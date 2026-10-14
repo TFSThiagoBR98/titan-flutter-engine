@@ -1,0 +1,26 @@
+# Why: the non-default toolchains did not define sysroot for ARM or x86, even
+# when GN received an explicit target sysroot, so cross-build configuration failed.
+# Map each supported 32-bit target ABI to the installed Debian sysroot.
+diff --git a/engine/src/build/config/sysroot.gni b/engine/src/build/config/sysroot.gni
+index 12c8df99f44..0aa7c3d8aff 100644
+--- a/engine/src/build/config/sysroot.gni
++++ b/engine/src/build/config/sysroot.gni
+@@ -28,6 +28,18 @@ if (current_toolchain == default_toolchain && target_sysroot != "") {
+     } else if (current_cpu == "arm64") {
+       sysroot =
+           rebase_path("//build/linux/debian_bullseye_arm64-sysroot", root_build_dir)
++    } else if (current_cpu == "arm") {
++      import("//build/config/arm.gni")
++      if (arm_float_abi == "hard") {
++        sysroot =
++            rebase_path("//build/linux/debian_bullseye_armhf-sysroot", root_build_dir)
++      } else {
++        sysroot =
++            rebase_path("//build/linux/debian_bullseye_armel-sysroot", root_build_dir)
++      }
++    } else if (current_cpu == "x86") {
++      sysroot =
++          rebase_path("//build/linux/debian_bullseye_i386-sysroot", root_build_dir)
+     } else if (current_cpu == "riscv64") {
+       sysroot =
+           rebase_path("//build/linux/debian_trixie_riscv64-sysroot", root_build_dir)

@@ -1,0 +1,22 @@
+# Why: the Linux ARM Clang toolchain emitted ARM CPU flags without a target
+# triple, so the host x86_64 compiler rejected -mfloat-abi, -mthumb and -mfpu.
+# Select the Debian ARM hard-float or soft-float target explicitly.
+diff --git a/engine/src/build/config/compiler/BUILD.gn b/engine/src/build/config/compiler/BUILD.gn
+index ad938db2379..28291bb57ac 100644
+--- a/engine/src/build/config/compiler/BUILD.gn
++++ b/engine/src/build/config/compiler/BUILD.gn
+@@ -411,6 +411,14 @@ config("compiler") {
+       cflags += [ "--target=aarch64-linux-gnu" ]
+       ldflags += [ "--target=aarch64-linux-gnu" ]
+       cflags += [ "-DBORINGSSL_CLANG_SUPPORTS_DOT_ARCH" ]
++    } else if (current_cpu == "arm") {
++      if (arm_float_abi == "hard") {
++        cflags += [ "--target=arm-linux-gnueabihf" ]
++        ldflags += [ "--target=arm-linux-gnueabihf" ]
++      } else {
++        cflags += [ "--target=arm-linux-gnueabi" ]
++        ldflags += [ "--target=arm-linux-gnueabi" ]
++      }
+     }
+   }
+ 

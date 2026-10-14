@@ -1,0 +1,109 @@
+# Impeller does not otherwise wrap embedder-provided Vulkan backing stores,
+# which prevents multiple views from using them. This follows the existing
+# swapchain path in gpu_surface_vulkan_impeller.cc.
+diff --git a/engine/src/flutter/shell/platform/embedder/embedder.cc b/engine/src/flutter/shell/platform/embedder/embedder.cc
+index 3e06531d85a..e0ad14c91d5 100644
+--- a/engine/src/flutter/shell/platform/embedder/embedder.cc
++++ b/engine/src/flutter/shell/platform/embedder/embedder.cc
+@@ -104,6 +104,14 @@ extern const intptr_t kPlatformStrongDillSize;
+ #ifdef SHELL_ENABLE_VULKAN
+ #include "third_party/skia/include/gpu/ganesh/vk/GrVkBackendSurface.h"
+ #include "third_party/skia/include/gpu/ganesh/vk/GrVkTypes.h"
++#ifdef IMPELLER_SUPPORTS_RENDERING
++#include "impeller/core/formats.h"  // nogncheck
++#include "impeller/core/texture_descriptor.h"  // nogncheck
++#include "impeller/display_list/aiks_context.h"  // nogncheck
++#include "impeller/renderer/backend/vulkan/swapchain/surface_vk.h"  // nogncheck
++#include "impeller/renderer/backend/vulkan/texture_wrapper_vk.h"  // nogncheck
++#include "impeller/renderer/render_target.h"  // nogncheck
++#endif  // IMPELLER_SUPPORTS_RENDERING
+ #endif  // SHELL_ENABLE_VULKAN
+ 
+ const int32_t kFlutterSemanticsNodeIdBatchEnd = -1;
+@@ -1362,6 +1370,75 @@ static sk_sp<SkSurface> MakeSkSurfaceFromBackingStore(
+ #endif
+ }
+ 
++// Impeller needs the embedder-provided Vulkan image wrapped like a swapchain
++// image; without this path, Vulkan backing stores cannot support multiple views.
++static std::unique_ptr<flutter::EmbedderRenderTarget>
++MakeRenderTargetFromBackingStoreImpeller(
++    FlutterBackingStore backing_store,
++    const fml::closure& on_release,
++    const std::shared_ptr<impeller::AiksContext>& aiks_context,
++    const FlutterBackingStoreConfig& config,
++    const FlutterVulkanBackingStore* vulkan) {
++#if defined(SHELL_ENABLE_VULKAN) && defined(IMPELLER_SUPPORTS_RENDERING)
++  if (!vulkan->image) {
++    FML_LOG(ERROR) << "Embedder supplied null Vulkan image.";
++    return nullptr;
++  }
++
++  const impeller::vk::Format vk_format =
++      static_cast<impeller::vk::Format>(vulkan->image->format);
++  const std::optional<impeller::PixelFormat> format =
++      impeller::VkFormatToImpellerFormat(vk_format);
++  if (!format.has_value()) {
++    FML_LOG(ERROR) << "Unsupported Vulkan pixel format: "
++                   << impeller::vk::to_string(vk_format);
++    return nullptr;
++  }
++
++  impeller::TextureDescriptor desc;
++  desc.format = format.value();
++  desc.size = impeller::ISize(config.size.width, config.size.height);
++  desc.storage_mode = impeller::StorageMode::kDevicePrivate;
++  desc.mip_count = 1;
++  desc.compression_type = impeller::CompressionType::kLossless;
++  desc.usage = impeller::TextureUsage::kRenderTarget;
++
++  const impeller::vk::Image vk_image(
++      reinterpret_cast<VkImage>(vulkan->image->image));
++  auto wrapped_image = impeller::WrapTextureSourceVK(
++      aiks_context->GetContext(), desc, vk_image);
++  if (!wrapped_image) {
++    FML_LOG(ERROR) << "Could not wrap embedder supplied Vulkan render texture.";
++    return nullptr;
++  }
++
++  const auto transients = std::make_shared<impeller::SwapchainTransientsVK>(
++      aiks_context->GetContext(), desc, /*enable_msaa=*/true);
++  auto surface = impeller::SurfaceVK::WrapSwapchainImage(
++      transients, wrapped_image, []() -> bool { return true; });
++  if (!surface) {
++    FML_LOG(ERROR) << "Could not create an Impeller Vulkan render target.";
++    return nullptr;
++  }
++
++  impeller::RenderTarget render_target = surface->GetRenderTarget();
++  fml::closure vulkan_destruct =
++      [callback = vulkan->destruction_callback,
++       user_data = vulkan->user_data]() {
++        if (callback) {
++          callback(user_data);
++        }
++      };
++
++  return std::make_unique<flutter::EmbedderRenderTargetImpeller>(
++      backing_store, aiks_context,
++      std::make_unique<impeller::RenderTarget>(std::move(render_target)),
++      on_release, std::move(vulkan_destruct));
++#else
++  return nullptr;
++#endif
++}
++
+ static std::unique_ptr<flutter::EmbedderRenderTarget>
+ MakeRenderTargetFromSkSurface(
+     FlutterBackingStore backing_store,
+@@ -1523,7 +1600,9 @@ CreateEmbedderRenderTarget(
+     }
+     case kFlutterBackingStoreTypeVulkan: {
+       if (enable_impeller) {
+-        FML_LOG(ERROR) << "Unimplemented";
++        render_target = MakeRenderTargetFromBackingStoreImpeller(
++            backing_store, collect_callback.Release(), aiks_context, config,
++            &backing_store.vulkan);
+         break;
+       } else {
+         auto skia_surface = MakeSkSurfaceFromBackingStore(

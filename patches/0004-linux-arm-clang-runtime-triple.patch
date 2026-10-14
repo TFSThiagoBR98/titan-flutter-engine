@@ -1,0 +1,18 @@
+# Why: the bundled Clang runtime libraries use the armv7-unknown-linux-gnueabihf
+# target directory, while the Debian toolchain triple omitted the armv7 prefix.
+# Append the bundled target triple to the linker flags for hard-float ARM.
+diff --git a/engine/src/build/config/compiler/BUILD.gn b/engine/src/build/config/compiler/BUILD.gn
+index 28291bb57ac..7bf8c2653ca 100644
+--- a/engine/src/build/config/compiler/BUILD.gn
++++ b/engine/src/build/config/compiler/BUILD.gn
+@@ -495,6 +495,10 @@ config("compiler") {
+     configs = [ "//flutter/tools/fuchsia/gn-sdk/src/config:compiler" ]
+   }
+ 
++  if (is_linux && is_clang && current_cpu == "arm" && arm_float_abi == "hard") {
++    ldflags += [ "--target=armv7-unknown-linux-gnueabihf" ]
++  }
++
+   asmflags = cflags
+ }
+ 
