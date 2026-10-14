@@ -169,6 +169,12 @@ for folder in "${patch_folders[@]}"; do
   done < <(find "$folder" -maxdepth 1 -type f -name '*.patch' -print | LC_ALL=C sort)
 done
 
+all_patch_paths=()
+while IFS= read -r path; do
+  [[ -n "$path" ]] || continue
+  all_patch_paths+=("$path")
+done < <(python3 "$repository_root/scripts/patch_series.py" --patch-root "$patch_dir" --paths)
+
 patches_sha256() {
   if ((${#patches[@]} == 0)); then
     printf '' | sha256sum | cut -d' ' -f1
@@ -237,6 +243,35 @@ if [[ "$actual_commit" != "$flutter_commit" ]]; then
 fi
 [[ -d "$engine_src/flutter" ]] || die "Flutter engine source is missing: $engine_src"
 
+restore_patch_paths() {
+  local path target
+  local -a tracked_paths=()
+  local -a created_paths=()
+
+  for path in "${all_patch_paths[@]}"; do
+    if git -C "$flutter_dir" cat-file -e "$flutter_commit:$path" 2>/dev/null; then
+      tracked_paths+=("$path")
+    else
+      created_paths+=("$path")
+    fi
+  done
+
+  for path in "${created_paths[@]}"; do
+    target="$flutter_dir/$path"
+    if [[ -e "$target" || -L "$target" ]]; then
+      [[ -f "$target" || -L "$target" ]] || die "patch-created path is not a file: $path"
+      rm -f -- "$target"
+    fi
+  done
+
+  if ((${#tracked_paths[@]} > 0)); then
+    git -C "$flutter_dir" checkout "$flutter_commit" -- "${tracked_paths[@]}"
+  fi
+  printf 'restored %d patch paths from %s\n' "${#all_patch_paths[@]}" "$flutter_commit"
+}
+
+restore_patch_paths
+
 fvm_root=${FVM_ROOT:-${HOME}/fvm}
 fvm_sdk="$fvm_root/versions/custom_titan"
 mkdir -p "$fvm_root/versions"
@@ -247,14 +282,8 @@ elif [[ "$(readlink -f "$fvm_sdk")" != "$(readlink -f "$flutter_dir")" ]]; then
 fi
 
 for patch in "${patches[@]}"; do
-  if git -C "$flutter_dir" apply --check "$patch"; then
-    printf 'applying %s\n' "$patch"
-    git -C "$flutter_dir" apply "$patch"
-  elif git -C "$flutter_dir" apply --reverse --check "$patch"; then
-    printf 'patch already applied: %s\n' "$patch"
-  else
-    die "cannot apply patch: $patch"
-  fi
+  printf 'applying %s\n' "$patch"
+  git -C "$flutter_dir" apply "$patch"
 done
 
 gn_args=(
@@ -266,6 +295,9 @@ gn_args=(
   --no-build-glfw-shell
   --no-build-embedder-examples
   --no-enable-unittests
+  --enable-minimal-linux
+  --gn-args
+  build_linux_gtk_shell=false
 )
 if [[ "$cpu" != x64 ]]; then
   gn_args+=(--linux --linux-cpu "$cpu")

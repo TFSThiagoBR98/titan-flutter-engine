@@ -1,0 +1,50 @@
+# Why: the Titan embedder does not use Flutter's GTK shell, but GN still
+# declares its pkg-config dependencies when the Linux platform group is
+# evaluated. Keep the GTK shell enabled by default and allow the Titan build
+# to remove that graph explicitly.
+diff --git a/engine/src/build/config/BUILDCONFIG.gn b/engine/src/build/config/BUILDCONFIG.gn
+index a6c8100d434..a221aa445a2 100644
+--- a/engine/src/build/config/BUILDCONFIG.gn
++++ b/engine/src/build/config/BUILDCONFIG.gn
+@@ -143,6 +143,9 @@ declare_args() {
+   # Whether we're a traditional desktop unix.
+   is_desktop_linux = current_os == "linux" && current_os != "chromeos"
+ 
++  # Whether to include Flutter's GTK shell when building Linux targets.
++  build_linux_gtk_shell = true
++
+   # Set to true when compiling with the Clang compiler. Typically this is used
+   # to configure warnings.
+   is_clang = current_os == "mac" || current_os == "ios" ||
+diff --git a/engine/src/flutter/shell/platform/linux/BUILD.gn b/engine/src/flutter/shell/platform/linux/BUILD.gn
+index 8f9e79fd120..a2bcd4035d7 100644
+--- a/engine/src/flutter/shell/platform/linux/BUILD.gn
++++ b/engine/src/flutter/shell/platform/linux/BUILD.gn
+@@ -9,10 +9,10 @@ import("//flutter/shell/platform/glfw/config.gni")
+ import("//flutter/testing/testing.gni")
+ 
+ group("linux") {
+-  deps = [
+-    ":flutter_linux_gtk",
+-    ":publish_headers_linux",
+-  ]
++  deps = [ ":publish_headers_linux" ]
++  if (build_linux_gtk_shell) {
++    deps += [ ":flutter_linux_gtk" ]
++  }
+   if (build_glfw_shell) {
+     deps += [
+       ":flutter_linux_glfw",
+diff --git a/engine/src/flutter/shell/platform/linux/config/BUILD.gn b/engine/src/flutter/shell/platform/linux/config/BUILD.gn
+index 48b3bf051da..364a9b45230 100644
+--- a/engine/src/flutter/shell/platform/linux/config/BUILD.gn
++++ b/engine/src/flutter/shell/platform/linux/config/BUILD.gn
+@@ -33,7 +33,7 @@ _pkg_configs = [
+ ]
+ 
+ foreach(pkg, _pkg_configs) {
+-  if (!is_minimal_linux) {
++  if (!is_minimal_linux && build_linux_gtk_shell) {
+     pkg_config(pkg.name) {
+       packages = [ pkg.package ]
+     }
