@@ -145,6 +145,7 @@ flutter_dir="$work_root/flutter"
 engine_src="$flutter_dir/engine/src"
 ccache_dir="$work_root/ccache"
 patch_dir="$repository_root/patches"
+series_file="$patch_dir/series"
 lock="$repository_root/flutter.lock"
 
 value() { sed -n "s/^$1=//p" "$lock"; }
@@ -152,18 +153,30 @@ value() { sed -n "s/^$1=//p" "$lock"; }
 flutter_commit=$(value flutter_commit)
 [[ -n "$flutter_commit" ]] || die "flutter.lock is missing flutter_commit"
 
+[[ -f "$series_file" ]] || die "patch series is missing: $series_file"
+
+patch_folders=()
+while IFS= read -r folder; do
+  [[ -n "$folder" ]] || continue
+  patch_folders+=("$patch_dir/$folder")
+done < <(python3 "$repository_root/scripts/patch_series.py" --series "$series_file" --cpu "$cpu")
+
 patches=()
-if [[ -d "$patch_dir" ]]; then
+for folder in "${patch_folders[@]}"; do
+  [[ -d "$folder" ]] || die "patch folder does not exist: $folder"
   while IFS= read -r patch; do
     patches+=("$patch")
-  done < <(find "$patch_dir" -maxdepth 1 -type f -name '*.patch' -print | LC_ALL=C sort)
-fi
+  done < <(find "$folder" -maxdepth 1 -type f -name '*.patch' -print | LC_ALL=C sort)
+done
 
 patches_sha256() {
   if ((${#patches[@]} == 0)); then
     printf '' | sha256sum | cut -d' ' -f1
   else
-    cat "${patches[@]}" | sha256sum | cut -d' ' -f1
+    {
+      cat "$series_file"
+      cat "${patches[@]}"
+    } | sha256sum | cut -d' ' -f1
   fi
 }
 
