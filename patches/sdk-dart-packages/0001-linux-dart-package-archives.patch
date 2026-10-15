@@ -1,0 +1,80 @@
+# Why: the flutter tool downloads sky_engine.zip and flutter_gpu.zip for every
+# SDK, but the engine only defines their archive targets for Android. Define the
+# old-location archives on Linux too so the host SDK artifacts include them.
+diff --git a/engine/src/flutter/lib/gpu/dist/BUILD.gn b/engine/src/flutter/lib/gpu/dist/BUILD.gn
+index c8ea07f2164..99f63b7fd51 100644
+--- a/engine/src/flutter/lib/gpu/dist/BUILD.gn
++++ b/engine/src/flutter/lib/gpu/dist/BUILD.gn
+@@ -14,16 +14,20 @@ import("//flutter/build/zip_bundle.gni")
+ # complete Dart package. So no additional build steps are necessary beyond
+ # zipping it up.
+ 
+-if (is_android) {
+-  zip_bundle("zip") {
+-    output = "$android_zip_archive_dir/flutter_gpu.zip"
+-    files = [
+-      {
+-        source = "//flutter/lib/gpu"
+-        destination = "flutter_gpu"
+-      },
+-    ]
+-    deps = []
++# The Linux SDK artifacts ship these packages too (sky_engine.zip,
++# flutter_gpu.zip at the old location the flutter tool downloads).
++if (is_android || is_linux) {
++  if (is_android) {
++    zip_bundle("zip") {
++      output = "$android_zip_archive_dir/flutter_gpu.zip"
++      files = [
++        {
++          source = "//flutter/lib/gpu"
++          destination = "flutter_gpu"
++        },
++      ]
++      deps = []
++    }
+   }
+ 
+   zip_bundle("zip_old_location") {
+diff --git a/engine/src/flutter/sky/dist/BUILD.gn b/engine/src/flutter/sky/dist/BUILD.gn
+index 1198b45c2d7..3ef102d1aa1 100644
+--- a/engine/src/flutter/sky/dist/BUILD.gn
++++ b/engine/src/flutter/sky/dist/BUILD.gn
+@@ -4,7 +4,9 @@
+ 
+ import("//flutter/build/zip_bundle.gni")
+ 
+-if (is_android) {
++# The Linux SDK artifacts ship these packages too (sky_engine.zip,
++# flutter_gpu.zip at the old location the flutter tool downloads).
++if (is_android || is_linux) {
+   action("sky_engine") {
+     script = "//flutter/sky/tools/dist_dart_pkg.py"
+ 
+@@ -23,15 +25,17 @@ if (is_android) {
+     deps = [ "//flutter/sky/packages/sky_engine" ]
+   }
+ 
+-  zip_bundle("zip") {
+-    output = "$android_zip_archive_dir/sky_engine.zip"
+-    files = [
+-      {
+-        source = "$root_build_dir/dist/packages/sky_engine"
+-        destination = "sky_engine"
+-      },
+-    ]
+-    deps = [ ":sky_engine" ]
++  if (is_android) {
++    zip_bundle("zip") {
++      output = "$android_zip_archive_dir/sky_engine.zip"
++      files = [
++        {
++          source = "$root_build_dir/dist/packages/sky_engine"
++          destination = "sky_engine"
++        },
++      ]
++      deps = [ ":sky_engine" ]
++    }
+   }
+ 
+   zip_bundle("zip_old_location") {
