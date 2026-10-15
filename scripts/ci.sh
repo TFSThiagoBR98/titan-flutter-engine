@@ -157,7 +157,7 @@ run_release() {
   }
   [[ -n "${GITHUB_REPOSITORY:-}" ]] || die "GITHUB_REPOSITORY is required for a tag release"
 
-  local tag=${GITHUB_REF#refs/tags/}
+  local tag=${GITHUB_REF_NAME:-${GITHUB_REF#refs/tags/}}
   local dist="$TITAN_BUNDLE_DIR/dist"
   local -a assets
   mapfile -t assets < <(find "$dist" -maxdepth 1 -type f \( -name '*.zip' -o -name SHA256SUMS \) -print | LC_ALL=C sort)

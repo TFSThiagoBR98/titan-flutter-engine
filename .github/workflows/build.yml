@@ -10,51 +10,75 @@ permissions:
   contents: read
 
 concurrency:
-  group: flutter-engine-${{ github.ref }}
+  group: flutter-engine-${${ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  sysroots:
-    name: Buildroot sysroots
-    runs-on: [self-hosted, linux, x64]
-    container:
-      image: node:24-trixie
-      options: "-v /srv/titan-flutter-engine:/cache"
-    env:
-      TITAN_WORK_DIR: /cache/work
-      TITAN_BUNDLE_DIR: /cache/bundles
-      TITAN_CPU_SCOPE: 0
-      TITAN_JOBS: ${{ vars.TITAN_JOBS || '8' }}
-      GH_TOKEN: ${{ github.token }}
-    timeout-minutes: 600
+  build:
+    name: Build Flutter Engine (${${ matrix.variant }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
     permissions:
       contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: x64-debug
+            defconfig: ''
+          - variant: x64-musl-debug
+            defconfig: titan_x64_musl_defconfig
+          - variant: arm64-debug
+            defconfig: titan_arm64_glibc_defconfig
+          - variant: arm64-musl-debug
+            defconfig: titan_arm64_musl_defconfig
+          - variant: arm-hard-debug
+            defconfig: titan_armv7a_hf_glibc_defconfig
+          - variant: arm-hard-musl-debug
+            defconfig: titan_armv7a_hf_musl_defconfig
+          - variant: arm-softfp-debug
+            defconfig: titan_armv7a_softfp_glibc_defconfig
+          - variant: arm-softfp-musl-debug
+            defconfig: titan_armv7a_softfp_musl_defconfig
+          - variant: riscv64-glibc-debug
+            defconfig: titan_riscv64_glibc_defconfig
+          - variant: riscv64-musl-debug
+            defconfig: titan_riscv64_musl_defconfig
+    env:
+      TITAN_WORK_DIR: /mnt/titan/work
+      TITAN_BUNDLE_DIR: /mnt/titan/bundles
+      TITAN_VARIANTS: ${${ matrix.variant }}
+      TITAN_PARALLEL: 1
+      GH_TOKEN: ${${ github.token }}
+      CCACHE_MAXSIZE: 900M
     steps:
       - uses: actions/checkout@v4
+
+      - name: Prepare workspace
+        run: |
+          sudo mkdir -p /mnt/titan
+          sudo chown "$USER" /mnt/titan
+
+      - name: Free disk space
+        run: scripts/ci.sh free-disk
 
       - name: Install dependencies
         run: scripts/ci.sh deps
 
-      - name: Build Buildroot sysroots
-        run: scripts/ci.sh sysroots
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: /mnt/titan/work/ccache
+          key: ccache-${${ matrix.variant }}-${${ hashFiles('flutter.lock', 'patches/**') }}-${${ github.run_id }}
+          restore-keys: |
+            ccache-${${ matrix.variant }}-${${ hashFiles('flutter.lock', 'patches/**') }}-
+            ccache-${${ matrix.variant }}-
 
-  build:
-    name: Build Flutter Engine
-    needs: sysroots
-    runs-on: [self-hosted, linux, x64]
-    container:
-      image: node:24-trixie
-      options: "-v /srv/titan-flutter-engine:/cache"
-    env:
-      TITAN_WORK_DIR: /cache/work
-      TITAN_BUNDLE_DIR: /cache/bundles
-      TITAN_CPU_SCOPE: 0
-      TITAN_JOBS: ${{ vars.TITAN_JOBS || '8' }}
-    timeout-minutes: 600
-    steps:
-      - uses: actions/checkout@v4
+      - name: Build sysroot
+        if: matrix.defconfig != ''
+        run: scripts/ci.sh sysroot ${${ matrix.defconfig }}
 
-      - name: Build engine matrix
+      - name: Build engine
         run: scripts/ci.sh build
 
       - name: Probe engine bundles
@@ -63,33 +87,35 @@ jobs:
       - name: Package engine bundles
         run: scripts/ci.sh package
 
-      - name: Upload engine bundles
+      - name: Upload engine bundle
         uses: actions/upload-artifact@v4
         with:
-          name: flutter-engine-dist
-          path: /cache/bundles/dist/
+          name: flutter-engine-${${ matrix.variant }}
+          path: /mnt/titan/bundles/dist/
           if-no-files-found: error
 
   release:
     name: Publish GitHub release
-    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    if: ${${ startsWith(github.ref, 'refs/tags/v') }}
     needs: build
-    runs-on: [self-hosted, linux, x64]
-    container:
-      image: node:24-trixie
-      options: "-v /srv/titan-flutter-engine:/cache"
-    env:
-      TITAN_BUNDLE_DIR: /cache/bundles
-      GH_TOKEN: ${{ github.token }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: write
+    env:
+      TITAN_BUNDLE_DIR: /mnt/titan/bundles
+      GH_TOKEN: ${${ github.token }}
     steps:
       - uses: actions/checkout@v4
+
       - name: Download engine bundles
         uses: actions/download-artifact@v4
         with:
-          name: flutter-engine-dist
-          path: /cache/bundles/dist
+          path: /mnt/titan/bundles/dist
+          merge-multiple: true
+
+      - name: Create release checksums
+        run: sha256sum /mnt/titan/bundles/dist/*.zip > /mnt/titan/bundles/dist/SHA256SUMS
+
       - name: Publish GitHub release
         run: scripts/ci.sh release
