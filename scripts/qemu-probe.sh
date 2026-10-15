@@ -119,7 +119,7 @@ case "$target_variant" in
     sysroot_name=titan_x64_musl
     variant="$flutter_commit-debug-x64-musl"
     qemu_binary=qemu-x86_64-static
-    default_qemu_cpu=x86_64
+    default_qemu_cpu=qemu64
     uses_gcc_runtime=1
     ;;
   arm64-debug)
