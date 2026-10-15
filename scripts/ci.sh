@@ -76,12 +76,56 @@ run_sysroot() {
   "$scripts_root/make-buildroot-sysroot.sh" --config "$1" --publish
 }
 
+# Prints "<variant>: <done>/<total> (<pct>%), <min> min, ~<min> min left" from
+# the last Ninja status line in a variant log. The remaining time assumes the
+# rate so far holds; links at the end make it a rough lower bound.
+build_progress_line() {
+  local variant=$1 log=$2 ninja_seconds=$3
+  local status done total
+  status=$(tail -c 65536 "$log" 2>/dev/null | tr '\r' '\n' | grep -oE '^\[[0-9]+/[0-9]+\]' | tail -n 1) || true
+  if [[ -z "$status" ]]; then
+    printf '%s: preparing (checkout, gclient, GN)\n' "$variant"
+    return
+  fi
+  status=${status#[}
+  status=${status%]}
+  done=${status%/*}
+  total=${status#*/}
+  if ((done == 0 || ninja_seconds == 0)); then
+    printf '%s: %s/%s\n' "$variant" "$done" "$total"
+    return
+  fi
+  printf '%s: %s/%s (%s%%), %s min compiling, ~%s min left\n' "$variant" "$done" "$total" \
+    "$((100 * done / total))" "$((ninja_seconds / 60))" \
+    "$((ninja_seconds * (total - done) / done / 60))"
+}
+
+# Heartbeat for the job output: the build itself only writes to the variant
+# logs, so print each variant's progress every TITAN_PROGRESS_SECONDS.
+report_build_progress() {
+  local interval=${TITAN_PROGRESS_SECONDS:-60} variant log
+  local -A ninja_started=()
+  while sleep "$interval"; do
+    for variant in "$@"; do
+      log="$TITAN_WORK_DIR/matrix/$variant.log"
+      if [[ -z "${ninja_started[$variant]:-}" ]] && grep -qE '^\[[0-9]+/[0-9]+\]' "$log" 2>/dev/null; then
+        ninja_started[$variant]=$SECONDS
+      fi
+      build_progress_line "$variant" "$log" "$((SECONDS - ${ninja_started[$variant]:-$SECONDS}))"
+    done
+  done
+}
+
 run_build() {
   local variants_text=${TITAN_VARIANTS:-x64-debug x64-musl-debug arm64-debug arm64-musl-debug arm-hard-debug arm-hard-musl-debug arm-softfp-debug arm-softfp-musl-debug riscv64-glibc-debug riscv64-musl-debug}
   local parallel=${TITAN_PARALLEL:-3}
   read -r -a variants <<<"$variants_text"
   local variant status=0
+  report_build_progress "${variants[@]}" &
+  local reporter=$!
   "$scripts_root/build-matrix.sh" --parallel "$parallel" --zip "${variants[@]}" || status=$?
+  kill "$reporter" 2>/dev/null || true
+  wait "$reporter" 2>/dev/null || true
   if ((status != 0)); then
     # The per-variant logs live on the runner's disk; show the end of each one so
     # the failure is visible in the job output.
