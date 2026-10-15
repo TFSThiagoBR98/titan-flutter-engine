@@ -5,10 +5,12 @@ um commit fixado do Flutter, compila o engine (Linux x86_64 e
 cross-compilação para armv7-a hard/soft, arm64 e riscv64) e publica os
 artefatos.
 
-O build x64 debug é o bundle usado pelo TitanDM. Os builds ARM usam `glibc`
-ou `musl` conforme o sysroot; `musl` está disponível, por enquanto, somente
-para ARM soft-float. A CI roda em um runner Linux x86_64 self-hosted, porque
-o checkout do Flutter e os builds do engine são grandes.
+O build x64 debug é o bundle usado pelo TitanDM. Cada alvo é CPU × ABI de
+ponto flutuante (ARM) × libc (`glibc` ou `musl`); a matriz oficial, com o
+estado de cada alvo, está em [docs/plataformas.md](docs/plataformas.md), e o
+como compilar em [docs/cross-compilacao.md](docs/cross-compilacao.md). A CI
+roda num runner Linux x86_64 próprio, porque o checkout do Flutter e os
+builds do engine são grandes.
 
 ## Requisitos
 
@@ -54,24 +56,36 @@ script também inclui o `gen_snapshot` do host.
 
 ## Organização dos patches
 
-`patches/series` lista as pastas de funcionalidade na ordem em que devem ser
-aplicadas. Cada linha tem o nome de uma pasta e pode ter condições no formato
-`chave=valor`, como `cpu=arm` ou `libc=musl`; uma linha sem condições vale para
-todos os alvos. Dentro de cada pasta, os arquivos `.patch` são aplicados em
-ordem lexicográfica e começam em `0001`. O script ignora uma pasta quando uma
-das condições não corresponde ao alvo atual e aceita patches já aplicados para
-permitir reexecução.
+`patches/series` lista as pastas **por assunto** (`impeller-vulkan`,
+`linux-embedder-only`, `linux-target-matrix`, `linux-compiler-runtime`,
+`linux-musl`), na ordem de aplicação. A série não usa condições: o
+`build-engine.sh` sempre aplica todas as pastas e todos os `.patch`, em ordem
+lexicográfica, e cada patch se limita ao alvo certo por condições no próprio
+GN. Assim, builds de alvos diferentes compartilham o mesmo checkout. Cada pasta
+tem um README com a tabela patch → por quê → plataformas afetadas. O parser
+continua aceitando condições `chave=valor` para séries antigas.
+
+## Vários alvos em paralelo
+
+```sh
+scripts/build-matrix.sh --parallel 4 x64-debug arm-hard-debug arm-softfp-debug arm-softfp-musl-debug
+```
+
+Cada alvo compila num diretório próprio em `engine/src/out/`; a fase de patch
+roda sob `flock` e é pulada quando o checkout já está com a mesma série. Os
+logs ficam em `.build_flutter/matrix/`. Debug e profile compilam sem LTO.
 
 O hash usado pelo lockfile do TitanDM é calculado sobre os bytes de
-`patches/series` e dos patches aplicáveis ao alvo x64, nessa ordem. READMEs de
-funcionalidade não entram no hash.
+`patches/series` e de todos os patches de todas as pastas listadas, nessa
+ordem. READMEs de funcionalidade não entram no hash.
 
 Para atualizar o Flutter, altere `flutter_commit` e `flutter` em
 `flutter.lock`, confira o novo checkout com o script e reaplique cada patch
 com `git apply --check` antes de atualizar o número e o conteúdo dos patches.
-O commit do Flutter deve ser fixado novamente antes de publicar um bundle; o
-script sempre restaura os arquivos tocados pelos patches a partir desse
-commit para que uma execução não herde alterações de outra.
+O commit do Flutter deve ser fixado novamente antes de publicar um bundle.
+Quando a série muda, o script restaura os arquivos tocados pelos patches a
+partir desse commit antes de reaplicar, para que uma execução não herde
+alterações de outra.
 
 ## Sysroots ARM
 
