@@ -1,11 +1,10 @@
-# Why: flatbuffers enables its strtoll_l/strtoull_l path whenever
-# _XOPEN_VERSION >= 700, which musl reports without providing those functions.
-# Disable the locale-independent path for the musl target (as Alpine does),
-# in the public config so every user of the headers agrees.
+# Why: disable flatbuffers locale helpers absent from musl despite its X/Open
+# version macro.
 diff --git a/engine/src/flutter/build/secondary/flutter/third_party/flatbuffers/BUILD.gn b/engine/src/flutter/build/secondary/flutter/third_party/flatbuffers/BUILD.gn
+index a760addb04a..da1c8cda8d7 100644
 --- a/engine/src/flutter/build/secondary/flutter/third_party/flatbuffers/BUILD.gn
 +++ b/engine/src/flutter/build/secondary/flutter/third_party/flatbuffers/BUILD.gn
-@@ -8,6 +8,11 @@
+@@ -8,6 +8,11 @@ config("flatbuffers_public_configs") {
    include_dirs = [ "$_src_root/include" ]
  
    cflags = [ "-Wno-newline-eof" ]

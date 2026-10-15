@@ -1,0 +1,62 @@
+# Why: give every target CPU and libc a deterministic default sysroot while
+# preserving explicit target_sysroot values and the x64 glibc Chromium sysroot.
+diff --git a/engine/src/build/config/sysroot.gni b/engine/src/build/config/sysroot.gni
+index 12c8df99f44..2dffbcd94b2 100644
+--- a/engine/src/build/config/sysroot.gni
++++ b/engine/src/build/config/sysroot.gni
+@@ -23,14 +23,50 @@ if (current_toolchain == default_toolchain && target_sysroot != "") {
+ } else if (is_linux && !is_chromeos) {
+   if (use_default_linux_sysroot && !is_fuchsia) {
+     if (current_cpu == "x64") {
+-      sysroot =
+-          rebase_path("//build/linux/debian_bullseye_amd64-sysroot", root_build_dir)
++      if (current_toolchain == default_toolchain && titan_target_libc == "musl") {
++        sysroot = rebase_path("//build/linux/titan_x64_musl-sysroot", root_build_dir)
++      } else {
++        # Keep the Chromium Debian sysroot for the x64 glibc bundle and host tools.
++        sysroot = rebase_path(
++            "//build/linux/debian_bullseye_amd64-sysroot", root_build_dir)
++      }
+     } else if (current_cpu == "arm64") {
++      if (current_toolchain == default_toolchain && titan_target_libc == "musl") {
++        sysroot = rebase_path("//build/linux/titan_arm64_musl-sysroot", root_build_dir)
++      } else {
++        sysroot = rebase_path("//build/linux/titan_arm64_glibc-sysroot", root_build_dir)
++      }
++    } else if (current_cpu == "arm") {
++      import("//build/config/arm.gni")
++      if (current_toolchain == default_toolchain && titan_target_libc == "musl") {
++        if (arm_float_abi == "hard") {
++          sysroot = rebase_path(
++              "//build/linux/titan_armv7a_hf_musl-sysroot", root_build_dir)
++        } else {
++          sysroot = rebase_path(
++              "//build/linux/titan_armv7a_softfp_musl-sysroot", root_build_dir)
++        }
++      } else if (arm_float_abi == "hard") {
++        sysroot = rebase_path("//build/linux/titan_armv7a_hf-sysroot", root_build_dir)
++      } else {
++        sysroot = rebase_path(
++            "//build/linux/titan_armv7a_softfp-sysroot", root_build_dir)
++      }
++    } else if (current_cpu == "x86") {
+       sysroot =
+-          rebase_path("//build/linux/debian_bullseye_arm64-sysroot", root_build_dir)
++          rebase_path("//build/linux/debian_bullseye_i386-sysroot", root_build_dir)
++    } else if (current_cpu == "riscv32") {
++      if (current_toolchain == default_toolchain && titan_target_libc == "musl") {
++        sysroot = rebase_path("//build/linux/titan_riscv32_musl-sysroot", root_build_dir)
++      } else {
++        sysroot = rebase_path("//build/linux/titan_riscv32_glibc-sysroot", root_build_dir)
++      }
+     } else if (current_cpu == "riscv64") {
+-      sysroot =
+-          rebase_path("//build/linux/debian_trixie_riscv64-sysroot", root_build_dir)
++      if (current_toolchain == default_toolchain && titan_target_libc == "musl") {
++        sysroot = rebase_path("//build/linux/titan_riscv64_musl-sysroot", root_build_dir)
++      } else {
++        sysroot = rebase_path("//build/linux/titan_riscv64_glibc-sysroot", root_build_dir)
++      }
+     }
+     assert(
+         exec_script("//build/dir_exists.py", [ sysroot ], "string") == "True",

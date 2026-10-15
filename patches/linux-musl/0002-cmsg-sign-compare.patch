@@ -1,10 +1,10 @@
-# Why: musl's CMSG_NXTHDR macro compares size_t with ptrdiff_t, so Dart's
-# socket code fails -Werror,-Wsign-compare only against musl headers. Silence
-# that warning for the musl target alone, after -Wextra enables it.
+# Why: silence the musl CMSG_NXTHDR sign comparison that becomes an error in
+# Dart's socket code.
 diff --git a/engine/src/build/config/compiler/BUILD.gn b/engine/src/build/config/compiler/BUILD.gn
+index ad938db2379..b8325b02427 100644
 --- a/engine/src/build/config/compiler/BUILD.gn
 +++ b/engine/src/build/config/compiler/BUILD.gn
-@@ -865,6 +865,12 @@
+@@ -840,6 +840,12 @@ config("chromium_code") {
        ]
      }
  

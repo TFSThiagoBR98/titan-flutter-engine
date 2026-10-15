@@ -1,4 +1,5 @@
 impeller-vulkan
 linux-embedder-only
-cross-linux-arm cpu=arm
-linux-musl cpu=arm libc=musl
+linux-target-matrix
+linux-compiler-runtime
+linux-musl

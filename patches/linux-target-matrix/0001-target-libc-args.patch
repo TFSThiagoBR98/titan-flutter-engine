@@ -1,0 +1,27 @@
+# Why: declare and validate TitanDM's target libc once so every Linux target
+# can select glibc or musl through the same GN argument.
+diff --git a/engine/src/build/config/BUILDCONFIG.gn b/engine/src/build/config/BUILDCONFIG.gn
+index a6c8100d434..7b582339e73 100644
+--- a/engine/src/build/config/BUILDCONFIG.gn
++++ b/engine/src/build/config/BUILDCONFIG.gn
+@@ -115,6 +115,9 @@ if (current_os == "") {
+ #   even if the value is overridden, which is wasteful. See first bullet.
+ 
+ declare_args() {
++  # Select the libc used by TitanDM's non-default Linux target sysroots.
++  titan_target_libc = "glibc"
++
+   # How many symbols to include in the build. This affects the performance of
+   # the build since the symbols are large and dealing with them is slow.
+   #   2 means regular build with symbols.
+@@ -181,6 +184,10 @@ declare_args() {
+   # DON'T ADD MORE FLAGS HERE. Read the comment above.
+ }
+ 
++assert(
++    titan_target_libc == "glibc" || titan_target_libc == "musl",
++    "titan_target_libc must be glibc or musl")
++
+ # =============================================================================
+ # OS DEFINITIONS
+ # =============================================================================

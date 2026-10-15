@@ -1,19 +1,20 @@
-# Why: the bundled Clang ships compiler-rt and libunwind only for
-# armv7-unknown-linux-gnueabihf, whose floating-point calling convention is
-# wrong for soft/softfp targets. Those targets link the GCC runtime (libgcc and
-# libgcc_eh) that the Buildroot sysroot installs under usr/lib/gcc/, statically,
-# so libflutter_engine.so still depends only on libc.
+# Why: use the target sysroot's GCC runtime where compiler-rt/libunwind does
+# not cover musl, ARM soft-float, or riscv32.
 diff --git a/engine/src/build/config/compiler/BUILD.gn b/engine/src/build/config/compiler/BUILD.gn
+index ad938db2379..237493b19a2 100644
 --- a/engine/src/build/config/compiler/BUILD.gn
 +++ b/engine/src/build/config/compiler/BUILD.gn
-@@ -654,7 +654,17 @@
+@@ -642,7 +642,20 @@ config("runtime_library") {
      if (is_linux) {
        # Our custom libcxx doesn't include the unwinder, which is included in
        # libc++.a. Link the libunwind directly.
 -      ldflags += [ "--unwindlib=libunwind" ]
-+      if (current_cpu == "arm" && arm_float_abi != "hard") {
-+        # The bundled libunwind is hard-float only; use the sysroot's GCC
-+        # unwinder, linked statically so the engine needs only libc.
++      if (current_toolchain == default_toolchain &&
++          (titan_target_libc == "musl" ||
++           (current_cpu == "arm" && arm_float_abi != "hard") ||
++           current_cpu == "riscv32")) {
++        # The bundled runtime does not cover these target triples; use the
++        # GCC runtime from the target sysroot and link it statically.
 +        ldflags += [
 +          "--rtlib=libgcc",
 +          "--unwindlib=libgcc",

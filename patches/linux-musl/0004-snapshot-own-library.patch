@@ -1,7 +1,5 @@
-# Why: the engine finds its embedded Dart snapshot with dlsym(RTLD_DEFAULT).
-# glibc searches the caller's scope there, musl only the global namespace, so
-# an engine loaded with RTLD_LOCAL (titan-embedder, the QEMU probe) fails with
-# "VM snapshot invalid" on musl. Also look in the engine's own library.
+# Why: find embedded Dart snapshots in the engine's own RTLD_LOCAL library on
+# musl, whose RTLD_DEFAULT lookup excludes that library.
 diff --git a/engine/src/flutter/runtime/dart_snapshot.cc b/engine/src/flutter/runtime/dart_snapshot.cc
 index 293ed44cc5f..7848e74aadc 100644
 --- a/engine/src/flutter/runtime/dart_snapshot.cc

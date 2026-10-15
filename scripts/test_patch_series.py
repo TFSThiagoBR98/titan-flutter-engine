@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from patch_series import collect_patch_paths, parse_series
+from patch_series import collect_patch_paths, parse_all_series, parse_series
 
 
 class PatchSeriesTest(unittest.TestCase):
@@ -64,6 +64,18 @@ new file mode 100644
         self.assertEqual(
             parse_series(series, cpu="arm", libc="musl"),
             ["impeller-vulkan", "cross-linux-arm", "musl"],
+        )
+
+    def test_returns_all_entries_for_the_unconditional_build_series(self) -> None:
+        series = """
+        linux-target-matrix cpu=arm
+        linux-compiler-runtime libc=musl
+        linux-musl cpu=arm libc=musl
+        """
+
+        self.assertEqual(
+            parse_all_series(series),
+            ["linux-target-matrix", "linux-compiler-runtime", "linux-musl"],
         )
 
 

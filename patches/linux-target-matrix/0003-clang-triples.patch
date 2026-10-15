@@ -1,0 +1,63 @@
+# Why: select the compiler and linker triples for each supported target CPU,
+# libc, and ARM floating-point ABI without changing host toolchains.
+diff --git a/engine/src/build/config/compiler/BUILD.gn b/engine/src/build/config/compiler/BUILD.gn
+index ad938db2379..c30d376da7d 100644
+--- a/engine/src/build/config/compiler/BUILD.gn
++++ b/engine/src/build/config/compiler/BUILD.gn
+@@ -407,10 +407,52 @@ config("compiler") {
+     cflags += [ "-pthread" ]
+     ldflags += [ "-pthread" ]
+ 
+-    if (current_cpu == "arm64") {
+-      cflags += [ "--target=aarch64-linux-gnu" ]
+-      ldflags += [ "--target=aarch64-linux-gnu" ]
+-      cflags += [ "-DBORINGSSL_CLANG_SUPPORTS_DOT_ARCH" ]
++    if (current_toolchain == default_toolchain) {
++      if (current_cpu == "x64" && titan_target_libc == "musl") {
++        cflags += [ "--target=x86_64-linux-musl" ]
++        ldflags += [ "--target=x86_64-linux-musl" ]
++      } else if (current_cpu == "arm64") {
++        if (titan_target_libc == "musl") {
++          cflags += [ "--target=aarch64-linux-musl" ]
++          ldflags += [ "--target=aarch64-linux-musl" ]
++        } else {
++          cflags += [ "--target=aarch64-linux-gnu" ]
++          ldflags += [ "--target=aarch64-linux-gnu" ]
++        }
++        cflags += [ "-DBORINGSSL_CLANG_SUPPORTS_DOT_ARCH" ]
++      } else if (current_cpu == "arm") {
++        if (titan_target_libc == "musl") {
++          if (arm_float_abi == "hard") {
++            cflags += [ "--target=arm-linux-musleabihf" ]
++            ldflags += [ "--target=arm-linux-musleabihf" ]
++          } else {
++            cflags += [ "--target=arm-linux-musleabi" ]
++            ldflags += [ "--target=arm-linux-musleabi" ]
++          }
++        } else if (arm_float_abi == "hard") {
++          cflags += [ "--target=arm-linux-gnueabihf" ]
++          ldflags += [ "--target=armv7-unknown-linux-gnueabihf" ]
++        } else {
++          cflags += [ "--target=arm-linux-gnueabi" ]
++          ldflags += [ "--target=arm-linux-gnueabi" ]
++        }
++      } else if (current_cpu == "riscv32") {
++        if (titan_target_libc == "musl") {
++          cflags += [ "--target=riscv32-linux-musl" ]
++          ldflags += [ "--target=riscv32-linux-musl" ]
++        } else {
++          cflags += [ "--target=riscv32-linux-gnu" ]
++          ldflags += [ "--target=riscv32-linux-gnu" ]
++        }
++      } else if (current_cpu == "riscv64") {
++        if (titan_target_libc == "musl") {
++          cflags += [ "--target=riscv64-linux-musl" ]
++          ldflags += [ "--target=riscv64-linux-musl" ]
++        } else {
++          cflags += [ "--target=riscv64-linux-gnu" ]
++          ldflags += [ "--target=riscv64-linux-gnu" ]
++        }
++      }
+     }
+   }
+ 

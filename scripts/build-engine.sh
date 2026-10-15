@@ -13,8 +13,11 @@ Options:
   --mode debug|profile|release       Runtime mode (default: debug)
   --cpu x64|arm64|arm|riscv64       Linux target CPU (default: x64)
   --arm-float-abi hard|softfp|soft  ARM float ABI (only with --cpu arm)
-  --libc glibc|musl                 Target libc (default: glibc; musl is ARM soft-float only)
+  --libc glibc|musl                 Target libc (default: glibc)
   --target-sysroot <dir>             Target sysroot for cross-compilation
+  --gn-only                          Configure GN without running Ninja
+  --jobs N                           Ninja parallel jobs (default: host CPU count)
+  --load N                           Ninja load limit (default: host CPU count)
   --out <dir>                        Bundle output directory
   --zip                              Also publish the bundle under dist/
   --work-dir <dir>                   Flutter/depot_tools workspace
@@ -54,6 +57,9 @@ target_sysroot=
 out_dir_arg=
 zip_output=0
 work_dir_arg=
+gn_only=0
+jobs_arg=
+load_arg=
 while (($# > 0)); do
   case "$1" in
     --mode)
@@ -99,6 +105,28 @@ while (($# > 0)); do
       ;;
     --target-sysroot=*)
       target_sysroot=${1#*=}
+      shift
+      ;;
+    --gn-only)
+      gn_only=1
+      shift
+      ;;
+    --jobs)
+      (($# >= 2)) || die "--jobs requires a value"
+      jobs_arg=$2
+      shift 2
+      ;;
+    --jobs=*)
+      jobs_arg=${1#*=}
+      shift
+      ;;
+    --load)
+      (($# >= 2)) || die "--load requires a value"
+      load_arg=$2
+      shift 2
+      ;;
+    --load=*)
+      load_arg=${1#*=}
       shift
       ;;
     --out)
@@ -152,9 +180,10 @@ esac
 if [[ -n "$arm_float_abi" && "$cpu" != arm ]]; then
   die "--arm-float-abi is only valid with --cpu arm"
 fi
-if [[ "$libc" == musl && ("$cpu" != arm || "$arm_float_abi" == hard) ]]; then
-  die "--libc musl currently requires --cpu arm with a non-hard float ABI"
-fi
+[[ -z "$jobs_arg" || "$jobs_arg" =~ ^[1-9][0-9]*$ ]] || die "--jobs must be a positive integer"
+[[ -z "$load_arg" || "$load_arg" =~ ^[1-9][0-9]*$ ]] || die "--load must be a positive integer"
+jobs=${jobs_arg:-$(getconf _NPROCESSORS_ONLN)}
+load=${load_arg:-$jobs}
 
 repository_root=$(cd "$(dirname "$0")/.." && pwd -P)
 caller_root=$(pwd -P)
@@ -196,7 +225,7 @@ patch_folders=()
 while IFS= read -r folder; do
   [[ -n "$folder" ]] || continue
   patch_folders+=("$patch_dir/$folder")
-done < <(python3 "$repository_root/scripts/patch_series.py" --series "$series_file" --cpu "$cpu" --libc "$libc")
+done < <(python3 "$repository_root/scripts/patch_series.py" --series "$series_file" --all)
 
 patches=()
 for folder in "${patch_folders[@]}"; do
@@ -307,7 +336,24 @@ restore_patch_paths() {
   printf 'restored %d patch paths from %s\n' "${#all_patch_paths[@]}" "$flutter_commit"
 }
 
-restore_patch_paths
+patch_lock="$work_root/.titan-patches.lock"
+patch_state="$flutter_dir/.titan-patches.sha256"
+
+(
+  flock 9
+  if [[ -f "$patch_state" && "$(<"$patch_state")" == "$patches_sha256_actual" ]]; then
+    printf 'patch series already applied: %s\n' "$patches_sha256_actual"
+  else
+    restore_patch_paths
+
+    for patch in "${patches[@]}"; do
+      printf 'applying %s\n' "$patch"
+      git -C "$flutter_dir" apply "$patch"
+    done
+    printf '%s\n' "$patches_sha256_actual" > "$patch_state"
+    printf 'applied patch series: %s\n' "$patches_sha256_actual"
+  fi
+) 9>"$patch_lock"
 
 fvm_root=${FVM_ROOT:-${HOME}/fvm}
 fvm_sdk="$fvm_root/versions/custom_titan"
@@ -317,11 +363,6 @@ if [[ ! -e "$fvm_sdk" && ! -L "$fvm_sdk" ]]; then
 elif [[ "$(readlink -f "$fvm_sdk")" != "$(readlink -f "$flutter_dir")" ]]; then
   die "FVM custom_titan does not point to $flutter_dir: $fvm_sdk"
 fi
-
-for patch in "${patches[@]}"; do
-  printf 'applying %s\n' "$patch"
-  git -C "$flutter_dir" apply "$patch"
-done
 
 gn_args=(
   --runtime-mode "$mode"
@@ -351,32 +392,68 @@ if [[ -n "$target_sysroot" ]]; then
   target_sysroot=$(cd "$target_sysroot" && pwd -P)
   gn_args+=(--target-sysroot "$target_sysroot")
 fi
-if [[ "$cpu" == arm && "$arm_float_abi" != hard ]]; then
-  # Soft-float ARM links the sysroot's GCC runtime (patch 0004); the bundled
-  # compiler-rt is hard-float only.
-  gcc_triple=arm-linux-gnueabi
+if [[ "$libc" == musl || ("$cpu" == arm && "$arm_float_abi" != hard) || "$cpu" == riscv32 ]]; then
+  # These targets link the GCC runtime from their sysroot; the bundled
+  # compiler-rt/libunwind does not cover their ABI or libc.
+  gcc_triple=
+  sysroot_name=
   if [[ "$libc" == musl ]]; then
-    gcc_triple=arm-linux-musleabi
+    case "$cpu" in
+      x64) gcc_triple=x86_64-linux-musl; sysroot_name=titan_x64_musl ;;
+      arm64) gcc_triple=aarch64-linux-musl; sysroot_name=titan_arm64_musl ;;
+      arm)
+        if [[ "$arm_float_abi" == hard ]]; then
+          gcc_triple=arm-linux-musleabihf
+          sysroot_name=titan_armv7a_hf_musl
+        else
+          gcc_triple=arm-linux-musleabi
+          sysroot_name=titan_armv7a_softfp_musl
+        fi
+        ;;
+      riscv64) gcc_triple=riscv64-linux-musl; sysroot_name=titan_riscv64_musl ;;
+    esac
+  elif [[ "$cpu" == arm ]]; then
+    gcc_triple=arm-linux-gnueabi
+    sysroot_name=titan_armv7a_softfp
+  else
+    gcc_triple=riscv32-linux-gnu
+    sysroot_name=titan_riscv32_glibc
   fi
-  gcc_runtime=("${target_sysroot:-/nonexistent}"/usr/lib/gcc/"$gcc_triple"/*/libgcc_eh.a)
+  runtime_sysroot=${target_sysroot:-$engine_src/build/linux/$sysroot_name-sysroot}
+  gcc_runtime=("$runtime_sysroot"/usr/lib/gcc/"$gcc_triple"/*/libgcc_eh.a)
   [[ -f "${gcc_runtime[0]}" ]] || \
-    die "soft-float ARM needs --target-sysroot with the GCC runtime (scripts/make-buildroot-sysroot.sh)"
+    die "target $cpu/$libc needs the GCC runtime in $runtime_sysroot (scripts/make-buildroot-sysroot.sh)"
+fi
+
+if [[ "$mode" != release ]]; then
+  gn_args+=(--no-lto)
+fi
+
+if [[ "$cpu" == x64 && "$libc" == glibc ]]; then
+  out_name="host_$mode"
+else
+  out_name="linux_${mode}_${cpu}"
+  if [[ "$cpu" == arm && -n "$arm_float_abi" ]]; then
+    out_name+="_$arm_float_abi"
+  fi
+  out_name+="_$libc"
 fi
 
 printf 'configuring Flutter Engine: mode=%s cpu=%s\n' "$mode" "$cpu"
-"$engine_src/flutter/tools/gn" "${gn_args[@]}"
+"$engine_src/flutter/tools/gn" --target-dir "$out_name" "${gn_args[@]}"
 
-out_name="host_$mode"
-if [[ "$cpu" != x64 ]]; then
-  out_name="linux_${mode}_$cpu"
+if ((gn_only)); then
+  printf 'GN configuration complete: %s\n' "$engine_src/out/$out_name"
+  exit 0
 fi
+
 out_dir="$engine_src/out/$out_name"
 printf 'building Flutter Engine in %s\n' "$out_dir"
-ninja -C "$out_dir" \
+ninja -C "$out_dir" -j "$jobs" -l "$load" \
   flutter/shell/platform/embedder:flutter_engine_library \
   flutter/shell/platform/embedder:copy_headers
 if [[ "$mode" != debug ]]; then
-  ninja -C "$out_dir" flutter/shell/common:gen_snapshot
+  ninja -C "$out_dir" -j "$jobs" -l "$load" flutter/shell/common:gen_snapshot
 fi
 
 variant="$flutter_commit"
@@ -391,6 +468,7 @@ if [[ "$libc" == musl ]]; then
 fi
 dest="$artifact_root/$variant"
 stage=$(mktemp -d "$artifact_root/.stage.XXXXXX")
+chmod 755 "$stage"  # mktemp creates 0700; the bundle is read by other tools
 trap 'rm -rf "$stage"' EXIT
 
 for artifact in libflutter_engine.so flutter_embedder.h icudtl.dat; do

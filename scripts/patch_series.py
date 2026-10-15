@@ -66,11 +66,32 @@ def parse_series(series: str, *, cpu: str, libc: str) -> list[str]:
     return selected
 
 
+def parse_all_series(series: str) -> list[str]:
+    """Return every valid feature directory, preserving legacy conditions."""
+    selected: list[str] = []
+    for line_number, line in enumerate(series.splitlines(), start=1):
+        fields = line.split("#", 1)[0].split()
+        if not fields:
+            continue
+        folder, *conditions = fields
+        if "/" in folder or folder in {".", ".."}:
+            raise ValueError(f"invalid patch folder on line {line_number}: {folder}")
+        for condition in conditions:
+            key, separator, _ = condition.partition("=")
+            if not separator or key not in {"cpu", "libc"}:
+                raise ValueError(
+                    f"invalid patch condition on line {line_number}: {condition}"
+                )
+        selected.append(folder)
+    return selected
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--series", type=Path)
     parser.add_argument("--cpu")
     parser.add_argument("--libc", default="glibc")
+    parser.add_argument("--all", action="store_true")
     parser.add_argument("--patch-root", type=Path)
     parser.add_argument("--paths", action="store_true")
     arguments = parser.parse_args()
@@ -81,6 +102,12 @@ def main() -> int:
             sorted(arguments.patch_root.rglob("*.patch"))
         ):
             print(path)
+        return 0
+    if arguments.all:
+        if arguments.series is None:
+            parser.error("--all requires --series")
+        for folder in parse_all_series(arguments.series.read_text(encoding="utf-8")):
+            print(folder)
         return 0
     if arguments.series is None or arguments.cpu is None:
         parser.error("--series and --cpu are required unless --paths is used")
