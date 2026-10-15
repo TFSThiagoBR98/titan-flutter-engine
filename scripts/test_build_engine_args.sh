@@ -150,6 +150,67 @@ run_engine() {
     "$standalone_repository/scripts/build-engine.sh" "$@"
 }
 
+bootstrap_repository="$temporary_directory/bootstrap-repository"
+bootstrap_work="$temporary_directory/bootstrap-work"
+bootstrap_remote="$temporary_directory/bootstrap-remote"
+bootstrap_bin="$temporary_directory/bootstrap-bin"
+bootstrap_flutter="$bootstrap_work/flutter"
+bootstrap_commit=
+mkdir -p "$bootstrap_repository/scripts/lib" "$bootstrap_repository/patches" \
+  "$bootstrap_remote/engine/src/flutter/tools" "$bootstrap_work/depot_tools" "$bootstrap_bin"
+cp "$repository_root/scripts/build-engine.sh" "$bootstrap_repository/scripts/build-engine.sh"
+cp "$repository_root/scripts/patch_series.py" "$bootstrap_repository/scripts/patch_series.py"
+cp "$repository_root/scripts/lib/paths.sh" "$bootstrap_repository/scripts/lib/paths.sh"
+cp "$repository_root/scripts/lib/cpu-budget.sh" "$bootstrap_repository/scripts/lib/cpu-budget.sh"
+cp "$repository_root/scripts/lib/sysroot.sh" "$bootstrap_repository/scripts/lib/sysroot.sh"
+: > "$bootstrap_repository/patches/series"
+
+git init --quiet "$bootstrap_remote"
+git -C "$bootstrap_remote" config user.email test@example.invalid
+git -C "$bootstrap_remote" config user.name "Build Engine Test"
+printf '%s\n' 'first remote Flutter commit' > "$bootstrap_remote/README"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$bootstrap_remote/engine/src/flutter/tools/gn"
+chmod +x "$bootstrap_remote/engine/src/flutter/tools/gn"
+git -C "$bootstrap_remote" add README engine
+git -C "$bootstrap_remote" commit --quiet -m 'test: first remote Flutter commit'
+printf '%s\n' 'second remote Flutter commit' > "$bootstrap_remote/README"
+git -C "$bootstrap_remote" add README
+git -C "$bootstrap_remote" commit --quiet -m 'test: second remote Flutter commit'
+bootstrap_commit=$(git -C "$bootstrap_remote" rev-parse HEAD)
+printf 'flutter_commit=%s\n' "$bootstrap_commit" > "$bootstrap_repository/flutter.lock"
+
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$bootstrap_work/depot_tools/gclient"
+chmod +x "$bootstrap_work/depot_tools/gclient"
+cat > "$bootstrap_bin/git" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == clone && "${2:-}" == https://github.com/flutter/flutter.git ]]; then
+  exec "$REAL_GIT" clone "$FAKE_FLUTTER_REMOTE" "$3"
+fi
+if [[ "${1:-}" == -C && "${3:-}" == remote && "${4:-}" == add && "${5:-}" == origin ]]; then
+  exec "$REAL_GIT" -C "$2" remote add origin "$FAKE_FLUTTER_REMOTE"
+fi
+exec "$REAL_GIT" "$@"
+EOF
+chmod +x "$bootstrap_bin/git"
+
+run_bootstrap_engine() {
+  REAL_GIT="$(command -v git)" \
+  FAKE_FLUTTER_REMOTE="$bootstrap_remote" \
+  TITAN_GN_LOG="$gn_log" \
+  TITAN_PYTHON_LOG="$python_log" \
+  TITAN_REAL_PYTHON="$real_python" \
+  TITAN_HOST_SYSROOT="$host_sysroot" \
+  TITAN_NINJA_LOG="$ninja_log" \
+  TITAN_GN="$fake_gn" \
+  TITAN_WORK_DIR="$bootstrap_work" \
+  TITAN_BUNDLE_DIR="$temporary_directory/bootstrap-bundle" \
+  FVM_ROOT="$temporary_directory/bootstrap-fvm" \
+  PATH="$bootstrap_bin:$fake_bin:$PATH" \
+    "$bootstrap_repository/scripts/build-engine.sh" "$@"
+}
+
 assert_log_contains() {
   local log_path=$1
   local expected=$2
@@ -168,6 +229,16 @@ assert_log_not_contains() {
     sed -n '1,120p' "$log_path" >&2
     exit 1
   fi
+}
+
+run_bootstrap_engine --gn-only
+[[ "$(git -C "$bootstrap_flutter" rev-parse --is-shallow-repository)" == true ]] || {
+  printf 'new Flutter checkout is not shallow\n' >&2
+  exit 1
+}
+[[ "$(git -C "$bootstrap_flutter" rev-parse HEAD)" == "$bootstrap_commit" ]] || {
+  printf 'new Flutter checkout is not at flutter_commit\n' >&2
+  exit 1
 }
 
 : > "$gn_log"

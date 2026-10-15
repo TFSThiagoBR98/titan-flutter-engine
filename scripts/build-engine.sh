@@ -359,6 +359,7 @@ export DEPOT_TOOLS_METRICS=0
 export PATH="$depot_tools:$PATH"
 
 bootstrap=0
+flutter_checkout_new=0
 if [[ ! -d "$depot_tools" ]]; then
   printf 'bootstrapping depot_tools in %s\n' "$depot_tools"
   git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "$depot_tools"
@@ -367,8 +368,10 @@ fi
 
 if [[ ! -d "$flutter_dir/.git" && ! -f "$flutter_dir/.git" ]]; then
   printf 'bootstrapping Flutter in %s\n' "$flutter_dir"
-  git clone https://github.com/flutter/flutter.git "$flutter_dir"
+  git init "$flutter_dir"
+  git -C "$flutter_dir" remote add origin https://github.com/flutter/flutter.git
   bootstrap=1
+  flutter_checkout_new=1
 fi
 
 if ((bootstrap)); then
@@ -391,8 +394,13 @@ download_esbuild = False
 setup_githooks = False
 EOF
   fi
-  git -C "$flutter_dir" fetch origin "$flutter_commit"
-  git -C "$flutter_dir" checkout --detach "$flutter_commit"
+  if ((flutter_checkout_new)); then
+    git -C "$flutter_dir" fetch --depth 1 origin "$flutter_commit"
+    git -C "$flutter_dir" checkout --detach FETCH_HEAD
+  else
+    git -C "$flutter_dir" fetch origin "$flutter_commit"
+    git -C "$flutter_dir" checkout --detach "$flutter_commit"
+  fi
   (cd "$work_root" && gclient sync -D --no-history)
 fi
 
