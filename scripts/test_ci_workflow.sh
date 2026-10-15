@@ -64,6 +64,7 @@ raise 'ccache restore is missing' unless uses.include?('actions/cache/restore@v4
 raise 'ccache save is missing' unless uses.include?('actions/cache/save@v4')
 save = steps.find { |step| step['uses'] == 'actions/cache/save@v4' }
 raise 'ccache must be saved even when the job fails' unless save['if'].to_s.include?('always()')
+raise 'ccache must not be saved when the build was cancelled' unless save['if'].to_s.include?("steps.build.outcome == 'failure'") && !save['if'].to_s.include?('cancelled')
 raise 'artifact upload is missing' unless uses.include?('actions/upload-artifact@v4')
 raise 'checkout cache must not be configured' unless uses.count { |use| use.start_with?('actions/cache') } == 2
 cache = steps.find { |step| step['uses'] == 'actions/cache/restore@v4' }.fetch('with')

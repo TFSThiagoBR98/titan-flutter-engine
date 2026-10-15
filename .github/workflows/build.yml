@@ -86,7 +86,9 @@ jobs:
       # compiled objects are still valid, and actions/cache would only save them
       # when the whole job succeeds.
       - name: Save ccache
-        if: always() && steps.build.conclusion != 'skipped'
+        # Only when the build really ran (passed or failed): a cancelled or skipped
+        # build would save an empty ccache that later runs restore.
+        if: always() && (steps.build.outcome == 'success' || steps.build.outcome == 'failure')
         uses: actions/cache/save@v4
         with:
           path: /mnt/titan/work/ccache
