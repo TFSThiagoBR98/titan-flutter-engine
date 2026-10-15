@@ -4,12 +4,20 @@
 diff --git a/engine/src/build/config/BUILDCONFIG.gn b/engine/src/build/config/BUILDCONFIG.gn
 --- a/engine/src/build/config/BUILDCONFIG.gn
 +++ b/engine/src/build/config/BUILDCONFIG.gn
-@@ -586,7 +586,11 @@ if (custom_toolchain != "") {
+@@ -586,7 +586,19 @@ if (custom_toolchain != "") {
    }
  } else if (is_linux) {
    if (is_clang) {
 -    host_toolchain = "//build/toolchain/linux:clang_$host_cpu"
-+    if (titan_target_libc == "musl" && host_cpu == target_cpu) {
++    declare_args() {
++      # Set only by //build/toolchain/linux:clang_x64_host. That toolchain
++      # re-evaluates this file with titan_target_libc set to glibc, so it needs
++      # this flag to keep itself as the host toolchain instead of pointing its
++      # host tools back to the musl toolchain.
++      titan_glibc_host_toolchain = false
++    }
++    if (host_cpu == target_cpu &&
++        (titan_target_libc == "musl" || titan_glibc_host_toolchain)) {
 +      host_toolchain = "//build/toolchain/linux:clang_${host_cpu}_host"
 +    } else {
 +      host_toolchain = "//build/toolchain/linux:clang_$host_cpu"
@@ -20,7 +28,7 @@ diff --git a/engine/src/build/config/BUILDCONFIG.gn b/engine/src/build/config/BU
 diff --git a/engine/src/build/toolchain/linux/BUILD.gn b/engine/src/build/toolchain/linux/BUILD.gn
 --- a/engine/src/build/toolchain/linux/BUILD.gn
 +++ b/engine/src/build/toolchain/linux/BUILD.gn
-@@ -151,2 +151,22 @@ gcc_toolchain("clang_x64") {
+@@ -151,2 +151,23 @@ gcc_toolchain("clang_x64") {
    is_clang = true
  }
 +
@@ -41,6 +49,7 @@ diff --git a/engine/src/build/toolchain/linux/BUILD.gn b/engine/src/build/toolch
 +  is_clang = true
 +  extra_toolchain_args = {
 +    titan_target_libc = "glibc"
++    titan_glibc_host_toolchain = true
 +  }
 +}
 +
