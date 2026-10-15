@@ -19,6 +19,7 @@ mkdir -p "$standalone_repository/scripts/lib" "$standalone_repository/patches/te
 cp "$repository_root/scripts/build-engine.sh" "$standalone_repository/scripts/build-engine.sh"
 cp "$repository_root/scripts/patch_series.py" "$standalone_repository/scripts/patch_series.py"
 cp "$repository_root/scripts/lib/paths.sh" "$standalone_repository/scripts/lib/paths.sh"
+cp "$repository_root/scripts/lib/cpu-budget.sh" "$standalone_repository/scripts/lib/cpu-budget.sh"
 printf '%s\n' test-patches > "$standalone_repository/patches/series"
 
 git init --quiet "$flutter_directory"
@@ -253,10 +254,13 @@ matrix_log="$temporary_directory/matrix.log"
 mkdir -p "$matrix_repository/scripts/lib"
 cp "$repository_root/scripts/build-matrix.sh" "$matrix_repository/scripts/build-matrix.sh"
 cp "$repository_root/scripts/lib/paths.sh" "$matrix_repository/scripts/lib/paths.sh"
+cp "$repository_root/scripts/lib/cpu-budget.sh" "$matrix_repository/scripts/lib/cpu-budget.sh"
 matrix_build_engine="$matrix_repository/scripts/build-engine.sh"
 cat > "$matrix_build_engine" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+
+source "$(dirname "$0")/lib/cpu-budget.sh"
 
 out_name=
 print_out_name=0
@@ -285,12 +289,13 @@ if ((print_out_name)); then
   fi
   exit 0
 fi
-printf '%s\n' "$*" >> "$TITAN_MATRIX_ARGS_LOG"
+run_within_cpu_budget printf '%s\n' "$*" >> "$TITAN_MATRIX_ARGS_LOG"
 EOF
 chmod +x "$matrix_build_engine"
 
 TITAN_WORK_DIR="$temporary_directory/matrix-work" \
 TITAN_MATRIX_ARGS_LOG="$matrix_log" \
+TITAN_CPU_SCOPE=0 \
   bash "$matrix_repository/scripts/build-matrix.sh" --parallel 3 \
     sdk-host-debug sdk-host-release sdk-desktop-debug sdk-desktop-profile sdk-desktop-release
 assert_log_contains "$matrix_log" '--mode debug --out-name sdk_host_debug --ninja-target flutter/build/archives:artifacts'
@@ -321,6 +326,7 @@ matrix_variants=(
 )
 TITAN_WORK_DIR="$temporary_directory/platform-matrix-work" \
 TITAN_MATRIX_ARGS_LOG="$matrix_log" \
+TITAN_CPU_SCOPE=0 \
   bash "$matrix_repository/scripts/build-matrix.sh" --parallel 3 "${matrix_variants[@]}"
 assert_log_contains "$matrix_log" '--mode debug --cpu x64 --libc musl --target-sysroot '
 assert_log_contains "$matrix_log" '--mode debug --cpu arm64 --target-sysroot '
@@ -330,6 +336,36 @@ assert_log_contains "$matrix_log" '--mode debug --cpu riscv32 --target-sysroot '
 assert_log_contains "$matrix_log" '--mode debug --cpu riscv32 --libc musl --target-sysroot '
 assert_log_contains "$matrix_log" '--mode debug --cpu riscv64 --target-sysroot '
 assert_log_contains "$matrix_log" '--mode debug --cpu riscv64 --libc musl --target-sysroot '
+
+matrix_scope_log="$temporary_directory/matrix-scope.log"
+cat > "$fake_bin/systemd-run" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$*" >> "$TITAN_SYSTEMD_RUN_LOG"
+if [[ "$*" == *' true' ]]; then
+  exit 0
+fi
+while (($# > 0)); do
+  case "$1" in
+    --user|--scope|--quiet) shift ;;
+    -p) shift 2 ;;
+    *) break ;;
+  esac
+done
+exec "$@"
+EOF
+chmod +x "$fake_bin/systemd-run"
+TITAN_WORK_DIR="$temporary_directory/scoped-matrix-work" \
+TITAN_MATRIX_ARGS_LOG="$temporary_directory/scoped-matrix.log" \
+TITAN_SYSTEMD_RUN_LOG="$matrix_scope_log" \
+PATH="$fake_bin:$PATH" \
+  bash "$matrix_repository/scripts/build-matrix.sh" --parallel 2 x64-debug sdk-host-debug
+[[ "$(grep -c 'CPUQuota=' "$matrix_scope_log")" -eq 1 ]] || {
+  printf 'expected one matrix CPU scope\n' >&2
+  cat "$matrix_scope_log" >&2
+  exit 1
+}
 
 assemble_script="$repository_root/scripts/assemble-sdk-artifacts.sh"
 artifact_fixture="$temporary_directory/artifact-fixture"

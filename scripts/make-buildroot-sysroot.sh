@@ -3,6 +3,7 @@
 set -euo pipefail
 
 source "$(dirname "$0")/lib/paths.sh"
+source "$(dirname "$0")/lib/cpu-budget.sh"
 
 usage() {
   cat <<'EOF'
@@ -131,11 +132,11 @@ mkdir -p "$build_output" "$download_dir" "$sysroot_output"
 export BR2_DL_DIR="$download_dir"
 export BR2_JLEVEL="$TITAN_JOBS"
 
-nice -n 10 make -C "$buildroot_root" \
+run_within_cpu_budget make -C "$buildroot_root" \
   O="$build_output" \
   BR2_EXTERNAL="$repository_root/buildroot" \
   "$config_name"
-nice -n 10 make -C "$buildroot_root" \
+run_within_cpu_budget make -C "$buildroot_root" \
   O="$build_output" \
   BR2_EXTERNAL="$repository_root/buildroot"
 

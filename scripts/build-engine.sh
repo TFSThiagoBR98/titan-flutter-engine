@@ -4,6 +4,7 @@
 set -euo pipefail
 
 source "$(dirname "$0")/lib/paths.sh"
+source "$(dirname "$0")/lib/cpu-budget.sh"
 
 usage() {
   cat <<'EOF'
@@ -605,15 +606,15 @@ fi
 out_dir="$engine_src/out/$out_name"
 printf 'building Flutter Engine in %s\n' "$out_dir"
 if ((${#ninja_targets[@]} > 0)); then
-  nice -n 10 ninja -C "$out_dir" -j "$jobs" -l "$load" "${ninja_targets[@]}"
+  run_within_cpu_budget ninja -C "$out_dir" -j "$jobs" -l "$load" "${ninja_targets[@]}"
   printf 'selected Ninja targets complete: %s\n' "$out_dir"
   exit 0
 fi
-nice -n 10 ninja -C "$out_dir" -j "$jobs" -l "$load" \
+run_within_cpu_budget ninja -C "$out_dir" -j "$jobs" -l "$load" \
   flutter/shell/platform/embedder:flutter_engine_library \
   flutter/shell/platform/embedder:copy_headers
 if [[ "$mode" != debug ]]; then
-  nice -n 10 ninja -C "$out_dir" -j "$jobs" -l "$load" flutter/shell/common:gen_snapshot
+  run_within_cpu_budget ninja -C "$out_dir" -j "$jobs" -l "$load" flutter/shell/common:gen_snapshot
 fi
 
 # The bare commit name is the TitanDM bundle (x64 glibc debug); every other

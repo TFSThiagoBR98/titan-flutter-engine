@@ -3,6 +3,12 @@
 set -euo pipefail
 
 source "$(dirname "$0")/lib/paths.sh"
+source "$(dirname "$0")/lib/cpu-budget.sh"
+
+if [[ "${TITAN_CPU_SCOPE:-1}" != 0 ]]; then
+  run_within_cpu_budget "$0" "$@"
+  exit $?
+fi
 
 usage() {
   cat <<'EOF'
