@@ -3,6 +3,7 @@
 
 import argparse
 import os
+import shutil
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock
@@ -24,8 +25,9 @@ class SdkArtifactsRequestHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Length", str(local_path.stat().st_size))
             self.end_headers()
+            # Stream: SDK zips (the Dart SDK above all) are hundreds of MB.
             with local_path.open("rb") as artifact:
-                self.wfile.write(artifact.read())
+                shutil.copyfileobj(artifact, self.wfile)
             return
 
         self.send_response(302)

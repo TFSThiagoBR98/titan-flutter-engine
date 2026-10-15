@@ -415,12 +415,15 @@ gn_args=(
   --no-build-glfw-shell
   --no-build-embedder-examples
   --no-enable-unittests
-  --enable-minimal-linux
   --gn-args
   "build_linux_gtk_shell=$([[ "$gtk_shell" == 1 ]] && printf true || printf false) titan_target_libc=\"$libc\""
 )
 if ((enable_fontconfig)); then
   gn_args+=(--enable-fontconfig)
+fi
+if ((!gtk_shell)); then
+  # The GTK shell needs its pkg-config deps, which minimal Linux drops.
+  gn_args+=(--enable-minimal-linux)
 fi
 if [[ "$libc" == musl ]]; then
   # fml's backtrace needs glibc's execinfo.h; musl uses fml's stub.
