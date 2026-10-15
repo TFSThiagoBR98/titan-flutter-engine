@@ -108,14 +108,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Prepare workspace
+        run: |
+          sudo mkdir -p /mnt/titan
+          sudo chown "$USER" /mnt/titan
+
       - name: Download engine bundles
         uses: actions/download-artifact@v4
         with:
           path: /mnt/titan/bundles/dist
           merge-multiple: true
 
+      # Each build job uploads its own one-line SHA256SUMS, and merge-multiple keeps
+      # only one of them; rebuild it over every zip, with relative names.
       - name: Create release checksums
-        run: sha256sum /mnt/titan/bundles/dist/*.zip > /mnt/titan/bundles/dist/SHA256SUMS
+        working-directory: /mnt/titan/bundles/dist
+        run: |
+          rm -f SHA256SUMS
+          sha256sum *.zip > SHA256SUMS
 
       - name: Publish GitHub release
         run: scripts/ci.sh release
