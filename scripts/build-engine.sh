@@ -365,6 +365,11 @@ if [[ ! -d "$depot_tools" ]]; then
   git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "$depot_tools"
   bootstrap=1
 fi
+# A fresh clone is not usable yet: its python3 and ninja wrappers need the
+# bootstrap that creates python3_bin_reldir.txt (gclient alone may skip it).
+if [[ ! -f "$depot_tools/python3_bin_reldir.txt" ]]; then
+  "$depot_tools/ensure_bootstrap"
+fi
 
 if [[ ! -d "$flutter_dir/.git" && ! -f "$flutter_dir/.git" ]]; then
   printf 'bootstrapping Flutter in %s\n' "$flutter_dir"

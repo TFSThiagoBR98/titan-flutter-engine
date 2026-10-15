@@ -16,6 +16,8 @@ real_python=$(command -v python3)
 mkdir -p "$standalone_repository/scripts/lib" "$standalone_repository/patches/test-patches" \
   "$temporary_directory/work/depot_tools" \
   "$flutter_directory/engine/src/flutter/tools" "$fake_bin"
+# An already bootstrapped depot_tools has this marker.
+: > "$temporary_directory/work/depot_tools/python3_bin_reldir.txt"
 cp "$repository_root/scripts/build-engine.sh" "$standalone_repository/scripts/build-engine.sh"
 cp "$repository_root/scripts/patch_series.py" "$standalone_repository/scripts/patch_series.py"
 cp "$repository_root/scripts/lib/paths.sh" "$standalone_repository/scripts/lib/paths.sh"
@@ -183,6 +185,14 @@ printf 'flutter_commit=%s\n' "$bootstrap_commit" > "$bootstrap_repository/flutte
 gclient_log="$temporary_directory/gclient.log"
 printf '%s\n' '#!/usr/bin/env bash' "pwd >> '$gclient_log'" 'exit 0' > "$bootstrap_work/depot_tools/gclient"
 chmod +x "$bootstrap_work/depot_tools/gclient"
+# Fresh depot_tools: no marker yet; ensure_bootstrap must create it once.
+ensure_bootstrap_log="$temporary_directory/ensure-bootstrap.log"
+cat > "$bootstrap_work/depot_tools/ensure_bootstrap" <<EOF
+#!/usr/bin/env bash
+printf 'bootstrap\n' >> '$ensure_bootstrap_log'
+: > '$bootstrap_work/depot_tools/python3_bin_reldir.txt'
+EOF
+chmod +x "$bootstrap_work/depot_tools/ensure_bootstrap"
 cat > "$bootstrap_bin/git" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -236,6 +246,10 @@ assert_log_not_contains() {
 run_bootstrap_engine --gn-only
 [[ "$(<"$gclient_log")" == "$bootstrap_flutter" ]] || {
   printf 'gclient did not run at the root of the Flutter checkout: %s\n' "$(<"$gclient_log")" >&2
+  exit 1
+}
+[[ "$(wc -l < "$ensure_bootstrap_log")" -eq 1 ]] || {
+  printf 'a fresh depot_tools was not bootstrapped exactly once\n' >&2
   exit 1
 }
 grep -Fq '"name": ".",' "$bootstrap_flutter/.gclient" || {
