@@ -72,6 +72,30 @@ archive_directories=("$archive_root"/sdk_*/zip_archives)
 shopt -u nullglob
 ((${#archive_directories[@]} > 0)) || die "no SDK zip_archives found under $archive_root"
 
+# Same fields as the engine_stamp.json the Flutter CI publishes next to the
+# artifacts; the tool reads it to describe the engine build.
+write_engine_stamp() {
+  local stamp_path=$1
+  local flutter_root="$TITAN_WORK_DIR/flutter"
+  local revision revision_date
+  revision=$(git -C "$flutter_root" rev-parse HEAD)
+  revision_date=$(TZ=UTC git -C "$flutter_root" log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ HEAD)
+  STAMP_REVISION="$revision" STAMP_REVISION_DATE="$revision_date" STAMP_CONTENT_HASH="$content_hash" \
+    python3 - "$stamp_path" <<'PY'
+import datetime, json, os, sys
+now = datetime.datetime.now()
+stamp = {
+    "build_date": now.isoformat(),
+    "build_time_ms": int(now.timestamp() * 1000),
+    "git_revision": os.environ["STAMP_REVISION"],
+    "git_revision_date": os.environ["STAMP_REVISION_DATE"],
+    "content_hash": os.environ["STAMP_CONTENT_HASH"],
+}
+with open(sys.argv[1], "w", encoding="utf-8") as stamp_file:
+    json.dump(stamp, stamp_file, separators=(",", ":"))
+PY
+}
+
 rm -rf "$layout_root"
 mkdir -p "$layout_root"
 
@@ -96,10 +120,14 @@ required_paths=(
   linux-x64-debug/linux-x64-flutter-gtk.zip
   linux-x64-profile/linux-x64-flutter-gtk.zip
   linux-x64-release/linux-x64-flutter-gtk.zip
+  sky_engine.zip
+  flutter_gpu.zip
 )
 for required_path in "${required_paths[@]}"; do
   [[ -f "$layout_root/$required_path" ]] || die "required SDK artifact is missing: $required_path"
 done
+
+write_engine_stamp "$layout_root/engine_stamp.json"
 
 : > "$manifest"
 while IFS= read -r -d '' artifact_path; do
@@ -107,7 +135,7 @@ while IFS= read -r -d '' artifact_path; do
   size=$(stat -c '%s' "$artifact_path")
   checksum=$(sha256sum "$artifact_path" | cut -d' ' -f1)
   printf '%s\t%s\t%s\n' "$relative_path" "$size" "$checksum" >> "$manifest"
-done < <(find "$layout_root" -type f -name '*.zip' -print0 | LC_ALL=C sort -z)
+done < <(find "$layout_root" -type f -print0 | LC_ALL=C sort -z)
 
 printf 'SDK artifacts assembled: %s\n' "$layout_root"
 printf 'SDK manifest: %s\n' "$manifest"

@@ -170,6 +170,8 @@ artifact_paths=(
   linux-x64-debug/linux-x64-flutter-gtk.zip
   linux-x64-profile/linux-x64-flutter-gtk.zip
   linux-x64-release/linux-x64-flutter-gtk.zip
+  sky_engine.zip
+  flutter_gpu.zip
 )
 for artifact_path in "${artifact_paths[@]}"; do
   case "$artifact_path" in
@@ -182,7 +184,10 @@ for artifact_path in "${artifact_paths[@]}"; do
   mkdir -p "$source_root/$(dirname "$artifact_path")"
   printf 'fixture:%s\n' "$artifact_path" > "$source_root/$artifact_path"
 done
-printf 'fixture:sky_engine.zip\n' > "$artifact_fixture/out/sdk_host_debug/zip_archives/sky_engine.zip"
+# The engine stamp reads the Flutter checkout's revision.
+git -C "$artifact_fixture/flutter" init -q
+git -C "$artifact_fixture/flutter" -c user.name=test -c user.email=test@example.invalid \
+  commit -q --allow-empty -m fixture
 
 TITAN_WORK_DIR="$artifact_fixture" \
 TITAN_BUNDLE_DIR="$temporary_directory/default-bundle" \
@@ -191,14 +196,20 @@ TITAN_BUNDLE_DIR="$temporary_directory/default-bundle" \
     printf 'assemble-sdk-artifacts.sh failed unexpectedly\n' >&2
     exit 1
   }
-for artifact_path in "${artifact_paths[@]}" sky_engine.zip; do
+grep -q '"content_hash":"test-hash"' \
+  "$artifact_output/flutter_infra_release/flutter/test-hash/engine_stamp.json" || {
+    printf 'engine_stamp.json does not carry the content hash\n' >&2
+    exit 1
+  }
+for artifact_path in "${artifact_paths[@]}"; do
   [[ -f "$artifact_output/flutter_infra_release/flutter/test-hash/$artifact_path" ]] || {
     printf 'missing assembled artifact: %s\n' "$artifact_path" >&2
     exit 1
   }
 done
 manifest="$artifact_output/MANIFEST"
-[[ "$(awk 'END { print NR }' "$manifest")" -eq 11 ]] || {
+# The zips plus engine_stamp.json.
+[[ "$(awk 'END { print NR }' "$manifest")" -eq $(( ${#artifact_paths[@]} + 1 )) ]] || {
   printf 'unexpected MANIFEST entry count\n' >&2
   exit 1
 }

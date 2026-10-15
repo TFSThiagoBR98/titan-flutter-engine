@@ -112,12 +112,12 @@ kill "$server_pid" 2>/dev/null || true
 wait "$server_pid" 2>/dev/null || true
 server_pid=
 
-while IFS=$'\t' read -r relative_path _size _checksum; do
-  [[ -n "$relative_path" ]] || continue
-  requested_path="/flutter_infra_release/flutter/$flutter_hash/$relative_path"
-  grep -Fqx "local $requested_path" "$server_log" || \
-    die "MANIFEST artifact was not requested locally: $relative_path"
-done < "$manifest"
+# Every engine artifact the tool asked for must come from our layout; only
+# files outside the engine hash (fonts, Gradle wrapper) may come from upstream.
+engine_prefix="/flutter_infra_release/flutter/$flutter_hash/"
+missing_from_layout=$(grep "^upstream $engine_prefix" "$server_log" | sed "s|^upstream $engine_prefix||" || true)
+[[ -z "$missing_from_layout" ]] || \
+  die "engine artifacts requested by the tool but missing from the layout: $(tr '\n' ' ' <<<"$missing_from_layout")"
 
 if grep -q '^upstream ' "$server_log"; then
   printf 'upstream artifacts:\n'
