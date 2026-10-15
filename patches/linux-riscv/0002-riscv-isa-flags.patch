@@ -1,0 +1,23 @@
+# Why: make the RISC-V ISA and ABI explicit because the target triple does not
+# select the required TitanDM rv32gc/ilp32d and rv64gc/lp64d combinations.
+diff --git a/engine/src/build/config/compiler/BUILD.gn b/engine/src/build/config/compiler/BUILD.gn
+--- a/engine/src/build/config/compiler/BUILD.gn
++++ b/engine/src/build/config/compiler/BUILD.gn
+@@ -271,6 +271,16 @@ config("compiler") {
+           "-fno-caller-saves",
+         ]
+       }
++    } else if (current_cpu == "riscv32") {
++      cflags += [
++        "-march=rv32gc",
++        "-mabi=ilp32d",
++      ]
++    } else if (current_cpu == "riscv64") {
++      cflags += [
++        "-march=rv64gc",
++        "-mabi=lp64d",
++      ]
+     }
+
+     if (!is_android) {
+       defines += [

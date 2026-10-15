@@ -3,4 +3,5 @@ linux-embedder-only
 linux-target-matrix
 linux-compiler-runtime
 linux-musl
+linux-riscv
 sdk-dart-packages
