@@ -37,9 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - riscv32 stays out of the default build and CI matrix; request it by name.
-- CI runs on the Forgejo `docker` runner: one container job calling
-  `scripts/ci.sh` stages, a persistent volume for the workspace, and releases
-  through the Forgejo API.
+- CI runs on a GitHub Actions self-hosted runner with separate sysroot, build
+  and release jobs, a persistent volume for the workspace, and releases via
+  `gh`.
 - Scripts resolve the work and bundle directories in `scripts/lib/paths.sh`
   (`TITAN_WORK_DIR`, `TITAN_BUNDLE_DIR`), so the repository builds on its own.
 - Buildroot is pinned in `buildroot/buildroot.lock` and cloned on demand.
@@ -55,6 +55,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Buildroot sysroots and QEMU probes are generated and checked in the same CI
   pipeline that publishes engine bundles.
+- Buildroot sysroots use a content key and completion stamp, with local and
+  GitHub prerelease cache tarballs shared by the host and CI.
+- Buildroot and engine builds run within a hard CPU budget controlled by
+  `TITAN_JOBS` and the systemd CPU quota when available.
 
 ### Fixed
 

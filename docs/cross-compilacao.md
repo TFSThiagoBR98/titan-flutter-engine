@@ -23,6 +23,36 @@ Cada alvo compila num diretório próprio em `engine/src/out/`: `host_<modo>` pa
 Flutter) e `linux_<modo>_<cpu>[_<abi>]_<libc>` para os demais (por exemplo `linux_debug_arm_softfp_musl`). Por isso
 vários alvos podem compilar ao mesmo tempo.
 
+## Cache dos sysroots Buildroot
+
+Cada defconfig recebe uma chave SHA-256 calculada sobre o próprio defconfig,
+todos os arquivos de `buildroot/`, `buildroot/buildroot.lock` e
+`scripts/make-buildroot-sysroot.sh`. Depois que o staging e o runtime GCC são
+instalados, o script grava essa chave em
+`.titan-sysroot-key`. Um stamp ausente ou diferente significa que o sysroot
+está incompleto ou desatualizado; nesses casos o script tenta o cache antes de
+compilar o Buildroot.
+
+O cache local fica em `$TITAN_WORK_DIR/sysroot-cache/`. O nome do arquivo é
+`sysroot-<nome>-<chave16>.tar.zst`; o tar usa ordem, donos e mtime
+determinísticos. Para buscar ou publicar manualmente na release prerelease
+`sysroots-cache` do GitHub:
+
+```sh
+scripts/sysroot-cache.sh fetch titan_arm64_glibc_defconfig
+scripts/sysroot-cache.sh publish titan_arm64_glibc_defconfig
+```
+
+`TITAN_CACHE_REPO` altera o repositório padrão
+`TFSThiagoBR98/titan-flutter-engine`. O CI publica os nove sysroots da matriz
+padrão com `--publish`; os dois alvos riscv32 continuam fora da lista padrão e
+só são construídos quando pedidos explicitamente. Para ignorar o stamp e
+reconstruir:
+
+```sh
+scripts/make-buildroot-sysroot.sh --config titan_arm64_glibc_defconfig --force
+```
+
 ## Alvos RISC-V
 
 O engine aceita `riscv32` e `riscv64` diretamente no GN. Os alvos usam, respectivamente, `-march=rv32gc -mabi=ilp32d`
@@ -66,6 +96,13 @@ Buildroot, e todos rodam com `nice -n 10`. O `-l` olha a carga do sistema inteir
 juntos perto do orçamento, e o link de um se sobrepõe à compilação de outro. Usar todos os núcleos deixa a máquina a
 100% e trava o desktop; aumente `TITAN_JOBS` só numa máquina dedicada (o runner do CI). Os logs ficam em
 `.build_flutter/matrix/<variante>.log` e o script termina com um resumo (variante, duração, resultado).
+
+Quando há `systemd-run --user`, o comando da matriz inteira roda num scope com
+`CPUQuota=TITAN_JOBS*100%`; os scripts filhos recebem `TITAN_CPU_SCOPE=0` e
+não criam scopes aninhados. Em containers do CI, o workflow define
+`TITAN_CPU_SCOPE=0`, então o limite continua sendo `TITAN_JOBS`/`-j` com
+`nice`, sem depender de um systemd do usuário. Nunca use todos os núcleos numa
+máquina que também executa a sessão gráfica.
 
 ## Runtime do compilador (`linux-compiler-runtime`)
 
