@@ -3,6 +3,23 @@
 Os builds ARM usam os sysroots mínimos gerados pelo Buildroot
 (`scripts/make-buildroot-sysroot.sh`) e o Clang embutido no checkout do Flutter.
 
+## Alvos e artefatos
+
+O alvo nativo é `x64`; `arm64` e `riscv64` são alvos de melhor esforço. O
+script escolhe o diretório de saída pelo modo e pela CPU e, quando solicitado
+com `--zip`, publica um zip em `artifacts/dist/` (ou em `--out <dir>`):
+
+```sh
+scripts/build-engine.sh --mode debug
+scripts/build-engine.sh --mode debug --cpu arm64
+scripts/build-engine.sh --mode debug --cpu riscv64
+```
+
+Para ARMv7-A, use o sysroot correspondente e confira o bundle com
+`readelf -h`, `file` e `objdump -T`. O hard-float usa a tripla
+`armv7-unknown-linux-gnueabihf`; soft-float/softfp glibc usa
+`arm-linux-gnueabi`; o alvo musl usa `arm-linux-musleabi`.
+
 ## Runtime do compilador no ARM soft-float
 
 O Clang embutido traz o `compiler-rt` e o `libunwind` só para
@@ -70,3 +87,11 @@ dos builds glibc e do x64 (`b49a7f31cecb7983`).
 o loader e a `libc.so` são o mesmo arquivo; crie também o link `libc.so` → `ld-musl-arm.so.1`) e rode o embedder com
 esse loader (`./ld-musl-arm.so.1 --library-path . ./runner …`), ou linke o embedder com `-Wl,--dynamic-linker` apontando
 para o caminho do bundle. O musl roda em kernels antigos, o que atende o Kindle.
+
+## Atualizar o Flutter e os patches
+
+O commit e a versão legível ficam em `flutter.lock`. Depois de atualizar o
+commit, aplique os patches um por vez no checkout, resolva somente conflitos
+do código correspondente e regenere a série com o mesmo formato. Confirme o
+resultado com o build x64 e com `scripts/test_patch_series.py`; o lockfile do
+TitanDM recebe o novo hash da série e dos patches aplicáveis ao x64.
