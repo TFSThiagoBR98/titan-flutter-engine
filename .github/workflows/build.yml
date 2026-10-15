@@ -87,6 +87,14 @@ jobs:
       - name: Package engine bundles
         run: scripts/ci.sh package
 
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ matrix.variant }}
+          path: /mnt/titan/work/matrix/
+          if-no-files-found: ignore
+
       - name: Upload engine bundle
         uses: actions/upload-artifact@v4
         with:

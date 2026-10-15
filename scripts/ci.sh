@@ -80,7 +80,18 @@ run_build() {
   local variants_text=${TITAN_VARIANTS:-x64-debug x64-musl-debug arm64-debug arm64-musl-debug arm-hard-debug arm-hard-musl-debug arm-softfp-debug arm-softfp-musl-debug riscv64-glibc-debug riscv64-musl-debug}
   local parallel=${TITAN_PARALLEL:-3}
   read -r -a variants <<<"$variants_text"
-  "$scripts_root/build-matrix.sh" --parallel "$parallel" --zip "${variants[@]}"
+  local variant status=0
+  "$scripts_root/build-matrix.sh" --parallel "$parallel" --zip "${variants[@]}" || status=$?
+  if ((status != 0)); then
+    # The per-variant logs live on the runner's disk; show the end of each one so
+    # the failure is visible in the job output.
+    for variant in "${variants[@]}"; do
+      printf '::group::%s (last 200 lines)\n' "$variant"
+      tail -n 200 "$TITAN_WORK_DIR/matrix/$variant.log" 2>/dev/null || true
+      printf '::endgroup::\n'
+    done
+  fi
+  return "$status"
 }
 
 run_probe() {
