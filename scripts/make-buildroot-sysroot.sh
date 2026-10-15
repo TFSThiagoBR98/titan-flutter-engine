@@ -47,6 +47,17 @@ while (($# > 0)); do
   esac
 done
 
+# Clang links the GCC runtime (crtbegin*.o, libgcc, libgcc_eh) for soft-float
+# ARM; it finds it automatically under usr/lib/gcc/<triple>/<version>.
+install_gcc_runtime() {
+  local build_output=$1 sysroot=$2 triple=$3
+  local gcc_dirs=("$build_output"/host/lib/gcc/*/*)
+  [[ -f "${gcc_dirs[0]}/libgcc_eh.a" ]] || die "GCC runtime is missing in ${gcc_dirs[0]}"
+  local destination="$sysroot/usr/lib/gcc/$triple/$(basename "${gcc_dirs[0]}")"
+  mkdir -p "$destination"
+  cp "${gcc_dirs[0]}"/crt*.o "${gcc_dirs[0]}"/libgcc.a "${gcc_dirs[0]}"/libgcc_eh.a "$destination/"
+}
+
 [[ -n "$config_arg" ]] || die "--config is required"
 
 repository_root=$(cd "$(dirname "$0")/.." && pwd -P)
@@ -54,9 +65,11 @@ config_name=$(basename "$config_arg")
 case "$config_name" in
   titan_armv7a_hf_glibc_defconfig)
     sysroot_name=titan_armv7a_hf
+    clang_gcc_triple=arm-linux-gnueabihf
     ;;
   titan_armv7a_softfp_glibc_defconfig)
     sysroot_name=titan_armv7a_softfp
+    clang_gcc_triple=arm-linux-gnueabi
     ;;
   *)
     die "unsupported Buildroot config: $config_name"
@@ -97,6 +110,7 @@ make -C "$buildroot_root" \
 staging_dir=$(readlink -f "$build_output/staging")
 [[ -d "$staging_dir" ]] || die "Buildroot staging sysroot is missing: $staging_dir"
 cp -a "$staging_dir/." "$sysroot_output/"
+install_gcc_runtime "$build_output" "$sysroot_output" "$clang_gcc_triple"
 
 mkdir -p "$(dirname "$engine_sysroot")"
 ln -sfn "$sysroot_output" "$engine_sysroot"

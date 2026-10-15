@@ -12,7 +12,7 @@ Build the Flutter Engine from the revision in flutter.lock.
 Options:
   --mode debug|profile|release       Runtime mode (default: debug)
   --cpu x64|arm64|arm|riscv64       Linux target CPU (default: x64)
-  --arm-float-abi hard|softfp        ARM float ABI (only with --cpu arm)
+  --arm-float-abi hard|softfp|soft  ARM float ABI (only with --cpu arm)
   --target-sysroot <dir>             Target sysroot for cross-compilation
   --out <dir>                        Bundle output directory
   --zip                              Also publish the bundle under dist/
@@ -24,6 +24,21 @@ EOF
 die() {
   printf 'error: %s\n' "$*" >&2
   exit 1
+}
+
+verify_arm_abi() {
+  local engine_path=$1
+  local expected_abi=$2
+  local attributes
+  command -v readelf >/dev/null || die "readelf is required for ARM ABI verification"
+  attributes=$(readelf -A "$engine_path")
+  printf '%s\n' "$attributes"
+  if [[ "$expected_abi" == hard ]]; then
+    grep -Fq 'Tag_ABI_VFP_args: VFP registers' <<<"$attributes" || \
+      die "ARM hard-float ABI verification failed for $engine_path"
+  elif grep -Fq 'Tag_ABI_VFP_args' <<<"$attributes"; then
+    die "ARM soft-float ABI verification failed for $engine_path"
+  fi
 }
 
 mode=debug
@@ -112,8 +127,8 @@ case "$cpu" in
   *) die "invalid CPU: $cpu (expected x64, arm64, arm or riscv64)" ;;
 esac
 case "$arm_float_abi" in
-  ''|hard|softfp) ;;
-  *) die "invalid ARM float ABI: $arm_float_abi (expected hard or softfp)" ;;
+  ''|hard|softfp|soft) ;;
+  *) die "invalid ARM float ABI: $arm_float_abi (expected hard, softfp or soft)" ;;
 esac
 if [[ -n "$arm_float_abi" && "$cpu" != arm ]]; then
   die "--arm-float-abi is only valid with --cpu arm"
@@ -310,6 +325,13 @@ if [[ -n "$target_sysroot" ]]; then
   target_sysroot=$(cd "$target_sysroot" && pwd -P)
   gn_args+=(--target-sysroot "$target_sysroot")
 fi
+if [[ "$cpu" == arm && "$arm_float_abi" != hard ]]; then
+  # Soft-float ARM links the sysroot's GCC runtime (patch 0004); the bundled
+  # compiler-rt is hard-float only.
+  gcc_runtime=("${target_sysroot:-/nonexistent}"/usr/lib/gcc/arm-linux-gnueabi/*/libgcc_eh.a)
+  [[ -f "${gcc_runtime[0]}" ]] || \
+    die "soft-float ARM needs --target-sysroot with the GCC runtime (scripts/make-buildroot-sysroot.sh)"
+fi
 
 printf 'configuring Flutter Engine: mode=%s cpu=%s\n' "$mode" "$cpu"
 "$engine_src/flutter/tools/gn" "${gn_args[@]}"
@@ -351,6 +373,10 @@ stamp="local:$flutter_commit:$patches_sha256_actual"
 printf '%s\n' "$stamp" > "$stage/.complete"
 rm -rf "$dest"
 mv "$stage" "$dest"
+
+if [[ "$cpu" == arm ]]; then
+  verify_arm_abi "$dest/libflutter_engine.so" "${arm_float_abi:-softfp}"
+fi
 
 if ((zip_output)); then
   dist="$artifact_root/dist"

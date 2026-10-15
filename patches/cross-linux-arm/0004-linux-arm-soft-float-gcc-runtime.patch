@@ -1,0 +1,26 @@
+# Why: the bundled Clang ships compiler-rt and libunwind only for
+# armv7-unknown-linux-gnueabihf, whose floating-point calling convention is
+# wrong for soft/softfp targets. Those targets link the GCC runtime (libgcc and
+# libgcc_eh) that the Buildroot sysroot installs under usr/lib/gcc/, statically,
+# so libflutter_engine.so still depends only on libc.
+--- a/engine/src/build/config/compiler/BUILD.gn
++++ b/engine/src/build/config/compiler/BUILD.gn
+@@ -654,7 +654,17 @@
+     if (is_linux) {
+       # Our custom libcxx doesn't include the unwinder, which is included in
+       # libc++.a. Link the libunwind directly.
+-      ldflags += [ "--unwindlib=libunwind" ]
++      if (current_cpu == "arm" && arm_float_abi != "hard") {
++        # The bundled libunwind is hard-float only; use the sysroot's GCC
++        # unwinder, linked statically so the engine needs only libc.
++        ldflags += [
++          "--rtlib=libgcc",
++          "--unwindlib=libgcc",
++          "-static-libgcc",
++        ]
++      } else {
++        ldflags += [ "--unwindlib=libunwind" ]
++      }
+     }
+   }
+ 
