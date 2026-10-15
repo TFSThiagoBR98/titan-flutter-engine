@@ -10,6 +10,16 @@ ou `musl` conforme o sysroot; `musl` está disponível, por enquanto, somente
 para ARM soft-float. A CI roda em um runner Linux x86_64 self-hosted, porque
 o checkout do Flutter e os builds do engine são grandes.
 
+## Requisitos
+
+- Linux x86_64 com `git`, `python3`, `curl`, `readelf`/`objdump` (binutils) e `ccache`. O script baixa sozinho o
+  `depot_tools`, o checkout do Flutter no commit de `flutter.lock` e as dependências (`gclient sync`); o toolchain
+  (Clang, `gn`, `ninja`) vem do próprio checkout.
+- Espaço em disco: o checkout com dependências ocupa dezenas de GB; reserve ~40 GB para o primeiro build e o cache.
+- Sysroots ARM: as dependências de host do Buildroot (`make`, `gcc`, `g++`, `patch`, `bzip2`, `perl`, `rsync`,
+  `cpio`, `unzip`, `bc`, `file`, `wget`) e o Buildroot 2026.02.3 clonado em `.build_flutter/buildroot`.
+- Validação ARM: `qemu-arm-static` (QEMU em modo usuário).
+
 ## Compilar
 
 O script usa `.build_flutter/` ao lado do checkout que o chama como espaço de
@@ -97,3 +107,23 @@ ARM soft-float glibc e ARM soft-float musl no runner self-hosted
 `[self-hosted, linux, x64]`. Para cada alvo ARM, o workflow gera ou restaura o
 sysroot Buildroot, compila com `--zip` e executa o probe em QEMU user-mode.
 Pushes de tags `v*` juntam os zips e um `SHA256SUMS` em uma release do GitHub.
+
+## Validação no QEMU (modo usuário)
+
+`scripts/qemu-probe.sh` compila `tests/qemu/probe_engine.c` para a ABI pedida e o roda com
+`qemu-arm-static -cpu <cpu> -L <sysroot>`: o probe carrega o `libflutter_engine.so`, inicia o engine com o renderer
+por software e espera o primeiro quadro do app spike do TitanDM (`apps/titan_spike_counter`).
+
+```sh
+scripts/qemu-probe.sh --abi hf --cpu cortex-a8
+scripts/qemu-probe.sh --abi softfp --cpu cortex-a8
+scripts/qemu-probe.sh --abi softfp-musl --cpu cortex-a8
+```
+
+Saída esperada: `frame 320x240 hash=…` e `ok`. Resultados e o caso armv6j em `docs/cross-compilacao.md`.
+
+## Licença
+
+Os scripts, a árvore do Buildroot, os testes e os patches deste repositório estão sob a licença MIT
+([LICENSE](LICENSE)). O código do Flutter que os patches modificam continua sob a licença dele (BSD-3-Clause, no
+repositório do Flutter), assim como os componentes de terceiros que o build baixa.
