@@ -1,7 +1,6 @@
 # Why: Flutter's top-level Linux group requests analyze_snapshot for every
 # target, but Dart defines that tool only for 64-bit AOT targets. Keep the
 # dependency for supported 64-bit CPUs and omit it for riscv32.
-# Repo: engine/src/flutter
 diff --git a/engine/src/flutter/BUILD.gn b/engine/src/flutter/BUILD.gn
 index 524cc5b8b11..a357553f318 100644
 --- a/engine/src/flutter/BUILD.gn

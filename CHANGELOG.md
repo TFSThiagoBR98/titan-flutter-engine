@@ -26,6 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Linux platform matrix for x86_64, armv7-a, arm64, riscv32 and riscv64, with
   glibc and musl variants; GN-only configuration and quick checks cover the
   target triples and ELF bundle metadata.
+- Patches can target the gclient dependency repositories (SwiftShader, Skia,
+  Dart…) with a `# Repo:` header line; each repository is restored to its own
+  pinned revision before the series is applied.
+- riscv32 Linux engine builds: Marl's generic `ucontext` fibers and LLVM's
+  RISC-V sources in SwiftShader, no `analyze_snapshot` for 32-bit targets, and
+  the Debian i386 host sysroot installed on demand (Dart needs a 32-bit host
+  `gen_snapshot` for riscv32).
 
 ### Changed
 
@@ -47,3 +54,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Buildroot sysroots and QEMU probes are generated and checked in the same CI
   pipeline that publishes engine bundles.
+
+### Fixed
+
+- x86_64 musl builds: host tools (`flatc`, `impellerc`, `gen_snapshot`) build
+  in a separate glibc host toolchain instead of being linked against musl.
