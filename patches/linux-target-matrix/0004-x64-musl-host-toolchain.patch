@@ -1,0 +1,49 @@
+# Why: keep host tools such as flatc and impellerc on the glibc sysroot when
+# the x64 Linux target uses musl; cross-target builds keep their existing host
+# toolchain.
+diff --git a/engine/src/build/config/BUILDCONFIG.gn b/engine/src/build/config/BUILDCONFIG.gn
+--- a/engine/src/build/config/BUILDCONFIG.gn
++++ b/engine/src/build/config/BUILDCONFIG.gn
+@@ -586,7 +586,11 @@ if (custom_toolchain != "") {
+   }
+ } else if (is_linux) {
+   if (is_clang) {
+-    host_toolchain = "//build/toolchain/linux:clang_$host_cpu"
++    if (titan_target_libc == "musl" && host_cpu == target_cpu) {
++      host_toolchain = "//build/toolchain/linux:clang_${host_cpu}_host"
++    } else {
++      host_toolchain = "//build/toolchain/linux:clang_$host_cpu"
++    }
+     set_default_toolchain("//build/toolchain/linux:clang_$current_cpu")
+   } else {
+     host_toolchain = "//build/toolchain/linux:$host_cpu"
+diff --git a/engine/src/build/toolchain/linux/BUILD.gn b/engine/src/build/toolchain/linux/BUILD.gn
+--- a/engine/src/build/toolchain/linux/BUILD.gn
++++ b/engine/src/build/toolchain/linux/BUILD.gn
+@@ -151,2 +151,22 @@ gcc_toolchain("clang_x64") {
+   is_clang = true
+ }
++
++gcc_toolchain("clang_x64_host") {
++  prefix = rebased_clang_dir
++  asm = "${prefix}/clang"
++  cc = "${compiler_prefix}${prefix}/clang"
++  cxx = "${compiler_prefix}${prefix}/clang++"
++
++  readelf = "${prefix}/llvm-readelf"
++  nm = "${prefix}/llvm-nm"
++  ar = "${prefix}/llvm-ar"
++  ld = "${link_prefix}${prefix}/clang++"
++  llvm_objcopy = "${prefix}/llvm-objcopy"
++
++  toolchain_cpu = "x64"
++  toolchain_os = "linux"
++  is_clang = true
++  extra_toolchain_args = {
++    titan_target_libc = "glibc"
++  }
++}
++
+ gcc_toolchain("x64") {
+   prefix = ""
+   asm = "${prefix}gcc"

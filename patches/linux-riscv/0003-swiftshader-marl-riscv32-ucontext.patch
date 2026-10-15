@@ -1,0 +1,15 @@
+# Repo: engine/src/flutter/third_party/swiftshader
+# Why: Marl has no riscv32 assembly fiber implementation; use its generic ucontext path.
+diff --git a/third_party/marl/BUILD.gn b/third_party/marl/BUILD.gn
+index 4c02648..eb57ddc 100644
+--- a/third_party/marl/BUILD.gn
++++ b/third_party/marl/BUILD.gn
+@@ -107,6 +107,8 @@ swiftshader_source_set("Marl") {
+         "src/osfiber_asm_x86.h",
+         "src/osfiber_asm_x86.S",
+       ]
++    } else if (current_cpu == "riscv32") {
++      defines = [ "MARL_FIBERS_USE_UCONTEXT=1" ]
+     } else {
+       assert(false, "Unhandled value for current-cpu=" + current_cpu)
+     }

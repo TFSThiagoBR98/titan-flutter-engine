@@ -25,12 +25,13 @@ diff --git a/engine/src/flutter/tools/gn b/engine/src/flutter/tools/gn
      prebuilt = 'linux-%s' % args.linux_cpu
    elif args.target_os == 'mac' and args.mac_cpu in ['x64', 'arm64']:
      prebuilt = 'macos-%s' % args.mac_cpu
-@@ -546,6 +546,11 @@ def to_gn_args(args):
+@@ -546,6 +546,12 @@ def to_gn_args(args):
      gn_args['host_cpu'] = 'x86'
      gn_args['current_cpu'] = 'x86'
 
-+  # Use a 32-bit host toolchain for the 32-bit RISC-V gen_snapshot build, as
-+  # is done for 32-bit ARM targets.
++  # Use a 32-bit host toolchain for the 32-bit RISC-V gen_snapshot build;
++  # Dart requires a 32-bit host for riscv32 targets, while only ARM has a
++  # simulator on a 64-bit host.
 +  if args.target_os == 'linux' and args.linux_cpu == 'riscv32':
 +    gn_args['host_cpu'] = 'x86'
 +

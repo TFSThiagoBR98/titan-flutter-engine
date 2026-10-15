@@ -10,6 +10,8 @@ flutter_directory="$temporary_directory/work/flutter"
 fake_bin="$temporary_directory/bin"
 gn_log="$temporary_directory/gn.log"
 ninja_log="$temporary_directory/ninja.log"
+python_log="$temporary_directory/python.log"
+real_python=$(command -v python3)
 
 mkdir -p "$standalone_repository/scripts/lib" "$standalone_repository/patches/test-patches" \
   "$temporary_directory/work/depot_tools" \
@@ -27,6 +29,20 @@ git -C "$flutter_directory" add README
 git -C "$flutter_directory" commit --quiet -m 'test: fake Flutter checkout'
 flutter_commit=$(git -C "$flutter_directory" rev-parse HEAD)
 printf 'flutter_commit=%s\n' "$flutter_commit" > "$standalone_repository/flutter.lock"
+
+host_sysroot="$flutter_directory/engine/src/build/linux/debian_bullseye_i386-sysroot"
+cat > "$fake_bin/python3" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$*" >> "$TITAN_PYTHON_LOG"
+if [[ "${1:-}" == */install-sysroot.py && "${2:-}" == '--arch=i386' ]]; then
+  mkdir -p "$TITAN_HOST_SYSROOT"
+  exit 0
+fi
+exec "$TITAN_REAL_PYTHON" "$@"
+EOF
+chmod +x "$fake_bin/python3"
 
 dependency_repository="$flutter_directory/engine/src/flutter/third_party/fake-dependency"
 mkdir -p "$dependency_repository"
@@ -121,6 +137,9 @@ chmod +x "$fake_bin/objdump"
 run_engine() {
   TITAN_GN="$fake_gn" \
   TITAN_GN_LOG="$gn_log" \
+  TITAN_PYTHON_LOG="$python_log" \
+  TITAN_REAL_PYTHON="$real_python" \
+  TITAN_HOST_SYSROOT="$host_sysroot" \
   TITAN_NINJA_LOG="$ninja_log" \
   TITAN_WORK_DIR="$temporary_directory/work" \
   TITAN_BUNDLE_DIR="$temporary_directory/bundle" \
@@ -150,10 +169,12 @@ assert_log_not_contains() {
 }
 
 : > "$gn_log"
+: > "$python_log"
 run_engine --gn-only
 assert_log_contains "$gn_log" '--target-dir host_debug'
 assert_log_contains "$gn_log" 'build_linux_gtk_shell=false titan_target_libc="glibc"'
 assert_log_not_contains "$gn_log" '--enable-fontconfig'
+assert_log_not_contains "$python_log" 'install-sysroot.py --arch=i386'
 [[ "$(<"$flutter_directory/README")" == 'patched Flutter checkout' ]] || {
   printf 'Flutter repository patch was not applied\n' >&2
   exit 1
@@ -195,9 +216,15 @@ riscv32_sysroot="$temporary_directory/riscv32-sysroot"
 mkdir -p "$riscv32_sysroot/usr/lib/gcc/riscv32-linux-gnu/14"
 : > "$riscv32_sysroot/usr/lib/gcc/riscv32-linux-gnu/14/libgcc_eh.a"
 : > "$gn_log"
+: > "$python_log"
 run_engine --mode debug --cpu riscv32 --target-sysroot "$riscv32_sysroot" --gn-only
 assert_log_contains "$gn_log" '--linux --linux-cpu riscv32'
 assert_log_contains "$gn_log" "--target-sysroot $riscv32_sysroot"
+assert_log_contains "$python_log" 'install-sysroot.py --arch=i386'
+[[ -d "$host_sysroot" ]] || {
+  printf 'riscv32 host sysroot was not installed\n' >&2
+  exit 1
+}
 
 run_engine --mode debug --out "$temporary_directory/verified-bundle"
 [[ -f "$temporary_directory/verified-bundle/$flutter_commit/libflutter_engine.so" ]] || {

@@ -400,6 +400,22 @@ if [[ "$actual_commit" != "$flutter_commit" ]]; then
 fi
 [[ -d "$engine_src/flutter" ]] || die "Flutter engine source is missing: $engine_src"
 
+ensure_host_sysroot_for_target() {
+  if [[ "$cpu" != riscv32 ]]; then
+    return
+  fi
+
+  local sysroot="$engine_src/build/linux/debian_bullseye_i386-sysroot"
+  if [[ -d "$sysroot" ]]; then
+    return
+  fi
+
+  # Dart requires a 32-bit x86 host for riscv32; only ARM has a simulator on a
+  # 64-bit host.
+  printf 'installing host sysroot for riscv32: %s\n' "$sysroot"
+  python3 "$engine_src/build/linux/sysroot_scripts/install-sysroot.py" --arch=i386
+}
+
 restore_patch_paths() {
   local repo repo_root revision path target index restored_count=0
   local -a tracked_paths=()
@@ -500,6 +516,8 @@ if [[ ! -e "$fvm_sdk" && ! -L "$fvm_sdk" ]]; then
 elif [[ "$(readlink -f "$fvm_sdk")" != "$(readlink -f "$flutter_dir")" ]]; then
   die "FVM custom_titan does not point to $flutter_dir: $fvm_sdk"
 fi
+
+ensure_host_sysroot_for_target
 
 gn_args=(
   --runtime-mode "$mode"
