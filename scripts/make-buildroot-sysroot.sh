@@ -69,23 +69,37 @@ buildroot_tag=$(sed -n 's/^tag=//p' "$buildroot_lock")
 [[ -n "$buildroot_url" ]] || die "Buildroot lock is missing url: $buildroot_lock"
 [[ -n "$buildroot_tag" ]] || die "Buildroot lock is missing tag: $buildroot_lock"
 config_name=$(basename "$config_arg")
-case "$config_name" in
-  titan_armv7a_hf_glibc_defconfig)
-    sysroot_name=titan_armv7a_hf
-    clang_gcc_triple=arm-linux-gnueabihf
-    ;;
-  titan_armv7a_softfp_glibc_defconfig)
-    sysroot_name=titan_armv7a_softfp
-    clang_gcc_triple=arm-linux-gnueabi
-    ;;
-  titan_armv7a_softfp_musl_defconfig)
-    sysroot_name=titan_armv7a_softfp_musl
-    clang_gcc_triple=arm-linux-musleabi
-    ;;
-  *)
-    die "unsupported Buildroot config: $config_name"
-    ;;
-esac
+# Sysroot name (as patches/linux-target-matrix expects it) and the GCC triple
+# Clang looks for under usr/lib/gcc/ in the sysroot, per Buildroot defconfig.
+declare -A sysroot_names=(
+  [titan_x64_musl_defconfig]=titan_x64_musl
+  [titan_arm64_glibc_defconfig]=titan_arm64_glibc
+  [titan_arm64_musl_defconfig]=titan_arm64_musl
+  [titan_armv7a_hf_glibc_defconfig]=titan_armv7a_hf
+  [titan_armv7a_hf_musl_defconfig]=titan_armv7a_hf_musl
+  [titan_armv7a_softfp_glibc_defconfig]=titan_armv7a_softfp
+  [titan_armv7a_softfp_musl_defconfig]=titan_armv7a_softfp_musl
+  [titan_riscv32_glibc_defconfig]=titan_riscv32_glibc
+  [titan_riscv32_musl_defconfig]=titan_riscv32_musl
+  [titan_riscv64_glibc_defconfig]=titan_riscv64_glibc
+  [titan_riscv64_musl_defconfig]=titan_riscv64_musl
+)
+declare -A gcc_triples=(
+  [titan_x64_musl_defconfig]=x86_64-linux-musl
+  [titan_arm64_glibc_defconfig]=aarch64-linux-gnu
+  [titan_arm64_musl_defconfig]=aarch64-linux-musl
+  [titan_armv7a_hf_glibc_defconfig]=arm-linux-gnueabihf
+  [titan_armv7a_hf_musl_defconfig]=arm-linux-musleabihf
+  [titan_armv7a_softfp_glibc_defconfig]=arm-linux-gnueabi
+  [titan_armv7a_softfp_musl_defconfig]=arm-linux-musleabi
+  [titan_riscv32_glibc_defconfig]=riscv32-linux-gnu
+  [titan_riscv32_musl_defconfig]=riscv32-linux-musl
+  [titan_riscv64_glibc_defconfig]=riscv64-linux-gnu
+  [titan_riscv64_musl_defconfig]=riscv64-linux-musl
+)
+[[ -n "${sysroot_names[$config_name]+set}" ]] || die "unsupported Buildroot config: $config_name"
+sysroot_name=${sysroot_names[$config_name]}
+clang_gcc_triple=${gcc_triples[$config_name]}
 config_path="$repository_root/buildroot/configs/$config_name"
 [[ -f "$config_path" ]] || die "Buildroot config does not exist: $config_path"
 
