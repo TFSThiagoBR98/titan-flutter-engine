@@ -2,6 +2,8 @@
 # Builds a minimal Buildroot glibc sysroot for a supported ARM ABI.
 set -euo pipefail
 
+source "$(dirname "$0")/lib/paths.sh"
+
 usage() {
   cat <<'EOF'
 Usage: scripts/make-buildroot-sysroot.sh --config <defconfig> [--out <dir>]
@@ -82,22 +84,18 @@ esac
 config_path="$repository_root/buildroot/configs/$config_name"
 [[ -f "$config_path" ]] || die "Buildroot config does not exist: $config_path"
 
-superproject_root=$(git -C "$repository_root" rev-parse --show-superproject-working-tree 2>/dev/null || true)
-if [[ -z "$superproject_root" ]]; then
-  superproject_root=$(cd "$repository_root/../.." && pwd -P)
-fi
-workspace_root="$superproject_root/.build_flutter"
-buildroot_root="$workspace_root/buildroot"
+workspace_root="$TITAN_WORK_DIR"
+buildroot_root="$TITAN_WORK_DIR/buildroot"
 [[ -d "$buildroot_root" ]] || die "Buildroot checkout does not exist: $buildroot_root"
 
 build_output="$workspace_root/buildroot-out/$config_name"
 download_dir="$workspace_root/buildroot-dl"
 sysroot_output=${out_arg:-$workspace_root/sysroots/$sysroot_name}
 if [[ "$sysroot_output" != /* ]]; then
-  sysroot_output="$superproject_root/$sysroot_output"
+  sysroot_output="$TITAN_REPOSITORY_ROOT/$sysroot_output"
 fi
 sysroot_output=$(cd "$(dirname "$sysroot_output")" && pwd -P)/$(basename "$sysroot_output")
-engine_sysroot="$superproject_root/.build_flutter/flutter/engine/src/build/linux/${sysroot_name}-sysroot"
+engine_sysroot="$TITAN_WORK_DIR/flutter/engine/src/build/linux/${sysroot_name}-sysroot"
 
 mkdir -p "$build_output" "$download_dir" "$sysroot_output"
 export BR2_DL_DIR="$download_dir"

@@ -3,6 +3,8 @@
 # repository's patches, and publishes a complete embedder bundle.
 set -euo pipefail
 
+source "$(dirname "$0")/lib/paths.sh"
+
 usage() {
   cat <<'EOF'
 Usage: scripts/build-engine.sh [options]
@@ -186,25 +188,16 @@ jobs=${jobs_arg:-$(getconf _NPROCESSORS_ONLN)}
 load=${load_arg:-$jobs}
 
 repository_root=$(cd "$(dirname "$0")/.." && pwd -P)
-caller_root=$(pwd -P)
 if [[ -n "$work_dir_arg" ]]; then
-  if [[ -d "$work_dir_arg" ]]; then
-    work_root=$(cd "$work_dir_arg" && pwd -P)
-  else
-    mkdir -p "$work_dir_arg"
-    work_root=$(cd "$work_dir_arg" && pwd -P)
-  fi
-else
-  work_root="$caller_root/.build_flutter"
+  mkdir -p "$work_dir_arg"
+  TITAN_WORK_DIR=$(cd "$work_dir_arg" && pwd -P)
 fi
 if [[ -n "$out_dir_arg" ]]; then
   mkdir -p "$out_dir_arg"
-  artifact_root=$(cd "$out_dir_arg" && pwd -P)
-elif [[ -d "$caller_root/third_party/flutter-engine" ]]; then
-  artifact_root="$caller_root/third_party/flutter-engine"
-else
-  artifact_root="$repository_root/artifacts"
+  TITAN_BUNDLE_DIR=$(cd "$out_dir_arg" && pwd -P)
 fi
+work_root="$TITAN_WORK_DIR"
+artifact_root="$TITAN_BUNDLE_DIR"
 
 depot_tools="$work_root/depot_tools"
 flutter_dir="$work_root/flutter"

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source "$(dirname "$0")/lib/paths.sh"
+
 usage() {
   cat <<'EOF'
 Usage: scripts/qemu-probe.sh --abi hf|softfp|softfp-musl --cpu <qemu-cpu>
@@ -53,15 +55,14 @@ esac
 [[ -n "$qemu_cpu" ]] || die "--cpu is required"
 
 repository_root=$(cd "$(dirname "$0")/.." && pwd -P)
-superproject_root=$(cd "$repository_root/../.." && pwd -P)
-work_root="$superproject_root/.build_flutter"
+work_root="$TITAN_WORK_DIR"
 flutter_dir="$work_root/flutter"
 engine_src="$flutter_dir/engine/src"
 clang="$engine_src/flutter/buildtools/linux-x64/clang/bin/clang"
 probe_source="$repository_root/tests/qemu/probe_engine.c"
 probe_root="$work_root/qemu"
-bundle_root="$superproject_root/third_party/flutter-engine"
-assets="$superproject_root/apps/titan_spike_counter/build/flutter_assets"
+bundle_root="$TITAN_BUNDLE_DIR"
+assets="$TITAN_REPOSITORY_ROOT/../../apps/titan_spike_counter/build/flutter_assets"
 flutter_commit=$(sed -n 's/^flutter_commit=//p' "$repository_root/flutter.lock")
 
 [[ -x "$clang" ]] || die "embedded clang is missing: $clang"

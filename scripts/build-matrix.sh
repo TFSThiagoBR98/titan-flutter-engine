@@ -2,6 +2,8 @@
 # Builds the supported Flutter Engine variants concurrently.
 set -euo pipefail
 
+source "$(dirname "$0")/lib/paths.sh"
+
 usage() {
   cat <<'EOF'
 Usage: scripts/build-matrix.sh [--parallel N] [variant ...]
@@ -47,9 +49,8 @@ done
 [[ "$parallel" =~ ^[1-9][0-9]*$ ]] || die "--parallel must be a positive integer"
 
 repository_root=$(cd "$(dirname "$0")/.." && pwd -P)
-superproject_root=$(cd "$repository_root/../.." && pwd -P)
-work_root="$superproject_root/.build_flutter"
-matrix_root="$work_root/matrix"
+work_root="$TITAN_WORK_DIR"
+matrix_root="$TITAN_WORK_DIR/matrix"
 build_engine="$repository_root/scripts/build-engine.sh"
 jobs=$(getconf _NPROCESSORS_ONLN)
 load=$jobs
