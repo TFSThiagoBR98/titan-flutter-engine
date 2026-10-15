@@ -27,10 +27,7 @@ class ProbeApp extends StatelessWidget {
               children: [
                 Icon(Icons.check, color: Colors.white),
                 SizedBox(height: 8),
-                Text(
-                  'Titan probe',
-                  style: TextStyle(color: Colors.white),
-                ),
+                Text('Titan probe', style: TextStyle(color: Colors.white)),
               ],
             ),
           ),
