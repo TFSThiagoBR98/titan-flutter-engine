@@ -10,12 +10,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: flutter-engine-${${ github.ref }}
+  group: flutter-engine-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Build Flutter Engine (${${ matrix.variant }})
+    name: Build Flutter Engine (${{ matrix.variant }})
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     permissions:
@@ -47,9 +47,9 @@ jobs:
     env:
       TITAN_WORK_DIR: /mnt/titan/work
       TITAN_BUNDLE_DIR: /mnt/titan/bundles
-      TITAN_VARIANTS: ${${ matrix.variant }}
+      TITAN_VARIANTS: ${{ matrix.variant }}
       TITAN_PARALLEL: 1
-      GH_TOKEN: ${${ github.token }}
+      GH_TOKEN: ${{ github.token }}
       CCACHE_MAXSIZE: 900M
     steps:
       - uses: actions/checkout@v4
@@ -69,14 +69,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /mnt/titan/work/ccache
-          key: ccache-${${ matrix.variant }}-${${ hashFiles('flutter.lock', 'patches/**') }}-${${ github.run_id }}
+          key: ccache-${{ matrix.variant }}-${{ hashFiles('flutter.lock', 'patches/**') }}-${{ github.run_id }}
           restore-keys: |
-            ccache-${${ matrix.variant }}-${${ hashFiles('flutter.lock', 'patches/**') }}-
-            ccache-${${ matrix.variant }}-
+            ccache-${{ matrix.variant }}-${{ hashFiles('flutter.lock', 'patches/**') }}-
+            ccache-${{ matrix.variant }}-
 
       - name: Build sysroot
         if: matrix.defconfig != ''
-        run: scripts/ci.sh sysroot ${${ matrix.defconfig }}
+        run: scripts/ci.sh sysroot ${{ matrix.defconfig }}
 
       - name: Build engine
         run: scripts/ci.sh build
@@ -90,13 +90,13 @@ jobs:
       - name: Upload engine bundle
         uses: actions/upload-artifact@v4
         with:
-          name: flutter-engine-${${ matrix.variant }}
+          name: flutter-engine-${{ matrix.variant }}
           path: /mnt/titan/bundles/dist/
           if-no-files-found: error
 
   release:
     name: Publish GitHub release
-    if: ${${ startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -104,7 +104,7 @@ jobs:
       contents: write
     env:
       TITAN_BUNDLE_DIR: /mnt/titan/bundles
-      GH_TOKEN: ${${ github.token }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
 

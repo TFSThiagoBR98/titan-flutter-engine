@@ -52,9 +52,9 @@ raise 'riscv32 must not be in the hosted matrix' if actual.keys.any? { |variant|
 env = build.fetch('env')
 raise 'unexpected work directory' unless env['TITAN_WORK_DIR'] == '/mnt/titan/work'
 raise 'unexpected bundle directory' unless env['TITAN_BUNDLE_DIR'] == '/mnt/titan/bundles'
-raise 'matrix variant is not exported' unless env['TITAN_VARIANTS'] == '${${ matrix.variant }}'
+raise 'matrix variant is not exported' unless env['TITAN_VARIANTS'] == '${{ matrix.variant }}'
 raise 'parallelism must be one' unless env['TITAN_PARALLEL'] == 1
-raise 'GitHub token is not exported' unless env['GH_TOKEN'] == '${${ github.token }}'
+raise 'GitHub token is not exported' unless env['GH_TOKEN'] == '${{ github.token }}'
 raise 'ccache size is not capped at 900M' unless env['CCACHE_MAXSIZE'] == '900M'
 
 steps = build.fetch('steps')
@@ -65,10 +65,10 @@ raise 'artifact upload is missing' unless uses.include?('actions/upload-artifact
 raise 'checkout cache must not be configured' unless uses.count { |use| use.start_with?('actions/cache') } == 1
 cache = steps.find { |step| step['uses'] == 'actions/cache@v4' }.fetch('with')
 raise 'wrong ccache path' unless cache['path'] == '/mnt/titan/work/ccache'
-raise 'cache key must include the variant' unless cache['key'].include?('${${ matrix.variant }}')
-raise 'cache key must include the run id' unless cache['key'].include?('${${ github.run_id }}')
+raise 'cache key must include the variant' unless cache['key'].include?('${{ matrix.variant }}')
+raise 'cache key must include the run id' unless cache['key'].include?('${{ github.run_id }}')
 raise 'cache key must include the Flutter lock' unless cache['key'].include?("hashFiles('flutter.lock', 'patches/**')")
-raise 'cache restore keys are incomplete' unless cache['restore-keys'].include?('ccache-${${ matrix.variant }}-')
+raise 'cache restore keys are incomplete' unless cache['restore-keys'].include?('ccache-${{ matrix.variant }}-')
 
 runs = steps.filter_map { |step| step['run'] }.join("\n")
 %w[free-disk deps build probe package].each do |stage|
