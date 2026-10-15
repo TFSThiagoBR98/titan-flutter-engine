@@ -1,0 +1,7 @@
+titan-flutter-engine
+Copyright 2026 TitanDM contributors.
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This repository also contains patches to Flutter Engine source files. Those
+files retain their original BSD-3-Clause notices and licensing terms.

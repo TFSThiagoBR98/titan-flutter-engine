@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `LICENSE` holds the unmodified Apache 2.0 text, so GitHub detects it; the
+  copyright and the note on Flutter's BSD-3-Clause patches moved to `NOTICE`.
+
 ## [0.1.0] - 2026-10-15
 
 ### Added
