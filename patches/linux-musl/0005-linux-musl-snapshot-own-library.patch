@@ -1,0 +1,42 @@
+# Why: the engine finds its embedded Dart snapshot with dlsym(RTLD_DEFAULT).
+# glibc searches the caller's scope there, musl only the global namespace, so
+# an engine loaded with RTLD_LOCAL (titan-embedder, the QEMU probe) fails with
+# "VM snapshot invalid" on musl. Also look in the engine's own library.
+diff --git a/engine/src/flutter/runtime/dart_snapshot.cc b/engine/src/flutter/runtime/dart_snapshot.cc
+index 293ed44cc5f..7848e74aadc 100644
+--- a/engine/src/flutter/runtime/dart_snapshot.cc
++++ b/engine/src/flutter/runtime/dart_snapshot.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "flutter/runtime/dart_snapshot.h"
+ 
++#include <dlfcn.h>
++
+ #include <sstream>
+ 
+ #include "flutter/fml/native_library.h"
+@@ -93,6 +95,24 @@ static std::shared_ptr<const fml::Mapping> SearchMapping(
+     }
+   }
+ 
++  // Look inside the library that contains the engine. musl's RTLD_DEFAULT
++  // only searches the global namespace, so an engine loaded with RTLD_LOCAL
++  // cannot find its own snapshot through the current process.
++  {
++    Dl_info engine_library;
++    if (::dladdr(reinterpret_cast<void*>(&SearchMapping), &engine_library) !=
++            0 &&
++        engine_library.dli_fname != nullptr) {
++      auto native_library =
++          fml::NativeLibrary::Create(engine_library.dli_fname);
++      auto symbol_mapping = std::make_unique<const fml::SymbolMapping>(
++          native_library, native_library_symbol_name);
++      if (symbol_mapping->GetMapping() != nullptr) {
++        return symbol_mapping;
++      }
++    }
++  }
++
+   return nullptr;
+ }
+ 

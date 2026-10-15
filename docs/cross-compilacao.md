@@ -57,3 +57,16 @@ O hash do quadro é o mesmo nos três casos ARMv7 e no x64 nativo (`b49a7f31cecb
 desenham igual. No armv6j, a falha vem já da primeira instrução ARMv7 do userland (glibc do sysroot e o probe são
 ARMv7), antes do engine; como o Dart VM só suporta ARMv7+, o armv6j (base do Debian armel) fica **fora**. O Kindle
 (armv7-a soft-float) é suportado.
+
+## musl (Kindle e sistemas de nicho)
+
+`scripts/build-engine.sh --cpu arm --arm-float-abi softfp --libc musl --target-sysroot
+.build_flutter/sysroots/titan_armv7a_softfp_musl` gera `…-debug-arm-softfp-musl/`: cabeçalho ELF soft-float, `NEEDED`
+só `libc.so` (do musl) e nenhum símbolo `GLIBC_*`. Os patches estão em `patches/linux-musl/` (veja o README da
+pasta). No QEMU (`scripts/qemu-probe.sh --abi softfp-musl --cpu cortex-a8`), o primeiro quadro sai com o mesmo hash
+dos builds glibc e do x64 (`b49a7f31cecb7983`).
+
+**Distribuição:** o aparelho não precisa ter musl. Leve junto do bundle o `lib/ld-musl-arm.so.1` do sysroot (no musl,
+o loader e a `libc.so` são o mesmo arquivo; crie também o link `libc.so` → `ld-musl-arm.so.1`) e rode o embedder com
+esse loader (`./ld-musl-arm.so.1 --library-path . ./runner …`), ou linke o embedder com `-Wl,--dynamic-linker` apontando
+para o caminho do bundle. O musl roda em kernels antigos, o que atende o Kindle.

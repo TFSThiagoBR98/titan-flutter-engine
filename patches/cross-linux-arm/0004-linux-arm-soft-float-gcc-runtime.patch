@@ -3,6 +3,7 @@
 # wrong for soft/softfp targets. Those targets link the GCC runtime (libgcc and
 # libgcc_eh) that the Buildroot sysroot installs under usr/lib/gcc/, statically,
 # so libflutter_engine.so still depends only on libc.
+diff --git a/engine/src/build/config/compiler/BUILD.gn b/engine/src/build/config/compiler/BUILD.gn
 --- a/engine/src/build/config/compiler/BUILD.gn
 +++ b/engine/src/build/config/compiler/BUILD.gn
 @@ -654,7 +654,17 @@

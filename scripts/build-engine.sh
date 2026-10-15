@@ -13,6 +13,7 @@ Options:
   --mode debug|profile|release       Runtime mode (default: debug)
   --cpu x64|arm64|arm|riscv64       Linux target CPU (default: x64)
   --arm-float-abi hard|softfp|soft  ARM float ABI (only with --cpu arm)
+  --libc glibc|musl                 Target libc (default: glibc; musl is ARM soft-float only)
   --target-sysroot <dir>             Target sysroot for cross-compilation
   --out <dir>                        Bundle output directory
   --zip                              Also publish the bundle under dist/
@@ -48,6 +49,7 @@ verify_arm_abi() {
 mode=debug
 cpu=x64
 arm_float_abi=
+libc=glibc
 target_sysroot=
 out_dir_arg=
 zip_output=0
@@ -79,6 +81,15 @@ while (($# > 0)); do
       ;;
     --arm-float-abi=*)
       arm_float_abi=${1#*=}
+      shift
+      ;;
+    --libc)
+      (($# >= 2)) || die "--libc requires a value"
+      libc=$2
+      shift 2
+      ;;
+    --libc=*)
+      libc=${1#*=}
       shift
       ;;
     --target-sysroot)
@@ -134,8 +145,15 @@ case "$arm_float_abi" in
   ''|hard|softfp|soft) ;;
   *) die "invalid ARM float ABI: $arm_float_abi (expected hard, softfp or soft)" ;;
 esac
+case "$libc" in
+  glibc|musl) ;;
+  *) die "invalid libc: $libc (expected glibc or musl)" ;;
+esac
 if [[ -n "$arm_float_abi" && "$cpu" != arm ]]; then
   die "--arm-float-abi is only valid with --cpu arm"
+fi
+if [[ "$libc" == musl && ("$cpu" != arm || "$arm_float_abi" == hard) ]]; then
+  die "--libc musl currently requires --cpu arm with a non-hard float ABI"
 fi
 
 repository_root=$(cd "$(dirname "$0")/.." && pwd -P)
@@ -178,7 +196,7 @@ patch_folders=()
 while IFS= read -r folder; do
   [[ -n "$folder" ]] || continue
   patch_folders+=("$patch_dir/$folder")
-done < <(python3 "$repository_root/scripts/patch_series.py" --series "$series_file" --cpu "$cpu")
+done < <(python3 "$repository_root/scripts/patch_series.py" --series "$series_file" --cpu "$cpu" --libc "$libc")
 
 patches=()
 for folder in "${patch_folders[@]}"; do
@@ -316,8 +334,12 @@ gn_args=(
   --no-enable-unittests
   --enable-minimal-linux
   --gn-args
-  build_linux_gtk_shell=false
+  "build_linux_gtk_shell=false titan_target_libc=\"$libc\""
 )
+if [[ "$libc" == musl ]]; then
+  # fml's backtrace needs glibc's execinfo.h; musl uses fml's stub.
+  gn_args+=(--no-backtrace)
+fi
 if [[ "$cpu" != x64 ]]; then
   gn_args+=(--linux --linux-cpu "$cpu")
 fi
@@ -332,7 +354,11 @@ fi
 if [[ "$cpu" == arm && "$arm_float_abi" != hard ]]; then
   # Soft-float ARM links the sysroot's GCC runtime (patch 0004); the bundled
   # compiler-rt is hard-float only.
-  gcc_runtime=("${target_sysroot:-/nonexistent}"/usr/lib/gcc/arm-linux-gnueabi/*/libgcc_eh.a)
+  gcc_triple=arm-linux-gnueabi
+  if [[ "$libc" == musl ]]; then
+    gcc_triple=arm-linux-musleabi
+  fi
+  gcc_runtime=("${target_sysroot:-/nonexistent}"/usr/lib/gcc/"$gcc_triple"/*/libgcc_eh.a)
   [[ -f "${gcc_runtime[0]}" ]] || \
     die "soft-float ARM needs --target-sysroot with the GCC runtime (scripts/make-buildroot-sysroot.sh)"
 fi
@@ -360,6 +386,9 @@ if [[ "$mode" != debug || "$cpu" != x64 ]]; then
     variant+="-$arm_float_abi"
   fi
 fi
+if [[ "$libc" == musl ]]; then
+  variant+="-musl"
+fi
 dest="$artifact_root/$variant"
 stage=$(mktemp -d "$artifact_root/.stage.XXXXXX")
 trap 'rm -rf "$stage"' EXIT
@@ -380,6 +409,19 @@ mv "$stage" "$dest"
 
 if [[ "$cpu" == arm ]]; then
   verify_arm_abi "$dest/libflutter_engine.so" "${arm_float_abi:-softfp}"
+fi
+
+if [[ "$libc" == musl ]]; then
+  # A shared library has no PT_INTERP; check that nothing binds to glibc.
+  if LC_ALL=C objdump -T "$dest/libflutter_engine.so" | grep -q 'GLIBC_'; then
+    die "musl verification failed: the engine references glibc symbol versions"
+  fi
+  mapfile -t needed_libraries < <(
+    LC_ALL=C readelf -d "$dest/libflutter_engine.so" |
+      sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p'
+  )
+  [[ "${#needed_libraries[@]}" -eq 1 && "${needed_libraries[0]}" == "libc.so" ]] || \
+    die "musl NEEDED verification failed: ${needed_libraries[*]:-none}"
 fi
 
 if ((zip_output)); then

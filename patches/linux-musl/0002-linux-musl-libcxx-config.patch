@@ -1,0 +1,19 @@
+# Why: Flutter's bundled libc++ already has musl-specific locale fallbacks,
+# but its generated config does not identify the target libc. Enable those
+# existing fallbacks and their portable ctype table for the musl ARM target only
+# (host tools still build against glibc).
+diff --git a/engine/src/flutter/build/secondary/flutter/third_party/libcxx/BUILD.gn b/engine/src/flutter/build/secondary/flutter/third_party/libcxx/BUILD.gn
+--- a/engine/src/flutter/build/secondary/flutter/third_party/libcxx/BUILD.gn
++++ b/engine/src/flutter/build/secondary/flutter/third_party/libcxx/BUILD.gn
+@@ -5,5 +5,11 @@
+ config("libcxx_config") {
+   defines = [ "_LIBCPP_DISABLE_AVAILABILITY=1" ]
++  if (titan_target_libc == "musl" && current_cpu == "arm") {
++    defines += [
++      "_LIBCPP_HAS_MUSL_LIBC=1",
++      "_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE=1",
++    ]
++  }
+   include_dirs =
+       [ "//flutter/build/secondary/flutter/third_party/libcxx/config" ]
+ }

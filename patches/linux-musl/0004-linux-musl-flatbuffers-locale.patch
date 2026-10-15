@@ -1,0 +1,19 @@
+# Why: flatbuffers enables its strtoll_l/strtoull_l path whenever
+# _XOPEN_VERSION >= 700, which musl reports without providing those functions.
+# Disable the locale-independent path for the musl target (as Alpine does),
+# in the public config so every user of the headers agrees.
+diff --git a/engine/src/flutter/build/secondary/flutter/third_party/flatbuffers/BUILD.gn b/engine/src/flutter/build/secondary/flutter/third_party/flatbuffers/BUILD.gn
+--- a/engine/src/flutter/build/secondary/flutter/third_party/flatbuffers/BUILD.gn
++++ b/engine/src/flutter/build/secondary/flutter/third_party/flatbuffers/BUILD.gn
+@@ -8,6 +8,11 @@
+   include_dirs = [ "$_src_root/include" ]
+ 
+   cflags = [ "-Wno-newline-eof" ]
++
++  if (titan_target_libc == "musl") {
++    # musl reports _XOPEN_VERSION 700 but has no strtoll_l/strtoull_l.
++    defines = [ "FLATBUFFERS_LOCALE_INDEPENDENT=0" ]
++  }
+ }
+ 
+ source_set("flatbuffers") {

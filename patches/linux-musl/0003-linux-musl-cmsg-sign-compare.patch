@@ -1,0 +1,19 @@
+# Why: musl's CMSG_NXTHDR macro compares size_t with ptrdiff_t, so Dart's
+# socket code fails -Werror,-Wsign-compare only against musl headers. Silence
+# that warning for the musl target alone, after -Wextra enables it.
+diff --git a/engine/src/build/config/compiler/BUILD.gn b/engine/src/build/config/compiler/BUILD.gn
+--- a/engine/src/build/config/compiler/BUILD.gn
++++ b/engine/src/build/config/compiler/BUILD.gn
+@@ -865,6 +865,12 @@
+       ]
+     }
+ 
++    if (titan_target_libc == "musl") {
++      # musl's CMSG_NXTHDR compares size_t with ptrdiff_t inside the macro,
++      # which -Wsign-compare rejects in Dart's socket code. Must follow -Wextra.
++      cflags += [ "-Wno-sign-compare" ]
++    }
++
+     # In Chromium code, we define __STDC_foo_MACROS in order to get the
+     # C99 macros on Mac and Linux.
+     defines = [

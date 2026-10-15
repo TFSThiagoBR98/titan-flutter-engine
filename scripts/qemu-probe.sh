@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/qemu-probe.sh --abi hf|softfp --cpu <qemu-cpu>
+Usage: scripts/qemu-probe.sh --abi hf|softfp|softfp-musl --cpu <qemu-cpu>
 
 Compile the software-rendering engine probe and run it with qemu-arm-static.
 EOF
@@ -47,8 +47,8 @@ while (($# > 0)); do
 done
 
 case "$abi" in
-  hf|softfp) ;;
-  *) die "invalid ABI: $abi (expected hf or softfp)" ;;
+  hf|softfp|softfp-musl) ;;
+  *) die "invalid ABI: $abi (expected hf, softfp or softfp-musl)" ;;
 esac
 [[ -n "$qemu_cpu" ]] || die "--cpu is required"
 
@@ -81,6 +81,12 @@ case "$abi" in
     sysroot="$work_root/sysroots/titan_armv7a_softfp"
     variant="$flutter_commit-debug-arm-softfp"
     ;;
+  softfp-musl)
+    target=arm-linux-musleabi
+    float_abi=softfp
+    sysroot="$work_root/sysroots/titan_armv7a_softfp_musl"
+    variant="$flutter_commit-debug-arm-softfp-musl"
+    ;;
 esac
 
 bundle="$bundle_root/$variant"
@@ -106,7 +112,7 @@ compiler_flags=(
   -O2
   -pthread
 )
-if [[ "$abi" == softfp ]]; then
+if [[ "$abi" != hf ]]; then
   compiler_flags+=(--rtlib=libgcc --unwindlib=libgcc -static-libgcc)
 fi
 
