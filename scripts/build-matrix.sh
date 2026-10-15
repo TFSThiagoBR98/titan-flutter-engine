@@ -6,7 +6,7 @@ source "$(dirname "$0")/lib/paths.sh"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/build-matrix.sh [--parallel N] [variant ...]
+Usage: scripts/build-matrix.sh [--parallel N] [--zip] [variant ...]
 
 Build the selected engine variants concurrently. Without variants, build:
   x64-debug arm-hard-debug arm-softfp-debug arm-softfp-musl-debug
@@ -23,6 +23,7 @@ die() {
 }
 
 parallel=3
+zip_output=0
 variants=()
 while (($# > 0)); do
   case "$1" in
@@ -33,6 +34,10 @@ while (($# > 0)); do
       ;;
     --parallel=*)
       parallel=${1#*=}
+      shift
+      ;;
+    --zip)
+      zip_output=1
       shift
       ;;
     -h|--help)
@@ -94,7 +99,11 @@ while ((next_variant < variant_count || active > 0)); do
     read -r -a build_args <<<"$build_spec"
     start_by_variant[$variant]=$(date +%s)
     printf 'starting %s (log: %s)\n' "$variant" "$log"
-    nohup "$build_engine" "${build_args[@]}" --jobs "$jobs" --load "$load" \
+    build_options=(--jobs "$jobs" --load "$load")
+    if ((zip_output)); then
+      build_options+=(--zip)
+    fi
+    nohup "$build_engine" "${build_args[@]}" "${build_options[@]}" \
       >"$log" 2>&1 &
     pid=$!
     variant_by_pid[$pid]=$variant

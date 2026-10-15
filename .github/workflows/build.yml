@@ -15,111 +15,45 @@ concurrency:
 
 jobs:
   build:
-    name: ${{ matrix.name }}
-    runs-on: [self-hosted, linux, x64]
-    timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: x64 debug
-            mode: debug
-            cpu: x64
-            arm_float_abi: ''
-            libc: glibc
-            sysroot_config: ''
-            sysroot_name: ''
-            probe_abi: ''
-            probe_cpu: ''
-          - name: armv7-a hard-float debug
-            mode: debug
-            cpu: arm
-            arm_float_abi: hard
-            libc: glibc
-            sysroot_config: titan_armv7a_hf_glibc_defconfig
-            sysroot_name: titan_armv7a_hf
-            probe_abi: hf
-            probe_cpu: cortex-a8
-          - name: armv7-a soft-float glibc debug
-            mode: debug
-            cpu: arm
-            arm_float_abi: softfp
-            libc: glibc
-            sysroot_config: titan_armv7a_softfp_glibc_defconfig
-            sysroot_name: titan_armv7a_softfp
-            probe_abi: softfp
-            probe_cpu: cortex-a8
-          - name: armv7-a soft-float musl debug
-            mode: debug
-            cpu: arm
-            arm_float_abi: softfp
-            libc: musl
-            sysroot_config: titan_armv7a_softfp_musl_defconfig
-            sysroot_name: titan_armv7a_softfp_musl
-            probe_abi: softfp-musl
-            probe_cpu: cortex-a8
-
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Check the provisioned Buildroot checkout
-        if: matrix.sysroot_config != ''
-        run: test -d .build_flutter/buildroot
-
-      - name: Cache Buildroot sysroot
-        if: matrix.sysroot_config != ''
-        uses: actions/cache@v4
-        with:
-          path: |
-            .build_flutter/buildroot-dl
-            .build_flutter/buildroot-out/${{ matrix.sysroot_config }}
-            .build_flutter/sysroots/${{ matrix.sysroot_name }}
-          key: titan-engine-buildroot-${{ runner.os }}-${{ matrix.sysroot_config }}-${{ hashFiles(format('buildroot/configs/{0}', matrix.sysroot_config)) }}
-
-      - name: Generate the Buildroot sysroot
-        if: matrix.sysroot_config != ''
-        run: scripts/make-buildroot-sysroot.sh --config "${{ matrix.sysroot_config }}"
-
-      - name: Build and package the engine
-        shell: bash
-        run: |
-          args=(--mode "${{ matrix.mode }}" --cpu "${{ matrix.cpu }}" --libc "${{ matrix.libc }}" --zip)
-          if [[ "${{ matrix.cpu }}" == arm ]]; then
-            args+=(--arm-float-abi "${{ matrix.arm_float_abi }}")
-            args+=(--target-sysroot ".build_flutter/sysroots/${{ matrix.sysroot_name }}")
-          fi
-          scripts/build-engine.sh "${args[@]}"
-
-      - name: Run the ARM QEMU probe
-        if: matrix.probe_abi != ''
-        run: scripts/qemu-probe.sh --abi "${{ matrix.probe_abi }}" --cpu "${{ matrix.probe_cpu }}"
-
-      - name: Upload engine bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: flutter-engine-${{ matrix.name }}
-          path: artifacts/dist/*.zip
-          if-no-files-found: error
-
-  release:
-    name: Publish release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: [self-hosted, linux, x64]
+    name: Build Flutter Engine
+    runs-on: docker
+    container:
+      image: node:24-trixie
+      options: "-v /srv/titan-flutter-engine:/cache"
+    env:
+      TITAN_WORK_DIR: /cache/work
+      TITAN_BUNDLE_DIR: /cache/bundles
+    timeout-minutes: 600
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: scripts/ci.sh deps
+
+      - name: Build Buildroot sysroots
+        run: scripts/ci.sh sysroots
+
+      - name: Build engine matrix
+        run: scripts/ci.sh build
+
+      - name: Probe engine bundles
+        run: scripts/ci.sh probe
+
+      - name: Package engine bundles
+        run: scripts/ci.sh package
+
+      - name: Upload engine bundles
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v3
         with:
-          pattern: flutter-engine-*
-          path: release-assets
-          merge-multiple: true
+          name: flutter-engine-dist
+          path: /cache/bundles/dist/
+          if-no-files-found: error
 
-      - name: Generate checksums
-        working-directory: release-assets
-        run: find . -maxdepth 1 -type f -name '*.zip' -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
-
-      - name: Create GitHub release
+      - name: Publish Forgejo release
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: scripts/ci.sh release
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" release-assets/*.zip release-assets/SHA256SUMS --verify-tag --generate-notes
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
