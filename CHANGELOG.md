@@ -16,8 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `flutter precache` from a local server (`scripts/assemble-sdk-artifacts.sh`,
   `scripts/install-sdk-artifacts.sh`).
 
-- Self-hosted GitHub Actions workflow for x64, ARM hard-float, ARM soft-float
-  with glibc, and ARM soft-float with musl.
+- GitHub Actions workflow on hosted `ubuntu-24.04` runners, with one matrix
+  job per engine variant and sysroots published through `sysroots-cache`.
 - Documentation for cross-compilation, QEMU validation, the platform matrix
   (`docs/plataformas.md`) and the runtime-neutral SPI study for a Dart-free
   engine.
@@ -37,9 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - riscv32 stays out of the default build and CI matrix; request it by name.
-- CI runs on a GitHub Actions self-hosted runner with separate sysroot, build
-  and release jobs, a persistent volume for the workspace, and releases via
-  `gh`.
+- CI runs on GitHub-hosted runners with a shallow Flutter checkout, ccache in
+  `actions/cache`, one variant per job, and releases via `gh`.
 - Scripts resolve the work and bundle directories in `scripts/lib/paths.sh`
   (`TITAN_WORK_DIR`, `TITAN_BUNDLE_DIR`), so the repository builds on its own.
 - Buildroot is pinned in `buildroot/buildroot.lock` and cloned on demand.

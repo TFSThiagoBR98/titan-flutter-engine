@@ -53,6 +53,16 @@ reconstruir:
 scripts/make-buildroot-sysroot.sh --config titan_arm64_glibc_defconfig --force
 ```
 
+## CI hospedada
+
+O workflow do GitHub Actions usa runners hospedados `ubuntu-24.04`, uma
+variante por job e sem cap de CPU. No CI, `TITAN_JOBS` usa `nproc` e
+`TITAN_CPU_SCOPE=0`; localmente, o padrão continua sendo metade dos núcleos.
+O ccache fica em `actions/cache`, enquanto o checkout novo do Flutter é feito
+sem histórico. O job recupera ou publica sysroots na release prerelease
+`sysroots-cache`; o release final junta os artefatos da matriz e gera
+`SHA256SUMS` antes de chamar `gh`.
+
 ## Alvos RISC-V
 
 O engine aceita `riscv32` e `riscv64` diretamente no GN. Os alvos usam, respectivamente, `-march=rv32gc -mabi=ilp32d`
@@ -94,14 +104,15 @@ Roda até `N` builds ao mesmo tempo (padrão 2), dentro de um **orçamento de CP
 núcleos, definido em `scripts/lib/paths.sh`) vale para o `-j` e o `-l` do ninja de cada build e para o `BR2_JLEVEL` do
 Buildroot, e todos rodam com `nice -n 10`. O `-l` olha a carga do sistema inteiro, então builds concorrentes ficam
 juntos perto do orçamento, e o link de um se sobrepõe à compilação de outro. Usar todos os núcleos deixa a máquina a
-100% e trava o desktop; aumente `TITAN_JOBS` só numa máquina dedicada (o runner do CI). Os logs ficam em
+100% e trava o desktop; aumente `TITAN_JOBS` só numa máquina dedicada. Os logs ficam em
 `.build_flutter/matrix/<variante>.log` e o script termina com um resumo (variante, duração, resultado).
 
 Quando há `systemd-run --user`, o comando da matriz inteira roda num scope com
 `CPUQuota=TITAN_JOBS*100%`; os scripts filhos recebem `TITAN_CPU_SCOPE=0` e
-não criam scopes aninhados. Em containers do CI, o workflow define
+não criam scopes aninhados. No CI hospedado, o workflow define
 `TITAN_CPU_SCOPE=0`, então o limite continua sendo `TITAN_JOBS`/`-j` com
-`nice`, sem depender de um systemd do usuário. Nunca use todos os núcleos numa
+`nice`, sem depender de um systemd do usuário. No CI hospedado, o workflow
+desativa esse scope e usa todos os núcleos do runner. Nunca use todos os núcleos numa
 máquina que também executa a sessão gráfica.
 
 ## Runtime do compilador (`linux-compiler-runtime`)

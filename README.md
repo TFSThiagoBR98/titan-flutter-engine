@@ -9,8 +9,9 @@ O build x64 debug é o bundle usado pelo TitanDM. Cada alvo é CPU × ABI de
 ponto flutuante (ARM) × libc (`glibc` ou `musl`); a matriz oficial, com o
 estado de cada alvo, está em [docs/plataformas.md](docs/plataformas.md), e o
 como compilar em [docs/cross-compilacao.md](docs/cross-compilacao.md). A CI
-roda num runner Linux x86_64 próprio, porque o checkout do Flutter e os
-builds do engine são grandes.
+roda nos runners Linux x86_64 hospedados do GitHub (`ubuntu-24.04`), com uma
+variante por job. O checkout novo do Flutter é raso e cada job usa o orçamento
+completo de CPU do runner.
 
 ## Requisitos
 
@@ -135,40 +136,38 @@ Buildroot é usado somente para construir a toolchain e o staging sysroot.
 ## CI e release
 
 O repositório principal do engine fica no GitHub. `.github/workflows/build.yml`
-usa jobs em containers `node:24-trixie` num runner GitHub Actions self-hosted
-com os labels `self-hosted`, `linux` e `x64`. O job `sysroots` prepara os
-sysroots e o job `build`, dependente dele, compila e testa o engine:
+usa runners hospedados `ubuntu-24.04` e uma matriz com uma variante por job.
+O checkout do Flutter feito pelo `build-engine.sh` usa clone raso; o checkout
+do repositório não usa cache porque é grande.
 
 | Estágio | O que faz |
 |---|---|
-| `deps` | instala as dependências do build no container (`apt-get`) |
-| `sysroots` | recupera ou gera e publica os sysroots Buildroot das variantes (o Buildroot é clonado na versão de `buildroot/buildroot.lock`) |
-| `build` | `build-matrix.sh` com `--zip` (`TITAN_VARIANTS`, `TITAN_PARALLEL`) |
+| `free-disk` | remove as ferramentas pré-instaladas listadas no workflow e libera espaço no runner |
+| `deps` | instala as dependências do build com `sudo` no runner hospedado |
+| `sysroot` | recupera o sysroot da release `sysroots-cache` ou gera e publica o defconfig da variante |
+| `build` | `build-matrix.sh` com uma variante e `TITAN_PARALLEL=1` |
 | `probe` | compila o app de `tests/qemu/app`, roda `TITAN_VARIANTS` no x64 nativo/QEMU e exige o **mesmo hash** de quadro em todos |
-| `package` | junta os zips em `dist/` com `SHA256SUMS` |
-| `release` | só em tags `v*`: cria a release do GitHub com os zips e `SHA256SUMS` via `gh` |
+| `package` | empacota somente o zip da variante em `dist/` com `SHA256SUMS` |
+| `release` | só em tags `v*`: junta os artefatos, gera `SHA256SUMS` e cria a release via `gh` |
 
-Os mesmos estágios rodam no host. Os caminhos vêm de `scripts/lib/paths.sh`:
+Os mesmos estágios rodam localmente. Os caminhos vêm de `scripts/lib/paths.sh`:
 `TITAN_WORK_DIR` (checkout do Flutter, depot_tools, ccache, Buildroot,
-sysroots) e `TITAN_BUNDLE_DIR` (bundles e `dist/`). Sem as variáveis, dentro
+sysroots) e `TITAN_BUNDLE_DIR` (bundles e `dist/`). No CI, eles apontam para
+`/mnt/titan/work` e `/mnt/titan/bundles`; o ccache fica em
+`/mnt/titan/work/ccache` e é salvo por `actions/cache`. Sem as variáveis, dentro
 do TitanDM valem `.build_flutter/` e `third_party/flutter-engine/` do
 superprojeto; num clone isolado, `.build_flutter/` e `artifacts/` do próprio
-repositório. No CI, as duas apontam para o volume persistente.
+repositório.
 
-## Runner GitHub Actions
+## CI GitHub Actions
 
-Registre um runner GitHub Actions self-hosted com os labels padrão
-`self-hosted`, `linux` e `x64`. O host precisa ter Docker configurado e o
-volume persistente:
+O workflow roda automaticamente em pushes para `main`/`develop` e em tags
+`v*`. Para cada variante, ele prepara `/mnt/titan`, libera espaço, instala
+dependências, recupera o ccache, recupera ou publica o sysroot quando
+necessário, compila, executa o probe e envia o bundle como artefato.
 
-```sh
-sudo mkdir -p /srv/titan-flutter-engine
-```
-
-Reserve pelo menos 120 GB em `/srv/titan-flutter-engine`. Configure a variável
-de repositório `vars.TITAN_JOBS` para o orçamento de CPU do runner; sem ela o
-workflow usa 8. O runner deve executar um job por vez para evitar disputa pelo
-volume e pelos núcleos.
+Não há cap de CPU no CI: `ci.sh` usa `nproc` e desativa o scope de CPU do
+systemd. Localmente, o padrão continua sendo metade dos núcleos.
 
 ## Cache dos sysroots
 
