@@ -89,9 +89,12 @@ verify_bundle() {
       LC_ALL=C readelf -d "$engine_path" |
         sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p'
     )
-    [[ "${#needed_libraries[@]}" -eq 1 && "${needed_libraries[0]}" == "libc.so" ]] || \
+    # riscv32 also needs libatomic (no 64-bit atomic instructions on RV32).
+    local expected_needed="libc.so"
+    [[ "$target_cpu" == riscv32 ]] && expected_needed="libatomic.so.1 libc.so"
+    [[ "$(printf '%s\n' "${needed_libraries[@]}" | sort | xargs)" == "$expected_needed" ]] || \
       die "musl NEEDED verification failed: ${needed_libraries[*]:-none}"
-    printf 'musl NEEDED: %s\n' "${needed_libraries[0]}"
+    printf 'musl NEEDED: %s\n' "${needed_libraries[*]}"
   else
     max_glibc_symbol=$(
       LC_ALL=C objdump -T "$engine_path" |

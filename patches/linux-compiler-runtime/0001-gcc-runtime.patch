@@ -1,10 +1,10 @@
 # Why: use the target sysroot's GCC runtime where compiler-rt/libunwind does
-# not cover musl, ARM soft-float, or riscv32.
+# not cover musl, ARM soft-float, or riscv32, plus libatomic on riscv32.
 diff --git a/engine/src/build/config/compiler/BUILD.gn b/engine/src/build/config/compiler/BUILD.gn
 index ad938db2379..237493b19a2 100644
 --- a/engine/src/build/config/compiler/BUILD.gn
 +++ b/engine/src/build/config/compiler/BUILD.gn
-@@ -642,7 +642,20 @@ config("runtime_library") {
+@@ -642,7 +642,26 @@ config("runtime_library") {
      if (is_linux) {
        # Our custom libcxx doesn't include the unwinder, which is included in
        # libc++.a. Link the libunwind directly.
@@ -20,6 +20,12 @@ index ad938db2379..237493b19a2 100644
 +          "--unwindlib=libgcc",
 +          "-static-libgcc",
 +        ]
++        if (current_cpu == "riscv32") {
++          # RV32 has no 64-bit atomic instructions, so std::atomic<int64_t>
++          # lowers to __atomic_*_8 calls served by libatomic. The sysroot's
++          # libatomic.a is not PIC, so the engine needs libatomic.so.1.
++          libs += [ "atomic" ]
++        }
 +      } else {
 +        ldflags += [ "--unwindlib=libunwind" ]
 +      }
