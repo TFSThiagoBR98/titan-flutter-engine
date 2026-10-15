@@ -63,6 +63,11 @@ install_gcc_runtime() {
 [[ -n "$config_arg" ]] || die "--config is required"
 
 repository_root=$(cd "$(dirname "$0")/.." && pwd -P)
+buildroot_lock="$repository_root/buildroot/buildroot.lock"
+buildroot_url=$(sed -n 's/^url=//p' "$buildroot_lock")
+buildroot_tag=$(sed -n 's/^tag=//p' "$buildroot_lock")
+[[ -n "$buildroot_url" ]] || die "Buildroot lock is missing url: $buildroot_lock"
+[[ -n "$buildroot_tag" ]] || die "Buildroot lock is missing tag: $buildroot_lock"
 config_name=$(basename "$config_arg")
 case "$config_name" in
   titan_armv7a_hf_glibc_defconfig)
@@ -86,6 +91,17 @@ config_path="$repository_root/buildroot/configs/$config_name"
 
 workspace_root="$TITAN_WORK_DIR"
 buildroot_root="$TITAN_WORK_DIR/buildroot"
+if [[ ! -e "$buildroot_root" ]]; then
+  mkdir -p "$workspace_root"
+  printf 'cloning Buildroot %s into %s\n' "$buildroot_tag" "$buildroot_root"
+  git clone --depth 1 --branch "$buildroot_tag" "$buildroot_url" "$buildroot_root"
+elif [[ ! -d "$buildroot_root/.git" && ! -f "$buildroot_root/.git" ]]; then
+  die "Buildroot checkout is not a Git repository: $buildroot_root"
+else
+  current_buildroot_tag=$(git -C "$buildroot_root" describe --tags --exact-match HEAD 2>/dev/null || true)
+  [[ "$current_buildroot_tag" == "$buildroot_tag" ]] || \
+    die "Buildroot checkout has version ${current_buildroot_tag:-unknown}; expected $buildroot_tag: $buildroot_root"
+fi
 [[ -d "$buildroot_root" ]] || die "Buildroot checkout does not exist: $buildroot_root"
 
 build_output="$workspace_root/buildroot-out/$config_name"
