@@ -83,6 +83,8 @@ declare -A variant_specs=(
   [sdk-desktop-profile]='--mode profile --gtk-shell --enable-fontconfig --out-name sdk_desktop_profile --ninja-target flutter/shell/platform/linux:flutter_gtk'
   [sdk-desktop-release]='--mode release --gtk-shell --enable-fontconfig --out-name sdk_desktop_release --ninja-target flutter/shell/platform/linux:flutter_gtk'
 )
+# riscv32 builds and passes QEMU but is a niche target: request it by name
+# (riscv32-glibc-debug, riscv32-musl-debug).
 default_variants=(
   x64-debug
   x64-musl-debug
@@ -92,8 +94,6 @@ default_variants=(
   arm-hard-musl-debug
   arm-softfp-debug
   arm-softfp-musl-debug
-  riscv32-glibc-debug
-  riscv32-musl-debug
   riscv64-glibc-debug
   riscv64-musl-debug
 )

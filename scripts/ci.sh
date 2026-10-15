@@ -30,7 +30,7 @@ run_sysroots() {
 }
 
 run_build() {
-  local variants_text=${TITAN_VARIANTS:-x64-debug x64-musl-debug arm64-debug arm64-musl-debug arm-hard-debug arm-hard-musl-debug arm-softfp-debug arm-softfp-musl-debug riscv32-glibc-debug riscv32-musl-debug riscv64-glibc-debug riscv64-musl-debug}
+  local variants_text=${TITAN_VARIANTS:-x64-debug x64-musl-debug arm64-debug arm64-musl-debug arm-hard-debug arm-hard-musl-debug arm-softfp-debug arm-softfp-musl-debug riscv64-glibc-debug riscv64-musl-debug}
   local parallel=${TITAN_PARALLEL:-3}
   read -r -a variants <<<"$variants_text"
   "$scripts_root/build-matrix.sh" --parallel "$parallel" --zip "${variants[@]}"
@@ -38,7 +38,7 @@ run_build() {
 
 run_probe() {
   local assets="$TITAN_WORK_DIR/probe-app/flutter_assets"
-  local variants_text=${TITAN_VARIANTS:-x64-debug x64-musl-debug arm64-debug arm64-musl-debug arm-hard-debug arm-hard-musl-debug arm-softfp-debug arm-softfp-musl-debug riscv32-glibc-debug riscv32-musl-debug riscv64-glibc-debug riscv64-musl-debug}
+  local variants_text=${TITAN_VARIANTS:-x64-debug x64-musl-debug arm64-debug arm64-musl-debug arm-hard-debug arm-hard-musl-debug arm-softfp-debug arm-softfp-musl-debug riscv64-glibc-debug riscv64-musl-debug}
   local output hash expected_hash=
   local -a variants
 
