@@ -10,7 +10,7 @@ Um alvo é a combinação **CPU × ABI de ponto flutuante (só ARM) × libc**, p
 
 ```sh
 scripts/build-engine.sh --mode debug|profile|release \
-  --cpu x64|arm64|arm|riscv64 [--arm-float-abi hard|softfp|soft] [--libc glibc|musl] \
+  --cpu x64|arm64|arm|riscv32|riscv64 [--arm-float-abi hard|softfp|soft] [--libc glibc|musl] \
   [--target-sysroot <sysroot>]
 ```
 
@@ -22,6 +22,13 @@ sysroot explícito continua com o sysroot Debian do Chromium, que é o do bundle
 Cada alvo compila num diretório próprio em `engine/src/out/`: `host_<modo>` para o x64 glibc (o nome padrão do
 Flutter) e `linux_<modo>_<cpu>[_<abi>]_<libc>` para os demais (por exemplo `linux_debug_arm_softfp_musl`). Por isso
 vários alvos podem compilar ao mesmo tempo.
+
+## Alvos RISC-V
+
+O engine aceita `riscv32` e `riscv64` diretamente no GN. Os alvos usam, respectivamente, `-march=rv32gc -mabi=ilp32d`
+e `-march=rv64gc -mabi=lp64d`; a tripla e o sysroot vêm da combinação de CPU e libc. O runtime GCC do
+sysroot é usado nos dois alvos `riscv32` e nos alvos `riscv64` com musl. Os nomes de variante da matriz são
+`riscv32-glibc-debug`, `riscv32-musl-debug`, `riscv64-glibc-debug` e `riscv64-musl-debug`.
 
 ## Patches por assunto
 
@@ -91,11 +98,25 @@ apontando para o caminho do bundle. O musl roda em kernels antigos.
 
 ## Validação no QEMU (modo usuário)
 
-`scripts/qemu-probe.sh --abi x64|hf|softfp|softfp-musl [--cpu <cpu>] [--assets <dir>]` compila
-`tests/qemu/probe_engine.c` com o Clang embutido e o roda nativo (x64) ou com `qemu-arm-static -cpu <cpu> -L <sysroot>`. O probe carrega o `libflutter_engine.so`, inicia o
-engine com o renderer por software e um *platform task runner* próprio (sem ele, as tarefas de plataforma nunca rodam
-e o primeiro quadro não sai), manda métricas de 320×240 e espera o primeiro quadro do app (`PROBE_TIMEOUT_SECONDS`, padrão 120). O app padrão é o de
-`tests/qemu/app`; dentro do TitanDM, o app spike. O `scripts/ci.sh probe` roda todos os alvos com o mesmo app e exige
+`--target` seleciona uma variante da matriz e `--abi x64|hf|softfp|softfp-musl` continua como apelido para os quatro
+alvos históricos. Exemplos:
+
+```sh
+scripts/qemu-probe.sh --target x64-debug
+scripts/qemu-probe.sh --target arm64-debug
+scripts/qemu-probe.sh --target arm-hard-debug
+scripts/qemu-probe.sh --target riscv32-glibc-debug
+scripts/qemu-probe.sh --target riscv64-musl-debug
+```
+
+O probe compila `tests/qemu/probe_engine.c` com o Clang embutido e roda o x64 glibc nativamente; os demais alvos usam
+o QEMU correspondente com a CPU padrão (`cortex-a8` no armv7, `cortex-a53` no arm64, `rv32`/`rv64` no RISC-V e
+`x86_64` no x64 musl) e o sysroot do alvo. As flags `--rtlib=libgcc --unwindlib=libgcc -static-libgcc` acompanham
+os alvos que usam `linux-compiler-runtime`. O probe carrega o `libflutter_engine.so`, inicia o engine com o renderer
+por software e um *platform task runner* próprio (sem ele, as tarefas de plataforma nunca rodam e o primeiro quadro
+não sai), manda métricas de 320×240 e espera o primeiro quadro do app (`PROBE_TIMEOUT_SECONDS`, padrão 120). O app
+padrão é o de `tests/qemu/app`; dentro do TitanDM, o app spike. O `scripts/ci.sh probe` usa `TITAN_VARIANTS` (ou a
+matriz completa por padrão) e exige
 o mesmo hash de quadro (com o app de `tests/qemu/app`, `8dca0036f583054a` em x64, hf, softfp e softfp musl, em
 2026-10-15).
 

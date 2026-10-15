@@ -2,7 +2,7 @@
 
 Patches e build do Flutter Engine usado pelo TitanDM: aplica os patches sobre
 um commit fixado do Flutter, compila o engine (Linux x86_64 e
-cross-compilação para armv7-a hard/soft, arm64 e riscv64) e publica os
+cross-compilação para armv7-a hard/soft, arm64, riscv32 e riscv64) e publica os
 artefatos.
 
 O build x64 debug é o bundle usado pelo TitanDM. Cada alvo é CPU × ABI de
@@ -20,7 +20,8 @@ builds do engine são grandes.
 - Espaço em disco: o checkout com dependências ocupa dezenas de GB; reserve ~40 GB para o primeiro build e o cache.
 - Sysroots ARM: as dependências de host do Buildroot (`make`, `gcc`, `g++`, `patch`, `bzip2`, `perl`, `rsync`,
   `cpio`, `unzip`, `bc`, `file`, `wget`) e o Buildroot 2026.02.3 clonado em `.build_flutter/buildroot`.
-- Validação ARM: `qemu-arm-static` (QEMU em modo usuário).
+- Validação dos alvos: `qemu-x86_64-static`, `qemu-aarch64-static`, `qemu-arm-static`,
+  `qemu-riscv32-static` e `qemu-riscv64-static` (QEMU em modo usuário).
 
 ## Compilar
 
@@ -45,9 +46,8 @@ scripts/make-buildroot-sysroot.sh --config titan_armv7a_softfp_musl_defconfig
 scripts/build-engine.sh --mode debug --cpu arm --arm-float-abi softfp --libc musl \
   --target-sysroot .build_flutter/sysroots/titan_armv7a_softfp_musl
 
-# Alvos de melhor esforço
-scripts/build-engine.sh --mode debug --cpu arm64
-scripts/build-engine.sh --mode debug --cpu riscv64
+# Matriz completa dos 12 alvos debug, quando os sysroots estão prontos
+scripts/build-matrix.sh --parallel 4
 ```
 
 Use `--zip` para publicar `artifacts/dist/flutter-engine-<variante>.zip` e
@@ -81,7 +81,7 @@ continua aceitando condições `chave=valor` para séries antigas.
 ## Vários alvos em paralelo
 
 ```sh
-scripts/build-matrix.sh --parallel 4 x64-debug arm-hard-debug arm-softfp-debug arm-softfp-musl-debug
+scripts/build-matrix.sh --parallel 4
 ```
 
 Cada alvo compila num diretório próprio em `engine/src/out/`; a fase de patch
@@ -140,7 +140,7 @@ GitHub. `.github/workflows/build.yml` roda um único job num container
 | `deps` | instala as dependências do build no container (`apt-get`) |
 | `sysroots` | gera os sysroots Buildroot das variantes (o Buildroot é clonado na versão de `buildroot/buildroot.lock`) |
 | `build` | `build-matrix.sh` com `--zip` (`TITAN_VARIANTS`, `TITAN_PARALLEL`) |
-| `probe` | compila o app de `tests/qemu/app`, roda o probe nativo no x64 e no QEMU nos alvos ARM e exige o **mesmo hash** de quadro em todos |
+| `probe` | compila o app de `tests/qemu/app`, roda `TITAN_VARIANTS` no x64 nativo/QEMU e exige o **mesmo hash** de quadro em todos |
 | `package` | junta os zips em `dist/` com `SHA256SUMS` |
 | `release` | só em tags `v*`: cria a release pela API do Forgejo e envia os arquivos |
 
@@ -176,17 +176,18 @@ volume persistente.
 
 ## Validação no QEMU (modo usuário)
 
-`scripts/qemu-probe.sh` compila `tests/qemu/probe_engine.c` para a ABI pedida, carrega o `libflutter_engine.so`,
-inicia o engine com o renderer por software e espera o primeiro quadro de um app. No x64 o probe roda nativo; nos
-alvos ARM, com `qemu-arm-static` (ou `qemu-arm`) `-cpu <cpu> -L <sysroot>`. O app padrão é o de `tests/qemu/app`
-(gerado por `scripts/build-probe-app.sh`); dentro do TitanDM, o app spike do superprojeto; `--assets <dir>` escolhe
-outro.
+`scripts/qemu-probe.sh` compila `tests/qemu/probe_engine.c` para a variante pedida, carrega o `libflutter_engine.so`,
+inicia o engine com o renderer por software e espera o primeiro quadro de um app. Use `--target` com os nomes da
+matriz; `--abi x64|hf|softfp|softfp-musl` permanece como apelido para os quatro alvos históricos. O x64 glibc roda
+nativamente; os demais usam o QEMU e a CPU padrão do alvo. O app padrão é o de `tests/qemu/app` (gerado por
+`scripts/build-probe-app.sh`); dentro do TitanDM, o app spike do superprojeto; `--assets <dir>` escolhe outro.
 
 ```sh
-scripts/qemu-probe.sh --abi x64
-scripts/qemu-probe.sh --abi hf --cpu cortex-a8
-scripts/qemu-probe.sh --abi softfp --cpu cortex-a8
-scripts/qemu-probe.sh --abi softfp-musl --cpu cortex-a8
+scripts/qemu-probe.sh --target x64-debug
+scripts/qemu-probe.sh --target arm64-debug
+scripts/qemu-probe.sh --target arm-hard-debug
+scripts/qemu-probe.sh --target riscv32-glibc-debug
+scripts/qemu-probe.sh --target riscv64-musl-debug
 ```
 
 Saída esperada: `frame 320x240 hash=…` e `ok`, com o **mesmo hash** em todos os alvos para o mesmo app (o

@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engine.
 - `scripts/build-matrix.sh` builds several engine variants in parallel, each in
   its own output directory.
+- Linux platform matrix for x86_64, armv7-a, arm64, riscv32 and riscv64, with
+  glibc and musl variants; GN-only configuration and quick checks cover the
+  target triples and ELF bundle metadata.
 
 ### Changed
 
@@ -34,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Buildroot is pinned in `buildroot/buildroot.lock` and cloned on demand.
 - The QEMU probe uses a self-contained app and requires the same frame hash
   on every target, including a native x64 run.
+- The QEMU probe accepts `--target <variant>` for the complete matrix and keeps
+  `--abi` as an alias for the four historical targets.
 
 - Engine patches are organized by concern (`linux-target-matrix`,
   `linux-compiler-runtime`, `linux-musl`) and cover every planned target; the
