@@ -55,10 +55,12 @@ com a mesma série, a fase de patch é pulada, para nunca restaurar arquivos enq
 scripts/build-matrix.sh [--parallel N] [variante …]
 ```
 
-Roda até `N` builds ao mesmo tempo (padrão 3), cada um com `ninja -j <núcleos> -l <núcleos>`: o `-l` segura novos
-jobs quando a carga passa do número de núcleos, de modo que o link de um build se sobrepõe à compilação de outro. Os
-logs ficam em `.build_flutter/matrix/<variante>.log` e o script termina com um resumo (variante, duração, resultado).
-Debug e profile compilam **sem LTO** (como o CI do Flutter nos artefatos de host); o release mantém o LTO.
+Roda até `N` builds ao mesmo tempo (padrão 2), dentro de um **orçamento de CPU**: `TITAN_JOBS` (padrão: metade dos
+núcleos, definido em `scripts/lib/paths.sh`) vale para o `-j` e o `-l` do ninja de cada build e para o `BR2_JLEVEL` do
+Buildroot, e todos rodam com `nice -n 10`. O `-l` olha a carga do sistema inteiro, então builds concorrentes ficam
+juntos perto do orçamento, e o link de um se sobrepõe à compilação de outro. Usar todos os núcleos deixa a máquina a
+100% e trava o desktop; aumente `TITAN_JOBS` só numa máquina dedicada (o runner do CI). Os logs ficam em
+`.build_flutter/matrix/<variante>.log` e o script termina com um resumo (variante, duração, resultado).
 
 ## Runtime do compilador (`linux-compiler-runtime`)
 
