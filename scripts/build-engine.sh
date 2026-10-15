@@ -616,8 +616,10 @@ if [[ "$mode" != debug ]]; then
   nice -n 10 ninja -C "$out_dir" -j "$jobs" -l "$load" flutter/shell/common:gen_snapshot
 fi
 
+# The bare commit name is the TitanDM bundle (x64 glibc debug); every other
+# target gets the full <commit>-<mode>-<cpu>[-<abi>][-musl] name.
 variant="$flutter_commit"
-if [[ "$mode" != debug || "$cpu" != x64 ]]; then
+if [[ "$mode" != debug || "$cpu" != x64 || "$libc" == musl ]]; then
   variant="$flutter_commit-$mode-$cpu"
   if [[ -n "$arm_float_abi" ]]; then
     variant+="-$arm_float_abi"

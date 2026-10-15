@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- riscv32 stays out of the default build and CI matrix; request it by name.
 - CI runs on the Forgejo `docker` runner: one container job calling
   `scripts/ci.sh` stages, a persistent volume for the workspace, and releases
   through the Forgejo API.
@@ -59,3 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - x86_64 musl builds: host tools (`flatc`, `impellerc`, `gen_snapshot`) build
   in a separate glibc host toolchain instead of being linked against musl.
+- riscv32 engines link `libatomic.so.1` (RV32 has no 64-bit atomic
+  instructions).
+- The x86_64 musl bundle uses the full `<commit>-debug-x64-musl` name instead of
+  `<commit>-musl`.
