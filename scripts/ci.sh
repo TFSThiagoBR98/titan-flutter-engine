@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${GITHUB_ACTIONS:-}" == true ]]; then
+  if [[ -z "${TITAN_JOBS+x}" ]]; then
+    TITAN_JOBS=$(nproc)
+  fi
+  export TITAN_CPU_SCOPE=0
+fi
+
 source "$(dirname "$0")/lib/paths.sh"
 
 die() {
@@ -12,11 +19,40 @@ repository_root=$(cd "$(dirname "$0")/.." && pwd -P)
 scripts_root="$repository_root/scripts"
 
 run_deps() {
-  [[ "$(id -u)" -eq 0 ]] || die "ci.sh deps must run as root in a container"
-  apt-get update
-  apt-get install -y --no-install-recommends \
+  local -a root_prefix=()
+  if [[ "$(id -u)" -ne 0 ]]; then
+    [[ "${GITHUB_ACTIONS:-}" == true ]] || die "ci.sh deps must run as root in a container"
+    command -v sudo >/dev/null 2>&1 || die "ci.sh deps requires sudo on a GitHub Actions runner"
+    root_prefix=(sudo -n)
+  fi
+  "${root_prefix[@]}" apt-get update
+  "${root_prefix[@]}" apt-get install -y --no-install-recommends \
     git python3 curl ca-certificates xz-utils unzip zip binutils ccache file rsync bc cpio patch perl wget make \
     gcc g++ bzip2 qemu-user-static pkg-config libglib2.0-dev
+}
+
+run_free_disk() {
+  [[ "${GITHUB_ACTIONS:-}" == true ]] || die "ci.sh free-disk requires GITHUB_ACTIONS=true"
+
+  df -h / /mnt
+  local -a root_prefix=()
+  if [[ "$(id -u)" -ne 0 ]]; then
+    command -v sudo >/dev/null 2>&1 || die "ci.sh free-disk requires sudo on a GitHub Actions runner"
+    root_prefix=(sudo -n)
+  fi
+  for path in \
+    /usr/share/dotnet \
+    /usr/local/lib/android \
+    /opt/ghc \
+    /usr/local/.ghcup \
+    /opt/hostedtoolcache/CodeQL \
+    /usr/share/swift; do
+    "${root_prefix[@]}" rm -rf "$path"
+  done
+  if command -v docker >/dev/null 2>&1; then
+    docker image prune -af
+  fi
+  df -h / /mnt
 }
 
 run_sysroots() {
@@ -35,6 +71,11 @@ run_sysroots() {
   done
 }
 
+run_sysroot() {
+  (($# == 1)) || die "sysroot requires a defconfig"
+  "$scripts_root/make-buildroot-sysroot.sh" --config "$1" --publish
+}
+
 run_build() {
   local variants_text=${TITAN_VARIANTS:-x64-debug x64-musl-debug arm64-debug arm64-musl-debug arm-hard-debug arm-hard-musl-debug arm-softfp-debug arm-softfp-musl-debug riscv64-glibc-debug riscv64-musl-debug}
   local parallel=${TITAN_PARALLEL:-3}
@@ -45,7 +86,12 @@ run_build() {
 run_probe() {
   local assets="$TITAN_WORK_DIR/probe-app/flutter_assets"
   local variants_text=${TITAN_VARIANTS:-x64-debug x64-musl-debug arm64-debug arm64-musl-debug arm-hard-debug arm-hard-musl-debug arm-softfp-debug arm-softfp-musl-debug riscv64-glibc-debug riscv64-musl-debug}
-  local output hash expected_hash=
+  local expected_hash_file="$repository_root/tests/qemu/expected-frame-hash"
+  [[ -f "$expected_hash_file" ]] || die "expected probe hash is missing: $expected_hash_file"
+  local expected_hash
+  read -r expected_hash < "$expected_hash_file"
+  [[ -n "$expected_hash" ]] || die "expected probe hash is empty: $expected_hash_file"
+  local output hash
   local -a variants
 
   "$scripts_root/build-probe-app.sh"
@@ -55,24 +101,49 @@ run_probe() {
     printf '%s\n' "$output"
     hash=$(sed -n 's/.*hash=\([0-9a-f][0-9a-f]*\).*/\1/p' <<<"$output" | tail -n 1)
     [[ -n "$hash" ]] || die "probe did not report a frame hash: $variant"
-    if [[ -z "$expected_hash" ]]; then
-      expected_hash=$hash
-    elif [[ "$hash" != "$expected_hash" ]]; then
+    if [[ "$hash" != "$expected_hash" ]]; then
       die "probe hash mismatch for $variant: expected $expected_hash, got $hash"
     fi
   done
   printf 'probe hash: %s\n' "$expected_hash"
 }
 
+archive_name_for_variant() {
+  (($# == 2)) || return 2
+  local flutter_commit=$1 variant=$2
+  local suffix
+  case "$variant" in
+    x64-debug) suffix= ;;
+    x64-musl-debug) suffix=-debug-x64-musl ;;
+    arm64-debug) suffix=-debug-arm64 ;;
+    arm64-musl-debug) suffix=-debug-arm64-musl ;;
+    arm-hard-debug) suffix=-debug-arm-hard ;;
+    arm-hard-musl-debug) suffix=-debug-arm-hard-musl ;;
+    arm-softfp-debug) suffix=-debug-arm-softfp ;;
+    arm-softfp-musl-debug) suffix=-debug-arm-softfp-musl ;;
+    riscv64-glibc-debug) suffix=-debug-riscv64 ;;
+    riscv64-musl-debug) suffix=-debug-riscv64-musl ;;
+    *) return 1 ;;
+  esac
+  printf 'flutter-engine-%s%s.zip\n' "$flutter_commit" "$suffix"
+}
+
 run_package() {
   local dist="$TITAN_BUNDLE_DIR/dist"
-  local -a archives archive_names
+  local flutter_commit
+  flutter_commit=$(sed -n 's/^flutter_commit=//p' "$repository_root/flutter.lock")
+  [[ -n "$flutter_commit" ]] || die "flutter.lock is missing flutter_commit"
+  local variants_text=${TITAN_VARIANTS:-x64-debug x64-musl-debug arm64-debug arm64-musl-debug arm-hard-debug arm-hard-musl-debug arm-softfp-debug arm-softfp-musl-debug riscv64-glibc-debug riscv64-musl-debug}
+  local variant archive
+  local -a variants archives archive_names
   mkdir -p "$dist"
-  while IFS= read -r -d '' archive; do
-    [[ "$archive" == "$dist/"* ]] && continue
-    cp -f "$archive" "$dist/"
-  done < <(find "$TITAN_BUNDLE_DIR" -mindepth 2 -maxdepth 2 -type f -name '*.zip' -print0)
-  mapfile -t archives < <(find "$dist" -maxdepth 1 -type f -name '*.zip' -print | LC_ALL=C sort)
+  read -r -a variants <<<"$variants_text"
+  for variant in "${variants[@]}"; do
+    archive=$(archive_name_for_variant "$flutter_commit" "$variant") || \
+      die "cannot package unknown variant: $variant"
+    [[ -f "$dist/$archive" ]] || die "missing engine bundle for $variant: $dist/$archive"
+    archives+=("$dist/$archive")
+  done
   ((${#archives[@]} > 0)) || die "no engine bundles found in $dist"
   archive_names=("${archives[@]##*/}")
   (cd "$dist" && sha256sum "${archive_names[@]}" > SHA256SUMS)
@@ -137,7 +208,15 @@ case "$stage" in
     (($# == 1)) || die "all does not accept additional arguments"
     run_all
     ;;
+  free-disk)
+    (($# == 1)) || die "free-disk does not accept additional arguments"
+    run_free_disk
+    ;;
+  sysroot)
+    (($# == 2)) || die "sysroot requires exactly one defconfig"
+    run_sysroot "$2"
+    ;;
   *)
-    die "usage: scripts/ci.sh deps|sysroots|build|probe|package|release|all"
+    die "usage: scripts/ci.sh deps|free-disk|sysroot|sysroots|build|probe|package|release|all"
     ;;
 esac
