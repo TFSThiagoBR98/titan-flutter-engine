@@ -30,7 +30,7 @@ run_sysroots() {
 }
 
 run_build() {
-  local variants_text=${TITAN_VARIANTS:-x64-debug arm-hard-debug arm-softfp-debug arm-softfp-musl-debug}
+  local variants_text=${TITAN_VARIANTS:-x64-debug x64-musl-debug arm64-debug arm64-musl-debug arm-hard-debug arm-hard-musl-debug arm-softfp-debug arm-softfp-musl-debug riscv32-glibc-debug riscv32-musl-debug riscv64-glibc-debug riscv64-musl-debug}
   local parallel=${TITAN_PARALLEL:-3}
   read -r -a variants <<<"$variants_text"
   "$scripts_root/build-matrix.sh" --parallel "$parallel" --zip "${variants[@]}"
@@ -38,31 +38,21 @@ run_build() {
 
 run_probe() {
   local assets="$TITAN_WORK_DIR/probe-app/flutter_assets"
+  local variants_text=${TITAN_VARIANTS:-x64-debug x64-musl-debug arm64-debug arm64-musl-debug arm-hard-debug arm-hard-musl-debug arm-softfp-debug arm-softfp-musl-debug riscv32-glibc-debug riscv32-musl-debug riscv64-glibc-debug riscv64-musl-debug}
   local output hash expected_hash=
-  local -a probes=(
-    "x64"
-    "hf cortex-a8"
-    "softfp cortex-a8"
-    "softfp-musl cortex-a8"
-  )
-  local -a probe_command
+  local -a variants
 
   "$scripts_root/build-probe-app.sh"
-  for probe in "${probes[@]}"; do
-    read -r -a probe_args <<<"$probe"
-    probe_command=("$scripts_root/qemu-probe.sh" --abi "${probe_args[0]}")
-    if ((${#probe_args[@]} > 1)); then
-      probe_command+=(--cpu "${probe_args[1]}")
-    fi
-    probe_command+=(--assets "$assets")
-    output=$("${probe_command[@]}")
+  read -r -a variants <<<"$variants_text"
+  for variant in "${variants[@]}"; do
+    output=$("$scripts_root/qemu-probe.sh" --target "$variant" --assets "$assets")
     printf '%s\n' "$output"
     hash=$(sed -n 's/.*hash=\([0-9a-f][0-9a-f]*\).*/\1/p' <<<"$output" | tail -n 1)
-    [[ -n "$hash" ]] || die "probe did not report a frame hash: ${probe_args[0]}"
+    [[ -n "$hash" ]] || die "probe did not report a frame hash: $variant"
     if [[ -z "$expected_hash" ]]; then
       expected_hash=$hash
     elif [[ "$hash" != "$expected_hash" ]]; then
-      die "probe hash mismatch for ${probe_args[0]}: expected $expected_hash, got $hash"
+      die "probe hash mismatch for $variant: expected $expected_hash, got $hash"
     fi
   done
   printf 'probe hash: %s\n' "$expected_hash"
