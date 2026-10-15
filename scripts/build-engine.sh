@@ -26,18 +26,22 @@ die() {
   exit 1
 }
 
+# The ELF header float-ABI flag is what the glibc loader checks. The
+# .ARM.attributes section is not reliable: lld keeps the first input's, which
+# comes from the sysroot's crti.o.
 verify_arm_abi() {
   local engine_path=$1
   local expected_abi=$2
-  local attributes
+  local header_flags
   command -v readelf >/dev/null || die "readelf is required for ARM ABI verification"
-  attributes=$(readelf -A "$engine_path")
-  printf '%s\n' "$attributes"
+  header_flags=$(LC_ALL=C readelf -h "$engine_path" | grep 'Flags:')
+  printf '%s\n' "$header_flags"
   if [[ "$expected_abi" == hard ]]; then
-    grep -Fq 'Tag_ABI_VFP_args: VFP registers' <<<"$attributes" || \
+    grep -Fq 'hard-float ABI' <<<"$header_flags" || \
       die "ARM hard-float ABI verification failed for $engine_path"
-  elif grep -Fq 'Tag_ABI_VFP_args' <<<"$attributes"; then
-    die "ARM soft-float ABI verification failed for $engine_path"
+  else
+    grep -Fq 'soft-float ABI' <<<"$header_flags" || \
+      die "ARM soft-float ABI verification failed for $engine_path"
   fi
 }
 

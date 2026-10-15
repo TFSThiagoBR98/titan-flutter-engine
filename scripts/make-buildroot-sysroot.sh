@@ -71,6 +71,10 @@ case "$config_name" in
     sysroot_name=titan_armv7a_softfp
     clang_gcc_triple=arm-linux-gnueabi
     ;;
+  titan_armv7a_softfp_musl_defconfig)
+    sysroot_name=titan_armv7a_softfp_musl
+    clang_gcc_triple=arm-linux-musleabi
+    ;;
   *)
     die "unsupported Buildroot config: $config_name"
     ;;
