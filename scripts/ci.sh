@@ -22,10 +22,16 @@ run_deps() {
 run_sysroots() {
   local config
   for config in \
+    titan_x64_musl_defconfig \
+    titan_arm64_glibc_defconfig \
+    titan_arm64_musl_defconfig \
     titan_armv7a_hf_glibc_defconfig \
+    titan_armv7a_hf_musl_defconfig \
     titan_armv7a_softfp_glibc_defconfig \
-    titan_armv7a_softfp_musl_defconfig; do
-    "$scripts_root/make-buildroot-sysroot.sh" --config "$config"
+    titan_armv7a_softfp_musl_defconfig \
+    titan_riscv64_glibc_defconfig \
+    titan_riscv64_musl_defconfig; do
+    "$scripts_root/make-buildroot-sysroot.sh" --config "$config" --publish
   done
 }
 
@@ -78,33 +84,15 @@ run_release() {
     printf 'release skipped: not a v* tag\n'
     return 0
   }
-  [[ -n "${FORGEJO_TOKEN:-}" ]] || die "FORGEJO_TOKEN is required for a tag release"
-  [[ -n "${GITHUB_SERVER_URL:-}" ]] || die "GITHUB_SERVER_URL is required for a tag release"
   [[ -n "${GITHUB_REPOSITORY:-}" ]] || die "GITHUB_REPOSITORY is required for a tag release"
 
   local tag=${GITHUB_REF#refs/tags/}
-  local api_url="$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/releases"
-  local payload response release_id asset asset_name asset_url
-  payload=$(GITHUB_TAG="$tag" python3 -c \
-    'import json, os; print(json.dumps({"tag_name": os.environ["GITHUB_TAG"], "name": os.environ["GITHUB_TAG"]}))')
-  response=$(curl --fail-with-body --silent --show-error \
-    -X POST \
-    -H "Authorization: token $FORGEJO_TOKEN" \
-    -H 'Content-Type: application/json' \
-    --data "$payload" \
-    "$api_url")
-  release_id=$(python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])' <<<"$response")
-  [[ -n "$release_id" ]] || die "Forgejo release response did not contain an id"
-
-  while IFS= read -r -d '' asset; do
-    asset_name=$(basename "$asset")
-    asset_url="$api_url/$release_id/assets?name=$asset_name"
-    curl --fail-with-body --silent --show-error \
-      -X POST \
-      -H "Authorization: token $FORGEJO_TOKEN" \
-      -F "attachment=@$asset" \
-      "$asset_url" >/dev/null
-  done < <(find "$TITAN_BUNDLE_DIR/dist" -maxdepth 1 -type f -print0 | LC_ALL=C sort -z)
+  local dist="$TITAN_BUNDLE_DIR/dist"
+  local -a assets
+  mapfile -t assets < <(find "$dist" -maxdepth 1 -type f \( -name '*.zip' -o -name SHA256SUMS \) -print | LC_ALL=C sort)
+  ((${#assets[@]} > 0)) || die "no release assets found in $dist"
+  gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+    --title "$tag" --notes "Titan Flutter Engine $tag" "${assets[@]}"
   printf 'release published: %s\n' "$tag"
 }
 

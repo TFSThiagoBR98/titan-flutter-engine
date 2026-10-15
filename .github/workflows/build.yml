@@ -14,15 +14,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build Flutter Engine
-    runs-on: docker
+  sysroots:
+    name: Buildroot sysroots
+    runs-on: [self-hosted, linux, x64]
     container:
       image: node:24-trixie
       options: "-v /srv/titan-flutter-engine:/cache"
     env:
       TITAN_WORK_DIR: /cache/work
       TITAN_BUNDLE_DIR: /cache/bundles
+      TITAN_CPU_SCOPE: 0
+      TITAN_JOBS: ${{ vars.TITAN_JOBS || '8' }}
+      GH_TOKEN: ${{ github.token }}
     timeout-minutes: 600
     permissions:
       contents: write
@@ -35,6 +38,22 @@ jobs:
       - name: Build Buildroot sysroots
         run: scripts/ci.sh sysroots
 
+  build:
+    name: Build Flutter Engine
+    needs: sysroots
+    runs-on: [self-hosted, linux, x64]
+    container:
+      image: node:24-trixie
+      options: "-v /srv/titan-flutter-engine:/cache"
+    env:
+      TITAN_WORK_DIR: /cache/work
+      TITAN_BUNDLE_DIR: /cache/bundles
+      TITAN_CPU_SCOPE: 0
+      TITAN_JOBS: ${{ vars.TITAN_JOBS || '8' }}
+    timeout-minutes: 600
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Build engine matrix
         run: scripts/ci.sh build
 
@@ -45,15 +64,32 @@ jobs:
         run: scripts/ci.sh package
 
       - name: Upload engine bundles
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: flutter-engine-dist
           path: /cache/bundles/dist/
           if-no-files-found: error
 
-      - name: Publish Forgejo release
-        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+  release:
+    name: Publish GitHub release
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    needs: build
+    runs-on: [self-hosted, linux, x64]
+    container:
+      image: node:24-trixie
+      options: "-v /srv/titan-flutter-engine:/cache"
+    env:
+      TITAN_BUNDLE_DIR: /cache/bundles
+      GH_TOKEN: ${{ github.token }}
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download engine bundles
+        uses: actions/download-artifact@v4
+        with:
+          name: flutter-engine-dist
+          path: /cache/bundles/dist
+      - name: Publish GitHub release
         run: scripts/ci.sh release
-        env:
-          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}

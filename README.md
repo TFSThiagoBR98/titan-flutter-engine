@@ -134,20 +134,19 @@ Buildroot é usado somente para construir a toolchain e o staging sysroot.
 
 ## CI e release
 
-O repositório principal fica no Forgejo
-(`forgejo.apps.dev.br/TFS_Tecnologia/titan-flutter-engine`), espelhado no
-GitHub. `.github/workflows/build.yml` roda um único job num container
-(`node:24-trixie`) do runner Forgejo com o label `docker`, e só chama
-`scripts/ci.sh`, um estágio por passo:
+O repositório principal do engine fica no GitHub. `.github/workflows/build.yml`
+usa jobs em containers `node:24-trixie` num runner GitHub Actions self-hosted
+com os labels `self-hosted`, `linux` e `x64`. O job `sysroots` prepara os
+sysroots e o job `build`, dependente dele, compila e testa o engine:
 
 | Estágio | O que faz |
 |---|---|
 | `deps` | instala as dependências do build no container (`apt-get`) |
-| `sysroots` | gera os sysroots Buildroot das variantes (o Buildroot é clonado na versão de `buildroot/buildroot.lock`) |
+| `sysroots` | recupera ou gera e publica os sysroots Buildroot das variantes (o Buildroot é clonado na versão de `buildroot/buildroot.lock`) |
 | `build` | `build-matrix.sh` com `--zip` (`TITAN_VARIANTS`, `TITAN_PARALLEL`) |
 | `probe` | compila o app de `tests/qemu/app`, roda `TITAN_VARIANTS` no x64 nativo/QEMU e exige o **mesmo hash** de quadro em todos |
 | `package` | junta os zips em `dist/` com `SHA256SUMS` |
-| `release` | só em tags `v*`: cria a release pela API do Forgejo e envia os arquivos |
+| `release` | só em tags `v*`: cria a release do GitHub com os zips e `SHA256SUMS` via `gh` |
 
 Os mesmos estágios rodam no host. Os caminhos vêm de `scripts/lib/paths.sh`:
 `TITAN_WORK_DIR` (checkout do Flutter, depot_tools, ccache, Buildroot,
@@ -156,28 +155,41 @@ do TitanDM valem `.build_flutter/` e `third_party/flutter-engine/` do
 superprojeto; num clone isolado, `.build_flutter/` e `artifacts/` do próprio
 repositório. No CI, as duas apontam para o volume persistente.
 
-## Runner Forgejo
+## Runner GitHub Actions
 
-O workflow usa um runner Forgejo com o label `docker`. No host do runner, crie
-o volume persistente:
+Registre um runner GitHub Actions self-hosted com os labels padrão
+`self-hosted`, `linux` e `x64`. O host precisa ter Docker configurado e o
+volume persistente:
 
 ```sh
 sudo mkdir -p /srv/titan-flutter-engine
 ```
 
-No `config.yml` do `forgejo-runner`, permita esse volume e mantenha uma tarefa
-por vez:
+Reserve pelo menos 120 GB em `/srv/titan-flutter-engine`. Configure a variável
+de repositório `vars.TITAN_JOBS` para o orçamento de CPU do runner; sem ela o
+workflow usa 8. O runner deve executar um job por vez para evitar disputa pelo
+volume e pelos núcleos.
 
-```yaml
-runner:
-  capacity: 1
-container:
-  valid_volumes: ['/srv/titan-flutter-engine']
+## Cache dos sysroots
+
+Cada sysroot recebe uma chave SHA-256 calculada do defconfig, da árvore
+`buildroot/`, do lock do Buildroot e de
+`scripts/make-buildroot-sysroot.sh`. O stamp
+`.titan-sysroot-key` só é gravado depois do runtime GCC, portanto identifica um
+sysroot pronto. O tarball determinístico
+`sysroot-<nome>-<chave16>.tar.zst` fica em
+`$TITAN_WORK_DIR/sysroot-cache/` e também na release prerelease GitHub
+`sysroots-cache`.
+
+`make-buildroot-sysroot.sh` tenta primeiro o stamp, depois `fetch` local/remoto
+e só então compila; no CI, `ci.sh sysroots` usa `--publish`. Para forçar uma
+reconstrução, use:
+
+```sh
+scripts/make-buildroot-sysroot.sh --config titan_arm64_glibc_defconfig --force
+scripts/sysroot-cache.sh fetch titan_arm64_glibc_defconfig
+scripts/sysroot-cache.sh publish titan_arm64_glibc_defconfig
 ```
-
-Reserve pelo menos 120 GB no volume. A primeira execução faz o `gclient sync`
-e compila os sysroots, o que pode levar horas; as seguintes reaproveitam o
-volume persistente.
 
 ## Validação no QEMU (modo usuário)
 
