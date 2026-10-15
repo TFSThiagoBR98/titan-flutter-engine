@@ -61,8 +61,8 @@ sysroot_cache_create() {
     printf 'error: sysroot directory is missing: %s\n' "$sysroot_directory" >&2
     return 1
   }
-  sysroot_has_stamp "$sysroot_directory" || {
-    printf 'error: sysroot stamp is missing: %s\n' "$sysroot_directory" >&2
+  sysroot_stamp_matches "$sysroot_directory" "$(sysroot_key "$config_name")" || {
+    printf 'error: sysroot stamp is missing or outdated: %s\n' "$sysroot_directory" >&2
     return 1
   }
   command -v zstd >/dev/null 2>&1 || {
@@ -110,7 +110,7 @@ sysroot_cache_fetch() {
   fi
 
   if ! sysroot_cache_extract "$archive" "$sysroot_directory" || \
-    ! sysroot_has_stamp "$sysroot_directory"; then
+    ! sysroot_stamp_matches "$sysroot_directory" "$(sysroot_key "$config_name")"; then
     printf 'no sysroot cache: invalid archive %s\n' "$archive" >&2
     return 3
   fi

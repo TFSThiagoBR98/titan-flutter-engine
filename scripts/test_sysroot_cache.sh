@@ -151,6 +151,25 @@ PATH="$fake_bin:$PATH" \
   exit 1
 }
 
+corrupt_directory="$temporary_directory/corrupt-sysroot"
+mkdir -p "$corrupt_directory"
+printf '%s\n' wrong-key > "$corrupt_directory/.titan-sysroot-key"
+printf '%s\n' corrupt > "$corrupt_directory/fixture.txt"
+tar --sort=name --owner=0 --group=0 --mtime=@0 -I zstd \
+  -cf "$work_root/sysroot-cache/$archive" -C "$corrupt_directory" .
+rm -rf "$sysroot"
+corrupt_status=0
+if run_cache fetch "$defconfig" > "$temporary_directory/corrupt.log" 2>&1; then
+  printf 'cache fetch accepted a mismatched stamp\n' >&2
+  exit 1
+else
+  corrupt_status=$?
+fi
+[[ "$corrupt_status" -eq 3 ]] || {
+  printf 'mismatched cache returned %s instead of 3\n' "$corrupt_status" >&2
+  exit 1
+}
+
 missing_status=0
 if run_cache fetch "$other_defconfig" > "$temporary_directory/missing.log" 2>&1; then
   printf 'missing cache unexpectedly succeeded\n' >&2
