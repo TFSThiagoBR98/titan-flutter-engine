@@ -124,6 +124,6 @@ Saída esperada: `frame 320x240 hash=…` e `ok`. Resultados e o caso armv6j em 
 
 ## Licença
 
-Os scripts, a árvore do Buildroot, os testes e os patches deste repositório estão sob a licença MIT
+Os scripts, a árvore do Buildroot, os testes e os patches deste repositório estão sob a licença Apache 2.0
 ([LICENSE](LICENSE)). O código do Flutter que os patches modificam continua sob a licença dele (BSD-3-Clause, no
 repositório do Flutter), assim como os componentes de terceiros que o build baixa.
