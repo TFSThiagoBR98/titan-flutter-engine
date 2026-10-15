@@ -116,25 +116,68 @@ Buildroot é usado somente para construir a toolchain e o staging sysroot.
 
 ## CI e release
 
-`.github/workflows/build.yml` roda a matriz x64 debug, ARM hard-float,
-ARM soft-float glibc e ARM soft-float musl no runner self-hosted
-`[self-hosted, linux, x64]`. Para cada alvo ARM, o workflow gera ou restaura o
-sysroot Buildroot, compila com `--zip` e executa o probe em QEMU user-mode.
-Pushes de tags `v*` juntam os zips e um `SHA256SUMS` em uma release do GitHub.
+O repositório principal fica no Forgejo
+(`forgejo.apps.dev.br/TFS_Tecnologia/titan-flutter-engine`), espelhado no
+GitHub. `.github/workflows/build.yml` roda um único job num container
+(`node:24-trixie`) do runner Forgejo com o label `docker`, e só chama
+`scripts/ci.sh`, um estágio por passo:
+
+| Estágio | O que faz |
+|---|---|
+| `deps` | instala as dependências do build no container (`apt-get`) |
+| `sysroots` | gera os sysroots Buildroot das variantes (o Buildroot é clonado na versão de `buildroot/buildroot.lock`) |
+| `build` | `build-matrix.sh` com `--zip` (`TITAN_VARIANTS`, `TITAN_PARALLEL`) |
+| `probe` | compila o app de `tests/qemu/app`, roda o probe nativo no x64 e no QEMU nos alvos ARM e exige o **mesmo hash** de quadro em todos |
+| `package` | junta os zips em `dist/` com `SHA256SUMS` |
+| `release` | só em tags `v*`: cria a release pela API do Forgejo e envia os arquivos |
+
+Os mesmos estágios rodam no host. Os caminhos vêm de `scripts/lib/paths.sh`:
+`TITAN_WORK_DIR` (checkout do Flutter, depot_tools, ccache, Buildroot,
+sysroots) e `TITAN_BUNDLE_DIR` (bundles e `dist/`). Sem as variáveis, dentro
+do TitanDM valem `.build_flutter/` e `third_party/flutter-engine/` do
+superprojeto; num clone isolado, `.build_flutter/` e `artifacts/` do próprio
+repositório. No CI, as duas apontam para o volume persistente.
+
+## Runner Forgejo
+
+O workflow usa um runner Forgejo com o label `docker`. No host do runner, crie
+o volume persistente:
+
+```sh
+sudo mkdir -p /srv/titan-flutter-engine
+```
+
+No `config.yml` do `forgejo-runner`, permita esse volume e mantenha uma tarefa
+por vez:
+
+```yaml
+runner:
+  capacity: 1
+container:
+  valid_volumes: ['/srv/titan-flutter-engine']
+```
+
+Reserve pelo menos 120 GB no volume. A primeira execução faz o `gclient sync`
+e compila os sysroots, o que pode levar horas; as seguintes reaproveitam o
+volume persistente.
 
 ## Validação no QEMU (modo usuário)
 
-`scripts/qemu-probe.sh` compila `tests/qemu/probe_engine.c` para a ABI pedida e o roda com
-`qemu-arm-static -cpu <cpu> -L <sysroot>`: o probe carrega o `libflutter_engine.so`, inicia o engine com o renderer
-por software e espera o primeiro quadro do app spike do TitanDM (`apps/titan_spike_counter`).
+`scripts/qemu-probe.sh` compila `tests/qemu/probe_engine.c` para a ABI pedida, carrega o `libflutter_engine.so`,
+inicia o engine com o renderer por software e espera o primeiro quadro de um app. No x64 o probe roda nativo; nos
+alvos ARM, com `qemu-arm-static` (ou `qemu-arm`) `-cpu <cpu> -L <sysroot>`. O app padrão é o de `tests/qemu/app`
+(gerado por `scripts/build-probe-app.sh`); dentro do TitanDM, o app spike do superprojeto; `--assets <dir>` escolhe
+outro.
 
 ```sh
+scripts/qemu-probe.sh --abi x64
 scripts/qemu-probe.sh --abi hf --cpu cortex-a8
 scripts/qemu-probe.sh --abi softfp --cpu cortex-a8
 scripts/qemu-probe.sh --abi softfp-musl --cpu cortex-a8
 ```
 
-Saída esperada: `frame 320x240 hash=…` e `ok`. Resultados e o caso armv6j em `docs/cross-compilacao.md`.
+Saída esperada: `frame 320x240 hash=…` e `ok`, com o **mesmo hash** em todos os alvos para o mesmo app (o
+`ci.sh probe` confere isso). Resultados e o caso armv6j em `docs/cross-compilacao.md`.
 
 ## Licença
 

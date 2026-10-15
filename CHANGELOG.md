@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- CI runs on the Forgejo `docker` runner: one container job calling
+  `scripts/ci.sh` stages, a persistent volume for the workspace, and releases
+  through the Forgejo API.
+- Scripts resolve the work and bundle directories in `scripts/lib/paths.sh`
+  (`TITAN_WORK_DIR`, `TITAN_BUNDLE_DIR`), so the repository builds on its own.
+- Buildroot is pinned in `buildroot/buildroot.lock` and cloned on demand.
+- The QEMU probe uses a self-contained app and requires the same frame hash
+  on every target, including a native x64 run.
+
 - Engine patches are organized by concern (`linux-target-matrix`,
   `linux-compiler-runtime`, `linux-musl`) and cover every planned target; the
   whole series always applies, with each patch limited to its targets in GN.

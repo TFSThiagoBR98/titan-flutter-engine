@@ -90,11 +90,13 @@ apontando para o caminho do bundle. O musl roda em kernels antigos.
 
 ## Validação no QEMU (modo usuário)
 
-`scripts/qemu-probe.sh --abi hf|softfp|softfp-musl --cpu <cpu>` compila `tests/qemu/probe_engine.c` com o Clang
-embutido e o roda com `qemu-arm-static -cpu <cpu> -L <sysroot>`. O probe carrega o `libflutter_engine.so`, inicia o
+`scripts/qemu-probe.sh --abi x64|hf|softfp|softfp-musl [--cpu <cpu>] [--assets <dir>]` compila
+`tests/qemu/probe_engine.c` com o Clang embutido e o roda nativo (x64) ou com `qemu-arm-static -cpu <cpu> -L <sysroot>`. O probe carrega o `libflutter_engine.so`, inicia o
 engine com o renderer por software e um *platform task runner* próprio (sem ele, as tarefas de plataforma nunca rodam
-e o primeiro quadro não sai), manda métricas de 320×240 e espera o primeiro quadro do app spike do TitanDM
-(`PROBE_TIMEOUT_SECONDS`, padrão 120).
+e o primeiro quadro não sai), manda métricas de 320×240 e espera o primeiro quadro do app (`PROBE_TIMEOUT_SECONDS`, padrão 120). O app padrão é o de
+`tests/qemu/app`; dentro do TitanDM, o app spike. O `scripts/ci.sh probe` roda todos os alvos com o mesmo app e exige
+o mesmo hash de quadro (com o app de `tests/qemu/app`, `8dca0036f583054a` em x64, hf, softfp e softfp musl, em
+2026-10-15).
 
 Resultado (2026-10-14, engine debug/JIT, app `titan_spike_counter`):
 
