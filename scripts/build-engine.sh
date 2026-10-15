@@ -375,23 +375,27 @@ if [[ ! -d "$flutter_dir/.git" && ! -f "$flutter_dir/.git" ]]; then
 fi
 
 if ((bootstrap)); then
-  if [[ ! -f "$work_root/.gclient" ]]; then
-    cat > "$work_root/.gclient" <<'EOF'
+  # The Flutter monorepo is its own gclient solution ("name": "."), with the
+  # .gclient file at the root of the checkout, as in Flutter's
+  # engine/scripts/standard.gclient. Options go in custom_vars.
+  if [[ ! -f "$flutter_dir/.gclient" ]]; then
+    cat > "$flutter_dir/.gclient" <<'EOF'
 solutions = [
   {
-    "managed": False,
-    "name": "flutter",
-    "url": "https://github.com/flutter/flutter.git",
     "custom_deps": {},
-    "custom_vars": {},
+    "deps_file": "DEPS",
+    "managed": False,
+    "name": ".",
+    "safesync_url": "",
+    "url": "https://github.com/flutter/flutter.git",
+    "custom_vars": {
+      "download_android_deps": False,
+      "download_fuchsia_deps": False,
+      "download_esbuild": False,
+      "setup_githooks": False,
+    },
   },
 ]
-target_os = []
-target_os_only = True
-download_android_deps = False
-download_fuchsia_deps = False
-download_esbuild = False
-setup_githooks = False
 EOF
   fi
   if ((flutter_checkout_new)); then
@@ -401,7 +405,7 @@ EOF
     git -C "$flutter_dir" fetch origin "$flutter_commit"
     git -C "$flutter_dir" checkout --detach "$flutter_commit"
   fi
-  (cd "$work_root" && gclient sync -D --no-history)
+  (cd "$flutter_dir" && gclient sync -D --no-history)
 fi
 
 actual_commit=$(git -C "$flutter_dir" rev-parse HEAD)

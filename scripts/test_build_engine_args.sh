@@ -179,7 +179,9 @@ git -C "$bootstrap_remote" commit --quiet -m 'test: second remote Flutter commit
 bootstrap_commit=$(git -C "$bootstrap_remote" rev-parse HEAD)
 printf 'flutter_commit=%s\n' "$bootstrap_commit" > "$bootstrap_repository/flutter.lock"
 
-printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$bootstrap_work/depot_tools/gclient"
+# Record where gclient runs; the .gclient must sit in that directory.
+gclient_log="$temporary_directory/gclient.log"
+printf '%s\n' '#!/usr/bin/env bash' "pwd >> '$gclient_log'" 'exit 0' > "$bootstrap_work/depot_tools/gclient"
 chmod +x "$bootstrap_work/depot_tools/gclient"
 cat > "$bootstrap_bin/git" <<'EOF'
 #!/usr/bin/env bash
@@ -232,6 +234,18 @@ assert_log_not_contains() {
 }
 
 run_bootstrap_engine --gn-only
+[[ "$(<"$gclient_log")" == "$bootstrap_flutter" ]] || {
+  printf 'gclient did not run at the root of the Flutter checkout: %s\n' "$(<"$gclient_log")" >&2
+  exit 1
+}
+grep -Fq '"name": ".",' "$bootstrap_flutter/.gclient" || {
+  printf 'the .gclient does not declare the Flutter checkout as solution "."\n' >&2
+  exit 1
+}
+if grep -q 'target_os_only' "$bootstrap_flutter/.gclient"; then
+  printf 'the .gclient sets target_os_only, which gclient rejects without target_os\n' >&2
+  exit 1
+fi
 [[ "$(git -C "$bootstrap_flutter" rev-parse --is-shallow-repository)" == true ]] || {
   printf 'new Flutter checkout is not shallow\n' >&2
   exit 1
