@@ -36,3 +36,24 @@ a versão que o código usa: com a glibc 2.42 do Buildroot, os dois bundles pede
 glibc servem às distros atuais; o Kindle e outros sistemas de nicho usam o
 sysroot musl (`titan_armv7a_softfp_musl_defconfig`), com a libc distribuída
 junto do engine.
+
+## Validação em QEMU (modo usuário)
+
+`scripts/qemu-probe.sh --abi hf|softfp --cpu <cpu>` compila `tests/qemu/probe_engine.c` com o Clang embutido e o
+roda com `qemu-arm-static -L <sysroot>`. O probe carrega o `libflutter_engine.so`, inicia o engine com o renderer por
+software e um *platform task runner* próprio (sem ele, as tarefas de plataforma nunca rodam e o primeiro quadro não
+sai), manda métricas de 320×240 e espera o primeiro quadro do app spike (`PROBE_TIMEOUT_SECONDS`, padrão 120).
+
+Resultado (2026-10-14, engine debug/JIT, app `titan_spike_counter`):
+
+| ABI | CPU emulada | Resultado | Tempo |
+|---|---|---|---|
+| hf | `cortex-a8` | quadro 320×240 + `ok` | 12,1 s |
+| hf | `cortex-a7` | quadro 320×240 + `ok` | 12,2 s |
+| softfp | `cortex-a8` | quadro 320×240 + `ok` | 12,3 s |
+| softfp | `arm1176` (armv6j) | `SIGILL` em 0,2 s | — |
+
+O hash do quadro é o mesmo nos três casos ARMv7 e no x64 nativo (`b49a7f31cecb7983`): o Dart e o engine rodam e
+desenham igual. No armv6j, a falha vem já da primeira instrução ARMv7 do userland (glibc do sysroot e o probe são
+ARMv7), antes do engine; como o Dart VM só suporta ARMv7+, o armv6j (base do Debian armel) fica **fora**. O Kindle
+(armv7-a soft-float) é suportado.
