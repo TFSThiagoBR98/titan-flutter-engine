@@ -133,10 +133,9 @@ compiler_flags=(
   -Werror
   -O2
   -pthread
+  --target="$target"
 )
-if [[ "$abi" == x64 ]]; then
-  compiler_flags+=(--target="$target")
-else
+if [[ "$abi" != x64 ]]; then
   compiler_flags+=(
     -march=armv7-a
     -mfpu=vfpv3-d16
