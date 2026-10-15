@@ -52,9 +52,23 @@ mkdir -p "$output/staging/usr/include" "$output/host/lib/gcc/x86_64-linux-musl/1
 EOF
 chmod +x "$fake_bin/make"
 
+# Never reach the real sysroots-cache release: downloads miss, uploads are logged.
+gh_log="$temporary_directory/gh.log"
+cat > "$fake_bin/gh" <<'GH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TITAN_GH_LOG"
+case "$1 $2" in
+  "release view") exit 0 ;;
+  "release upload") exit 0 ;;
+  *) exit 1 ;;
+esac
+GH
+chmod +x "$fake_bin/gh"
+
 run_sysroot() {
   TITAN_WORK_DIR="$work_root" \
   TITAN_MAKE_LOG="$make_log" \
+  TITAN_GH_LOG="$gh_log" \
   TITAN_CPU_SCOPE=0 \
   PATH="$fake_bin:$PATH" \
     "$repository_root/scripts/make-buildroot-sysroot.sh" \
@@ -81,6 +95,17 @@ run_sysroot > "$temporary_directory/second.log"
 [[ "$(wc -l < "$make_log")" -eq 2 ]] || {
   printf 'matching stamp did not skip Buildroot\n' >&2
   cat "$make_log" >&2
+  exit 1
+}
+
+run_sysroot --publish > "$temporary_directory/publish.log"
+[[ "$(wc -l < "$make_log")" -eq 2 ]] || {
+  printf -- '--publish on an up-to-date sysroot ran Buildroot\n' >&2
+  exit 1
+}
+grep -q '^release upload sysroots-cache ' "$gh_log" || {
+  printf -- '--publish on an up-to-date sysroot did not upload it\n' >&2
+  cat "$gh_log" >&2
   exit 1
 }
 

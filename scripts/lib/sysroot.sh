@@ -2,6 +2,11 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")/paths.sh"
 
+# Bump when make-buildroot-sysroot.sh changes what goes into a sysroot (for
+# example the GCC runtime copy). The key hashes this instead of the whole script,
+# so edits that do not change the content keep the published caches valid.
+sysroot_layout_version=1
+
 sysroot_key() {
   (($# == 1)) || {
     printf 'error: sysroot_key requires a defconfig\n' >&2
@@ -11,17 +16,12 @@ sysroot_key() {
   local config_name=$(basename "$1")
   local config_path="$TITAN_REPOSITORY_ROOT/buildroot/configs/$config_name"
   local lock_path="$TITAN_REPOSITORY_ROOT/buildroot/buildroot.lock"
-  local script_path="$TITAN_REPOSITORY_ROOT/scripts/make-buildroot-sysroot.sh"
   [[ -f "$config_path" ]] || {
     printf 'error: Buildroot config does not exist: %s\n' "$config_path" >&2
     return 1
   }
   [[ -f "$lock_path" ]] || {
     printf 'error: Buildroot lock does not exist: %s\n' "$lock_path" >&2
-    return 1
-  }
-  [[ -f "$script_path" ]] || {
-    printf 'error: sysroot build script does not exist: %s\n' "$script_path" >&2
     return 1
   }
 
@@ -34,8 +34,7 @@ sysroot_key() {
     done < <(find "$TITAN_REPOSITORY_ROOT/buildroot" -type f -print0 | LC_ALL=C sort -z)
     printf 'buildroot-lock\n'
     sha256sum < "$lock_path"
-    printf 'sysroot-script\n'
-    sha256sum < "$script_path"
+    printf 'sysroot-layout:%s\n' "$sysroot_layout_version"
   } | sha256sum | awk '{print $1}'
 }
 

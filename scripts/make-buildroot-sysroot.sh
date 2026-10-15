@@ -134,6 +134,12 @@ if ((force == 0)) && sysroot_stamp_matches "$sysroot_output" "$sysroot_key_value
   ln -sfn "$sysroot_output" "$engine_sysroot"
   printf 'Buildroot sysroot is up to date: %s\n' "$sysroot_output"
   printf 'Engine sysroot link: %s -> %s\n' "$engine_sysroot" "$(readlink "$engine_sysroot")"
+  # A sysroot built before the cache existed is up to date but not published yet;
+  # publishing is idempotent, so --publish still uploads it.
+  if ((publish)); then
+    sysroot_cache_create "$config_name" "$sysroot_output" >/dev/null
+    sysroot_cache_publish "$config_name" "$sysroot_output"
+  fi
   exit 0
 fi
 
