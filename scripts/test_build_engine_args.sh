@@ -148,4 +148,73 @@ assert_log_contains "$matrix_log" '--mode debug --gtk-shell --enable-fontconfig 
 assert_log_contains "$matrix_log" '--mode profile --gtk-shell --enable-fontconfig --out-name sdk_desktop_profile'
 assert_log_contains "$matrix_log" '--mode release --gtk-shell --enable-fontconfig --out-name sdk_desktop_release'
 
+assemble_script="$repository_root/scripts/assemble-sdk-artifacts.sh"
+artifact_fixture="$temporary_directory/artifact-fixture"
+artifact_output="$temporary_directory/artifact-output"
+mkdir -p "$artifact_fixture/flutter/engine/src"
+ln -s "$artifact_fixture/out" "$artifact_fixture/flutter/engine/src/out"
+mkdir -p "$artifact_fixture/out/sdk_host_debug/zip_archives/linux-x64" \
+  "$artifact_fixture/out/sdk_host_release/zip_archives" \
+  "$artifact_fixture/out/sdk_desktop_debug/zip_archives/linux-x64-debug" \
+  "$artifact_fixture/out/sdk_desktop_profile/zip_archives/linux-x64-profile" \
+  "$artifact_fixture/out/sdk_desktop_release/zip_archives/linux-x64-release"
+
+artifact_paths=(
+  linux-x64/artifacts.zip
+  flutter_patched_sdk.zip
+  dart-sdk-linux-x64.zip
+  linux-x64/font-subset.zip
+  linux-x64/linux-x64-embedder.zip
+  linux-x64/impeller_sdk.zip
+  flutter_patched_sdk_product.zip
+  linux-x64-debug/linux-x64-flutter-gtk.zip
+  linux-x64-profile/linux-x64-flutter-gtk.zip
+  linux-x64-release/linux-x64-flutter-gtk.zip
+)
+for artifact_path in "${artifact_paths[@]}"; do
+  case "$artifact_path" in
+    linux-x64-debug/*) source_root="$artifact_fixture/out/sdk_desktop_debug/zip_archives" ;;
+    linux-x64-profile/*) source_root="$artifact_fixture/out/sdk_desktop_profile/zip_archives" ;;
+    linux-x64-release/*) source_root="$artifact_fixture/out/sdk_desktop_release/zip_archives" ;;
+    flutter_patched_sdk_product.zip) source_root="$artifact_fixture/out/sdk_host_release/zip_archives" ;;
+    *) source_root="$artifact_fixture/out/sdk_host_debug/zip_archives" ;;
+  esac
+  mkdir -p "$source_root/$(dirname "$artifact_path")"
+  printf 'fixture:%s\n' "$artifact_path" > "$source_root/$artifact_path"
+done
+printf 'fixture:sky_engine.zip\n' > "$artifact_fixture/out/sdk_host_debug/zip_archives/sky_engine.zip"
+
+TITAN_WORK_DIR="$artifact_fixture" \
+TITAN_BUNDLE_DIR="$temporary_directory/default-bundle" \
+  bash "$assemble_script" --hash test-hash --out "$artifact_output" \
+  || {
+    printf 'assemble-sdk-artifacts.sh failed unexpectedly\n' >&2
+    exit 1
+  }
+for artifact_path in "${artifact_paths[@]}" sky_engine.zip; do
+  [[ -f "$artifact_output/flutter_infra_release/flutter/test-hash/$artifact_path" ]] || {
+    printf 'missing assembled artifact: %s\n' "$artifact_path" >&2
+    exit 1
+  }
+done
+manifest="$artifact_output/MANIFEST"
+[[ "$(awk 'END { print NR }' "$manifest")" -eq 11 ]] || {
+  printf 'unexpected MANIFEST entry count\n' >&2
+  exit 1
+}
+while IFS=$'\t' read -r path size checksum; do
+  [[ -n "$path" && "$size" =~ ^[0-9]+$ && "$checksum" =~ ^[0-9a-f]{64}$ ]] || {
+    printf 'invalid MANIFEST row: %s\n' "$path" >&2
+    exit 1
+  }
+done < "$manifest"
+
+rm "$artifact_fixture/out/sdk_host_debug/zip_archives/linux-x64/artifacts.zip"
+if TITAN_WORK_DIR="$artifact_fixture" \
+  TITAN_BUNDLE_DIR="$temporary_directory/default-bundle" \
+  bash "$assemble_script" --hash missing-artifact --out "$temporary_directory/missing-output"; then
+  printf 'assemble-sdk-artifacts.sh accepted a missing required artifact\n' >&2
+  exit 1
+fi
+
 printf 'test_build_engine_args.sh: ok\n'
