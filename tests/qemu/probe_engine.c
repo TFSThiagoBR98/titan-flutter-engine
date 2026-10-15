@@ -51,6 +51,28 @@ static uint64_t hash_surface(const uint8_t* pixels, size_t size) {
   return hash;
 }
 
+// PROBE_DUMP_PPM=<path> saves the first frame (software renderer, RGBA rows) as
+// a binary PPM, to see what changed when the hash does.
+static void dump_frame_ppm(const uint8_t* pixels, size_t row_bytes, size_t height) {
+  const char* path = getenv("PROBE_DUMP_PPM");
+  if (path == NULL || *path == '\0') {
+    return;
+  }
+  FILE* file = fopen(path, "wb");
+  if (file == NULL) {
+    fprintf(stderr, "probe: cannot write %s\n", path);
+    return;
+  }
+  const size_t width = row_bytes / 4;
+  fprintf(file, "P6\n%zu %zu\n255\n", width, height);
+  for (size_t y = 0; y < height; ++y) {
+    for (size_t x = 0; x < width; ++x) {
+      fwrite(pixels + y * row_bytes + x * 4, 1, 3, file);
+    }
+  }
+  fclose(file);
+}
+
 static bool present_surface(void* user_data,
                             const void* allocation,
                             size_t row_bytes,
@@ -69,6 +91,7 @@ static bool present_surface(void* user_data,
     state->width = row_bytes / 4;
     state->height = height;
     state->hash = hash;
+    dump_frame_ppm(pixels, row_bytes, height);
     pthread_cond_signal(&state->condition);
   }
   pthread_mutex_unlock(&state->mutex);

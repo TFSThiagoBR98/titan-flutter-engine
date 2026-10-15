@@ -171,9 +171,11 @@ os alvos que usam `linux-compiler-runtime`. O probe carrega o `libflutter_engine
 por software e um *platform task runner* próprio (sem ele, as tarefas de plataforma nunca rodam e o primeiro quadro
 não sai), manda métricas de 320×240 e espera o primeiro quadro do app (`PROBE_TIMEOUT_SECONDS`, padrão 120). O app
 padrão é o de `tests/qemu/app`; dentro do TitanDM, o app spike. O `scripts/ci.sh probe` usa `TITAN_VARIANTS` (ou a
-matriz completa por padrão) e exige
-o mesmo hash de quadro (com o app de `tests/qemu/app`, `8dca0036f583054a` em x64, hf, softfp e softfp musl, em
-2026-10-15).
+matriz completa por padrão) e compara o quadro de cada variante com `tests/qemu/expected-frame-hash`
+(`9afdbcd18abd9b35`). O app do probe traz a própria fonte (`tests/qemu/app/fonts`, usada no tema) e desliga a faixa
+DEBUG, que desenha o rótulo com outro estilo: sem fontconfig, o engine cai nas fontes de `/usr/share/fonts`, e o
+quadro mudaria de máquina para máquina (o runner do GitHub dava outro hash). Para ver o que mudou quando o hash
+difere, `PROBE_DUMP_PPM=<arquivo>.ppm` grava o quadro.
 
 Resultado (2026-10-14, engine debug/JIT, app `titan_spike_counter`):
 

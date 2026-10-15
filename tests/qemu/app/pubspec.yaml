@@ -10,3 +10,9 @@ dependencies:
 
 flutter:
   uses-material-design: true
+  # Bundled so the probe frame does not depend on the host's /usr/share/fonts
+  # (the engine without fontconfig falls back to that directory).
+  fonts:
+    - family: TitanProbe
+      fonts:
+        - asset: fonts/Roboto-Regular.ttf

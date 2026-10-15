@@ -61,6 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The QEMU probe frame no longer depends on the host's fonts: the probe app bundles
+  its font and hides the DEBUG ribbon (expected hash `9afdbcd18abd9b35`), and
+  `PROBE_DUMP_PPM` saves the frame for inspection.
+- CI keeps the ccache of a build even when a later step fails.
 - x86_64 musl builds: host tools (`flatc`, `impellerc`, `gen_snapshot`) build
   in a separate glibc host toolchain instead of being linked against musl.
 - riscv32 engines link `libatomic.so.1` (RV32 has no 64-bit atomic

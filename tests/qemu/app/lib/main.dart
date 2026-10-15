@@ -11,6 +11,11 @@ class ProbeApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      // Every default text style uses the bundled font, so nothing falls back to
+      // the host's fonts.
+      theme: ThemeData(fontFamily: 'TitanProbe'),
+      // The DEBUG ribbon draws its label with its own text style, not the theme's.
+      debugShowCheckedModeBanner: false,
       home: Scaffold(
         body: Center(
           child: Container(
@@ -22,7 +27,10 @@ class ProbeApp extends StatelessWidget {
               children: [
                 Icon(Icons.check, color: Colors.white),
                 SizedBox(height: 8),
-                Text('Titan probe', style: TextStyle(color: Colors.white)),
+                Text(
+                  'Titan probe',
+                  style: TextStyle(color: Colors.white),
+                ),
               ],
             ),
           ),
