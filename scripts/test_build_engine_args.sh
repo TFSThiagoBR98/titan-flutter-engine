@@ -43,8 +43,46 @@ cat > "$fake_ninja" <<'EOF'
 set -euo pipefail
 
 printf '%s\n' "$*" >> "$TITAN_NINJA_LOG"
+if [[ "${1:-}" == -C ]]; then
+  output_directory=$2
+  mkdir -p "$output_directory"
+  : > "$output_directory/libflutter_engine.so"
+  : > "$output_directory/flutter_embedder.h"
+  : > "$output_directory/icudtl.dat"
+fi
 EOF
 chmod +x "$fake_ninja"
+
+cat > "$fake_bin/readelf" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}" in
+  -h)
+    cat <<'OUTPUT'
+ELF Header:
+  Class:                             ELF64
+  Machine:                           Advanced Micro Devices X86-64
+  Flags:                             0x0
+OUTPUT
+    ;;
+  -d)
+    printf ' 0x0000000000000001 (NEEDED)             Shared library: [libc.so]\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+EOF
+chmod +x "$fake_bin/readelf"
+
+cat > "$fake_bin/objdump" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '0000000000000000 g    DF .text  0000000000000001 GLIBC_2.38 fake_symbol\n'
+EOF
+chmod +x "$fake_bin/objdump"
 
 run_engine() {
   TITAN_GN="$fake_gn" \
@@ -89,6 +127,20 @@ assert_log_contains "$gn_log" '--target-dir host_profile'
 assert_log_contains "$gn_log" 'build_linux_gtk_shell=true titan_target_libc="glibc"'
 assert_log_contains "$gn_log" '--enable-fontconfig'
 
+riscv32_sysroot="$temporary_directory/riscv32-sysroot"
+mkdir -p "$riscv32_sysroot/usr/lib/gcc/riscv32-linux-gnu/14"
+: > "$riscv32_sysroot/usr/lib/gcc/riscv32-linux-gnu/14/libgcc_eh.a"
+: > "$gn_log"
+run_engine --mode debug --cpu riscv32 --target-sysroot "$riscv32_sysroot" --gn-only
+assert_log_contains "$gn_log" '--linux --linux-cpu riscv32'
+assert_log_contains "$gn_log" "--target-sysroot $riscv32_sysroot"
+
+run_engine --mode debug --out "$temporary_directory/verified-bundle"
+[[ -f "$temporary_directory/verified-bundle/$flutter_commit/libflutter_engine.so" ]] || {
+  printf 'verified bundle was not published\n' >&2
+  exit 1
+}
+
 : > "$ninja_log"
 run_engine --mode release --out-name sdk_custom \
   --ninja-target first/target --ninja-target second/target --jobs 2 --load 2
@@ -117,16 +169,29 @@ set -euo pipefail
 
 out_name=
 print_out_name=0
+cpu=x64
+libc=glibc
+arm_abi=none
 previous=
 for argument in "$@"; do
-  if [[ "$previous" == --out-name ]]; then
-    out_name=$argument
-  fi
-  [[ "$argument" == --out-name ]] && previous=--out-name || previous=
-  [[ "$argument" == --print-out-name ]] && print_out_name=1
+  case "$previous" in
+    --out-name) out_name=$argument ;;
+    --cpu) cpu=$argument ;;
+    --libc) libc=$argument ;;
+    --arm-float-abi) arm_abi=$argument ;;
+  esac
+  case "$argument" in
+    --out-name|--cpu|--libc|--arm-float-abi) previous=$argument ;;
+    --print-out-name) print_out_name=1; previous= ;;
+    *) previous= ;;
+  esac
 done
 if ((print_out_name)); then
-  printf '%s\n' "$out_name"
+  if [[ -n "$out_name" ]]; then
+    printf '%s\n' "$out_name"
+  else
+    printf '%s-%s-%s\n' "$cpu" "$arm_abi" "$libc"
+  fi
   exit 0
 fi
 printf '%s\n' "$*" >> "$TITAN_MATRIX_ARGS_LOG"
@@ -147,6 +212,33 @@ assert_log_contains "$matrix_log" '--mode release --out-name sdk_host_release --
 assert_log_contains "$matrix_log" '--mode debug --gtk-shell --enable-fontconfig --out-name sdk_desktop_debug'
 assert_log_contains "$matrix_log" '--mode profile --gtk-shell --enable-fontconfig --out-name sdk_desktop_profile'
 assert_log_contains "$matrix_log" '--mode release --gtk-shell --enable-fontconfig --out-name sdk_desktop_release'
+
+matrix_log="$temporary_directory/platform-matrix.log"
+matrix_variants=(
+  x64-debug
+  x64-musl-debug
+  arm64-debug
+  arm64-musl-debug
+  arm-hard-debug
+  arm-hard-musl-debug
+  arm-softfp-debug
+  arm-softfp-musl-debug
+  riscv32-glibc-debug
+  riscv32-musl-debug
+  riscv64-glibc-debug
+  riscv64-musl-debug
+)
+TITAN_WORK_DIR="$temporary_directory/platform-matrix-work" \
+TITAN_MATRIX_ARGS_LOG="$matrix_log" \
+  bash "$matrix_repository/scripts/build-matrix.sh" --parallel 3 "${matrix_variants[@]}"
+assert_log_contains "$matrix_log" '--mode debug --cpu x64 --libc musl --target-sysroot '
+assert_log_contains "$matrix_log" '--mode debug --cpu arm64 --target-sysroot '
+assert_log_contains "$matrix_log" '--mode debug --cpu arm64 --libc musl --target-sysroot '
+assert_log_contains "$matrix_log" '--mode debug --cpu arm --arm-float-abi hard --libc musl --target-sysroot '
+assert_log_contains "$matrix_log" '--mode debug --cpu riscv32 --target-sysroot '
+assert_log_contains "$matrix_log" '--mode debug --cpu riscv32 --libc musl --target-sysroot '
+assert_log_contains "$matrix_log" '--mode debug --cpu riscv64 --target-sysroot '
+assert_log_contains "$matrix_log" '--mode debug --cpu riscv64 --libc musl --target-sysroot '
 
 assemble_script="$repository_root/scripts/assemble-sdk-artifacts.sh"
 artifact_fixture="$temporary_directory/artifact-fixture"

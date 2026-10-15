@@ -13,7 +13,7 @@ Build the Flutter Engine from the revision in flutter.lock.
 
 Options:
   --mode debug|profile|release       Runtime mode (default: debug)
-  --cpu x64|arm64|arm|riscv64       Linux target CPU (default: x64)
+  --cpu x64|arm64|arm|riscv32|riscv64 Linux target CPU (default: x64)
   --arm-float-abi hard|softfp|soft  ARM float ABI (only with --cpu arm)
   --libc glibc|musl                 Target libc (default: glibc)
   --target-sysroot <dir>             Target sysroot for cross-compilation
@@ -40,19 +40,66 @@ die() {
 # The ELF header float-ABI flag is what the glibc loader checks. The
 # .ARM.attributes section is not reliable: lld keeps the first input's, which
 # comes from the sysroot's crti.o.
-verify_arm_abi() {
+verify_bundle() {
   local engine_path=$1
-  local expected_abi=$2
-  local header_flags
-  command -v readelf >/dev/null || die "readelf is required for ARM ABI verification"
-  header_flags=$(LC_ALL=C readelf -h "$engine_path" | grep 'Flags:')
-  printf '%s\n' "$header_flags"
-  if [[ "$expected_abi" == hard ]]; then
-    grep -Fq 'hard-float ABI' <<<"$header_flags" || \
-      die "ARM hard-float ABI verification failed for $engine_path"
+  local target_cpu=$2
+  local target_libc=$3
+  local expected_arm_abi=$4
+  local header elf_class machine header_flags expected_class expected_machine
+  local max_glibc_symbol
+  local -a needed_libraries
+
+  command -v readelf >/dev/null || die "readelf is required for bundle verification"
+  command -v objdump >/dev/null || die "objdump is required for bundle verification"
+  header=$(LC_ALL=C readelf -h "$engine_path")
+  elf_class=$(sed -n 's/^ *Class: *//p' <<<"$header")
+  machine=$(sed -n 's/^ *Machine: *//p' <<<"$header")
+  header_flags=$(sed -n 's/^ *Flags: *//p' <<<"$header")
+
+  case "$target_cpu" in
+    x64) expected_class=ELF64; expected_machine='Advanced Micro Devices X86-64' ;;
+    arm64) expected_class=ELF64; expected_machine=AArch64 ;;
+    arm) expected_class=ELF32; expected_machine=ARM ;;
+    riscv32) expected_class=ELF32; expected_machine='RISC-V' ;;
+    riscv64) expected_class=ELF64; expected_machine='RISC-V' ;;
+    *) die "cannot verify unsupported CPU: $target_cpu" ;;
+  esac
+  [[ "$elf_class" == "$expected_class" ]] || \
+    die "ELF class verification failed for $engine_path: expected $expected_class, got $elf_class"
+  [[ "$machine" == "$expected_machine" ]] || \
+    die "ELF machine verification failed for $engine_path: expected $expected_machine, got $machine"
+  printf 'ELF: cpu=%s class=%s machine=%s\n' "$target_cpu" "$elf_class" "$machine"
+
+  if [[ "$target_cpu" == arm ]]; then
+    printf 'ELF flags: %s\n' "$header_flags"
+    if [[ "$expected_arm_abi" == hard ]]; then
+      grep -Fq 'hard-float ABI' <<<"$header_flags" || \
+        die "ARM hard-float ABI verification failed for $engine_path"
+    else
+      grep -Fq 'soft-float ABI' <<<"$header_flags" || \
+        die "ARM soft-float ABI verification failed for $engine_path"
+    fi
+  fi
+
+  if [[ "$target_libc" == musl ]]; then
+    if LC_ALL=C objdump -T "$engine_path" | grep -q 'GLIBC_'; then
+      die "musl verification failed: the engine references glibc symbol versions"
+    fi
+    mapfile -t needed_libraries < <(
+      LC_ALL=C readelf -d "$engine_path" |
+        sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p'
+    )
+    [[ "${#needed_libraries[@]}" -eq 1 && "${needed_libraries[0]}" == "libc.so" ]] || \
+      die "musl NEEDED verification failed: ${needed_libraries[*]:-none}"
+    printf 'musl NEEDED: %s\n' "${needed_libraries[0]}"
   else
-    grep -Fq 'soft-float ABI' <<<"$header_flags" || \
-      die "ARM soft-float ABI verification failed for $engine_path"
+    max_glibc_symbol=$(
+      LC_ALL=C objdump -T "$engine_path" |
+        sed -n 's/.*\(GLIBC_[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' |
+        sort -V |
+        tail -n 1
+    )
+    printf 'glibc max symbol: %s\n' "${max_glibc_symbol:-none}"
   fi
 }
 
@@ -200,8 +247,8 @@ case "$mode" in
   *) die "invalid mode: $mode (expected debug, profile or release)" ;;
 esac
 case "$cpu" in
-  x64|arm64|arm|riscv64) ;;
-  *) die "invalid CPU: $cpu (expected x64, arm64, arm or riscv64)" ;;
+  x64|arm64|arm|riscv32|riscv64) ;;
+  *) die "invalid CPU: $cpu (expected x64, arm64, arm, riscv32 or riscv64)" ;;
 esac
 case "$arm_float_abi" in
   ''|hard|softfp|soft) ;;
@@ -458,6 +505,7 @@ if [[ "$libc" == musl || ("$cpu" == arm && "$arm_float_abi" != hard) || "$cpu" =
           sysroot_name=titan_armv7a_softfp_musl
         fi
         ;;
+      riscv32) gcc_triple=riscv32-linux-musl; sysroot_name=titan_riscv32_musl ;;
       riscv64) gcc_triple=riscv64-linux-musl; sysroot_name=titan_riscv64_musl ;;
     esac
   elif [[ "$cpu" == arm ]]; then
@@ -528,22 +576,7 @@ printf '%s\n' "$stamp" > "$stage/.complete"
 rm -rf "$dest"
 mv "$stage" "$dest"
 
-if [[ "$cpu" == arm ]]; then
-  verify_arm_abi "$dest/libflutter_engine.so" "${arm_float_abi:-softfp}"
-fi
-
-if [[ "$libc" == musl ]]; then
-  # A shared library has no PT_INTERP; check that nothing binds to glibc.
-  if LC_ALL=C objdump -T "$dest/libflutter_engine.so" | grep -q 'GLIBC_'; then
-    die "musl verification failed: the engine references glibc symbol versions"
-  fi
-  mapfile -t needed_libraries < <(
-    LC_ALL=C readelf -d "$dest/libflutter_engine.so" |
-      sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p'
-  )
-  [[ "${#needed_libraries[@]}" -eq 1 && "${needed_libraries[0]}" == "libc.so" ]] || \
-    die "musl NEEDED verification failed: ${needed_libraries[*]:-none}"
-fi
+verify_bundle "$dest/libflutter_engine.so" "$cpu" "$libc" "${arm_float_abi:-softfp}"
 
 if ((zip_output)); then
   dist="$artifact_root/dist"
