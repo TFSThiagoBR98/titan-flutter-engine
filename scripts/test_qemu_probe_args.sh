@@ -92,6 +92,14 @@ run_probe() {
     "$repository_root/scripts/qemu-probe.sh" "$@"
 }
 
+if run_probe --target arm64-debug --assets "$assets" > "$temporary_directory/missing-stamp.log" 2>&1; then
+  printf 'qemu-probe accepted a sysroot without a stamp\n' >&2
+  exit 1
+fi
+grep -Fq 'incomplete or outdated' "$temporary_directory/missing-stamp.log"
+find "$work_root/sysroots" -mindepth 1 -maxdepth 1 -type d -exec sh -c \
+  'printf "%s\n" fixture-key > "$1/.titan-sysroot-key"' _ {} \;
+
 run_probe --target x64-debug --assets "$assets" > "$probe_log"
 grep -Fq 'frame 320x240 hash=0123456789abcdef' "$probe_log"
 grep -Fq -- '--target=x86_64-unknown-linux-gnu' "$clang_log"

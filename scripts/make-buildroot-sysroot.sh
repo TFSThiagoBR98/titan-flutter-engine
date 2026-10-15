@@ -4,10 +4,11 @@ set -euo pipefail
 
 source "$(dirname "$0")/lib/paths.sh"
 source "$(dirname "$0")/lib/cpu-budget.sh"
+source "$(dirname "$0")/lib/sysroot.sh"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/make-buildroot-sysroot.sh --config <defconfig> [--out <dir>]
+Usage: scripts/make-buildroot-sysroot.sh --config <defconfig> [--out <dir>] [--force]
 
 Build a Buildroot toolchain-only sysroot and link it into the Flutter Engine.
 EOF
@@ -20,6 +21,7 @@ die() {
 
 config_arg=
 out_arg=
+force=0
 while (($# > 0)); do
   case "$1" in
     --config)
@@ -38,6 +40,10 @@ while (($# > 0)); do
       ;;
     --out=*)
       out_arg=${1#*=}
+      shift
+      ;;
+    --force)
+      force=1
       shift
       ;;
     -h|--help)
@@ -103,9 +109,28 @@ sysroot_name=${sysroot_names[$config_name]}
 clang_gcc_triple=${gcc_triples[$config_name]}
 config_path="$repository_root/buildroot/configs/$config_name"
 [[ -f "$config_path" ]] || die "Buildroot config does not exist: $config_path"
+sysroot_key_value=$(sysroot_key "$config_name")
 
 workspace_root="$TITAN_WORK_DIR"
-buildroot_root="$TITAN_WORK_DIR/buildroot"
+buildroot_root="$workspace_root/buildroot"
+build_output="$workspace_root/buildroot-out/$config_name"
+download_dir="$workspace_root/buildroot-dl"
+sysroot_output=${out_arg:-$workspace_root/sysroots/$sysroot_name}
+if [[ "$sysroot_output" != /* ]]; then
+  sysroot_output="$TITAN_REPOSITORY_ROOT/$sysroot_output"
+fi
+mkdir -p "$(dirname "$sysroot_output")"
+sysroot_output=$(cd "$(dirname "$sysroot_output")" && pwd -P)/$(basename "$sysroot_output")
+engine_sysroot="$TITAN_WORK_DIR/flutter/engine/src/build/linux/${sysroot_name}-sysroot"
+
+if ((force == 0)) && sysroot_stamp_matches "$sysroot_output" "$sysroot_key_value"; then
+  mkdir -p "$(dirname "$engine_sysroot")"
+  ln -sfn "$sysroot_output" "$engine_sysroot"
+  printf 'Buildroot sysroot is up to date: %s\n' "$sysroot_output"
+  printf 'Engine sysroot link: %s -> %s\n' "$engine_sysroot" "$(readlink "$engine_sysroot")"
+  exit 0
+fi
+
 if [[ ! -e "$buildroot_root" ]]; then
   mkdir -p "$workspace_root"
   printf 'cloning Buildroot %s into %s\n' "$buildroot_tag" "$buildroot_root"
@@ -118,15 +143,6 @@ else
     die "Buildroot checkout has version ${current_buildroot_tag:-unknown}; expected $buildroot_tag: $buildroot_root"
 fi
 [[ -d "$buildroot_root" ]] || die "Buildroot checkout does not exist: $buildroot_root"
-
-build_output="$workspace_root/buildroot-out/$config_name"
-download_dir="$workspace_root/buildroot-dl"
-sysroot_output=${out_arg:-$workspace_root/sysroots/$sysroot_name}
-if [[ "$sysroot_output" != /* ]]; then
-  sysroot_output="$TITAN_REPOSITORY_ROOT/$sysroot_output"
-fi
-sysroot_output=$(cd "$(dirname "$sysroot_output")" && pwd -P)/$(basename "$sysroot_output")
-engine_sysroot="$TITAN_WORK_DIR/flutter/engine/src/build/linux/${sysroot_name}-sysroot"
 
 mkdir -p "$build_output" "$download_dir" "$sysroot_output"
 export BR2_DL_DIR="$download_dir"
@@ -149,3 +165,4 @@ mkdir -p "$(dirname "$engine_sysroot")"
 ln -sfn "$sysroot_output" "$engine_sysroot"
 printf 'Buildroot sysroot: %s\n' "$sysroot_output"
 printf 'Engine sysroot link: %s -> %s\n' "$engine_sysroot" "$(readlink "$engine_sysroot")"
+printf '%s\n' "$sysroot_key_value" > "$(sysroot_stamp_path "$sysroot_output")"

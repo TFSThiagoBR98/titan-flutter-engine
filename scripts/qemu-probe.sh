@@ -2,6 +2,7 @@
 set -euo pipefail
 
 source "$(dirname "$0")/lib/paths.sh"
+source "$(dirname "$0")/lib/sysroot.sh"
 
 usage() {
   cat <<'EOF'
@@ -218,7 +219,7 @@ engine="$bundle/libflutter_engine.so"
 icu="$bundle/icudtl.dat"
 mkdir -p "$probe_root"
 if [[ -n "$sysroot" ]]; then
-  [[ -d "$sysroot" ]] || die "target sysroot is missing: $sysroot"
+  sysroot_has_stamp "$sysroot" || die "target sysroot is incomplete or outdated: $sysroot"
 fi
 [[ -f "$engine" ]] || die "engine bundle is missing: $engine"
 [[ -f "$icu" ]] || die "ICU data is missing: $icu"

@@ -20,6 +20,7 @@ cp "$repository_root/scripts/build-engine.sh" "$standalone_repository/scripts/bu
 cp "$repository_root/scripts/patch_series.py" "$standalone_repository/scripts/patch_series.py"
 cp "$repository_root/scripts/lib/paths.sh" "$standalone_repository/scripts/lib/paths.sh"
 cp "$repository_root/scripts/lib/cpu-budget.sh" "$standalone_repository/scripts/lib/cpu-budget.sh"
+cp "$repository_root/scripts/lib/sysroot.sh" "$standalone_repository/scripts/lib/sysroot.sh"
 printf '%s\n' test-patches > "$standalone_repository/patches/series"
 
 git init --quiet "$flutter_directory"
@@ -216,6 +217,14 @@ assert_log_contains "$gn_log" '--enable-fontconfig'
 riscv32_sysroot="$temporary_directory/riscv32-sysroot"
 mkdir -p "$riscv32_sysroot/usr/lib/gcc/riscv32-linux-gnu/14"
 : > "$riscv32_sysroot/usr/lib/gcc/riscv32-linux-gnu/14/libgcc_eh.a"
+if run_engine --mode debug --cpu riscv32 --target-sysroot "$riscv32_sysroot" --gn-only \
+  > "$temporary_directory/missing-stamp.log" 2>&1; then
+  printf 'build-engine accepted a sysroot without a stamp\n' >&2
+  exit 1
+fi
+assert_log_contains "$temporary_directory/missing-stamp.log" 'incomplete or outdated'
+rm -rf "$host_sysroot"
+printf '%s\n' fixture-key > "$riscv32_sysroot/.titan-sysroot-key"
 : > "$gn_log"
 : > "$python_log"
 run_engine --mode debug --cpu riscv32 --target-sysroot "$riscv32_sysroot" --gn-only

@@ -5,6 +5,7 @@ set -euo pipefail
 
 source "$(dirname "$0")/lib/paths.sh"
 source "$(dirname "$0")/lib/cpu-budget.sh"
+source "$(dirname "$0")/lib/sysroot.sh"
 
 usage() {
   cat <<'EOF'
@@ -586,9 +587,8 @@ if [[ "$libc" == musl || ("$cpu" == arm && "$arm_float_abi" != hard) || "$cpu" =
     sysroot_name=titan_riscv32_glibc
   fi
   runtime_sysroot=${target_sysroot:-$engine_src/build/linux/$sysroot_name-sysroot}
-  gcc_runtime=("$runtime_sysroot"/usr/lib/gcc/"$gcc_triple"/*/libgcc_eh.a)
-  [[ -f "${gcc_runtime[0]}" ]] || \
-    die "target $cpu/$libc needs the GCC runtime in $runtime_sysroot (scripts/make-buildroot-sysroot.sh)"
+  sysroot_has_stamp "$runtime_sysroot" || \
+    die "target $cpu/$libc needs a sysroot that is incomplete or outdated: $runtime_sysroot (scripts/make-buildroot-sysroot.sh)"
 fi
 
 if [[ "$mode" != release ]]; then
