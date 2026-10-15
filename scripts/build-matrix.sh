@@ -61,10 +61,15 @@ jobs=$(getconf _NPROCESSORS_ONLN)
 load=$jobs
 
 declare -A variant_specs=(
-  [x64-debug]='--mode debug --cpu x64|host_debug'
-  [arm-hard-debug]="--mode debug --cpu arm --arm-float-abi hard --target-sysroot $work_root/sysroots/titan_armv7a_hf|linux_debug_arm_hard_glibc"
-  [arm-softfp-debug]="--mode debug --cpu arm --arm-float-abi softfp --target-sysroot $work_root/sysroots/titan_armv7a_softfp|linux_debug_arm_softfp_glibc"
-  [arm-softfp-musl-debug]="--mode debug --cpu arm --arm-float-abi softfp --libc musl --target-sysroot $work_root/sysroots/titan_armv7a_softfp_musl|linux_debug_arm_softfp_musl"
+  [x64-debug]='--mode debug --cpu x64'
+  [arm-hard-debug]="--mode debug --cpu arm --arm-float-abi hard --target-sysroot $work_root/sysroots/titan_armv7a_hf"
+  [arm-softfp-debug]="--mode debug --cpu arm --arm-float-abi softfp --target-sysroot $work_root/sysroots/titan_armv7a_softfp"
+  [arm-softfp-musl-debug]="--mode debug --cpu arm --arm-float-abi softfp --libc musl --target-sysroot $work_root/sysroots/titan_armv7a_softfp_musl"
+  [sdk-host-debug]='--mode debug --out-name sdk_host_debug --ninja-target flutter/build/archives:artifacts --ninja-target flutter/build/archives:flutter_patched_sdk --ninja-target flutter/build/archives:dart_sdk_archive --ninja-target flutter/build/archives:embedder --ninja-target flutter/tools/font_subset --ninja-target flutter/impeller/toolkit/interop:sdk'
+  [sdk-host-release]='--mode release --out-name sdk_host_release --ninja-target flutter/build/archives:flutter_patched_sdk'
+  [sdk-desktop-debug]='--mode debug --gtk-shell --enable-fontconfig --out-name sdk_desktop_debug --ninja-target flutter/shell/platform/linux:flutter_gtk'
+  [sdk-desktop-profile]='--mode profile --gtk-shell --enable-fontconfig --out-name sdk_desktop_profile --ninja-target flutter/shell/platform/linux:flutter_gtk'
+  [sdk-desktop-release]='--mode release --gtk-shell --enable-fontconfig --out-name sdk_desktop_release --ninja-target flutter/shell/platform/linux:flutter_gtk'
 )
 default_variants=(x64-debug arm-hard-debug arm-softfp-debug arm-softfp-musl-debug)
 if ((${#variants[@]} == 0)); then
@@ -75,7 +80,9 @@ declare -A output_owner
 for variant in "${variants[@]}"; do
   [[ -n "${variant_specs[$variant]+set}" ]] || die "unknown variant: $variant"
   spec=${variant_specs[$variant]}
-  output_name=${spec#*|}
+  build_spec=$spec
+  read -r -a build_args <<<"$build_spec"
+  output_name=$("$build_engine" "${build_args[@]}" --print-out-name)
   if [[ -n "${output_owner[$output_name]+set}" ]]; then
     die "variants ${output_owner[$output_name]} and $variant share the same output directory: $output_name"
   fi
@@ -94,7 +101,7 @@ while ((next_variant < variant_count || active > 0)); do
   while ((active < parallel && next_variant < variant_count)); do
     variant=${variants[next_variant]}
     spec=${variant_specs[$variant]}
-    build_spec=${spec%%|*}
+    build_spec=$spec
     log="$matrix_root/$variant.log"
     read -r -a build_args <<<"$build_spec"
     start_by_variant[$variant]=$(date +%s)

@@ -21,6 +21,11 @@ Options:
   --jobs N                           Ninja parallel jobs (default: host CPU count)
   --load N                           Ninja load limit (default: host CPU count)
   --out <dir>                        Bundle output directory
+  --out-name <name>                  Engine output directory name
+  --gtk-shell                        Build the GTK shell
+  --enable-fontconfig                Enable fontconfig in GN
+  --ninja-target <target>             Build only the selected Ninja target (repeatable)
+  --print-out-name                    Print the Engine output directory name and exit
   --zip                              Also publish the bundle under dist/
   --work-dir <dir>                   Flutter/depot_tools workspace
   -h, --help                         Show this help
@@ -62,6 +67,11 @@ work_dir_arg=
 gn_only=0
 jobs_arg=
 load_arg=
+gtk_shell=0
+enable_fontconfig=0
+ninja_targets=()
+out_name_arg=
+print_out_name=0
 while (($# > 0)); do
   case "$1" in
     --mode)
@@ -131,6 +141,28 @@ while (($# > 0)); do
       load_arg=${1#*=}
       shift
       ;;
+    --gtk-shell)
+      gtk_shell=1
+      shift
+      ;;
+    --enable-fontconfig)
+      enable_fontconfig=1
+      shift
+      ;;
+    --ninja-target)
+      (($# >= 2)) || die "--ninja-target requires a value"
+      ninja_targets+=("$2")
+      shift 2
+      ;;
+    --out-name)
+      (($# >= 2)) || die "--out-name requires a value"
+      out_name_arg=$2
+      shift 2
+      ;;
+    --print-out-name)
+      print_out_name=1
+      shift
+      ;;
     --out)
       (($# >= 2)) || die "--out requires a value"
       out_dir_arg=$2
@@ -186,6 +218,23 @@ fi
 [[ -z "$load_arg" || "$load_arg" =~ ^[1-9][0-9]*$ ]] || die "--load must be a positive integer"
 jobs=${jobs_arg:-$(getconf _NPROCESSORS_ONLN)}
 load=${load_arg:-$jobs}
+
+if [[ "$cpu" == x64 && "$libc" == glibc ]]; then
+  out_name="host_$mode"
+else
+  out_name="linux_${mode}_${cpu}"
+  if [[ "$cpu" == arm && -n "$arm_float_abi" ]]; then
+    out_name+="_$arm_float_abi"
+  fi
+  out_name+="_$libc"
+fi
+if [[ -n "$out_name_arg" ]]; then
+  out_name=$out_name_arg
+fi
+if ((print_out_name)); then
+  printf '%s\n' "$out_name"
+  exit 0
+fi
 
 repository_root=$(cd "$(dirname "$0")/.." && pwd -P)
 if [[ -n "$work_dir_arg" ]]; then
@@ -368,8 +417,11 @@ gn_args=(
   --no-enable-unittests
   --enable-minimal-linux
   --gn-args
-  "build_linux_gtk_shell=false titan_target_libc=\"$libc\""
+  "build_linux_gtk_shell=$([[ "$gtk_shell" == 1 ]] && printf true || printf false) titan_target_libc=\"$libc\""
 )
+if ((enable_fontconfig)); then
+  gn_args+=(--enable-fontconfig)
+fi
 if [[ "$libc" == musl ]]; then
   # fml's backtrace needs glibc's execinfo.h; musl uses fml's stub.
   gn_args+=(--no-backtrace)
@@ -422,18 +474,8 @@ if [[ "$mode" != release ]]; then
   gn_args+=(--no-lto)
 fi
 
-if [[ "$cpu" == x64 && "$libc" == glibc ]]; then
-  out_name="host_$mode"
-else
-  out_name="linux_${mode}_${cpu}"
-  if [[ "$cpu" == arm && -n "$arm_float_abi" ]]; then
-    out_name+="_$arm_float_abi"
-  fi
-  out_name+="_$libc"
-fi
-
 printf 'configuring Flutter Engine: mode=%s cpu=%s\n' "$mode" "$cpu"
-"$engine_src/flutter/tools/gn" --target-dir "$out_name" "${gn_args[@]}"
+"${TITAN_GN:-$engine_src/flutter/tools/gn}" --target-dir "$out_name" "${gn_args[@]}"
 
 if ((gn_only)); then
   printf 'GN configuration complete: %s\n' "$engine_src/out/$out_name"
@@ -442,6 +484,11 @@ fi
 
 out_dir="$engine_src/out/$out_name"
 printf 'building Flutter Engine in %s\n' "$out_dir"
+if ((${#ninja_targets[@]} > 0)); then
+  ninja -C "$out_dir" -j "$jobs" -l "$load" "${ninja_targets[@]}"
+  printf 'selected Ninja targets complete: %s\n' "$out_dir"
+  exit 0
+fi
 ninja -C "$out_dir" -j "$jobs" -l "$load" \
   flutter/shell/platform/embedder:flutter_engine_library \
   flutter/shell/platform/embedder:copy_headers
