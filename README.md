@@ -54,11 +54,24 @@ Use `--zip` para publicar `artifacts/dist/flutter-engine-<variante>.zip` e
 `--out <dir>` para escolher outro diretório de bundles. Em profile/release o
 script também inclui o `gen_snapshot` do host.
 
+## Artefatos do SDK Flutter
+
+Os zips que o `flutter` tool baixa (para `flutter build`) também saem daqui, do engine com os nossos patches, no
+mesmo layout do storage do Google, e se instalam no SDK pelo próprio `flutter precache`:
+
+```sh
+scripts/build-matrix.sh --parallel 3 sdk-host-debug sdk-host-release sdk-desktop-debug sdk-desktop-profile sdk-desktop-release
+scripts/assemble-sdk-artifacts.sh
+scripts/install-sdk-artifacts.sh <flutter-sdk>
+```
+
+Detalhes em [docs/artefatos-sdk.md](docs/artefatos-sdk.md).
+
 ## Organização dos patches
 
 `patches/series` lista as pastas **por assunto** (`impeller-vulkan`,
 `linux-embedder-only`, `linux-target-matrix`, `linux-compiler-runtime`,
-`linux-musl`), na ordem de aplicação. A série não usa condições: o
+`linux-musl`, `sdk-dart-packages`), na ordem de aplicação. A série não usa condições: o
 `build-engine.sh` sempre aplica todas as pastas e todos os `.patch`, em ordem
 lexicográfica, e cada patch se limita ao alvo certo por condições no próprio
 GN. Assim, builds de alvos diferentes compartilham o mesmo checkout. Cada pasta

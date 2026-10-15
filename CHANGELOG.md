@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Flutter SDK host artifacts (Linux x64): the same zips the `flutter` tool
+  downloads, built from the patched engine (including the GTK shell,
+  `sky_engine` and `flutter_gpu`), assembled in the official storage layout
+  with `engine_stamp.json` and a `MANIFEST`, and installed through
+  `flutter precache` from a local server (`scripts/assemble-sdk-artifacts.sh`,
+  `scripts/install-sdk-artifacts.sh`).
+
 - Self-hosted GitHub Actions workflow for x64, ARM hard-float, ARM soft-float
   with glibc, and ARM soft-float with musl.
 - Documentation for cross-compilation, QEMU validation, the platform matrix

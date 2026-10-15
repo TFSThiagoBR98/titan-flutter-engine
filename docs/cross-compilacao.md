@@ -36,6 +36,7 @@ build, e cada patch se limita ao alvo certo por condições no próprio GN (`cur
 | `linux-target-matrix/` | `titan_target_libc`, sysroot padrão e tripla do Clang de cada alvo |
 | `linux-compiler-runtime/` | runtime do GCC do sysroot onde o `compiler-rt` embutido não cobre a tripla |
 | `linux-musl/` | portabilidade para a libc musl, em qualquer CPU |
+| `sdk-dart-packages/` | `sky_engine.zip` e `flutter_gpu.zip` também no Linux (artefatos do SDK) |
 
 Cada pasta tem um README com a tabela patch → por quê → plataformas afetadas, e cada patch começa com um cabeçalho
 `# Why:`. O script aplica a série sob um `flock` e grava o hash da série aplicada no checkout; se o checkout já está
