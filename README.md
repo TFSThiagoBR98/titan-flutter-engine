@@ -142,7 +142,7 @@ do repositório não usa cache porque é grande.
 
 | Estágio | O que faz |
 |---|---|
-| `free-disk` | remove as ferramentas pré-instaladas listadas no workflow e libera espaço no runner |
+| `free-disk` | remove ferramentas pré-instaladas do runner do GitHub; fora do workflow (o runner público tem ~86 GB livres), para runners menores |
 | `deps` | instala as dependências do build com `sudo` no runner hospedado |
 | `sysroot` | recupera o sysroot da release `sysroots-cache` ou gera e publica o defconfig da variante |
 | `build` | `build-matrix.sh` com uma variante e `TITAN_PARALLEL=1` |

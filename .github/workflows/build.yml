@@ -59,9 +59,9 @@ jobs:
           sudo mkdir -p /mnt/titan
           sudo chown "$USER" /mnt/titan
 
-      - name: Free disk space
-        run: scripts/ci.sh free-disk
-
+      # The public repository's runner has ~86 GB free on / (/mnt is the same disk),
+      # far more than the ~15 GB a variant needs, so `scripts/ci.sh free-disk` is
+      # not run here; it stays for smaller runners.
       - name: Install dependencies
         run: scripts/ci.sh deps
 

@@ -71,7 +71,7 @@ raise 'cache key must include the Flutter lock' unless cache['key'].include?("ha
 raise 'cache restore keys are incomplete' unless cache['restore-keys'].include?('ccache-${{ matrix.variant }}-')
 
 runs = steps.filter_map { |step| step['run'] }.join("\n")
-%w[free-disk deps build probe package].each do |stage|
+%w[deps build probe package].each do |stage|
   raise "missing ci stage #{stage}" unless runs.include?("scripts/ci.sh #{stage}")
 end
 sysroot_step = steps.find { |step| step['run']&.include?('scripts/ci.sh sysroot') }
