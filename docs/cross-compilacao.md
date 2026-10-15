@@ -49,6 +49,11 @@ Cada pasta tem um README com a tabela patch → por quê → plataformas afetada
 `# Why:`. O script aplica a série sob um `flock` e grava o hash da série aplicada no checkout; se o checkout já está
 com a mesma série, a fase de patch é pulada, para nunca restaurar arquivos enquanto outro build compila.
 
+Quando o patch altera uma dependência do gclient, ele também começa com `# Repo: <caminho>`;
+os caminhos do diff são relativos a esse repositório. Sem a linha, vale o repositório do
+Flutter. As dependências do gclient são repositórios Git próprios, por isso a restauração e a
+aplicação precisam ser feitas no checkout indicado.
+
 ## Vários alvos em paralelo
 
 ```sh

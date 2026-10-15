@@ -11,13 +11,13 @@ fake_bin="$temporary_directory/bin"
 gn_log="$temporary_directory/gn.log"
 ninja_log="$temporary_directory/ninja.log"
 
-mkdir -p "$standalone_repository/scripts/lib" "$standalone_repository/patches" \
+mkdir -p "$standalone_repository/scripts/lib" "$standalone_repository/patches/test-patches" \
   "$temporary_directory/work/depot_tools" \
   "$flutter_directory/engine/src/flutter/tools" "$fake_bin"
 cp "$repository_root/scripts/build-engine.sh" "$standalone_repository/scripts/build-engine.sh"
 cp "$repository_root/scripts/patch_series.py" "$standalone_repository/scripts/patch_series.py"
 cp "$repository_root/scripts/lib/paths.sh" "$standalone_repository/scripts/lib/paths.sh"
-: > "$standalone_repository/patches/series"
+printf '%s\n' test-patches > "$standalone_repository/patches/series"
 
 git init --quiet "$flutter_directory"
 git -C "$flutter_directory" config user.email test@example.invalid
@@ -27,6 +27,40 @@ git -C "$flutter_directory" add README
 git -C "$flutter_directory" commit --quiet -m 'test: fake Flutter checkout'
 flutter_commit=$(git -C "$flutter_directory" rev-parse HEAD)
 printf 'flutter_commit=%s\n' "$flutter_commit" > "$standalone_repository/flutter.lock"
+
+dependency_repository="$flutter_directory/engine/src/flutter/third_party/fake-dependency"
+mkdir -p "$dependency_repository"
+git init --quiet "$dependency_repository"
+git -C "$dependency_repository" config user.email test@example.invalid
+git -C "$dependency_repository" config user.name "Build Engine Test"
+printf '%s\n' 'fake dependency' > "$dependency_repository/dependency.txt"
+git -C "$dependency_repository" add dependency.txt
+git -C "$dependency_repository" commit --quiet -m 'test: fake dependency repository'
+
+cat > "$standalone_repository/patches/test-patches/0001-fake-flutter.patch" <<'EOF'
+diff --git a/README b/README
+--- a/README
++++ b/README
+@@ -1 +1 @@
+-fake Flutter checkout
++patched Flutter checkout
+EOF
+
+cat > "$standalone_repository/patches/test-patches/0002-fake-dependency.patch" <<'EOF'
+# Repo: engine/src/flutter/third_party/fake-dependency
+diff --git a/dependency.txt b/dependency.txt
+--- a/dependency.txt
++++ b/dependency.txt
+@@ -1 +1 @@
+-fake dependency
++patched dependency
+diff --git a/created.txt b/created.txt
+new file mode 100644
+--- /dev/null
++++ b/created.txt
+@@ -0,0 +1 @@
++created by patch
+EOF
 
 fake_gn="$flutter_directory/engine/src/flutter/tools/fake-gn"
 cat > "$fake_gn" <<'EOF'
@@ -120,6 +154,36 @@ run_engine --gn-only
 assert_log_contains "$gn_log" '--target-dir host_debug'
 assert_log_contains "$gn_log" 'build_linux_gtk_shell=false titan_target_libc="glibc"'
 assert_log_not_contains "$gn_log" '--enable-fontconfig'
+[[ "$(<"$flutter_directory/README")" == 'patched Flutter checkout' ]] || {
+  printf 'Flutter repository patch was not applied\n' >&2
+  exit 1
+}
+[[ "$(<"$dependency_repository/dependency.txt")" == 'patched dependency' ]] || {
+  printf 'dependency repository patch was not applied\n' >&2
+  exit 1
+}
+[[ "$(<"$dependency_repository/created.txt")" == 'created by patch' ]] || {
+  printf 'dependency repository created file was not applied\n' >&2
+  exit 1
+}
+
+printf '%s\n' 'dirty Flutter checkout' > "$flutter_directory/README"
+printf '%s\n' 'dirty dependency' > "$dependency_repository/dependency.txt"
+printf '%s\n' 'dirty created file' > "$dependency_repository/created.txt"
+rm "$flutter_directory/.titan-patches.sha256"
+run_engine --gn-only
+[[ "$(<"$flutter_directory/README")" == 'patched Flutter checkout' ]] || {
+  printf 'Flutter repository patch was not restored before applying\n' >&2
+  exit 1
+}
+[[ "$(<"$dependency_repository/dependency.txt")" == 'patched dependency' ]] || {
+  printf 'dependency repository patch was not restored before applying\n' >&2
+  exit 1
+}
+[[ "$(<"$dependency_repository/created.txt")" == 'created by patch' ]] || {
+  printf 'dependency repository created file was not restored before applying\n' >&2
+  exit 1
+}
 
 : > "$gn_log"
 run_engine --mode profile --gtk-shell --enable-fontconfig --gn-only

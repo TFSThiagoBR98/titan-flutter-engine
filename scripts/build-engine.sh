@@ -325,8 +325,10 @@ for folder in "${patch_folders[@]}"; do
 done
 
 all_patch_paths=()
-while IFS= read -r path; do
-  [[ -n "$path" ]] || continue
+all_patch_repositories=()
+while IFS=$'\t' read -r repo path; do
+  [[ -n "$repo" && -n "$path" ]] || continue
+  all_patch_repositories+=("$repo")
   all_patch_paths+=("$path")
 done < <(python3 "$repository_root/scripts/patch_series.py" --patch-root "$patch_dir" --paths)
 
@@ -399,30 +401,74 @@ fi
 [[ -d "$engine_src/flutter" ]] || die "Flutter engine source is missing: $engine_src"
 
 restore_patch_paths() {
-  local path target
+  local repo repo_root revision path target index restored_count=0
   local -a tracked_paths=()
   local -a created_paths=()
+  local -a repositories=()
+  declare -A seen_repositories=()
 
-  for path in "${all_patch_paths[@]}"; do
-    if git -C "$flutter_dir" cat-file -e "$flutter_commit:$path" 2>/dev/null; then
-      tracked_paths+=("$path")
+  for repo in "${all_patch_repositories[@]}"; do
+    if [[ -z "${seen_repositories[$repo]+present}" ]]; then
+      seen_repositories["$repo"]=1
+      repositories+=("$repo")
+    fi
+  done
+
+  for repo in "${repositories[@]}"; do
+    if [[ "$repo" == . ]]; then
+      repo_root=$flutter_dir
+      revision=$flutter_commit
     else
-      created_paths+=("$path")
+      repo_root="$flutter_dir/$repo"
+      revision=HEAD
     fi
-  done
+    [[ -d "$repo_root" ]] || die "patch repository does not exist: $repo"
 
-  for path in "${created_paths[@]}"; do
-    target="$flutter_dir/$path"
-    if [[ -e "$target" || -L "$target" ]]; then
-      [[ -f "$target" || -L "$target" ]] || die "patch-created path is not a file: $path"
-      rm -f -- "$target"
+    tracked_paths=()
+    created_paths=()
+    for index in "${!all_patch_paths[@]}"; do
+      [[ "${all_patch_repositories[index]}" == "$repo" ]] || continue
+      path=${all_patch_paths[index]}
+      if git -C "$repo_root" cat-file -e "$revision:$path" 2>/dev/null; then
+        tracked_paths+=("$path")
+      else
+        created_paths+=("$path")
+      fi
+    done
+
+    for path in "${created_paths[@]}"; do
+      target="$repo_root/$path"
+      if [[ -e "$target" || -L "$target" ]]; then
+        [[ -f "$target" || -L "$target" ]] || die "patch-created path is not a file: $repo/$path"
+        rm -f -- "$target"
+      fi
+    done
+
+    if ((${#tracked_paths[@]} > 0)); then
+      git -C "$repo_root" checkout "$revision" -- "${tracked_paths[@]}"
     fi
+    restored_count=$((restored_count + ${#tracked_paths[@]} + ${#created_paths[@]}))
   done
+  printf 'restored %d patch paths across %d repositories\n' "$restored_count" "${#repositories[@]}"
+}
 
-  if ((${#tracked_paths[@]} > 0)); then
-    git -C "$flutter_dir" checkout "$flutter_commit" -- "${tracked_paths[@]}"
+patch_repository() {
+  local patch=$1 first_line repo=.
+  IFS= read -r first_line < "$patch" || true
+  if [[ "$first_line" == '# Repo: '* ]]; then
+    repo=${first_line#'# Repo: '}
   fi
-  printf 'restored %d patch paths from %s\n' "${#all_patch_paths[@]}" "$flutter_commit"
+  printf '%s\n' "$repo"
+}
+
+patch_checkout() {
+  local repo=$1
+  if [[ "$repo" == . ]]; then
+    printf '%s\n' "$flutter_dir"
+  else
+    [[ -d "$flutter_dir/$repo" ]] || die "patch repository does not exist: $repo"
+    printf '%s\n' "$flutter_dir/$repo"
+  fi
 }
 
 patch_lock="$work_root/.titan-patches.lock"
@@ -436,8 +482,10 @@ patch_state="$flutter_dir/.titan-patches.sha256"
     restore_patch_paths
 
     for patch in "${patches[@]}"; do
+      patch_repo=$(patch_repository "$patch")
+      patch_root=$(patch_checkout "$patch_repo")
       printf 'applying %s\n' "$patch"
-      git -C "$flutter_dir" apply "$patch"
+      git -C "$patch_root" apply "$patch"
     done
     printf '%s\n' "$patches_sha256_actual" > "$patch_state"
     printf 'applied patch series: %s\n' "$patches_sha256_actual"

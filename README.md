@@ -78,6 +78,11 @@ GN. Assim, builds de alvos diferentes compartilham o mesmo checkout. Cada pasta
 tem um README com a tabela patch → por quê → plataformas afetadas. O parser
 continua aceitando condições `chave=valor` para séries antigas.
 
+Um patch que modifica uma dependência do gclient começa com `# Repo: <caminho>`; os caminhos
+do diff são relativos a esse repositório. Sem essa linha, o patch pertence ao repositório do
+Flutter. Isso é necessário porque as dependências do gclient, como o SwiftShader, são
+repositórios Git próprios dentro do checkout do Flutter.
+
 ## Vários alvos em paralelo
 
 ```sh

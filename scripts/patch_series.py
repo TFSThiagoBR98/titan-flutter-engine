@@ -14,9 +14,14 @@ def collect_patch_paths(patch_paths: Iterable[Path]) -> list[str]:
     collected: list[str] = []
     seen: set[str] = set()
     for patch_path in patch_paths:
-        for line_number, line in enumerate(
-            patch_path.read_text(encoding="utf-8").splitlines(), start=1
-        ):
+        lines = patch_path.read_text(encoding="utf-8").splitlines()
+        repo = "."
+        if lines and lines[0].startswith("# Repo: "):
+            repo = lines[0][len("# Repo: ") :].strip()
+            if not repo or repo.startswith("/") or ".." in Path(repo).parts:
+                raise ValueError(f"invalid repository path in {patch_path}: {repo}")
+
+        for line_number, line in enumerate(lines, start=1):
             if not line.startswith("diff --git "):
                 continue
             fields = shlex.split(line[len("diff --git ") :])
@@ -36,9 +41,10 @@ def collect_patch_paths(patch_paths: Iterable[Path]) -> list[str]:
                     raise ValueError(
                         f"invalid repository path in {patch_path} on line {line_number}: {path}"
                     )
-                if path not in seen:
-                    seen.add(path)
-                    collected.append(path)
+                repository_path = f"{repo}\t{path}"
+                if repository_path not in seen:
+                    seen.add(repository_path)
+                    collected.append(repository_path)
     return collected
 
 

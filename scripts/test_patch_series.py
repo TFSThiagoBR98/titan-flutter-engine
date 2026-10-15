@@ -18,15 +18,16 @@ index 1111111..2222222 100644
 --- a/engine/src/always.gn
 +++ b/engine/src/always.gn
 """,
-            "conditional.patch": """\
-diff --git a/engine/src/conditional.gn b/engine/src/conditional.gn
+            "dependency.patch": """\
+# Repo: engine/src/flutter/third_party/swiftshader
+diff --git a/third_party/marl/BUILD.gn b/third_party/marl/BUILD.gn
 index 3333333..4444444 100644
---- a/engine/src/conditional.gn
-+++ b/engine/src/conditional.gn
-diff --git a/engine/src/created.gn b/engine/src/created.gn
+--- a/third_party/marl/BUILD.gn
++++ b/third_party/marl/BUILD.gn
+diff --git a/third_party/marl/created.gn b/third_party/marl/created.gn
 new file mode 100644
 --- /dev/null
-+++ b/engine/src/created.gn
++++ b/third_party/marl/created.gn
 """,
         }
         with TemporaryDirectory() as temporary_directory:
@@ -39,9 +40,9 @@ new file mode 100644
             self.assertEqual(
                 collect_patch_paths(patch_paths),
                 [
-                    "engine/src/always.gn",
-                    "engine/src/conditional.gn",
-                    "engine/src/created.gn",
+                    ".\tengine/src/always.gn",
+                    "engine/src/flutter/third_party/swiftshader\tthird_party/marl/BUILD.gn",
+                    "engine/src/flutter/third_party/swiftshader\tthird_party/marl/created.gn",
                 ],
             )
 
