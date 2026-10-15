@@ -60,10 +60,13 @@ raise 'ccache size is not capped at 900M' unless env['CCACHE_MAXSIZE'] == '900M'
 steps = build.fetch('steps')
 uses = steps.filter_map { |step| step['uses'] }
 raise 'checkout is missing' unless uses.include?('actions/checkout@v4')
-raise 'ccache cache is missing' unless uses.include?('actions/cache@v4')
+raise 'ccache restore is missing' unless uses.include?('actions/cache/restore@v4')
+raise 'ccache save is missing' unless uses.include?('actions/cache/save@v4')
+save = steps.find { |step| step['uses'] == 'actions/cache/save@v4' }
+raise 'ccache must be saved even when the job fails' unless save['if'].to_s.include?('always()')
 raise 'artifact upload is missing' unless uses.include?('actions/upload-artifact@v4')
-raise 'checkout cache must not be configured' unless uses.count { |use| use.start_with?('actions/cache') } == 1
-cache = steps.find { |step| step['uses'] == 'actions/cache@v4' }.fetch('with')
+raise 'checkout cache must not be configured' unless uses.count { |use| use.start_with?('actions/cache') } == 2
+cache = steps.find { |step| step['uses'] == 'actions/cache/restore@v4' }.fetch('with')
 raise 'wrong ccache path' unless cache['path'] == '/mnt/titan/work/ccache'
 raise 'cache key must include the variant' unless cache['key'].include?('${{ matrix.variant }}')
 raise 'cache key must include the run id' unless cache['key'].include?('${{ github.run_id }}')

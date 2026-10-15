@@ -65,8 +65,8 @@ jobs:
       - name: Install dependencies
         run: scripts/ci.sh deps
 
-      - name: Cache ccache
-        uses: actions/cache@v4
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
         with:
           path: /mnt/titan/work/ccache
           key: ccache-${{ matrix.variant }}-${{ hashFiles('flutter.lock', 'patches/**') }}-${{ github.run_id }}
@@ -79,7 +79,18 @@ jobs:
         run: scripts/ci.sh sysroot ${{ matrix.defconfig }}
 
       - name: Build engine
+        id: build
         run: scripts/ci.sh build
+
+      # Saved right after the build, even when it or a later step fails: the
+      # compiled objects are still valid, and actions/cache would only save them
+      # when the whole job succeeds.
+      - name: Save ccache
+        if: always() && steps.build.conclusion != 'skipped'
+        uses: actions/cache/save@v4
+        with:
+          path: /mnt/titan/work/ccache
+          key: ccache-${{ matrix.variant }}-${{ hashFiles('flutter.lock', 'patches/**') }}-${{ github.run_id }}
 
       - name: Probe engine bundles
         run: scripts/ci.sh probe
