@@ -5,10 +5,11 @@ set -euo pipefail
 source "$(dirname "$0")/lib/paths.sh"
 source "$(dirname "$0")/lib/cpu-budget.sh"
 source "$(dirname "$0")/lib/sysroot.sh"
+source "$(dirname "$0")/sysroot-cache.sh"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/make-buildroot-sysroot.sh --config <defconfig> [--out <dir>] [--force]
+Usage: scripts/make-buildroot-sysroot.sh --config <defconfig> [--out <dir>] [--force] [--publish]
 
 Build a Buildroot toolchain-only sysroot and link it into the Flutter Engine.
 EOF
@@ -22,6 +23,7 @@ die() {
 config_arg=
 out_arg=
 force=0
+publish=0
 while (($# > 0)); do
   case "$1" in
     --config)
@@ -44,6 +46,10 @@ while (($# > 0)); do
       ;;
     --force)
       force=1
+      shift
+      ;;
+    --publish)
+      publish=1
       shift
       ;;
     -h|--help)
@@ -131,6 +137,15 @@ if ((force == 0)) && sysroot_stamp_matches "$sysroot_output" "$sysroot_key_value
   exit 0
 fi
 
+if ((force == 0)); then
+  if sysroot_cache_fetch "$config_name" "$sysroot_output"; then
+    exit 0
+  else
+    cache_status=$?
+    ((cache_status == 3)) || die "sysroot cache fetch failed for $config_name"
+  fi
+fi
+
 if [[ ! -e "$buildroot_root" ]]; then
   mkdir -p "$workspace_root"
   printf 'cloning Buildroot %s into %s\n' "$buildroot_tag" "$buildroot_root"
@@ -166,3 +181,7 @@ ln -sfn "$sysroot_output" "$engine_sysroot"
 printf 'Buildroot sysroot: %s\n' "$sysroot_output"
 printf 'Engine sysroot link: %s -> %s\n' "$engine_sysroot" "$(readlink "$engine_sysroot")"
 printf '%s\n' "$sysroot_key_value" > "$(sysroot_stamp_path "$sysroot_output")"
+sysroot_cache_create "$config_name" "$sysroot_output" >/dev/null
+if ((publish)); then
+  sysroot_cache_publish "$config_name" "$sysroot_output"
+fi
