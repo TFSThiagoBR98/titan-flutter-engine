@@ -14,4 +14,9 @@ fi
 TITAN_WORK_DIR=${TITAN_WORK_DIR:-$TITAN_DEFAULT_WORK_DIR}
 TITAN_BUNDLE_DIR=${TITAN_BUNDLE_DIR:-$TITAN_DEFAULT_BUNDLE_DIR}
 
-export TITAN_WORK_DIR TITAN_BUNDLE_DIR
+# CPU budget for every build (Buildroot, ninja): half of the cores by
+# default, so a full build never pins the desktop at 100%. Builds also run
+# under `nice`. Override with TITAN_JOBS.
+TITAN_JOBS=${TITAN_JOBS:-$(( $(getconf _NPROCESSORS_ONLN) / 2 > 0 ? $(getconf _NPROCESSORS_ONLN) / 2 : 1 ))}
+
+export TITAN_WORK_DIR TITAN_BUNDLE_DIR TITAN_JOBS

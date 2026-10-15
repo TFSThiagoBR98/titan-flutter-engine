@@ -129,13 +129,13 @@ engine_sysroot="$TITAN_WORK_DIR/flutter/engine/src/build/linux/${sysroot_name}-s
 
 mkdir -p "$build_output" "$download_dir" "$sysroot_output"
 export BR2_DL_DIR="$download_dir"
-export BR2_JLEVEL="$(getconf _NPROCESSORS_ONLN)"
+export BR2_JLEVEL="$TITAN_JOBS"
 
-make -C "$buildroot_root" \
+nice -n 10 make -C "$buildroot_root" \
   O="$build_output" \
   BR2_EXTERNAL="$repository_root/buildroot" \
   "$config_name"
-make -C "$buildroot_root" \
+nice -n 10 make -C "$buildroot_root" \
   O="$build_output" \
   BR2_EXTERNAL="$repository_root/buildroot"
 

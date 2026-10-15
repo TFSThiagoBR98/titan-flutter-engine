@@ -18,7 +18,7 @@ Options:
   --libc glibc|musl                 Target libc (default: glibc)
   --target-sysroot <dir>             Target sysroot for cross-compilation
   --gn-only                          Configure GN without running Ninja
-  --jobs N                           Ninja parallel jobs (default: host CPU count)
+  --jobs N                           Ninja parallel jobs (default: TITAN_JOBS, half the cores)
   --load N                           Ninja load limit (default: host CPU count)
   --out <dir>                        Bundle output directory
   --out-name <name>                  Engine output directory name
@@ -263,7 +263,7 @@ if [[ -n "$arm_float_abi" && "$cpu" != arm ]]; then
 fi
 [[ -z "$jobs_arg" || "$jobs_arg" =~ ^[1-9][0-9]*$ ]] || die "--jobs must be a positive integer"
 [[ -z "$load_arg" || "$load_arg" =~ ^[1-9][0-9]*$ ]] || die "--load must be a positive integer"
-jobs=${jobs_arg:-$(getconf _NPROCESSORS_ONLN)}
+jobs=${jobs_arg:-$TITAN_JOBS}
 load=${load_arg:-$jobs}
 
 if [[ "$cpu" == x64 && "$libc" == glibc ]]; then
@@ -536,15 +536,15 @@ fi
 out_dir="$engine_src/out/$out_name"
 printf 'building Flutter Engine in %s\n' "$out_dir"
 if ((${#ninja_targets[@]} > 0)); then
-  ninja -C "$out_dir" -j "$jobs" -l "$load" "${ninja_targets[@]}"
+  nice -n 10 ninja -C "$out_dir" -j "$jobs" -l "$load" "${ninja_targets[@]}"
   printf 'selected Ninja targets complete: %s\n' "$out_dir"
   exit 0
 fi
-ninja -C "$out_dir" -j "$jobs" -l "$load" \
+nice -n 10 ninja -C "$out_dir" -j "$jobs" -l "$load" \
   flutter/shell/platform/embedder:flutter_engine_library \
   flutter/shell/platform/embedder:copy_headers
 if [[ "$mode" != debug ]]; then
-  ninja -C "$out_dir" -j "$jobs" -l "$load" flutter/shell/common:gen_snapshot
+  nice -n 10 ninja -C "$out_dir" -j "$jobs" -l "$load" flutter/shell/common:gen_snapshot
 fi
 
 variant="$flutter_commit"

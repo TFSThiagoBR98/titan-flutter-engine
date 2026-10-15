@@ -24,7 +24,7 @@ die() {
   exit 1
 }
 
-parallel=3
+parallel=2
 zip_output=0
 variants=()
 while (($# > 0)); do
@@ -59,8 +59,10 @@ repository_root=$(cd "$(dirname "$0")/.." && pwd -P)
 work_root="$TITAN_WORK_DIR"
 matrix_root="$TITAN_WORK_DIR/matrix"
 build_engine="$repository_root/scripts/build-engine.sh"
-jobs=$(getconf _NPROCESSORS_ONLN)
-load=$jobs
+# Every build gets the whole budget for -j, and -l (system load) keeps the
+# concurrent builds together near it.
+jobs=$TITAN_JOBS
+load=$TITAN_JOBS
 
 declare -A variant_specs=(
   [x64-debug]='--mode debug --cpu x64'
