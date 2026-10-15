@@ -133,7 +133,8 @@ grep -Fq -- '-march=rv64gc -mabi=lp64d' "$clang_log"
 grep -Fq -- '-cpu rv64' "$qemu_log"
 
 ci_repository="$temporary_directory/ci-repository"
-mkdir -p "$ci_repository/scripts/lib"
+mkdir -p "$ci_repository/scripts/lib" "$ci_repository/tests/qemu"
+printf '0123456789abcdef\n' > "$ci_repository/tests/qemu/expected-frame-hash"
 cp "$repository_root/scripts/ci.sh" "$ci_repository/scripts/ci.sh"
 cp "$repository_root/scripts/lib/paths.sh" "$ci_repository/scripts/lib/paths.sh"
 cat > "$ci_repository/scripts/build-probe-app.sh" <<'EOF'
@@ -169,5 +170,15 @@ TITAN_PROBE_SELECTION_LOG="$selection_log" \
 [[ "$(wc -l < "$selection_log")" -eq 2 ]]
 grep -Fxq x64-debug "$selection_log"
 grep -Fxq arm64-debug "$selection_log"
+
+printf 'fedcba9876543210\n' > "$ci_repository/tests/qemu/expected-frame-hash"
+if TITAN_WORK_DIR="$temporary_directory/ci-work" \
+  TITAN_BUNDLE_DIR="$bundle_root" \
+  TITAN_VARIANTS='x64-debug' \
+  TITAN_PROBE_SELECTION_LOG="$selection_log" \
+  bash "$ci_repository/scripts/ci.sh" probe > "$probe_log" 2>&1; then
+  printf 'ci.sh probe accepted a frame hash that differs from tests/qemu/expected-frame-hash\n' >&2
+  exit 1
+fi
 
 printf 'test_qemu_probe_args.sh: ok\n'
