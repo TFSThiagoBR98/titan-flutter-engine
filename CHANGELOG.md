@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-15
+
 ### Added
 
 - Flutter SDK host artifacts (Linux x64): the same zips the `flutter` tool
@@ -71,3 +73,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instructions).
 - The x86_64 musl bundle uses the full `<commit>-debug-x64-musl` name instead of
   `<commit>-musl`.
+
+[Unreleased]: https://github.com/TFSThiagoBR98/titan-flutter-engine/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/TFSThiagoBR98/titan-flutter-engine/releases/tag/v0.1.0
