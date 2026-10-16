@@ -27,8 +27,18 @@ O fluxo é:
 
 ## Verificar o build
 
-Com um build que tenha os testes habilitados, execute os gtests a partir do
-diretório de saída:
+O build, os alvos de teste e a linha de base podem ser verificados por uma
+única entrada, de qualquer diretório:
+
+```bash
+scripts/check-runtime-spi.sh
+```
+
+Para compilar sem executar os gtests, use `--skip-tests`. Alvos específicos
+podem ser informados repetindo `--target <ninja-target>`.
+
+Com um build que tenha os testes habilitados, também é possível executar os
+gtests diretamente a partir do diretório de saída:
 
 ```bash
 scripts/run-engine-tests.sh <out_dir> \
