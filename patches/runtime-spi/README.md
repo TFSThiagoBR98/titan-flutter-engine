@@ -1,13 +1,15 @@
 # Runtime SPI
 
 Patches do seam interno entre o core do Flutter Engine e os backends de
-runtime. A pasta começa vazia; cada patch exportado registra uma mudança
-isolada do branch `titan/runtime-spi`.
+runtime. Cada patch exportado registra uma mudança isolada do branch
+`titan/runtime-spi`.
 
 A série `runtime-spi` só modifica o repositório do Flutter.
 
 | Patch | Por quê | Plataformas |
 |---|---|---|
+| `0001-build-engine-add-the-no-dart-dependency-checker.patch` | Adicionar o alvo GN e o checker antes de mover as fontes de `lib/ui`. | |
+| `0002-feat-engine-split-the-dart-free-lib-ui-types.patch` | Separar os tipos de dados de `lib/ui` sem Dart no próprio alvo. | |
 
 O fluxo é:
 

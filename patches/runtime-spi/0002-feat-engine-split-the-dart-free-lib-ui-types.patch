@@ -1,0 +1,490 @@
+# Why: split the Dart-free data types of lib/ui into their own target so the
+engine core can use them without the Dart VM
+diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
+index 20ffebaaef5..0ddf322fc61 100644
+--- a/engine/src/flutter/lib/ui/BUILD.gn
++++ b/engine/src/flutter/lib/ui/BUILD.gn
+@@ -12,10 +12,38 @@ if (is_fuchsia) {
+ }
+ 
+ source_set("ui_core_types") {
+-  sources = []
++  sources = [
++    "semantics/custom_accessibility_action.cc",
++    "semantics/custom_accessibility_action.h",
++    "semantics/semantics_node.cc",
++    "semantics/semantics_node.h",
++    "semantics/semantics_flags_types.h",
++    "semantics/string_attribute_types.h",
++    "window/key_data.cc",
++    "window/key_data.h",
++    "window/key_data_packet.cc",
++    "window/key_data_packet.h",
++    "window/platform_message.cc",
++    "window/platform_message.h",
++    "window/platform_message_response.cc",
++    "window/platform_message_response.h",
++    "window/pointer_data.cc",
++    "window/pointer_data.h",
++    "window/pointer_data_packet.cc",
++    "window/pointer_data_packet.h",
++    "window/pointer_data_packet_converter.cc",
++    "window/pointer_data_packet_converter.h",
++    "window/viewport_metrics.cc",
++    "window/viewport_metrics.h",
++  ]
+ 
+   public_configs = [ "//flutter:config" ]
+ 
++  public_deps = [
++    "//flutter/fml",
++    "//flutter/skia",
++  ]
++
+   assert_no_deps = [
+     "//flutter/third_party/dart/*",
+     "//flutter/third_party/tonic/*",
+@@ -123,12 +151,8 @@ source_set("ui") {
+     "painting/vertices.h",
+     "plugins/callback_cache.cc",
+     "plugins/callback_cache.h",
+-    "semantics/custom_accessibility_action.cc",
+-    "semantics/custom_accessibility_action.h",
+     "semantics/semantics_flags.cc",
+     "semantics/semantics_flags.h",
+-    "semantics/semantics_node.cc",
+-    "semantics/semantics_node.h",
+     "semantics/semantics_update.cc",
+     "semantics/semantics_update.h",
+     "semantics/semantics_update_builder.cc",
+@@ -140,6 +164,7 @@ source_set("ui") {
+     "text/asset_manager_font_provider.h",
+     "text/font_collection.cc",
+     "text/font_collection.h",
++    "text/font_collection_dart.h",
+     "text/paragraph.cc",
+     "text/paragraph.h",
+     "text/paragraph_builder.cc",
+@@ -147,38 +172,23 @@ source_set("ui") {
+     "ui_dart_state.cc",
+     "ui_dart_state.h",
+     "window/hit_test_response.h",
+-    "window/key_data.cc",
+-    "window/key_data.h",
+-    "window/key_data_packet.cc",
+-    "window/key_data_packet.h",
+     "window/platform_configuration.cc",
+     "window/platform_configuration.h",
+     "window/platform_isolate.cc",
+     "window/platform_isolate.h",
+-    "window/platform_message.cc",
+-    "window/platform_message.h",
+-    "window/platform_message_response.cc",
+-    "window/platform_message_response.h",
+     "window/platform_message_response_dart.cc",
+     "window/platform_message_response_dart.h",
+     "window/platform_message_response_dart_port.cc",
+     "window/platform_message_response_dart_port.h",
+     "window/point_data.h",
+-    "window/pointer_data.cc",
+-    "window/pointer_data.h",
+-    "window/pointer_data_packet.cc",
+-    "window/pointer_data_packet.h",
+-    "window/pointer_data_packet_converter.cc",
+-    "window/pointer_data_packet_converter.h",
+     "window/view_focus.cc",
+     "window/view_focus.h",
+-    "window/viewport_metrics.cc",
+-    "window/viewport_metrics.h",
+   ]
+ 
+   public_configs = [ "//flutter:config" ]
+ 
+   public_deps = [
++    ":ui_core_types",
+     "//flutter/flow",
+     "//flutter/shell/common:display",
+     "//flutter/shell/common:platform_message_handler",
+diff --git a/engine/src/flutter/lib/ui/dart_ui.cc b/engine/src/flutter/lib/ui/dart_ui.cc
+index 73eb4917d52..7993a591e39 100644
+--- a/engine/src/flutter/lib/ui/dart_ui.cc
++++ b/engine/src/flutter/lib/ui/dart_ui.cc
+@@ -35,7 +35,7 @@
+ #include "flutter/lib/ui/semantics/semantics_update.h"
+ #include "flutter/lib/ui/semantics/semantics_update_builder.h"
+ #include "flutter/lib/ui/semantics/string_attribute.h"
+-#include "flutter/lib/ui/text/font_collection.h"
++#include "flutter/lib/ui/text/font_collection_dart.h"
+ #include "flutter/lib/ui/text/paragraph.h"
+ #include "flutter/lib/ui/text/paragraph_builder.h"
+ #include "flutter/lib/ui/window/platform_configuration.h"
+@@ -83,7 +83,7 @@ typedef CanvasPath Path;
+   V(SceneBuilder::Create)                                          \
+   V(SemanticsUpdateBuilder::Create)                                \
+   /* Other */                                                      \
+-  V(FontCollection::LoadFontFromList)                              \
++  V(LoadFontFromList)                                               \
+   V(ImageDescriptor::initEncoded)                                  \
+   V(Image::decodeImageFromPixelsSync)                              \
+   V(ImageFilter::equals)                                           \
+diff --git a/engine/src/flutter/lib/ui/semantics/custom_accessibility_action.h b/engine/src/flutter/lib/ui/semantics/custom_accessibility_action.h
+index e093c6bae0b..1c12aeae170 100644
+--- a/engine/src/flutter/lib/ui/semantics/custom_accessibility_action.h
++++ b/engine/src/flutter/lib/ui/semantics/custom_accessibility_action.h
+@@ -5,9 +5,9 @@
+ #ifndef FLUTTER_LIB_UI_SEMANTICS_CUSTOM_ACCESSIBILITY_ACTION_H_
+ #define FLUTTER_LIB_UI_SEMANTICS_CUSTOM_ACCESSIBILITY_ACTION_H_
+ 
+-#include "third_party/tonic/dart_library_natives.h"
+-#include "third_party/tonic/dart_wrappable.h"
+-#include "third_party/tonic/typed_data/typed_list.h"
++#include <cstdint>
++#include <string>
++#include <unordered_map>
+ 
+ namespace flutter {
+ 
+diff --git a/engine/src/flutter/lib/ui/semantics/semantics_flags.h b/engine/src/flutter/lib/ui/semantics/semantics_flags.h
+index 4dc49a52bd7..f4a39b19294 100644
+--- a/engine/src/flutter/lib/ui/semantics/semantics_flags.h
++++ b/engine/src/flutter/lib/ui/semantics/semantics_flags.h
+@@ -6,49 +6,11 @@
+ #define FLUTTER_LIB_UI_SEMANTICS_SEMANTICS_FLAGS_H_
+ 
+ #include "flutter/lib/ui/dart_wrapper.h"
++#include "flutter/lib/ui/semantics/semantics_flags_types.h"
+ #include "third_party/tonic/dart_library_natives.h"
+ 
+ namespace flutter {
+ 
+-enum class SemanticsTristate : int32_t {
+-  kNone = 0,
+-  kTrue = 1,
+-  kFalse = 2,
+-};
+-enum class SemanticsCheckState : int32_t {
+-  kNone = 0,
+-  kTrue = 1,
+-  kFalse = 2,
+-  kMixed = 3,
+-};
+-
+-struct SemanticsFlags {
+-  SemanticsCheckState isChecked = SemanticsCheckState::kNone;
+-  SemanticsTristate isSelected = SemanticsTristate::kNone;
+-  SemanticsTristate isEnabled = SemanticsTristate::kNone;
+-  SemanticsTristate isToggled = SemanticsTristate::kNone;
+-  SemanticsTristate isExpanded = SemanticsTristate::kNone;
+-  SemanticsTristate isRequired = SemanticsTristate::kNone;
+-  SemanticsTristate isFocused = SemanticsTristate::kNone;
+-  bool isButton = false;
+-  bool isTextField = false;
+-  bool isInMutuallyExclusiveGroup = false;
+-  bool isHeader = false;
+-  bool isObscured = false;
+-  bool scopesRoute = false;
+-  bool namesRoute = false;
+-  bool isHidden = false;
+-  bool isImage = false;
+-  bool isLiveRegion = false;
+-  bool hasImplicitScrolling = false;
+-  bool isMultiline = false;
+-  bool isReadOnly = false;
+-  bool isLink = false;
+-  bool isSlider = false;
+-  bool isKeyboardKey = false;
+-  bool isAccessibilityFocusBlocked = false;
+-};
+-
+ //------------------------------------------------------------------------------
+ /// The peer class for all of the SemanticsFlags subclasses in semantics.dart.
+ class NativeSemanticsFlags
+diff --git a/engine/src/flutter/lib/ui/semantics/semantics_flags_types.h b/engine/src/flutter/lib/ui/semantics/semantics_flags_types.h
+new file mode 100644
+index 00000000000..530294af7f0
+--- /dev/null
++++ b/engine/src/flutter/lib/ui/semantics/semantics_flags_types.h
+@@ -0,0 +1,54 @@
++// Copyright 2013 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_LIB_UI_SEMANTICS_SEMANTICS_FLAGS_TYPES_H_
++#define FLUTTER_LIB_UI_SEMANTICS_SEMANTICS_FLAGS_TYPES_H_
++
++#include <cstdint>
++
++namespace flutter {
++
++enum class SemanticsTristate : int32_t {
++  kNone = 0,
++  kTrue = 1,
++  kFalse = 2,
++};
++
++enum class SemanticsCheckState : int32_t {
++  kNone = 0,
++  kTrue = 1,
++  kFalse = 2,
++  kMixed = 3,
++};
++
++struct SemanticsFlags {
++  SemanticsCheckState isChecked = SemanticsCheckState::kNone;
++  SemanticsTristate isSelected = SemanticsTristate::kNone;
++  SemanticsTristate isEnabled = SemanticsTristate::kNone;
++  SemanticsTristate isToggled = SemanticsTristate::kNone;
++  SemanticsTristate isExpanded = SemanticsTristate::kNone;
++  SemanticsTristate isRequired = SemanticsTristate::kNone;
++  SemanticsTristate isFocused = SemanticsTristate::kNone;
++  bool isButton = false;
++  bool isTextField = false;
++  bool isInMutuallyExclusiveGroup = false;
++  bool isHeader = false;
++  bool isObscured = false;
++  bool scopesRoute = false;
++  bool namesRoute = false;
++  bool isHidden = false;
++  bool isImage = false;
++  bool isLiveRegion = false;
++  bool hasImplicitScrolling = false;
++  bool isMultiline = false;
++  bool isReadOnly = false;
++  bool isLink = false;
++  bool isSlider = false;
++  bool isKeyboardKey = false;
++  bool isAccessibilityFocusBlocked = false;
++};
++
++}  // namespace flutter
++
++#endif  // FLUTTER_LIB_UI_SEMANTICS_SEMANTICS_FLAGS_TYPES_H_
+diff --git a/engine/src/flutter/lib/ui/semantics/semantics_node.h b/engine/src/flutter/lib/ui/semantics/semantics_node.h
+index b3e38f3bd1b..5e0e85313cb 100644
+--- a/engine/src/flutter/lib/ui/semantics/semantics_node.h
++++ b/engine/src/flutter/lib/ui/semantics/semantics_node.h
+@@ -13,8 +13,8 @@
+ #include "third_party/skia/include/core/SkM44.h"
+ #include "third_party/skia/include/core/SkRect.h"
+ 
+-#include "flutter/lib/ui/semantics/semantics_flags.h"
+-#include "flutter/lib/ui/semantics/string_attribute.h"
++#include "flutter/lib/ui/semantics/semantics_flags_types.h"
++#include "flutter/lib/ui/semantics/string_attribute_types.h"
+ 
+ namespace flutter {
+ 
+diff --git a/engine/src/flutter/lib/ui/semantics/string_attribute.h b/engine/src/flutter/lib/ui/semantics/string_attribute.h
+index 1e2dce57e61..08f598c5222 100644
+--- a/engine/src/flutter/lib/ui/semantics/string_attribute.h
++++ b/engine/src/flutter/lib/ui/semantics/string_attribute.h
+@@ -5,52 +5,12 @@
+ #ifndef FLUTTER_LIB_UI_SEMANTICS_STRING_ATTRIBUTE_H_
+ #define FLUTTER_LIB_UI_SEMANTICS_STRING_ATTRIBUTE_H_
+ 
++#include "flutter/lib/ui/semantics/string_attribute_types.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "third_party/tonic/dart_library_natives.h"
+ 
+ namespace flutter {
+ 
+-struct StringAttribute;
+-
+-using StringAttributePtr = std::shared_ptr<flutter::StringAttribute>;
+-using StringAttributes = std::vector<StringAttributePtr>;
+-
+-// When adding a new StringAttributeType, the classes in these file must be
+-// updated as well.
+-//  * engine/src/flutter/lib/ui/semantics.dart
+-//  * engine/src/flutter/lib/web_ui/lib/semantics.dart
+-//  * engine/src/flutter/shell/platform/android/io/flutter/view/AccessibilityBridge.java
+-//  * engine/src/flutter/shell/platform/embedder/embedder.h
+-//  * engine/src/flutter/lib/web_ui/test/engine/semantics/semantics_api_test.dart
+-//  * engine/src/flutter/testing/dart/semantics_test.dart
+-
+-enum class StringAttributeType : int32_t {
+-  kSpellOut,
+-  kLocale,
+-};
+-
+-//------------------------------------------------------------------------------
+-/// The c++ representation of the StringAttribute, this struct serves as an
+-/// abstract interface for the subclasses and should not be used directly.
+-struct StringAttribute {
+-  virtual ~StringAttribute() = default;
+-  int32_t start = -1;
+-  int32_t end = -1;
+-  StringAttributeType type;
+-};
+-
+-//------------------------------------------------------------------------------
+-/// Indicates the string needs to be spelled out character by character when the
+-/// assistive technologies announce the string.
+-struct SpellOutStringAttribute : StringAttribute {};
+-
+-//------------------------------------------------------------------------------
+-/// Indicates the string needs to be treated as a specific language when the
+-/// assistive technologies announce the string.
+-struct LocaleStringAttribute : StringAttribute {
+-  std::string locale;
+-};
+-
+ //------------------------------------------------------------------------------
+ /// The peer class for all of the StringAttribute subclasses in semantics.dart.
+ class NativeStringAttribute
+diff --git a/engine/src/flutter/lib/ui/semantics/string_attribute_types.h b/engine/src/flutter/lib/ui/semantics/string_attribute_types.h
+new file mode 100644
+index 00000000000..bea378d02c0
+--- /dev/null
++++ b/engine/src/flutter/lib/ui/semantics/string_attribute_types.h
+@@ -0,0 +1,52 @@
++// Copyright 2013 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_LIB_UI_SEMANTICS_STRING_ATTRIBUTE_TYPES_H_
++#define FLUTTER_LIB_UI_SEMANTICS_STRING_ATTRIBUTE_TYPES_H_
++
++#include <cstdint>
++#include <memory>
++#include <string>
++#include <vector>
++
++namespace flutter {
++
++// When adding a new StringAttributeType, the classes in these file must be
++// updated as well.
++//  * engine/src/flutter/lib/ui/semantics.dart
++//  * engine/src/flutter/lib/web_ui/lib/semantics.dart
++//  * engine/src/flutter/shell/platform/android/io/flutter/view/AccessibilityBridge.java
++//  * engine/src/flutter/shell/platform/embedder/embedder.h
++//  * engine/src/flutter/lib/web_ui/test/engine/semantics/semantics_api_test.dart
++//  * engine/src/flutter/testing/dart/semantics_test.dart
++enum class StringAttributeType : int32_t {
++  kSpellOut,
++  kLocale,
++};
++
++// The C++ representation of StringAttribute. This struct serves as an
++// abstract interface for the subclasses and should not be used directly.
++struct StringAttribute {
++  virtual ~StringAttribute() = default;
++  int32_t start = -1;
++  int32_t end = -1;
++  StringAttributeType type;
++};
++
++// Indicates the string needs to be spelled out character by character when
++// assistive technologies announce the string.
++struct SpellOutStringAttribute : StringAttribute {};
++
++// Indicates the string needs to be treated as a specific language when
++// assistive technologies announce the string.
++struct LocaleStringAttribute : StringAttribute {
++  std::string locale;
++};
++
++using StringAttributePtr = std::shared_ptr<StringAttribute>;
++using StringAttributes = std::vector<StringAttributePtr>;
++
++}  // namespace flutter
++
++#endif  // FLUTTER_LIB_UI_SEMANTICS_STRING_ATTRIBUTE_TYPES_H_
+diff --git a/engine/src/flutter/lib/ui/text/font_collection.cc b/engine/src/flutter/lib/ui/text/font_collection.cc
+index 34ff63ea87d..c39f50801a9 100644
+--- a/engine/src/flutter/lib/ui/text/font_collection.cc
++++ b/engine/src/flutter/lib/ui/text/font_collection.cc
+@@ -3,6 +3,7 @@
+ // found in the LICENSE file.
+ 
+ #include "flutter/lib/ui/text/font_collection.h"
++#include "flutter/lib/ui/text/font_collection_dart.h"
+ 
+ #include <mutex>
+ 
+@@ -148,9 +149,9 @@ void FontCollection::RegisterTestFonts() {
+   collection_->DisableFontFallback();
+ }
+ 
+-void FontCollection::LoadFontFromList(Dart_Handle font_data_handle,
+-                                      Dart_Handle callback,
+-                                      const std::string& family_name) {
++void LoadFontFromList(Dart_Handle font_data_handle,
++                      Dart_Handle callback,
++                      std::string family_name) {
+   tonic::Uint8List font_data(font_data_handle);
+   UIDartState::ThrowIfUIOperationsProhibited();
+   FontCollection& font_collection = UIDartState::Current()
+diff --git a/engine/src/flutter/lib/ui/text/font_collection.h b/engine/src/flutter/lib/ui/text/font_collection.h
+index 78e4ff9125b..7cc7d998f34 100644
+--- a/engine/src/flutter/lib/ui/text/font_collection.h
++++ b/engine/src/flutter/lib/ui/text/font_collection.h
+@@ -11,7 +11,6 @@
+ #include "flutter/assets/asset_manager.h"
+ #include "flutter/fml/macros.h"
+ #include "flutter/fml/memory/ref_ptr.h"
+-#include "third_party/tonic/typed_data/typed_list.h"
+ #include "txt/font_collection.h"
+ 
+ namespace flutter {
+@@ -32,10 +31,6 @@ class FontCollection {
+ 
+   void RegisterTestFonts();
+ 
+-  static void LoadFontFromList(Dart_Handle font_data_handle,
+-                               Dart_Handle callback,
+-                               const std::string& family_name);
+-
+  private:
+   std::shared_ptr<txt::FontCollection> collection_;
+   sk_sp<txt::DynamicFontManager> dynamic_font_manager_;
+diff --git a/engine/src/flutter/lib/ui/text/font_collection_dart.h b/engine/src/flutter/lib/ui/text/font_collection_dart.h
+new file mode 100644
+index 00000000000..9966b6744de
+--- /dev/null
++++ b/engine/src/flutter/lib/ui/text/font_collection_dart.h
+@@ -0,0 +1,20 @@
++// Copyright 2013 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_LIB_UI_TEXT_FONT_COLLECTION_DART_H_
++#define FLUTTER_LIB_UI_TEXT_FONT_COLLECTION_DART_H_
++
++#include <string>
++
++#include "third_party/dart/runtime/include/dart_api.h"
++
++namespace flutter {
++
++void LoadFontFromList(Dart_Handle font_data_handle,
++                      Dart_Handle callback,
++                      std::string family_name);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_LIB_UI_TEXT_FONT_COLLECTION_DART_H_
+diff --git a/engine/src/flutter/shell/common/BUILD.gn b/engine/src/flutter/shell/common/BUILD.gn
+index 231a71c0378..7efe2f56a8e 100644
+--- a/engine/src/flutter/shell/common/BUILD.gn
++++ b/engine/src/flutter/shell/common/BUILD.gn
+@@ -135,6 +135,7 @@ source_set("common") {
+     ":display",
+     ":platform_message_handler",
+     ":snapshot_pixel_format",
++    "//flutter/lib/ui:ui_core_types",
+     "//flutter/shell/version",
+     "//flutter/third_party/rapidjson",
+     "//flutter/third_party/tonic",
+diff --git a/engine/src/flutter/shell/platform/embedder/BUILD.gn b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+index de0588a7855..67a7ff92909 100644
+--- a/engine/src/flutter/shell/platform/embedder/BUILD.gn
++++ b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+@@ -108,6 +108,7 @@ template("embedder_source_set") {
+       "//flutter/flow",
+       "//flutter/fml",
+       "//flutter/lib/ui",
++      "//flutter/lib/ui:ui_core_types",
+       "//flutter/runtime:libdart",
+       "//flutter/shell/common",
+       "//flutter/skia",

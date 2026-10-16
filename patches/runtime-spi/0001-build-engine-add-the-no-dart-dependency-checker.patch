@@ -1,0 +1,117 @@
+# Why: Add the GN seam target and checker before moving lib/ui sources.
+diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
+index 6ed8db4f6e4..20ffebaaef5 100644
+--- a/engine/src/flutter/lib/ui/BUILD.gn
++++ b/engine/src/flutter/lib/ui/BUILD.gn
+@@ -11,6 +11,17 @@ if (is_fuchsia) {
+   import("//flutter/tools/fuchsia/gn-sdk/src/gn_configs.gni")
+ }
+ 
++source_set("ui_core_types") {
++  sources = []
++
++  public_configs = [ "//flutter:config" ]
++
++  assert_no_deps = [
++    "//flutter/third_party/dart/*",
++    "//flutter/third_party/tonic/*",
++  ]
++}
++
+ source_set("ui") {
+   cflags = [
+     # Dart gives us doubles. Skia and Impeller work in floats.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+new file mode 100644
+index 00000000000..61df6425b8c
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -0,0 +1 @@
++# Runtime SPI targets are introduced as the internal seams are extracted.
+diff --git a/engine/src/flutter/runtime_spi/tools/check_no_dart_deps.py b/engine/src/flutter/runtime_spi/tools/check_no_dart_deps.py
+new file mode 100755
+index 00000000000..3026d991a5a
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/tools/check_no_dart_deps.py
+@@ -0,0 +1,81 @@
++#!/usr/bin/env python3
++"""Checks GN dependency graphs for forbidden Dart runtime dependencies."""
++
++from __future__ import annotations
++
++import os
++from pathlib import Path
++import re
++import subprocess
++import sys
++
++
++FORBIDDEN_PREFIXES = (
++    "//flutter/third_party/dart",
++    "//flutter/third_party/tonic",
++    "//flutter/runtime",
++)
++FORBIDDEN_LABEL = "//flutter/lib/ui:ui"
++GN_LABEL_PATTERN = re.compile(r"//[^\s]+")
++
++
++def engine_source_directory() -> Path:
++    return Path(__file__).resolve().parents[3]
++
++
++def run_gn_desc(output_directory: Path, label: str) -> subprocess.CompletedProcess[str]:
++    engine_source = engine_source_directory()
++    gn = engine_source / "flutter/third_party/gn/gn"
++    environment = os.environ.copy()
++    depot_tools = engine_source / "../../../depot_tools"
++    environment["PATH"] = f"{depot_tools}:{environment.get('PATH', '')}"
++    environment["VPYTHON_VIRTUALENV_ROOT"] = str(engine_source / "../../../vpython-root")
++    environment["CIPD_CACHE_DIR"] = str(engine_source / "../../../cipd-cache")
++    return subprocess.run(
++        [str(gn), "desc", str(output_directory), label, "deps", "--all"],
++        cwd=engine_source,
++        env=environment,
++        check=False,
++        capture_output=True,
++        text=True,
++    )
++
++
++def forbidden_dependencies(description: str) -> list[str]:
++    dependencies = set(GN_LABEL_PATTERN.findall(description))
++    return sorted(
++        dependency
++        for dependency in dependencies
++        if dependency == FORBIDDEN_LABEL
++        or any(dependency.startswith(prefix) for prefix in FORBIDDEN_PREFIXES)
++    )
++
++
++def check_label(output_directory: Path, label: str) -> bool:
++    result = run_gn_desc(output_directory, label)
++    if result.returncode != 0:
++        sys.stderr.write(result.stderr)
++        return False
++
++    forbidden = forbidden_dependencies(result.stdout)
++    if forbidden:
++        print(f"{label}: forbidden dependencies:")
++        for dependency in forbidden:
++            print(f"  {dependency}")
++        return False
++
++    print(f"{label}: no forbidden Dart dependencies")
++    return True
++
++
++def main(arguments: list[str]) -> int:
++    if len(arguments) < 2:
++        print(f"usage: {Path(sys.argv[0]).name} <out_dir> <label>...", file=sys.stderr)
++        return 2
++
++    output_directory = Path(arguments[0])
++    return 0 if all(check_label(output_directory, label) for label in arguments[1:]) else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main(sys.argv[1:]))
