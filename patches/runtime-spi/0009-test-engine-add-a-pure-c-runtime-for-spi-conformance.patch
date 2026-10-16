@@ -1,0 +1,370 @@
+# Why: Why: Provide a stateful C-only runtime that records borrowed SPI inputs
+and exercises response and frame callbacks in conformance tests.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 27368e00822..50fec11ecbf 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -36,6 +36,13 @@ executable("runtime_spi_unittests") {
+   ]
+ }
+ 
++source_set("c_test_runtime") {
++  testonly = true
++  public = [ "testing/c_test_runtime.h" ]
++  sources = [ "testing/c_test_runtime.c" ]
++  deps = [ ":runtime_spi_c_api" ]
++}
++
+ source_set("dart_runtime_extensions") {
+   public = [ "dart_runtime_extensions.h" ]
+   public_deps = [
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.c b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+new file mode 100644
+index 00000000000..2ed31a97c87
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+@@ -0,0 +1,284 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/testing/c_test_runtime.h"
++
++#include <stdlib.h>
++#include <string.h>
++
++static char* copy_string(const char* value) {
++  size_t length;
++  char* copy;
++
++  if (value == NULL) {
++    return NULL;
++  }
++  length = strlen(value) + 1;
++  copy = (char*)malloc(length);
++  if (copy != NULL) {
++    memcpy(copy, value, length);
++  }
++  return copy;
++}
++
++static uint8_t* copy_payload(const uint8_t* data, size_t size) {
++  uint8_t* copy;
++
++  if (data == NULL || size == 0) {
++    return NULL;
++  }
++  copy = (uint8_t*)malloc(size);
++  if (copy != NULL) {
++    memcpy(copy, data, size);
++  }
++  return copy;
++}
++
++static void copy_view_metrics(CTestRuntime* runtime,
++                              const FlutterSpiViewMetrics* metrics) {
++  if (metrics == NULL) {
++    return;
++  }
++  runtime->last_view_metrics = *metrics;
++  runtime->has_last_view_metrics = true;
++}
++
++static void copy_pointer_events(CTestRuntime* runtime,
++                                const FlutterSpiPointerEvent* events,
++                                size_t count) {
++  FlutterSpiPointerEvent* copy;
++
++  free(runtime->pointer_events);
++  runtime->pointer_events = NULL;
++  runtime->pointer_event_count = 0;
++  if (events == NULL || count == 0) {
++    return;
++  }
++  copy = (FlutterSpiPointerEvent*)malloc(count * sizeof(*copy));
++  if (copy == NULL) {
++    return;
++  }
++  memcpy(copy, events, count * sizeof(*copy));
++  runtime->pointer_events = copy;
++  runtime->pointer_event_count = count;
++}
++
++static FlutterSpiResult test_runtime_start(void* user_data,
++                                           const FlutterSpiEngineApi* api,
++                                           FlutterSpiEngine* engine) {
++  CTestRuntime* runtime = (CTestRuntime*)user_data;
++
++  runtime->start_count++;
++  runtime->engine_api = api;
++  runtime->engine = engine;
++  return runtime->fail_start ? kFlutterSpiInternalError : kFlutterSpiOk;
++}
++
++static void test_runtime_stop(void* user_data) {
++  ((CTestRuntime*)user_data)->stop_count++;
++}
++
++static void test_runtime_destroy(void* user_data) {
++  ((CTestRuntime*)user_data)->destroy_count++;
++}
++
++static void test_runtime_add_view(void* user_data,
++                                  const FlutterSpiViewMetrics* metrics) {
++  CTestRuntime* runtime = (CTestRuntime*)user_data;
++
++  runtime->add_view_count++;
++  copy_view_metrics(runtime, metrics);
++}
++
++static void test_runtime_remove_view(void* user_data, int64_t view_id) {
++  (void)view_id;
++  ((CTestRuntime*)user_data)->remove_view_count++;
++}
++
++static void test_runtime_set_view_metrics(
++    void* user_data,
++    const FlutterSpiViewMetrics* metrics) {
++  CTestRuntime* runtime = (CTestRuntime*)user_data;
++
++  runtime->set_view_metrics_count++;
++  copy_view_metrics(runtime, metrics);
++}
++
++static void test_runtime_begin_frame(void* user_data,
++                                     const FlutterSpiFrameInfo* frame_info) {
++  CTestRuntime* runtime = (CTestRuntime*)user_data;
++  FlutterSpiScene* scene = NULL;
++
++  runtime->begin_frame_count++;
++  if (frame_info != NULL) {
++    runtime->last_frame_info = *frame_info;
++    runtime->has_last_frame_info = true;
++  }
++  if (!runtime->submit_on_begin_frame || frame_info == NULL ||
++      !runtime->has_last_view_metrics || runtime->engine_api == NULL ||
++      runtime->engine == NULL) {
++    return;
++  }
++  if (runtime->engine_api->scene_create_empty(
++          runtime->engine,
++          (int64_t)runtime->last_view_metrics.physical_width,
++          (int64_t)runtime->last_view_metrics.physical_height, &scene) !=
++      kFlutterSpiOk) {
++    return;
++  }
++  runtime->engine_api->submit_frame(
++      runtime->engine, runtime->last_view_metrics.view_id,
++      frame_info->frame_token, scene,
++      runtime->last_view_metrics.device_pixel_ratio);
++}
++
++static void test_runtime_pointer_events(void* user_data,
++                                        const FlutterSpiPointerEvent* events,
++                                        size_t count) {
++  CTestRuntime* runtime = (CTestRuntime*)user_data;
++
++  runtime->pointer_events_count++;
++  copy_pointer_events(runtime, events, count);
++}
++
++static void test_runtime_key_event(void* user_data,
++                                   const FlutterSpiKeyEvent* event) {
++  CTestRuntime* runtime = (CTestRuntime*)user_data;
++
++  runtime->key_event_count++;
++  if (event == NULL) {
++    return;
++  }
++  free(runtime->last_key_character);
++  runtime->last_key_character = copy_string(event->character);
++  runtime->last_key_event = *event;
++  runtime->last_key_event.character = runtime->last_key_character;
++  runtime->has_last_key_event = true;
++}
++
++static void test_runtime_platform_message(
++    void* user_data,
++    const FlutterSpiPlatformMessage* message) {
++  CTestRuntime* runtime = (CTestRuntime*)user_data;
++
++  runtime->platform_message_count++;
++  if (message == NULL) {
++    return;
++  }
++  free(runtime->last_channel);
++  free(runtime->last_payload);
++  runtime->last_channel = copy_string(message->channel);
++  runtime->last_payload = copy_payload(message->data, message->data_size);
++  runtime->last_payload_size = message->data_size;
++  runtime->pending_response = message->response;
++  if (runtime->respond_to_messages && message->response != NULL &&
++      runtime->engine_api != NULL) {
++    runtime->engine_api->respond(message->response, message->data,
++                                 message->data_size);
++    runtime->pending_response = NULL;
++  }
++}
++
++static void test_runtime_set_semantics_enabled(void* user_data, bool enabled) {
++  (void)enabled;
++  ((CTestRuntime*)user_data)->set_semantics_enabled_count++;
++}
++
++static void test_runtime_semantics_action(void* user_data,
++                                          int64_t view_id,
++                                          int32_t node_id,
++                                          int32_t action,
++                                          const uint8_t* args,
++                                          size_t args_size) {
++  (void)view_id;
++  (void)node_id;
++  (void)action;
++  (void)args;
++  (void)args_size;
++  ((CTestRuntime*)user_data)->semantics_action_count++;
++}
++
++static void test_runtime_set_accessibility_features(void* user_data,
++                                                    int32_t flags) {
++  (void)flags;
++  ((CTestRuntime*)user_data)->set_accessibility_features_count++;
++}
++
++static void test_runtime_set_locales(void* user_data,
++                                     const char* const* locales,
++                                     size_t count) {
++  (void)locales;
++  (void)count;
++  ((CTestRuntime*)user_data)->set_locales_count++;
++}
++
++static void test_runtime_set_user_settings(void* user_data, const char* json) {
++  (void)json;
++  ((CTestRuntime*)user_data)->set_user_settings_count++;
++}
++
++static void test_runtime_set_lifecycle_state(void* user_data,
++                                             const char* state) {
++  (void)state;
++  ((CTestRuntime*)user_data)->set_lifecycle_state_count++;
++}
++
++static void test_runtime_view_focus(void* user_data,
++                                    int64_t view_id,
++                                    int32_t state,
++                                    int32_t direction) {
++  (void)view_id;
++  (void)state;
++  (void)direction;
++  ((CTestRuntime*)user_data)->view_focus_count++;
++}
++
++static void test_runtime_notify_idle(void* user_data, int64_t deadline_ns) {
++  (void)deadline_ns;
++  ((CTestRuntime*)user_data)->notify_idle_count++;
++}
++
++CTestRuntime* c_test_runtime_create(void) {
++  return (CTestRuntime*)calloc(1, sizeof(CTestRuntime));
++}
++
++void c_test_runtime_free(CTestRuntime* runtime) {
++  if (runtime == NULL) {
++    return;
++  }
++  free(runtime->pointer_events);
++  free(runtime->last_key_character);
++  free(runtime->last_channel);
++  free(runtime->last_payload);
++  free(runtime);
++}
++
++FlutterSpiRuntimeTable c_test_runtime_table(CTestRuntime* runtime) {
++  FlutterSpiRuntimeTable table;
++
++  memset(&table, 0, sizeof(table));
++  table.struct_size = sizeof(table);
++  table.version_major = FLUTTER_SPI_VERSION_MAJOR;
++  table.version_minor = FLUTTER_SPI_VERSION_MINOR;
++  table.user_data = runtime;
++  table.start = test_runtime_start;
++  table.stop = test_runtime_stop;
++  table.destroy = test_runtime_destroy;
++  table.add_view = test_runtime_add_view;
++  table.remove_view = test_runtime_remove_view;
++  table.set_view_metrics = test_runtime_set_view_metrics;
++  table.begin_frame = test_runtime_begin_frame;
++  table.pointer_events = test_runtime_pointer_events;
++  table.key_event = test_runtime_key_event;
++  table.platform_message = test_runtime_platform_message;
++  table.set_semantics_enabled = test_runtime_set_semantics_enabled;
++  table.semantics_action = test_runtime_semantics_action;
++  table.set_accessibility_features = test_runtime_set_accessibility_features;
++  table.set_locales = test_runtime_set_locales;
++  table.set_user_settings = test_runtime_set_user_settings;
++  table.set_lifecycle_state = test_runtime_set_lifecycle_state;
++  table.view_focus = test_runtime_view_focus;
++  table.notify_idle = test_runtime_notify_idle;
++  return table;
++}
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.h b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+new file mode 100644
+index 00000000000..425986ec2d0
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+@@ -0,0 +1,54 @@
++#ifndef FLUTTER_RUNTIME_SPI_TESTING_C_TEST_RUNTIME_H_
++#define FLUTTER_RUNTIME_SPI_TESTING_C_TEST_RUNTIME_H_
++
++#include <stdbool.h>
++#include <stddef.h>
++
++#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
++
++typedef struct CTestRuntime {
++  size_t start_count;
++  size_t stop_count;
++  size_t destroy_count;
++  size_t add_view_count;
++  size_t remove_view_count;
++  size_t set_view_metrics_count;
++  size_t begin_frame_count;
++  size_t pointer_events_count;
++  size_t key_event_count;
++  size_t platform_message_count;
++  size_t set_semantics_enabled_count;
++  size_t semantics_action_count;
++  size_t set_accessibility_features_count;
++  size_t set_locales_count;
++  size_t set_user_settings_count;
++  size_t set_lifecycle_state_count;
++  size_t view_focus_count;
++  size_t notify_idle_count;
++
++  FlutterSpiViewMetrics last_view_metrics;
++  bool has_last_view_metrics;
++  FlutterSpiFrameInfo last_frame_info;
++  bool has_last_frame_info;
++  FlutterSpiPointerEvent* pointer_events;
++  size_t pointer_event_count;
++  FlutterSpiKeyEvent last_key_event;
++  bool has_last_key_event;
++  char* last_key_character;
++  char* last_channel;
++  uint8_t* last_payload;
++  size_t last_payload_size;
++  FlutterSpiResponseHandle* pending_response;
++  const FlutterSpiEngineApi* engine_api;
++  FlutterSpiEngine* engine;
++
++  bool respond_to_messages;
++  bool submit_on_begin_frame;
++  bool fail_start;
++} CTestRuntime;
++
++FlutterSpiRuntimeTable c_test_runtime_table(CTestRuntime* runtime);
++CTestRuntime* c_test_runtime_create(void);
++void c_test_runtime_free(CTestRuntime* runtime);
++
++#endif  // FLUTTER_RUNTIME_SPI_TESTING_C_TEST_RUNTIME_H_
