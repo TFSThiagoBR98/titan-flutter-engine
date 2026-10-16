@@ -59,6 +59,43 @@ run_patch_branch() {
   )
 }
 
+relative_worktree_path=relative-runtime-spi-src
+relative_worktree_directory="$temporary_directory/$relative_worktree_path"
+relative_flutter_path=flutter
+(
+  cd "$temporary_directory"
+  "$standalone_repository/scripts/patch-branch.sh" prepare "$relative_flutter_path" \
+    "$relative_worktree_path"
+)
+[[ -d "$relative_worktree_directory" ]] || {
+  printf 'error: relative prepare did not create the worktree beside the source\n' >&2
+  exit 1
+}
+[[ ! -d "$flutter_directory/$relative_worktree_path" ]] || {
+  printf 'error: relative prepare created the worktree inside the source\n' >&2
+  exit 1
+}
+relative_worktree_absolute=$(cd "$relative_worktree_directory" && pwd -P)
+assert_contains <(git -C "$flutter_directory" worktree list --porcelain) \
+  "worktree $relative_worktree_absolute" 'relative worktree path'
+printf '%s\n' 'relative runtime change' > "$relative_worktree_directory/relative.txt"
+git -C "$relative_worktree_directory" add -- relative.txt
+git -C "$relative_worktree_directory" commit --quiet -m 'feat: relative seam' -m 'relative runtime reason'
+(
+  cd "$temporary_directory"
+  "$standalone_repository/scripts/patch-branch.sh" export \
+    "$relative_worktree_path" runtime-spi
+)
+relative_patch="$standalone_repository/patches/runtime-spi/0001-feat-relative-seam.patch"
+[[ -f "$relative_patch" ]] || {
+  printf 'error: relative export did not create the expected patch\n' >&2
+  exit 1
+}
+assert_contains "$relative_patch" '# Why: relative runtime reason' 'relative Why header'
+assert_contains "$relative_patch" 'diff --git' 'relative diff header'
+rm -f "$relative_patch"
+git -C "$flutter_directory" worktree remove --force "$relative_worktree_directory"
+
 run_patch_branch prepare "$flutter_directory" "$worktree_directory"
 [[ "$(git -C "$flutter_directory" rev-parse HEAD)" == "$flutter_head_before" ]] || {
   printf 'error: prepare changed the source HEAD\n' >&2

@@ -13,6 +13,15 @@ die() {
   exit 1
 }
 
+absolute_path() {
+  local path=$1 parent_directory path_name
+  parent_directory=$(dirname -- "$path")
+  path_name=$(basename -- "$path")
+  parent_directory=$(cd -- "$parent_directory" && pwd -P) || \
+    die "path parent does not exist: $path"
+  printf '%s/%s\n' "$parent_directory" "$path_name"
+}
+
 usage() {
   printf 'Usage: %s prepare <flutter_dir> <worktree_dir> | export <worktree_dir> <folder>\n' "$0"
 }
@@ -134,6 +143,8 @@ create_worktree() {
 
 prepare() {
   local flutter_dir=$1 worktree_dir=$2 flutter_commit existing_result
+  flutter_dir=$(absolute_path "$flutter_dir")
+  worktree_dir=$(absolute_path "$worktree_dir")
   [[ -d "$flutter_dir" ]] || die "Flutter repository does not exist: $flutter_dir"
   flutter_commit=$(read_flutter_commit)
   git -C "$flutter_dir" rev-parse --verify "$flutter_commit^{commit}" >/dev/null || \
@@ -183,6 +194,7 @@ export_patches() {
   local target_directory="$repository_root/patches/$folder"
   local temporary_output
   local -a commits=()
+  worktree_dir=$(absolute_path "$worktree_dir")
   [[ -d "$worktree_dir" ]] || die "worktree does not exist: $worktree_dir"
   [[ -d "$target_directory" ]] || die "patch folder does not exist: $target_directory"
   flutter_commit=$(read_flutter_commit)
