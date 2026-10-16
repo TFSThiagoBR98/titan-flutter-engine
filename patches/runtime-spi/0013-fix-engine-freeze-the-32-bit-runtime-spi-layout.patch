@@ -1,0 +1,419 @@
+# Why: 32-bit targets align 64-bit fields to 8 bytes; the frozen offsets
+assumed pointer-size alignment
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 761fa19fa03..e000949e5d2 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -21,82 +21,82 @@ _Static_assert(sizeof(FlutterSpiResult) == 4, "FlutterSpiResult must be 4 bytes"
+ #endif
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, view_id, sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, view_id, sizeof(void*) == 8 ? 8 : 8);
+ SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, device_pixel_ratio,
+-                  sizeof(void*) == 8 ? 16 : 12);
++                  sizeof(void*) == 8 ? 16 : 16);
+ SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_width,
+-                  sizeof(void*) == 8 ? 24 : 20);
++                  sizeof(void*) == 8 ? 24 : 24);
+ SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_height,
+-                  sizeof(void*) == 8 ? 32 : 28);
++                  sizeof(void*) == 8 ? 32 : 32);
+ SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_padding_top,
+-                  sizeof(void*) == 8 ? 40 : 36);
++                  sizeof(void*) == 8 ? 40 : 40);
+ SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_padding_right,
+-                  sizeof(void*) == 8 ? 48 : 44);
++                  sizeof(void*) == 8 ? 48 : 48);
+ SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_padding_bottom,
+-                  sizeof(void*) == 8 ? 56 : 52);
++                  sizeof(void*) == 8 ? 56 : 56);
+ SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_padding_left,
+-                  sizeof(void*) == 8 ? 64 : 60);
++                  sizeof(void*) == 8 ? 64 : 64);
+ SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_view_inset_top,
+-                  sizeof(void*) == 8 ? 72 : 68);
++                  sizeof(void*) == 8 ? 72 : 72);
+ SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_view_inset_right,
+-                  sizeof(void*) == 8 ? 80 : 76);
++                  sizeof(void*) == 8 ? 80 : 80);
+ SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_view_inset_bottom,
+-                  sizeof(void*) == 8 ? 88 : 84);
++                  sizeof(void*) == 8 ? 88 : 88);
+ SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_view_inset_left,
+-                  sizeof(void*) == 8 ? 96 : 92);
+-SPI_EXPECT_SIZE(FlutterSpiViewMetrics, sizeof(void*) == 8 ? 104 : 100);
++                  sizeof(void*) == 8 ? 96 : 96);
++SPI_EXPECT_SIZE(FlutterSpiViewMetrics, sizeof(void*) == 8 ? 104 : 104);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiFrameInfo, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiFrameInfo, frame_token, sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiFrameInfo, frame_token, sizeof(void*) == 8 ? 8 : 8);
+ SPI_EXPECT_OFFSET(FlutterSpiFrameInfo, frame_number,
+-                  sizeof(void*) == 8 ? 16 : 12);
++                  sizeof(void*) == 8 ? 16 : 16);
+ SPI_EXPECT_OFFSET(FlutterSpiFrameInfo, frame_start_ns,
+-                  sizeof(void*) == 8 ? 24 : 20);
++                  sizeof(void*) == 8 ? 24 : 24);
+ SPI_EXPECT_OFFSET(FlutterSpiFrameInfo, deadline_ns,
+-                  sizeof(void*) == 8 ? 32 : 28);
+-SPI_EXPECT_SIZE(FlutterSpiFrameInfo, sizeof(void*) == 8 ? 40 : 36);
++                  sizeof(void*) == 8 ? 32 : 32);
++SPI_EXPECT_SIZE(FlutterSpiFrameInfo, sizeof(void*) == 8 ? 40 : 40);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, view_id, sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, view_id, sizeof(void*) == 8 ? 8 : 8);
+ SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, timestamp_us,
+-                  sizeof(void*) == 8 ? 16 : 12);
++                  sizeof(void*) == 8 ? 16 : 16);
+ SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, change,
+-                  sizeof(void*) == 8 ? 24 : 20);
++                  sizeof(void*) == 8 ? 24 : 24);
+ SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, device_kind,
+-                  sizeof(void*) == 8 ? 28 : 24);
++                  sizeof(void*) == 8 ? 28 : 28);
+ SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, device,
+-                  sizeof(void*) == 8 ? 32 : 28);
++                  sizeof(void*) == 8 ? 32 : 32);
+ SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, pointer_id,
+-                  sizeof(void*) == 8 ? 40 : 36);
++                  sizeof(void*) == 8 ? 40 : 40);
+ SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, physical_x,
+-                  sizeof(void*) == 8 ? 48 : 44);
++                  sizeof(void*) == 8 ? 48 : 48);
+ SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, physical_y,
+-                  sizeof(void*) == 8 ? 56 : 52);
++                  sizeof(void*) == 8 ? 56 : 56);
+ SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, buttons,
+-                  sizeof(void*) == 8 ? 64 : 60);
++                  sizeof(void*) == 8 ? 64 : 64);
+ SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, scroll_delta_x,
+-                  sizeof(void*) == 8 ? 72 : 68);
++                  sizeof(void*) == 8 ? 72 : 72);
+ SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, scroll_delta_y,
+-                  sizeof(void*) == 8 ? 80 : 76);
++                  sizeof(void*) == 8 ? 80 : 80);
+ SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, pressure,
+-                  sizeof(void*) == 8 ? 88 : 84);
+-SPI_EXPECT_SIZE(FlutterSpiPointerEvent, sizeof(void*) == 8 ? 96 : 92);
++                  sizeof(void*) == 8 ? 88 : 88);
++SPI_EXPECT_SIZE(FlutterSpiPointerEvent, sizeof(void*) == 8 ? 96 : 96);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, timestamp_us,
+-                  sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, type, sizeof(void*) == 8 ? 16 : 12);
++                  sizeof(void*) == 8 ? 8 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, type, sizeof(void*) == 8 ? 16 : 16);
+ SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, device_type,
+-                  sizeof(void*) == 8 ? 20 : 16);
++                  sizeof(void*) == 8 ? 20 : 20);
+ SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, physical,
+-                  sizeof(void*) == 8 ? 24 : 20);
++                  sizeof(void*) == 8 ? 24 : 24);
+ SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, logical,
+-                  sizeof(void*) == 8 ? 32 : 28);
++                  sizeof(void*) == 8 ? 32 : 32);
+ SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, character,
+-                  sizeof(void*) == 8 ? 40 : 36);
++                  sizeof(void*) == 8 ? 40 : 40);
+ SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, synthesized,
+-                  sizeof(void*) == 8 ? 48 : 40);
+-SPI_EXPECT_SIZE(FlutterSpiKeyEvent, sizeof(void*) == 8 ? 56 : 44);
++                  sizeof(void*) == 8 ? 48 : 44);
++SPI_EXPECT_SIZE(FlutterSpiKeyEvent, sizeof(void*) == 8 ? 56 : 48);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiPlatformMessage, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiPlatformMessage, channel,
+@@ -115,46 +115,46 @@ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, version_major,
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, version_minor,
+                   sizeof(void*) == 8 ? 12 : 8);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, required_capabilities,
+-                  sizeof(void*) == 8 ? 16 : 12);
++                  sizeof(void*) == 8 ? 16 : 16);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, user_data,
+-                  sizeof(void*) == 8 ? 24 : 20);
++                  sizeof(void*) == 8 ? 24 : 24);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, start,
+-                  sizeof(void*) == 8 ? 32 : 24);
++                  sizeof(void*) == 8 ? 32 : 28);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, stop,
+-                  sizeof(void*) == 8 ? 40 : 28);
++                  sizeof(void*) == 8 ? 40 : 32);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, destroy,
+-                  sizeof(void*) == 8 ? 48 : 32);
++                  sizeof(void*) == 8 ? 48 : 36);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, add_view,
+-                  sizeof(void*) == 8 ? 56 : 36);
++                  sizeof(void*) == 8 ? 56 : 40);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, remove_view,
+-                  sizeof(void*) == 8 ? 64 : 40);
++                  sizeof(void*) == 8 ? 64 : 44);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, set_view_metrics,
+-                  sizeof(void*) == 8 ? 72 : 44);
++                  sizeof(void*) == 8 ? 72 : 48);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, begin_frame,
+-                  sizeof(void*) == 8 ? 80 : 48);
++                  sizeof(void*) == 8 ? 80 : 52);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, pointer_events,
+-                  sizeof(void*) == 8 ? 88 : 52);
++                  sizeof(void*) == 8 ? 88 : 56);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, key_event,
+-                  sizeof(void*) == 8 ? 96 : 56);
++                  sizeof(void*) == 8 ? 96 : 60);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, platform_message,
+-                  sizeof(void*) == 8 ? 104 : 60);
++                  sizeof(void*) == 8 ? 104 : 64);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, set_semantics_enabled,
+-                  sizeof(void*) == 8 ? 112 : 64);
++                  sizeof(void*) == 8 ? 112 : 68);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, semantics_action,
+-                  sizeof(void*) == 8 ? 120 : 68);
++                  sizeof(void*) == 8 ? 120 : 72);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, set_accessibility_features,
+-                  sizeof(void*) == 8 ? 128 : 72);
++                  sizeof(void*) == 8 ? 128 : 76);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, set_locales,
+-                  sizeof(void*) == 8 ? 136 : 76);
++                  sizeof(void*) == 8 ? 136 : 80);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, set_user_settings,
+-                  sizeof(void*) == 8 ? 144 : 80);
++                  sizeof(void*) == 8 ? 144 : 84);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, set_lifecycle_state,
+-                  sizeof(void*) == 8 ? 152 : 84);
++                  sizeof(void*) == 8 ? 152 : 88);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, view_focus,
+-                  sizeof(void*) == 8 ? 160 : 88);
++                  sizeof(void*) == 8 ? 160 : 92);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, notify_idle,
+-                  sizeof(void*) == 8 ? 168 : 92);
+-SPI_EXPECT_SIZE(FlutterSpiRuntimeTable, sizeof(void*) == 8 ? 176 : 96);
++                  sizeof(void*) == 8 ? 168 : 96);
++SPI_EXPECT_SIZE(FlutterSpiRuntimeTable, sizeof(void*) == 8 ? 176 : 104);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, version_major,
+@@ -162,27 +162,27 @@ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, version_major,
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, version_minor,
+                   sizeof(void*) == 8 ? 12 : 8);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, capabilities,
+-                  sizeof(void*) == 8 ? 16 : 12);
++                  sizeof(void*) == 8 ? 16 : 16);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, request_frame,
+-                  sizeof(void*) == 8 ? 24 : 20);
++                  sizeof(void*) == 8 ? 24 : 24);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, scene_create_empty,
+-                  sizeof(void*) == 8 ? 32 : 24);
++                  sizeof(void*) == 8 ? 32 : 28);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, scene_release,
+-                  sizeof(void*) == 8 ? 40 : 28);
++                  sizeof(void*) == 8 ? 40 : 32);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, submit_frame,
+-                  sizeof(void*) == 8 ? 48 : 32);
++                  sizeof(void*) == 8 ? 48 : 36);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, frames_done,
+-                  sizeof(void*) == 8 ? 56 : 36);
++                  sizeof(void*) == 8 ? 56 : 40);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, send_platform_message,
+-                  sizeof(void*) == 8 ? 64 : 40);
++                  sizeof(void*) == 8 ? 64 : 44);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, respond,
+-                  sizeof(void*) == 8 ? 72 : 44);
++                  sizeof(void*) == 8 ? 72 : 48);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, post_task,
+-                  sizeof(void*) == 8 ? 80 : 48);
++                  sizeof(void*) == 8 ? 80 : 52);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, now_ns,
+-                  sizeof(void*) == 8 ? 88 : 52);
++                  sizeof(void*) == 8 ? 88 : 56);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, log,
+-                  sizeof(void*) == 8 ? 96 : 56);
++                  sizeof(void*) == 8 ? 96 : 60);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, report_error,
+-                  sizeof(void*) == 8 ? 104 : 60);
+-SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 112 : 64);
++                  sizeof(void*) == 8 ? 104 : 64);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 112 : 72);
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index 59467de7c47..c380147dfa1 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -67,57 +67,57 @@ TEST(SpiAbi, KeyEnumValuesAreFrozen) {
+ 
+ TEST(SpiAbi, ViewMetricsLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, struct_size, 0, 0);
+-  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, view_id, 8, 4);
+-  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, device_pixel_ratio, 16, 12);
+-  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_width, 24, 20);
+-  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_height, 32, 28);
+-  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_padding_top, 40, 36);
+-  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_padding_right, 48, 44);
+-  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_padding_bottom, 56, 52);
+-  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_padding_left, 64, 60);
+-  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_view_inset_top, 72, 68);
+-  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_view_inset_right, 80, 76);
+-  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_view_inset_bottom, 88, 84);
+-  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_view_inset_left, 96, 92);
+-  EXPECT_EQ(sizeof(FlutterSpiViewMetrics), sizeof(void*) == 8 ? 104u : 100u);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, view_id, 8, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, device_pixel_ratio, 16, 16);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_width, 24, 24);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_height, 32, 32);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_padding_top, 40, 40);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_padding_right, 48, 48);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_padding_bottom, 56, 56);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_padding_left, 64, 64);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_view_inset_top, 72, 72);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_view_inset_right, 80, 80);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_view_inset_bottom, 88, 88);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_view_inset_left, 96, 96);
++  EXPECT_EQ(sizeof(FlutterSpiViewMetrics), sizeof(void*) == 8 ? 104u : 104u);
+ }
+ 
+ TEST(SpiAbi, FrameInfoLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiFrameInfo, struct_size, 0, 0);
+-  EXPECT_SPI_OFFSET(FlutterSpiFrameInfo, frame_token, 8, 4);
+-  EXPECT_SPI_OFFSET(FlutterSpiFrameInfo, frame_number, 16, 12);
+-  EXPECT_SPI_OFFSET(FlutterSpiFrameInfo, frame_start_ns, 24, 20);
+-  EXPECT_SPI_OFFSET(FlutterSpiFrameInfo, deadline_ns, 32, 28);
+-  EXPECT_EQ(sizeof(FlutterSpiFrameInfo), sizeof(void*) == 8 ? 40u : 36u);
++  EXPECT_SPI_OFFSET(FlutterSpiFrameInfo, frame_token, 8, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiFrameInfo, frame_number, 16, 16);
++  EXPECT_SPI_OFFSET(FlutterSpiFrameInfo, frame_start_ns, 24, 24);
++  EXPECT_SPI_OFFSET(FlutterSpiFrameInfo, deadline_ns, 32, 32);
++  EXPECT_EQ(sizeof(FlutterSpiFrameInfo), sizeof(void*) == 8 ? 40u : 40u);
+ }
+ 
+ TEST(SpiAbi, PointerEventLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, struct_size, 0, 0);
+-  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, view_id, 8, 4);
+-  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, timestamp_us, 16, 12);
+-  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, change, 24, 20);
+-  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, device_kind, 28, 24);
+-  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, device, 32, 28);
+-  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, pointer_id, 40, 36);
+-  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, physical_x, 48, 44);
+-  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, physical_y, 56, 52);
+-  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, buttons, 64, 60);
+-  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, scroll_delta_x, 72, 68);
+-  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, scroll_delta_y, 80, 76);
+-  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, pressure, 88, 84);
+-  EXPECT_EQ(sizeof(FlutterSpiPointerEvent), sizeof(void*) == 8 ? 96u : 92u);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, view_id, 8, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, timestamp_us, 16, 16);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, change, 24, 24);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, device_kind, 28, 28);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, device, 32, 32);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, pointer_id, 40, 40);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, physical_x, 48, 48);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, physical_y, 56, 56);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, buttons, 64, 64);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, scroll_delta_x, 72, 72);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, scroll_delta_y, 80, 80);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, pressure, 88, 88);
++  EXPECT_EQ(sizeof(FlutterSpiPointerEvent), sizeof(void*) == 8 ? 96u : 96u);
+ }
+ 
+ TEST(SpiAbi, KeyEventLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiKeyEvent, struct_size, 0, 0);
+-  EXPECT_SPI_OFFSET(FlutterSpiKeyEvent, timestamp_us, 8, 4);
+-  EXPECT_SPI_OFFSET(FlutterSpiKeyEvent, type, 16, 12);
+-  EXPECT_SPI_OFFSET(FlutterSpiKeyEvent, device_type, 20, 16);
+-  EXPECT_SPI_OFFSET(FlutterSpiKeyEvent, physical, 24, 20);
+-  EXPECT_SPI_OFFSET(FlutterSpiKeyEvent, logical, 32, 28);
+-  EXPECT_SPI_OFFSET(FlutterSpiKeyEvent, character, 40, 36);
+-  EXPECT_SPI_OFFSET(FlutterSpiKeyEvent, synthesized, 48, 40);
+-  EXPECT_EQ(sizeof(FlutterSpiKeyEvent), sizeof(void*) == 8 ? 56u : 44u);
++  EXPECT_SPI_OFFSET(FlutterSpiKeyEvent, timestamp_us, 8, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiKeyEvent, type, 16, 16);
++  EXPECT_SPI_OFFSET(FlutterSpiKeyEvent, device_type, 20, 20);
++  EXPECT_SPI_OFFSET(FlutterSpiKeyEvent, physical, 24, 24);
++  EXPECT_SPI_OFFSET(FlutterSpiKeyEvent, logical, 32, 32);
++  EXPECT_SPI_OFFSET(FlutterSpiKeyEvent, character, 40, 40);
++  EXPECT_SPI_OFFSET(FlutterSpiKeyEvent, synthesized, 48, 44);
++  EXPECT_EQ(sizeof(FlutterSpiKeyEvent), sizeof(void*) == 8 ? 56u : 48u);
+ }
+ 
+ TEST(SpiAbi, PlatformMessageLayoutIsFrozen) {
+@@ -133,46 +133,46 @@ TEST(SpiAbi, RuntimeTableLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, struct_size, 0, 0);
+   EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, version_major, 8, 4);
+   EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, version_minor, 12, 8);
+-  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, required_capabilities, 16, 12);
+-  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, user_data, 24, 20);
+-  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, start, 32, 24);
+-  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, stop, 40, 28);
+-  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, destroy, 48, 32);
+-  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, add_view, 56, 36);
+-  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, remove_view, 64, 40);
+-  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, set_view_metrics, 72, 44);
+-  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, begin_frame, 80, 48);
+-  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, pointer_events, 88, 52);
+-  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, key_event, 96, 56);
+-  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, platform_message, 104, 60);
+-  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, set_semantics_enabled, 112, 64);
+-  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, semantics_action, 120, 68);
+-  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, set_accessibility_features, 128, 72);
+-  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, set_locales, 136, 76);
+-  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, set_user_settings, 144, 80);
+-  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, set_lifecycle_state, 152, 84);
+-  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, view_focus, 160, 88);
+-  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, notify_idle, 168, 92);
+-  EXPECT_EQ(sizeof(FlutterSpiRuntimeTable), sizeof(void*) == 8 ? 176u : 96u);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, required_capabilities, 16, 16);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, user_data, 24, 24);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, start, 32, 28);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, stop, 40, 32);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, destroy, 48, 36);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, add_view, 56, 40);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, remove_view, 64, 44);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, set_view_metrics, 72, 48);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, begin_frame, 80, 52);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, pointer_events, 88, 56);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, key_event, 96, 60);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, platform_message, 104, 64);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, set_semantics_enabled, 112, 68);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, semantics_action, 120, 72);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, set_accessibility_features, 128, 76);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, set_locales, 136, 80);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, set_user_settings, 144, 84);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, set_lifecycle_state, 152, 88);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, view_focus, 160, 92);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, notify_idle, 168, 96);
++  EXPECT_EQ(sizeof(FlutterSpiRuntimeTable), sizeof(void*) == 8 ? 176u : 104u);
+ }
+ 
+ TEST(SpiAbi, EngineApiLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, struct_size, 0, 0);
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, version_major, 8, 4);
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, version_minor, 12, 8);
+-  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, capabilities, 16, 12);
+-  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, request_frame, 24, 20);
+-  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, scene_create_empty, 32, 24);
+-  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, scene_release, 40, 28);
+-  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, submit_frame, 48, 32);
+-  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, frames_done, 56, 36);
+-  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, send_platform_message, 64, 40);
+-  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, respond, 72, 44);
+-  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, post_task, 80, 48);
+-  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, now_ns, 88, 52);
+-  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, log, 96, 56);
+-  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, report_error, 104, 60);
+-  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 112u : 64u);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, capabilities, 16, 16);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, request_frame, 24, 24);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, scene_create_empty, 32, 28);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, scene_release, 40, 32);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, submit_frame, 48, 36);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, frames_done, 56, 40);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, send_platform_message, 64, 44);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, respond, 72, 48);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, post_task, 80, 52);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, now_ns, 88, 56);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, log, 96, 60);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, report_error, 104, 64);
++  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 112u : 72u);
+ }
+ 
+ TEST(SpiAbi, HeaderIsPureC) {
