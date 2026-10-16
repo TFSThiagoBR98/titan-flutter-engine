@@ -21,6 +21,13 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0011-test-engine-add-the-runtime-spi-conformance-suite.patch` | Adicionar a suíte de conformidade do Runtime SPI. | |
 | `0012-fix-engine-build-the-runtime-spi-tests-only-with-unit-tests-enabled.patch` | Fazer os testes do Runtime SPI dependerem da configuração de testes. | |
 | `0013-fix-engine-freeze-the-32-bit-runtime-spi-layout.patch` | Congelar o layout da ABI para ponteiros de 32 bits e campos de 64 bits. | |
+| `0014-feat-engine-add-the-runtime-spi-scene-header.patch` | Adicionar os tipos C11 e a tabela de funções da API de cena, sem habilitá-la no engine S2. | |
+| `0015-feat-engine-add-the-spi-handle-table.patch` | Implementar handles opacos por engine com retenção, liberação e ids que não são reutilizados. | |
+| `0016-feat-engine-add-spi-paths-and-paints.patch` | Expor paths, geometria e paints básicos pela ABI de cena. | |
+| `0017-feat-engine-add-the-spi-picture-recorder-and-canvas.patch` | Expor recorder, canvas, pictures e operações de desenho do `DisplayListBuilder`. | |
+| `0018-feat-flow-expose-layer-properties-for-scene-tracing.patch` | Expor ao traço as propriedades necessárias das camadas de composição. | |
+| `0019-feat-engine-add-the-spi-scene-builder-and-scene-trace.patch` | Montar cenas com transformações, clips, offsets, opacity e pictures, e gerar o traço canônico. | |
+| `0020-test-engine-exercise-the-spi-scene-api-end-to-end.patch` | Validar a API de cena ponta a ponta e comparar o custo da ABI com o builder direto. | |
 
 O fluxo é:
 

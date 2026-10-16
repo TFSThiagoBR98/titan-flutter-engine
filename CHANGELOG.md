@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime SPI S2: versioned C11 ABI, pure-C conformance runtime, frame and
   message ownership rules, and validation of the x64, arm64-musl and 32-bit
   layout paths.
+- Runtime SPI S3a: scene API for paths, paints, picture recording, canvas
+  operations, scene layers and canonical scene tracing, with end-to-end
+  conformance tests and an ABI-versus-direct-builder benchmark.
 
 ### Fixed
 

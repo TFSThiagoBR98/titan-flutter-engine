@@ -147,6 +147,45 @@ deadline, e um token atrasado ou uma view removida é rejeitado sem chegar ao
 rasterizer. A S2 usa apenas `scene_create_empty`; a representação de cena
 completa fica para a S3.
 
+## S3a: API de cena
+
+A S3a completa a representação mínima de cena do SPI sem expor tipos C++ do
+engine. A tabela `FlutterSpiSceneApi` acrescenta operações para paths, paints,
+recorders de pictures, canvas e scene builder. Pontos, retângulos, rrects,
+matrizes e cores são valores C11; shaders, filtros, texto, imagens, texturas e
+platform views permanecem para a S3b.
+
+Os recursos são referenciados por handles opacos: `FlutterSpiPath`,
+`FlutterSpiPictureRecorder`, `FlutterSpiPicture`, `FlutterSpiSceneBuilder` e
+`FlutterSpiScene`. Cada engine mantém sua própria tabela de handles, com ids
+crescentes que não são reutilizados. `retain` e `release` controlam as
+referências; um handle liberado, forjado ou pertencente a outro engine retorna
+`kFlutterSpiInvalidHandle` sem acessar a memória do recurso. O recorder é
+consumido por `recorder_finish` ou descartado por `recorder_release`, e não
+pode ser usado depois disso.
+
+As funções de construção da cena executam no UI runner, como as operações
+equivalentes de `dart:ui`; uma chamada em outra thread retorna
+`kFlutterSpiWrongThread`. Ponteiros de entrada são emprestados e só precisam
+ser válidos durante a chamada. Geometria não finita é rejeitada com
+`kFlutterSpiInvalidArgument` antes de gravar a operação. `scene_pop` além da
+raiz é ignorado, e `scene_build` fecha automaticamente as camadas ainda
+abertas. Ao inserir uma picture na cena, o engine mantém a referência interna,
+portanto a cena continua válida depois que o handle original é liberado.
+
+O scene builder produz um `LayerTree` com transformações, offsets, clips,
+opacity e pictures. `scene_trace` percorre essa árvore e as `DisplayList`
+associadas, devolvendo UTF-8 determinístico com tamanho do frame, hierarquia
+de camadas, valores geométricos e operações de desenho. O buffer retornado
+deve ser liberado com `trace_free`. Esse traço é o oráculo textual da paridade
+entre uma cena montada pela ABI e a mesma cena montada diretamente pelo
+engine.
+
+O checkpoint da S3a confirmou a mesma saída do probe Dart no x64 e no
+arm64-musl, a configuração GN nos dez alvos previstos e o layout de 32 bits
+do alvo `runtime_spi_c_api` em arm-hard. A medição de custo da ABI está em
+[runtime-spi-s3a.md](medidas/runtime-spi-s3a.md).
+
 ## Ciclo de vida e falhas
 
 O host cria, inicia, encerra e libera o backend. Uma falha recuperável encerra o runtime ativo e limpa os recursos;
