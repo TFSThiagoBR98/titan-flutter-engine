@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Patch folder `runtime-spi` (S1): Dart-free `lib/ui` data types, pluggable `fml` tracing, a `RuntimeBackend`
   interface between the engine and its runtime, and a shell created through a runtime backend factory. Dart apps
   render the same frame as before (probe hash unchanged on x64 and arm64-musl).
+- Runtime SPI S2: versioned C11 ABI, pure-C conformance runtime, frame and
+  message ownership rules, and validation of the x64, arm64-musl and 32-bit
+  layout paths.
 
 ### Fixed
 

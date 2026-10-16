@@ -15,6 +15,12 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0005-feat-engine-create-the-shell-runtime-through-a-backend-factory.patch` | Criar o runtime do shell por uma fábrica de backends. | |
 | `0006-fix-engine-make-the-runtime-spi-seams-compile.patch` | Restaurar includes e declarações removidos pela divisão do seam. | |
 | `0007-refactor-engine-keep-dart-types-out-of-the-runtime-backend-seam.patch` | Consolidar as correções da revisão S1 para manter o seam sem tipos Dart. | |
+| `0008-feat-engine-add-the-versioned-runtime-spi-c-header.patch` | Adicionar o header C11 versionado do Runtime SPI. | |
+| `0009-test-engine-add-a-pure-c-runtime-for-spi-conformance.patch` | Adicionar um runtime de teste em C puro para a conformidade da ABI. | |
+| `0010-feat-engine-run-spi-runtimes-behind-the-runtimebackend-seam.patch` | Executar runtimes SPI atrás do seam `RuntimeBackend`. | |
+| `0011-test-engine-add-the-runtime-spi-conformance-suite.patch` | Adicionar a suíte de conformidade do Runtime SPI. | |
+| `0012-fix-engine-build-the-runtime-spi-tests-only-with-unit-tests-enabled.patch` | Fazer os testes do Runtime SPI dependerem da configuração de testes. | |
+| `0013-fix-engine-freeze-the-32-bit-runtime-spi-layout.patch` | Congelar o layout da ABI para ponteiros de 32 bits e campos de 64 bits. | |
 
 O fluxo é:
 

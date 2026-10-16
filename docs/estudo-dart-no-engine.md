@@ -114,6 +114,39 @@ semântica pelo contrato neutro. Um backend Rust usa a mesma ABI por FFI; uma li
 - Chamadas do runtime levam identificadores de view e de sequência; quadros têm token e deadline, e submissões
   atrasadas ou de views removidas podem ser descartadas.
 
+## S2: ABI C
+
+A S2 fixa a primeira versão do contrato em
+`engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h`. O header é C11
+puro, também pode ser incluído por C++, e não expõe tipos privados do engine.
+As tabelas do runtime e do engine usam `struct_size`, versão maior e versão
+menor; a versão maior incompatível impede o `start`, enquanto a versão menor
+permite extensões compatíveis quando o tamanho e as capacidades anunciadas as
+suportam. A versão publicada nesta fase é `0.1`.
+
+O engine anuncia capacidades como tarefas, mensagens de plataforma, eventos de
+ponteiro e teclado, semântica, foco de view e cena vazia. O runtime declara as
+capacidades obrigatórias na sua tabela, e só inicia quando todas estão
+disponíveis. Resultados como `kFlutterSpiIncompatibleVersion`,
+`kFlutterSpiInvalidHandle`, `kFlutterSpiStaleFrame` e
+`kFlutterSpiWrongThread` atravessam a fronteira como valores explícitos; a ABI
+não lança exceções nem permite que panics atravessem o contrato.
+
+Os ponteiros recebidos pelos callbacks são emprestados e só permanecem válidos
+durante a chamada. Isso inclui métricas, eventos, mensagens, buffers, strings e
+listas de locales; strings são UTF-8 terminadas em zero. Um runtime que precise
+de um valor depois do retorno precisa copiá-lo. Cenas e respostas usam handles
+opacos: a cena submetida é consumida em qualquer resultado de `submit_frame`,
+`respond` consome o handle de resposta, e respostas pendentes são completadas
+vazias quando o backend é encerrado.
+
+As chamadas do runtime para o engine são feitas no UI runner. Uma chamada de
+outra thread retorna `kFlutterSpiWrongThread`; `post_task`, `now_ns` e `log`
+são as exceções previstas para uso fora dele. Cada quadro carrega token e
+deadline, e um token atrasado ou uma view removida é rejeitado sem chegar ao
+rasterizer. A S2 usa apenas `scene_create_empty`; a representação de cena
+completa fica para a S3.
+
 ## Ciclo de vida e falhas
 
 O host cria, inicia, encerra e libera o backend. Uma falha recuperável encerra o runtime ativo e limpa os recursos;
