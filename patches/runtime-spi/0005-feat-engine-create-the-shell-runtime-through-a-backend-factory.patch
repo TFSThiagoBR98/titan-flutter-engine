@@ -1,0 +1,747 @@
+# Why: create the shell runtime through a backend factory
+diff --git a/engine/src/flutter/runtime_spi/runtime_backend_factory.h b/engine/src/flutter/runtime_spi/runtime_backend_factory.h
+new file mode 100644
+index 00000000000..e251ab86c96
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/runtime_backend_factory.h
+@@ -0,0 +1,54 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_RUNTIME_BACKEND_FACTORY_H_
++#define FLUTTER_RUNTIME_SPI_RUNTIME_BACKEND_FACTORY_H_
++
++#include <future>
++#include <memory>
++
++#include "flutter/common/task_runners.h"
++#include "flutter/fml/memory/ref_ptr.h"
++#include "flutter/fml/memory/weak_ptr.h"
++#include "flutter/runtime/platform_data.h"
++#include "flutter/runtime_spi/runtime_backend.h"
++#include "impeller/runtime_stage/runtime_stage.h"
++
++namespace flutter {
++
++class DartSnapshot;
++class DartVM;
++class ImageDecoder;
++class ImageGeneratorRegistry;
++class IOManager;
++class RuntimeDelegate;
++struct Settings;
++class SnapshotDelegate;
++class SkiaUnrefQueue;
++
++class RuntimeBackendFactory {
++ public:
++  virtual ~RuntimeBackendFactory() = default;
++
++  virtual std::unique_ptr<RuntimeBackend> Create(
++      RuntimeDelegate& runtime_delegate,
++      const TaskRunners& task_runners,
++      const PlatformData& platform_data,
++      const Settings& settings,
++      fml::RefPtr<const DartSnapshot> isolate_snapshot,
++      fml::WeakPtr<IOManager> io_manager,
++      fml::RefPtr<SkiaUnrefQueue> unref_queue,
++      fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
++      fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
++      fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
++          image_generator_registry,
++      const std::shared_future<impeller::RuntimeStageBackend>&
++          runtime_stage_backend) = 0;
++
++  virtual DartVM* GetDartVM() { return nullptr; }
++};
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_RUNTIME_BACKEND_FACTORY_H_
+diff --git a/engine/src/flutter/shell/common/BUILD.gn b/engine/src/flutter/shell/common/BUILD.gn
+index cf5645c8e64..d42ac0626e3 100644
+--- a/engine/src/flutter/shell/common/BUILD.gn
++++ b/engine/src/flutter/shell/common/BUILD.gn
+@@ -90,6 +90,8 @@ source_set("common") {
+     "animator.h",
+     "context_options.cc",
+     "context_options.h",
++    "dart_runtime_backend_factory.cc",
++    "dart_runtime_backend_factory.h",
+     "display_manager.cc",
+     "display_manager.h",
+     "dl_op_spy.cc",
+diff --git a/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc b/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
+new file mode 100644
+index 00000000000..ab67a766e24
+--- /dev/null
++++ b/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
+@@ -0,0 +1,74 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/shell/common/dart_runtime_backend_factory.h"
++
++#include <utility>
++
++#include "flutter/lib/ui/painting/image_decoder.h"
++#include "flutter/lib/ui/painting/image_generator_registry.h"
++#include "flutter/lib/ui/snapshot_delegate.h"
++#include "flutter/lib/ui/ui_dart_state.h"
++#include "flutter/runtime/runtime_controller.h"
++#include "flutter/runtime/runtime_delegate.h"
++#include "flutter/shell/common/shell_io_manager.h"
++
++namespace flutter {
++
++DartRuntimeBackendFactory::DartRuntimeBackendFactory(
++    DartVMRef vm,
++    fml::RefPtr<const DartSnapshot> isolate_snapshot)
++    : vm_(std::move(vm)), isolate_snapshot_(std::move(isolate_snapshot)) {}
++
++DartRuntimeBackendFactory::~DartRuntimeBackendFactory() = default;
++
++std::unique_ptr<RuntimeBackend> DartRuntimeBackendFactory::Create(
++    RuntimeDelegate& runtime_delegate,
++    const TaskRunners& task_runners,
++    const PlatformData& platform_data,
++    const Settings& settings,
++    fml::RefPtr<const DartSnapshot> isolate_snapshot,
++    fml::WeakPtr<IOManager> io_manager,
++    fml::RefPtr<SkiaUnrefQueue> unref_queue,
++    fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
++    fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
++    fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
++        image_generator_registry,
++    const std::shared_future<impeller::RuntimeStageBackend>&
++        runtime_stage_backend) {
++  if (isolate_snapshot) {
++    isolate_snapshot_ = std::move(isolate_snapshot);
++  }
++
++  return std::make_unique<RuntimeController>(
++      runtime_delegate,                     // runtime delegate
++      vm_.get(),                            // VM
++      isolate_snapshot_,                    // isolate snapshot
++      settings.idle_notification_callback,  // idle callback
++      platform_data,                        // platform data
++      settings.isolate_create_callback,     // isolate callback
++      settings.isolate_shutdown_callback,   // shutdown callback
++      settings.persistent_isolate_data,     // persistent data
++      UIDartState::Context{
++          task_runners,                                  // task runners
++          std::move(snapshot_delegate),                  // snapshot delegate
++          std::move(io_manager),                         // IO manager
++          std::move(unref_queue),                        // Skia unref queue
++          std::move(image_decoder),                      // image decoder
++          std::move(image_generator_registry),           // image generators
++          settings.advisory_script_uri,                  // script URI
++          settings.advisory_script_entrypoint,           // entrypoint
++          settings.skia_deterministic_rendering_on_cpu,  // deterministic
++          vm_->GetConcurrentWorkerTaskRunner(),          // worker runner
++          runtime_stage_backend,                         // runtime stage
++          settings.enable_impeller,                      // Impeller
++          settings.enable_flutter_gpu                    // Flutter GPU
++      });
++}
++
++DartVM* DartRuntimeBackendFactory::GetDartVM() {
++  return vm_.get();
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/shell/common/dart_runtime_backend_factory.h b/engine/src/flutter/shell/common/dart_runtime_backend_factory.h
+new file mode 100644
+index 00000000000..12ee740c101
+--- /dev/null
++++ b/engine/src/flutter/shell/common/dart_runtime_backend_factory.h
+@@ -0,0 +1,43 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_SHELL_COMMON_DART_RUNTIME_BACKEND_FACTORY_H_
++#define FLUTTER_SHELL_COMMON_DART_RUNTIME_BACKEND_FACTORY_H_
++
++#include "flutter/runtime/dart_vm_lifecycle.h"
++#include "flutter/runtime_spi/runtime_backend_factory.h"
++
++namespace flutter {
++
++class DartRuntimeBackendFactory final : public RuntimeBackendFactory {
++ public:
++  DartRuntimeBackendFactory(DartVMRef vm,
++                            fml::RefPtr<const DartSnapshot> isolate_snapshot);
++  ~DartRuntimeBackendFactory() override;
++
++  std::unique_ptr<RuntimeBackend> Create(
++      RuntimeDelegate& runtime_delegate,
++      const TaskRunners& task_runners,
++      const PlatformData& platform_data,
++      const Settings& settings,
++      fml::RefPtr<const DartSnapshot> isolate_snapshot,
++      fml::WeakPtr<IOManager> io_manager,
++      fml::RefPtr<SkiaUnrefQueue> unref_queue,
++      fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
++      fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
++      fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
++          image_generator_registry,
++      const std::shared_future<impeller::RuntimeStageBackend>&
++          runtime_stage_backend) override;
++
++  DartVM* GetDartVM() override;
++
++ private:
++  DartVMRef vm_;
++  fml::RefPtr<const DartSnapshot> isolate_snapshot_;
++};
++
++}  // namespace flutter
++
++#endif  // FLUTTER_SHELL_COMMON_DART_RUNTIME_BACKEND_FACTORY_H_
+diff --git a/engine/src/flutter/shell/common/engine.cc b/engine/src/flutter/shell/common/engine.cc
+index 6db5fbe098a..7d162a3f886 100644
+--- a/engine/src/flutter/shell/common/engine.cc
++++ b/engine/src/flutter/shell/common/engine.cc
+@@ -16,6 +16,7 @@
+ #include "flutter/impeller/core/runtime_types.h"
+ #include "flutter/lib/ui/text/font_collection.h"
+ #include "flutter/runtime/runtime_controller.h"
++#include "flutter/runtime_spi/runtime_backend_factory.h"
+ #include "flutter/shell/common/animator.h"
+ #include "rapidjson/document.h"
+ 
+@@ -106,6 +107,39 @@ Engine::Engine(Delegate& delegate,
+       });
+ }
+ 
++Engine::Engine(
++    Delegate& delegate,
++    const TaskRunners& task_runners,
++    const PlatformData& platform_data,
++    const Settings& settings,
++    std::unique_ptr<Animator> animator,
++    fml::WeakPtr<IOManager> io_manager,
++    const fml::RefPtr<SkiaUnrefQueue>& unref_queue,
++    fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
++    fml::RefPtr<const DartSnapshot> isolate_snapshot,
++    const std::shared_future<impeller::RuntimeStageBackend>&
++        runtime_stage_backend,
++    const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch,
++    std::shared_ptr<RuntimeBackendFactory> runtime_backend_factory)
++    : Engine(delegate,
++             runtime_backend_factory->GetDartVM()
++                 ? runtime_backend_factory->GetDartVM()
++                       ->GetConcurrentWorkerTaskRunner()
++                 : nullptr,
++             task_runners,
++             settings,
++             std::move(animator),
++             io_manager,
++             std::make_shared<FontCollection>(),
++             nullptr,
++             gpu_disabled_switch) {
++  runtime_backend_ = runtime_backend_factory->Create(
++      *this, task_runners, platform_data, settings_, std::move(isolate_snapshot),
++      std::move(io_manager), unref_queue, std::move(snapshot_delegate),
++      image_decoder_->GetWeakPtr(), image_generator_registry_.GetWeakPtr(),
++      runtime_stage_backend);
++}
++
+ std::unique_ptr<Engine> Engine::Spawn(
+     Delegate& delegate,
+     const Settings& settings,
+diff --git a/engine/src/flutter/shell/common/engine.h b/engine/src/flutter/shell/common/engine.h
+index accf71dcc42..2476713cbbb 100644
+--- a/engine/src/flutter/shell/common/engine.h
++++ b/engine/src/flutter/shell/common/engine.h
+@@ -31,6 +31,7 @@
+ namespace flutter {
+ 
+ class RuntimeController;
++class RuntimeBackendFactory;
+ 
+ //------------------------------------------------------------------------------
+ /// The engine is a component owned by the shell that resides on the UI task
+@@ -428,6 +429,20 @@ class Engine final : public RuntimeDelegate {
+          const std::shared_future<impeller::RuntimeStageBackend>&
+              runtime_stage_backend);
+ 
++  Engine(Delegate& delegate,
++         const TaskRunners& task_runners,
++         const PlatformData& platform_data,
++         const Settings& settings,
++         std::unique_ptr<Animator> animator,
++         fml::WeakPtr<IOManager> io_manager,
++         const fml::RefPtr<SkiaUnrefQueue>& unref_queue,
++         fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
++         fml::RefPtr<const DartSnapshot> isolate_snapshot,
++         const std::shared_future<impeller::RuntimeStageBackend>&
++             runtime_stage_backend,
++         const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch,
++         std::shared_ptr<RuntimeBackendFactory> runtime_backend_factory);
++
+   //----------------------------------------------------------------------------
+   /// @brief      Create a Engine that shares as many resources as
+   ///             possible with the calling Engine such that together
+diff --git a/engine/src/flutter/shell/common/shell.cc b/engine/src/flutter/shell/common/shell.cc
+index 1f078f224c5..f26db91b3d1 100644
+--- a/engine/src/flutter/shell/common/shell.cc
++++ b/engine/src/flutter/shell/common/shell.cc
+@@ -29,6 +29,7 @@
+ #include "flutter/fml/trace_event.h"
+ #include "flutter/runtime/dart_vm.h"
+ #include "flutter/shell/common/base64.h"
++#include "flutter/shell/common/dart_runtime_backend_factory.h"
+ #include "flutter/shell/common/engine.h"
+ #include "flutter/shell/common/skia_event_tracer_impl.h"
+ #include "flutter/shell/common/switches.h"
+@@ -59,7 +60,7 @@ namespace {
+ 
+ std::unique_ptr<Engine> CreateEngine(
+     Engine::Delegate& delegate,
+-    DartVM& vm,
++    const std::shared_ptr<RuntimeBackendFactory>& runtime_backend_factory,
+     const fml::RefPtr<const DartSnapshot>& isolate_snapshot,
+     const TaskRunners& task_runners,
+     const PlatformData& platform_data,
+@@ -71,18 +72,10 @@ std::unique_ptr<Engine> CreateEngine(
+     const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch,
+     const std::shared_future<impeller::RuntimeStageBackend>&
+         runtime_stage_backend) {
+-  return std::make_unique<Engine>(delegate,             //
+-                                  vm,                   //
+-                                  isolate_snapshot,     //
+-                                  task_runners,         //
+-                                  platform_data,        //
+-                                  settings,             //
+-                                  std::move(animator),  //
+-                                  io_manager,           //
+-                                  unref_queue,          //
+-                                  snapshot_delegate,    //
+-                                  gpu_disabled_switch,  //
+-                                  runtime_stage_backend);
++  return std::make_unique<Engine>(
++      delegate, task_runners, platform_data, settings, std::move(animator),
++      io_manager, unref_queue, std::move(snapshot_delegate), isolate_snapshot,
++      runtime_stage_backend, gpu_disabled_switch, runtime_backend_factory);
+ }
+ 
+ void RegisterCodecsWithSkia() {
+@@ -231,6 +224,22 @@ std::unique_ptr<Shell> Shell::Create(
+   TRACE_EVENT0("flutter", "Shell::Create");
+ 
+   auto [vm, isolate_snapshot] = InferVmInitDataFromSettings(settings);
++
++  auto runtime_backend_factory = std::make_shared<DartRuntimeBackendFactory>(
++      std::move(vm), isolate_snapshot);
++  return Create(platform_data, task_runners, std::move(settings),
++                on_create_platform_view, on_create_rasterizer,
++                std::move(runtime_backend_factory), is_gpu_disabled);
++}
++
++std::unique_ptr<Shell> Shell::Create(
++    const PlatformData& platform_data,
++    const TaskRunners& task_runners,
++    Settings settings,
++    const Shell::CreateCallback<PlatformView>& on_create_platform_view,
++    const Shell::CreateCallback<Rasterizer>& on_create_rasterizer,
++    std::shared_ptr<RuntimeBackendFactory> runtime_backend_factory,
++    bool is_gpu_disabled) {
+   auto resource_cache_limit_calculator =
+       std::make_shared<ResourceCacheLimitCalculator>(
+           settings.resource_cache_max_bytes_threshold);
+@@ -241,15 +250,14 @@ std::unique_ptr<Shell> Shell::Create(
+                             /*parent_io_manager=*/nullptr,     //
+                             resource_cache_limit_calculator,   //
+                             settings,                          //
+-                            std::move(vm),                     //
+-                            std::move(isolate_snapshot),       //
++                            std::move(runtime_backend_factory), //
+                             on_create_platform_view,           //
+                             on_create_rasterizer,              //
+                             CreateEngine, is_gpu_disabled);
+ }
+ 
+ std::unique_ptr<Shell> Shell::CreateShellOnPlatformThread(
+-    DartVMRef vm,
++    std::shared_ptr<RuntimeBackendFactory> runtime_backend_factory,
+     fml::RefPtr<fml::RasterThreadMerger> parent_merger,
+     std::shared_ptr<ShellIOManager> parent_io_manager,
+     const std::shared_ptr<ResourceCacheLimitCalculator>&
+@@ -257,7 +265,6 @@ std::unique_ptr<Shell> Shell::CreateShellOnPlatformThread(
+     const TaskRunners& task_runners,
+     const PlatformData& platform_data,
+     const Settings& settings,
+-    fml::RefPtr<const DartSnapshot> isolate_snapshot,
+     const Shell::CreateCallback<PlatformView>& on_create_platform_view,
+     const Shell::CreateCallback<Rasterizer>& on_create_rasterizer,
+     const Shell::EngineCreateCallback& on_create_engine,
+@@ -268,7 +275,8 @@ std::unique_ptr<Shell> Shell::CreateShellOnPlatformThread(
+   }
+ 
+   auto shell = std::unique_ptr<Shell>(
+-      new Shell(std::move(vm), task_runners, std::move(parent_merger),
++      new Shell(std::move(runtime_backend_factory), task_runners,
++                std::move(parent_merger),
+                 resource_cache_limit_calculator, settings, is_gpu_disabled));
+ 
+   // Create the platform view on the platform thread (this thread).
+@@ -397,7 +405,6 @@ std::unique_ptr<Shell> Shell::CreateShellOnPlatformThread(
+       fml::MakeCopyable([&engine_promise,                                 //
+                          shell = shell.get(),                             //
+                          &platform_data,                                  //
+-                         isolate_snapshot = std::move(isolate_snapshot),  //
+                          vsync_waiter = std::move(vsync_waiter),          //
+                          &weak_io_manager_future,                         //
+                          &snapshot_delegate_future,                       //
+@@ -413,9 +420,9 @@ std::unique_ptr<Shell> Shell::CreateShellOnPlatformThread(
+                                                    std::move(vsync_waiter));
+ 
+         engine_promise.set_value(
+-            on_create_engine(*shell,                               //
+-                             *shell->GetDartVM(),                  //
+-                             std::move(isolate_snapshot),          //
++            on_create_engine(*shell,                              //
++                             shell->runtime_backend_factory_,      //
++                             nullptr,                              //
+                              task_runners,                         //
+                              platform_data,                        //
+                              shell->GetSettings(),                 //
+@@ -446,8 +453,7 @@ std::unique_ptr<Shell> Shell::CreateWithSnapshot(
+     const std::shared_ptr<ResourceCacheLimitCalculator>&
+         resource_cache_limit_calculator,
+     Settings settings,
+-    DartVMRef vm,
+-    fml::RefPtr<const DartSnapshot> isolate_snapshot,
++    std::shared_ptr<RuntimeBackendFactory> runtime_backend_factory,
+     const Shell::CreateCallback<PlatformView>& on_create_platform_view,
+     const Shell::CreateCallback<Rasterizer>& on_create_rasterizer,
+     const Shell::EngineCreateCallback& on_create_engine,
+@@ -476,31 +482,31 @@ std::unique_ptr<Shell> Shell::CreateWithSnapshot(
+                          task_runners = task_runners,                        //
+                          platform_data = platform_data,                      //
+                          settings = settings,                                //
+-                         vm = std::move(vm),                                 //
+-                         isolate_snapshot = std::move(isolate_snapshot),     //
++                         runtime_backend_factory =
++                             std::move(runtime_backend_factory),             //
+                          on_create_platform_view = on_create_platform_view,  //
+                          on_create_rasterizer = on_create_rasterizer,        //
+                          on_create_engine = on_create_engine,
+                          is_gpu_disabled]() mutable {
+-        shell = CreateShellOnPlatformThread(std::move(vm),                    //
+-                                            parent_thread_merger,             //
+-                                            parent_io_manager,                //
+-                                            resource_cache_limit_calculator,  //
+-                                            task_runners,                     //
+-                                            platform_data,                    //
+-                                            settings,                         //
+-                                            std::move(isolate_snapshot),      //
+-                                            on_create_platform_view,          //
+-                                            on_create_rasterizer,             //
+-                                            on_create_engine,                 //
+-                                            is_gpu_disabled);
++        shell = CreateShellOnPlatformThread(
++            std::move(runtime_backend_factory),   //
++            parent_thread_merger,                 //
++            parent_io_manager,                    //
++            resource_cache_limit_calculator,      //
++            task_runners,                         //
++            platform_data,                        //
++            settings,                             //
++            on_create_platform_view,              //
++            on_create_rasterizer,                 //
++            on_create_engine,                     //
++            is_gpu_disabled);
+         latch.Signal();
+       }));
+   latch.Wait();
+   return shell;
+ }
+ 
+-Shell::Shell(DartVMRef vm,
++Shell::Shell(std::shared_ptr<RuntimeBackendFactory> runtime_backend_factory,
+              const TaskRunners& task_runners,
+              fml::RefPtr<fml::RasterThreadMerger> parent_merger,
+              const std::shared_ptr<ResourceCacheLimitCalculator>&
+@@ -511,7 +517,7 @@ Shell::Shell(DartVMRef vm,
+       parent_raster_thread_merger_(std::move(parent_merger)),
+       resource_cache_limit_calculator_(resource_cache_limit_calculator),
+       settings_(settings),
+-      vm_(std::move(vm)),
++      runtime_backend_factory_(std::move(runtime_backend_factory)),
+       is_gpu_disabled_sync_switch_(new fml::SyncSwitch(is_gpu_disabled)),
+       weak_factory_gpu_(nullptr),
+       weak_factory_(this) {
+@@ -530,7 +536,8 @@ Shell::Shell(DartVMRef vm,
+     https://github.com/flutter/flutter/issues/new?template=02_bug.yml
+ )warn";
+   }
+-  FML_CHECK(vm_) << "Must have access to VM to create a shell.";
++  FML_CHECK(runtime_backend_factory_)
++      << "Must have a runtime backend factory to create a shell.";
+   FML_DCHECK(task_runners_.IsValid());
+   FML_DCHECK(task_runners_.GetPlatformTaskRunner()->RunsTasksOnCurrentThread());
+ 
+@@ -610,7 +617,9 @@ Shell::~Shell() {
+       task_runners_.GetIOTaskRunner());
+ #endif  //  !SLIMPELLER
+ 
+-  vm_->GetServiceProtocol()->RemoveHandler(this);
++  if (auto* vm = GetDartVM()) {
++    vm->GetServiceProtocol()->RemoveHandler(this);
++  }
+ 
+   fml::AutoResetWaitableEvent platiso_latch, ui_latch, gpu_latch,
+       platform_latch, io_latch;
+@@ -709,11 +718,11 @@ std::unique_ptr<Shell> Shell::Spawn(
+           .SetIfTrue([&is_gpu_disabled] { is_gpu_disabled = true; }));
+   std::unique_ptr<Shell> result = CreateWithSnapshot(
+       PlatformData{}, task_runners_, rasterizer_->GetRasterThreadMerger(),
+-      io_manager_, resource_cache_limit_calculator_, GetSettings(), vm_,
+-      vm_->GetVMData()->GetIsolateSnapshot(), on_create_platform_view,
+-      on_create_rasterizer,
++      io_manager_, resource_cache_limit_calculator_, GetSettings(),
++      runtime_backend_factory_, on_create_platform_view, on_create_rasterizer,
+       [engine = this->engine_.get(), initial_route](
+-          Engine::Delegate& delegate, DartVM& vm,
++          Engine::Delegate& delegate,
++          const std::shared_ptr<RuntimeBackendFactory>& runtime_backend_factory,
+           const fml::RefPtr<const DartSnapshot>& isolate_snapshot,
+           const TaskRunners& task_runners, const PlatformData& platform_data,
+           const Settings& settings, std::unique_ptr<Animator> animator,
+@@ -741,11 +750,9 @@ void Shell::NotifyLowMemoryWarning() const {
+   auto trace_id = fml::tracing::TraceNonce();
+   TRACE_EVENT_ASYNC_BEGIN0("flutter", "Shell::NotifyLowMemoryWarning",
+                            trace_id);
+-  // This does not require a current isolate but does require a running VM.
+-  // Since a valid shell will not be returned to the embedder without a valid
+-  // DartVMRef, we can be certain that this is a safe spot to assume a VM is
+-  // running.
+-  ::Dart_NotifyLowMemory();
++  if (GetDartVM()) {
++    ::Dart_NotifyLowMemory();
++  }
+ 
+   task_runners_.GetRasterTaskRunner()->PostTask(
+       [rasterizer = rasterizer_->GetWeakPtr(), trace_id = trace_id]() {
+@@ -966,7 +973,7 @@ std::shared_ptr<fml::BasicTaskRunner> Shell::GetShutdownSafeIOTaskRunner() {
+ }
+ 
+ DartVM* Shell::GetDartVM() {
+-  return &vm_;
++  return runtime_backend_factory_->GetDartVM();
+ }
+ 
+ // |PlatformView::Delegate|
+@@ -1675,8 +1682,9 @@ void Shell::OnRootIsolateCreated() {
+       task_runners_.GetPlatformTaskRunner(),
+       [self = weak_factory_.GetWeakPtr(),
+        description = std::move(description)]() {
+-        if (self) {
+-          self->vm_->GetServiceProtocol()->AddHandler(self.get(), description);
++        if (self && self->GetDartVM()) {
++          self->GetDartVM()->GetServiceProtocol()->AddHandler(self.get(),
++                                                               description);
+         }
+       });
+   is_added_to_service_protocol_ = true;
+@@ -1686,7 +1694,9 @@ void Shell::OnRootIsolateCreated() {
+ void Shell::UpdateIsolateDescription(const std::string isolate_name,
+                                      int64_t isolate_port) {
+   Handler::Description description(isolate_port, isolate_name);
+-  vm_->GetServiceProtocol()->SetHandlerDescription(this, description);
++  if (auto* vm = GetDartVM()) {
++    vm->GetServiceProtocol()->SetHandlerDescription(this, description);
++  }
+ }
+ 
+ void Shell::SetNeedsReportTimings(bool value) {
+@@ -2510,11 +2520,12 @@ const std::weak_ptr<VsyncWaiter> Shell::GetVsyncWaiter() const {
+ 
+ const std::shared_ptr<fml::ConcurrentTaskRunner>
+ Shell::GetConcurrentWorkerTaskRunner() const {
+-  FML_DCHECK(vm_);
+-  if (!vm_) {
++  auto* vm = GetDartVM();
++  FML_DCHECK(vm);
++  if (!vm) {
+     return nullptr;
+   }
+-  return vm_->GetConcurrentWorkerTaskRunner();
++  return vm->GetConcurrentWorkerTaskRunner();
+ }
+ 
+ BoxConstraints Shell::ExpectedFrameConstraints(int64_t view_id) {
+diff --git a/engine/src/flutter/shell/common/shell.h b/engine/src/flutter/shell/common/shell.h
+index fae536d8a77..6f415d4718e 100644
+--- a/engine/src/flutter/shell/common/shell.h
++++ b/engine/src/flutter/shell/common/shell.h
+@@ -40,6 +40,7 @@
+ #include "flutter/shell/common/resource_cache_limit_calculator.h"
+ #include "flutter/shell/common/shell_io_manager.h"
+ #include "flutter/shell/geometry/geometry.h"
++#include "flutter/runtime_spi/runtime_backend_factory.h"
+ #include "impeller/core/runtime_types.h"
+ #include "impeller/renderer/context.h"
+ #include "impeller/runtime_stage/runtime_stage.h"
+@@ -121,7 +122,7 @@ class Shell final : public PlatformView::Delegate,
+   using CreateCallback = std::function<std::unique_ptr<T>(Shell&)>;
+   typedef std::function<std::unique_ptr<Engine>(
+       Engine::Delegate& delegate,
+-      DartVM& vm,
++      const std::shared_ptr<RuntimeBackendFactory>& runtime_backend_factory,
+       fml::RefPtr<const DartSnapshot> isolate_snapshot,
+       TaskRunners task_runners,
+       const PlatformData& platform_data,
+@@ -174,6 +175,15 @@ class Shell final : public PlatformView::Delegate,
+       const CreateCallback<Rasterizer>& on_create_rasterizer,
+       bool is_gpu_disabled = false);
+ 
++  static std::unique_ptr<Shell> Create(
++      const PlatformData& platform_data,
++      const TaskRunners& task_runners,
++      Settings settings,
++      const CreateCallback<PlatformView>& on_create_platform_view,
++      const CreateCallback<Rasterizer>& on_create_rasterizer,
++      std::shared_ptr<RuntimeBackendFactory> runtime_backend_factory,
++      bool is_gpu_disabled = false);
++
+   //----------------------------------------------------------------------------
+   /// @brief      Destroys the shell. This is a synchronous operation and
+   ///             synchronous barrier blocks are introduced on the various
+@@ -480,7 +490,7 @@ class Shell final : public PlatformView::Delegate,
+       resource_cache_limit_calculator_;
+   size_t resource_cache_limit_;
+   const Settings settings_;
+-  DartVMRef vm_;
++  std::shared_ptr<RuntimeBackendFactory> runtime_backend_factory_;
+   mutable std::mutex time_recorder_mutex_;
+   std::optional<fml::TimePoint> latest_frame_target_time_;
+   std::unique_ptr<PlatformView> platform_view_;  // on platform task runner
+@@ -557,7 +567,7 @@ class Shell final : public PlatformView::Delegate,
+   // How many frames have been timed since last report.
+   size_t UnreportedFramesCount() const;
+ 
+-  Shell(DartVMRef vm,
++  Shell(std::shared_ptr<RuntimeBackendFactory> runtime_backend_factory,
+         const TaskRunners& task_runners,
+         fml::RefPtr<fml::RasterThreadMerger> parent_merger,
+         const std::shared_ptr<ResourceCacheLimitCalculator>&
+@@ -566,7 +576,7 @@ class Shell final : public PlatformView::Delegate,
+         bool is_gpu_disabled);
+ 
+   static std::unique_ptr<Shell> CreateShellOnPlatformThread(
+-      DartVMRef vm,
++      std::shared_ptr<RuntimeBackendFactory> runtime_backend_factory,
+       fml::RefPtr<fml::RasterThreadMerger> parent_merger,
+       std::shared_ptr<ShellIOManager> parent_io_manager,
+       const std::shared_ptr<ResourceCacheLimitCalculator>&
+@@ -574,7 +584,6 @@ class Shell final : public PlatformView::Delegate,
+       const TaskRunners& task_runners,
+       const PlatformData& platform_data,
+       const Settings& settings,
+-      fml::RefPtr<const DartSnapshot> isolate_snapshot,
+       const Shell::CreateCallback<PlatformView>& on_create_platform_view,
+       const Shell::CreateCallback<Rasterizer>& on_create_rasterizer,
+       const EngineCreateCallback& on_create_engine,
+@@ -588,8 +597,7 @@ class Shell final : public PlatformView::Delegate,
+       const std::shared_ptr<ResourceCacheLimitCalculator>&
+           resource_cache_limit_calculator,
+       Settings settings,
+-      DartVMRef vm,
+-      fml::RefPtr<const DartSnapshot> isolate_snapshot,
++      std::shared_ptr<RuntimeBackendFactory> runtime_backend_factory,
+       const CreateCallback<PlatformView>& on_create_platform_view,
+       const CreateCallback<Rasterizer>& on_create_rasterizer,
+       const EngineCreateCallback& on_create_engine,
+diff --git a/engine/src/flutter/shell/common/shell_unittests.cc b/engine/src/flutter/shell/common/shell_unittests.cc
+index 1972f1f88dd..ea74fe5c30a 100644
+--- a/engine/src/flutter/shell/common/shell_unittests.cc
++++ b/engine/src/flutter/shell/common/shell_unittests.cc
+@@ -38,6 +38,7 @@
+ #include "flutter/shell/common/shell_test.h"
+ #include "flutter/shell/common/shell_test_external_view_embedder.h"
+ #include "flutter/shell/common/shell_test_platform_view.h"
++#include "flutter/shell/common/fake_runtime_backend.h"
+ #include "flutter/shell/common/switches.h"
+ #include "flutter/shell/common/thread_host.h"
+ #include "flutter/shell/common/vsync_waiter_fallback.h"
+@@ -281,6 +282,32 @@ class MockPlatformMessageResponse : public PlatformMessageResponse {
+   MOCK_METHOD(void, Complete, (std::unique_ptr<fml::Mapping> data), (override));
+   MOCK_METHOD(void, CompleteEmpty, (), (override));
+ };
++
++class FakeRuntimeBackendFactory final : public RuntimeBackendFactory {
++ public:
++  std::unique_ptr<RuntimeBackend> Create(
++      RuntimeDelegate& runtime_delegate,
++      const TaskRunners& task_runners,
++      const PlatformData&,
++      const Settings&,
++      fml::RefPtr<const DartSnapshot>,
++      fml::WeakPtr<IOManager>,
++      fml::RefPtr<SkiaUnrefQueue>,
++      fml::TaskRunnerAffineWeakPtr<SnapshotDelegate>,
++      fml::TaskRunnerAffineWeakPtr<ImageDecoder>,
++      fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>,
++      const std::shared_future<impeller::RuntimeStageBackend>&) override {
++    auto backend = std::make_unique<FakeRuntimeBackend>(task_runners);
++    backend_ = backend.get();
++    backend_->SetRuntimeDelegate(runtime_delegate);
++    return backend;
++  }
++
++  FakeRuntimeBackend* backend() const { return backend_; }
++
++ private:
++  FakeRuntimeBackend* backend_ = nullptr;
++};
+ }  // namespace
+ 
+ class TestAssetResolver : public AssetResolver {
+@@ -452,6 +479,41 @@ TEST_F(ShellTest, InitializeWithInvalidThreads) {
+   ASSERT_FALSE(DartVMRef::IsInstanceRunning());
+ }
+ 
++TEST_F(ShellTest, StartsAndRendersWithFakeBackendWithoutDartVM) {
++  ASSERT_FALSE(DartVMRef::IsInstanceRunning());
++  auto settings = CreateSettingsForFixture();
++  auto task_runners = GetTaskRunnersForFixture();
++  auto factory = std::make_shared<FakeRuntimeBackendFactory>();
++  auto shell = Shell::Create(
++      PlatformData(), task_runners, settings,
++      ShellTestPlatformViewBuilder({}),
++      [](Shell& shell) { return std::make_unique<Rasterizer>(shell); },
++      factory);
++
++  ASSERT_TRUE(ValidateShell(shell.get()));
++  ASSERT_EQ(shell->GetDartVM(), nullptr);
++  PlatformViewNotifyCreated(shell.get());
++  factory->backend()->ScheduleFrame();
++  VSyncFlush(shell.get());
++  EXPECT_EQ(factory->backend()->begin_frame_count(), 1u);
++
++  DestroyShell(std::move(shell), task_runners);
++  ASSERT_FALSE(DartVMRef::IsInstanceRunning());
++}
++
++TEST_F(ShellTest, LegacyCreateStillUsesDartVM) {
++  ASSERT_FALSE(DartVMRef::IsInstanceRunning());
++  auto settings = CreateSettingsForFixture();
++  auto shell = CreateShell(settings);
++
++  ASSERT_TRUE(ValidateShell(shell.get()));
++  ASSERT_NE(shell->GetDartVM(), nullptr);
++  ASSERT_TRUE(DartVMRef::IsInstanceRunning());
++
++  DestroyShell(std::move(shell));
++  ASSERT_FALSE(DartVMRef::IsInstanceRunning());
++}
++
+ TEST_F(ShellTest, InitializeWithDifferentThreads) {
+   ASSERT_FALSE(DartVMRef::IsInstanceRunning());
+   Settings settings = CreateSettingsForFixture();
