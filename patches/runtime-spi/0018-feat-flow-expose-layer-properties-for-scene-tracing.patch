@@ -1,0 +1,128 @@
+# Why: the runtime SPI scene trace reads layer properties to compare SPI-built
+and C++-built layer trees
+diff --git a/engine/src/flutter/flow/layers/clip_path_layer.h b/engine/src/flutter/flow/layers/clip_path_layer.h
+index 30f6225cd3a..6acc7a88aa7 100644
+--- a/engine/src/flutter/flow/layers/clip_path_layer.h
++++ b/engine/src/flutter/flow/layers/clip_path_layer.h
+@@ -16,6 +16,8 @@ class ClipPathLayer : public ClipShapeLayer<DlPath> {
+   explicit ClipPathLayer(const DlPath& clip_path,
+                          Clip clip_behavior = Clip::kAntiAlias);
+ 
++  const ClipPathLayer* as_clip_path_layer() const override { return this; }
++
+  protected:
+   const DlRect clip_shape_bounds() const override;
+ 
+diff --git a/engine/src/flutter/flow/layers/clip_rect_layer.h b/engine/src/flutter/flow/layers/clip_rect_layer.h
+index a59fe28ca5c..8f158fc40e8 100644
+--- a/engine/src/flutter/flow/layers/clip_rect_layer.h
++++ b/engine/src/flutter/flow/layers/clip_rect_layer.h
+@@ -13,6 +13,8 @@ class ClipRectLayer : public ClipShapeLayer<DlRect> {
+  public:
+   ClipRectLayer(const DlRect& clip_rect, Clip clip_behavior);
+ 
++  const ClipRectLayer* as_clip_rect_layer() const override { return this; }
++
+  protected:
+   const DlRect clip_shape_bounds() const override;
+ 
+diff --git a/engine/src/flutter/flow/layers/clip_rrect_layer.h b/engine/src/flutter/flow/layers/clip_rrect_layer.h
+index 92b8889fd4b..b7b0b599dee 100644
+--- a/engine/src/flutter/flow/layers/clip_rrect_layer.h
++++ b/engine/src/flutter/flow/layers/clip_rrect_layer.h
+@@ -13,6 +13,8 @@ class ClipRRectLayer : public ClipShapeLayer<DlRoundRect> {
+  public:
+   ClipRRectLayer(const DlRoundRect& clip_rrect, Clip clip_behavior);
+ 
++  const ClipRRectLayer* as_clip_rrect_layer() const override { return this; }
++
+  protected:
+   const DlRect clip_shape_bounds() const override;
+ 
+diff --git a/engine/src/flutter/flow/layers/clip_shape_layer.h b/engine/src/flutter/flow/layers/clip_shape_layer.h
+index 220f05c802e..534c4fba048 100644
+--- a/engine/src/flutter/flow/layers/clip_shape_layer.h
++++ b/engine/src/flutter/flow/layers/clip_shape_layer.h
+@@ -116,6 +116,7 @@ class ClipShapeLayer : public CacheableContainerLayer {
+       ExternalViewEmbedder* view_embedder) const = 0;
+   virtual ~ClipShapeLayer() = default;
+ 
++ public:
+   const ClipShape& clip_shape() const { return clip_shape_; }
+   Clip clip_behavior() const { return clip_behavior_; }
+ 
+diff --git a/engine/src/flutter/flow/layers/display_list_layer.h b/engine/src/flutter/flow/layers/display_list_layer.h
+index 48af63f82c2..f64d9a3e070 100644
+--- a/engine/src/flutter/flow/layers/display_list_layer.h
++++ b/engine/src/flutter/flow/layers/display_list_layer.h
+@@ -25,6 +25,7 @@ class DisplayListLayer : public Layer {
+                    bool will_change);
+ 
+   DisplayList* display_list() const { return display_list_.get(); }
++  const DlPoint& offset() const { return offset_; }
+ 
+   bool IsReplacing(DiffContext* context, const Layer* layer) const override;
+ 
+diff --git a/engine/src/flutter/flow/layers/layer.h b/engine/src/flutter/flow/layers/layer.h
+index f3e9cb28459..37946277c5b 100644
+--- a/engine/src/flutter/flow/layers/layer.h
++++ b/engine/src/flutter/flow/layers/layer.h
+@@ -32,9 +32,14 @@ class MockLayer;
+ }  // namespace testing
+ 
+ class ContainerLayer;
++class ClipPathLayer;
++class ClipRectLayer;
++class ClipRRectLayer;
+ class DisplayListLayer;
++class OpacityLayer;
+ class PerformanceOverlayLayer;
+ class TextureLayer;
++class TransformLayer;
+ class RasterCacheItem;
+ 
+ static constexpr DlRect kGiantRect = DlRect::MakeLTRB(-1E9F, -1E9F, 1E9F, 1E9F);
+@@ -242,6 +247,13 @@ class Layer {
+   }
+ #endif  //  !SLIMPELLER
+   virtual const ContainerLayer* as_container_layer() const { return nullptr; }
++  virtual const TransformLayer* as_transform_layer() const { return nullptr; }
++  virtual const OpacityLayer* as_opacity_layer() const { return nullptr; }
++  virtual const ClipRectLayer* as_clip_rect_layer() const { return nullptr; }
++  virtual const ClipRRectLayer* as_clip_rrect_layer() const {
++    return nullptr;
++  }
++  virtual const ClipPathLayer* as_clip_path_layer() const { return nullptr; }
+   virtual const DisplayListLayer* as_display_list_layer() const {
+     return nullptr;
+   }
+diff --git a/engine/src/flutter/flow/layers/opacity_layer.h b/engine/src/flutter/flow/layers/opacity_layer.h
+index 444f05ca579..33d5b021307 100644
+--- a/engine/src/flutter/flow/layers/opacity_layer.h
++++ b/engine/src/flutter/flow/layers/opacity_layer.h
+@@ -45,6 +45,10 @@ class OpacityLayer : public CacheableContainerLayer {
+   }
+ 
+   DlScalar opacity() const { return DlColor::toOpacity(alpha_); }
++  uint8_t alpha() const { return alpha_; }
++  const DlPoint& offset() const { return offset_; }
++
++  const OpacityLayer* as_opacity_layer() const override { return this; }
+ 
+  private:
+   uint8_t alpha_;
+diff --git a/engine/src/flutter/flow/layers/transform_layer.h b/engine/src/flutter/flow/layers/transform_layer.h
+index a8724303673..6a974485d42 100644
+--- a/engine/src/flutter/flow/layers/transform_layer.h
++++ b/engine/src/flutter/flow/layers/transform_layer.h
+@@ -19,6 +19,10 @@ class TransformLayer : public ContainerLayer {
+ 
+   void Paint(PaintContext& context) const override;
+ 
++  const DlMatrix& transform() const { return transform_; }
++
++  const TransformLayer* as_transform_layer() const override { return this; }
++
+  private:
+   DlMatrix transform_;
+ 

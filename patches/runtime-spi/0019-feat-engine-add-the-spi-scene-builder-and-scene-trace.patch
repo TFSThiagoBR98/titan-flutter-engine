@@ -1,0 +1,1213 @@
+# Why: the runtime SPI scene API must build layer trees and describe them
+canonically for parity checks
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 4e2f6d0f784..603c89ed8f3 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -42,6 +42,7 @@ source_set("spi_backend") {
+   public_deps = [
+     ":runtime_spi",
+     ":runtime_spi_c_api",
++    ":scene",
+     "//flutter/flow",
+   ]
+ }
+@@ -61,16 +62,21 @@ source_set("scene") {
+     "scene/spi_paint.h",
+     "scene/spi_path.h",
+     "scene/spi_canvas.h",
++    "scene/spi_scene_builder.h",
++    "scene/spi_scene_trace.h",
+   ]
+   sources = [
+     "scene/spi_canvas.cc",
+     "scene/spi_geometry.cc",
+     "scene/spi_paint.cc",
+     "scene/spi_path.cc",
++    "scene/spi_scene_builder.cc",
++    "scene/spi_scene_trace.cc",
+   ]
+   public_deps = [
+     ":runtime_spi_c_api",
+     "//flutter/display_list",
++    "//flutter/flow",
+   ]
+   assert_no_deps = [
+     "//flutter/third_party/dart/*",
+@@ -91,6 +97,8 @@ if (enable_unittests) {
+       "scene/spi_canvas_parity_unittests.cc",
+       "scene/spi_path_unittests.cc",
+       "scene/spi_paint_unittests.cc",
++      "scene/spi_scene_builder_parity_unittests.cc",
++      "scene/spi_scene_trace_unittests.cc",
+       "spi_runtime_backend_unittests.cc",
+     ]
+     deps = [
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+index a5b6a1d80a3..4c955ff09ed 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+@@ -16,6 +16,8 @@
+ #include "flutter/runtime_spi/scene/spi_handle_table.h"
+ #include "flutter/runtime_spi/scene/spi_paint.h"
+ #include "flutter/runtime_spi/scene/spi_path.h"
++#include "flutter/runtime_spi/scene/spi_scene_builder.h"
++#include "flutter/runtime_spi/scene/spi_scene_trace.h"
+ 
+ namespace flutter {
+ namespace {
+@@ -793,6 +795,19 @@ const FlutterSpiSceneApi kSceneApi = {
+     .recorder_release = RecorderRelease,
+     .picture_retain = PictureRetain,
+     .picture_release = PictureRelease,
++    .scene_builder_create = SpiSceneBuilderCreate,
++    .scene_push_transform = SpiScenePushTransform,
++    .scene_push_offset = SpiScenePushOffset,
++    .scene_push_clip_rect = SpiScenePushClipRect,
++    .scene_push_clip_rrect = SpiScenePushClipRRect,
++    .scene_push_clip_path = SpiScenePushClipPath,
++    .scene_push_opacity = SpiScenePushOpacity,
++    .scene_pop = SpiScenePop,
++    .scene_add_picture = SpiSceneAddPicture,
++    .scene_build = SpiSceneBuild,
++    .scene_builder_release = SpiSceneBuilderRelease,
++    .scene_trace = SpiSceneTrace,
++    .trace_free = SpiTraceFree,
+ };
+ 
+ }  // namespace
+@@ -806,4 +821,9 @@ const DisplayList* SpiPictureDisplayListForTesting(FlutterSpiPicture* picture) {
+   return picture_value == nullptr ? nullptr : picture_value->display_list();
+ }
+ 
++const DlPath* SpiPathForTesting(FlutterSpiPath* path) {
++  const auto path_value = FindPath(path);
++  return path_value == nullptr ? nullptr : &path_value->path();
++}
++
+ }  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas.h b/engine/src/flutter/runtime_spi/scene/spi_canvas.h
+index c768f97dd4f..115833eb121 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas.h
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas.h
+@@ -10,9 +10,11 @@
+ namespace flutter {
+ 
+ class DisplayList;
++class DlPath;
+ 
+ const FlutterSpiSceneApi* SpiSceneApi();
+ const DisplayList* SpiPictureDisplayListForTesting(FlutterSpiPicture* picture);
++const DlPath* SpiPathForTesting(FlutterSpiPath* path);
+ 
+ }  // namespace flutter
+ 
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
+new file mode 100644
+index 00000000000..e0174866df6
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
+@@ -0,0 +1,248 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/scene/spi_scene_builder.h"
++
++#include <cmath>
++#include <memory>
++#include <utility>
++#include <vector>
++
++#include "flutter/flow/layers/clip_path_layer.h"
++#include "flutter/flow/layers/clip_rect_layer.h"
++#include "flutter/flow/layers/clip_rrect_layer.h"
++#include "flutter/flow/layers/container_layer.h"
++#include "flutter/flow/layers/display_list_layer.h"
++#include "flutter/flow/layers/opacity_layer.h"
++#include "flutter/flow/layers/transform_layer.h"
++#include "flutter/runtime_spi/scene/spi_canvas.h"
++#include "flutter/runtime_spi/scene/spi_geometry.h"
++#include "flutter/runtime_spi/scene/spi_handle_table.h"
++#include "flutter/runtime_spi/spi_scene.h"
++
++struct FlutterSpiSceneBuilder {
++  std::shared_ptr<flutter::ContainerLayer> root =
++      std::make_shared<flutter::ContainerLayer>();
++  std::vector<std::shared_ptr<flutter::ContainerLayer>> layer_stack = {root};
++};
++
++namespace flutter {
++namespace {
++
++SpiHandleTable<FlutterSpiSceneBuilder>& Builders() {
++  static SpiHandleTable<FlutterSpiSceneBuilder> builders;
++  return builders;
++}
++
++template <typename Handle>
++uintptr_t HandleValue(Handle* handle) {
++  return reinterpret_cast<uintptr_t>(handle);
++}
++
++template <typename Handle>
++Handle* MakeHandle(uintptr_t value) {
++  return reinterpret_cast<Handle*>(value);
++}
++
++std::shared_ptr<FlutterSpiSceneBuilder> FindBuilder(
++    FlutterSpiSceneBuilder* builder) {
++  return Builders().Find(HandleValue(builder));
++}
++
++FlutterSpiResult ToResult(bool succeeded) {
++  return succeeded ? kFlutterSpiOk : kFlutterSpiInvalidHandle;
++}
++
++bool IsValidClipBehavior(int32_t clip_behavior) {
++  return clip_behavior >= kFlutterSpiClipHardEdge &&
++         clip_behavior <= kFlutterSpiClipAntiAliasWithSaveLayer;
++}
++
++Clip ToClip(int32_t clip_behavior) {
++  return static_cast<Clip>(clip_behavior);
++}
++
++void AddLayer(const std::shared_ptr<Layer>& layer,
++              const std::shared_ptr<FlutterSpiSceneBuilder>& builder) {
++  builder->layer_stack.back()->Add(layer);
++}
++
++void PushLayer(const std::shared_ptr<ContainerLayer>& layer,
++               const std::shared_ptr<FlutterSpiSceneBuilder>& builder) {
++  AddLayer(layer, builder);
++  builder->layer_stack.push_back(layer);
++}
++
++}  // namespace
++
++FlutterSpiResult SpiSceneBuilderCreate(FlutterSpiEngine* engine,
++                                       FlutterSpiSceneBuilder** out_builder) {
++  if (engine == nullptr || out_builder == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const uintptr_t handle =
++      Builders().Insert(std::make_shared<FlutterSpiSceneBuilder>());
++  *out_builder = MakeHandle<FlutterSpiSceneBuilder>(handle);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiScenePushTransform(FlutterSpiSceneBuilder* builder,
++                                       const FlutterSpiMatrix* matrix) {
++  const auto builder_value = FindBuilder(builder);
++  DlMatrix dl_matrix;
++  if (builder_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (matrix == nullptr || !ToDlMatrix(*matrix, &dl_matrix)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  PushLayer(std::make_shared<TransformLayer>(dl_matrix), builder_value);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiScenePushOffset(FlutterSpiSceneBuilder* builder,
++                                    float dx,
++                                    float dy) {
++  const auto builder_value = FindBuilder(builder);
++  if (builder_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!std::isfinite(dx) || !std::isfinite(dy)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  PushLayer(std::make_shared<TransformLayer>(
++                DlMatrix::MakeTranslation({dx, dy})),
++            builder_value);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiScenePushClipRect(FlutterSpiSceneBuilder* builder,
++                                      const FlutterSpiRect* rect,
++                                      int32_t clip_behavior) {
++  const auto builder_value = FindBuilder(builder);
++  DlRect dl_rect;
++  if (builder_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (rect == nullptr || !ToDlRect(*rect, &dl_rect) ||
++      !IsValidClipBehavior(clip_behavior)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  PushLayer(std::make_shared<ClipRectLayer>(dl_rect, ToClip(clip_behavior)),
++            builder_value);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiScenePushClipRRect(FlutterSpiSceneBuilder* builder,
++                                       const FlutterSpiRRect* rrect,
++                                       int32_t clip_behavior) {
++  const auto builder_value = FindBuilder(builder);
++  DlRoundRect dl_rrect;
++  if (builder_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (rrect == nullptr || !ToDlRoundRect(*rrect, &dl_rrect) ||
++      !IsValidClipBehavior(clip_behavior)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  PushLayer(std::make_shared<ClipRRectLayer>(dl_rrect, ToClip(clip_behavior)),
++            builder_value);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiScenePushClipPath(FlutterSpiSceneBuilder* builder,
++                                      FlutterSpiPath* path,
++                                      int32_t clip_behavior) {
++  const auto builder_value = FindBuilder(builder);
++  const auto path_value = SpiPathForTesting(path);
++  if (builder_value == nullptr || path_value == nullptr) {
++    return builder_value == nullptr ? kFlutterSpiInvalidHandle
++                                    : kFlutterSpiInvalidArgument;
++  }
++  if (!IsValidClipBehavior(clip_behavior)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  PushLayer(std::make_shared<ClipPathLayer>(*path_value, ToClip(clip_behavior)),
++            builder_value);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiScenePushOpacity(FlutterSpiSceneBuilder* builder,
++                                     int32_t alpha,
++                                     float dx,
++                                     float dy) {
++  const auto builder_value = FindBuilder(builder);
++  if (builder_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (alpha < 0 || alpha > 255 || !std::isfinite(dx) ||
++      !std::isfinite(dy)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  PushLayer(std::make_shared<OpacityLayer>(
++                static_cast<uint8_t>(alpha), DlPoint(dx, dy)),
++            builder_value);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiScenePop(FlutterSpiSceneBuilder* builder) {
++  const auto builder_value = FindBuilder(builder);
++  if (builder_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (builder_value->layer_stack.size() > 1) {
++    builder_value->layer_stack.pop_back();
++  }
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiSceneAddPicture(FlutterSpiSceneBuilder* builder,
++                                    float dx,
++                                    float dy,
++                                    FlutterSpiPicture* picture,
++                                    bool is_complex,
++                                    bool will_change) {
++  const auto builder_value = FindBuilder(builder);
++  const auto* display_list = SpiPictureDisplayListForTesting(picture);
++  if (builder_value == nullptr || display_list == nullptr) {
++    return builder_value == nullptr ? kFlutterSpiInvalidHandle
++                                    : kFlutterSpiInvalidArgument;
++  }
++  if (!std::isfinite(dx) || !std::isfinite(dy)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  AddLayer(std::make_shared<DisplayListLayer>(
++                DlPoint(dx, dy), sk_ref_sp(display_list), is_complex,
++                will_change),
++            builder_value);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiSceneBuild(FlutterSpiSceneBuilder* builder,
++                               int64_t width_px,
++                               int64_t height_px,
++                               FlutterSpiScene** out_scene) {
++  const auto builder_value = FindBuilder(builder);
++  if (builder_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (width_px <= 0 || height_px <= 0 || out_scene == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  while (builder_value->layer_stack.size() > 1) {
++    builder_value->layer_stack.pop_back();
++  }
++  const FlutterSpiResult result = SpiSceneCreateFromLayerTree(
++      width_px, height_px, std::move(builder_value->root), out_scene);
++  if (result == kFlutterSpiOk) {
++    Builders().Release(HandleValue(builder));
++  }
++  return result;
++}
++
++FlutterSpiResult SpiSceneBuilderRelease(FlutterSpiSceneBuilder* builder) {
++  return ToResult(Builders().Release(HandleValue(builder)));
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.h b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.h
+new file mode 100644
+index 00000000000..e6028d5c8b1
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.h
+@@ -0,0 +1,47 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_SCENE_SPI_SCENE_BUILDER_H_
++#define FLUTTER_RUNTIME_SPI_SCENE_SPI_SCENE_BUILDER_H_
++
++#include "flutter/runtime_spi/include/flutter_scene.h"
++
++namespace flutter {
++
++FlutterSpiResult SpiSceneBuilderCreate(FlutterSpiEngine* engine,
++                                       FlutterSpiSceneBuilder** out_builder);
++FlutterSpiResult SpiScenePushTransform(FlutterSpiSceneBuilder* builder,
++                                       const FlutterSpiMatrix* matrix);
++FlutterSpiResult SpiScenePushOffset(FlutterSpiSceneBuilder* builder,
++                                    float dx,
++                                    float dy);
++FlutterSpiResult SpiScenePushClipRect(FlutterSpiSceneBuilder* builder,
++                                      const FlutterSpiRect* rect,
++                                      int32_t clip_behavior);
++FlutterSpiResult SpiScenePushClipRRect(FlutterSpiSceneBuilder* builder,
++                                       const FlutterSpiRRect* rrect,
++                                       int32_t clip_behavior);
++FlutterSpiResult SpiScenePushClipPath(FlutterSpiSceneBuilder* builder,
++                                      FlutterSpiPath* path,
++                                      int32_t clip_behavior);
++FlutterSpiResult SpiScenePushOpacity(FlutterSpiSceneBuilder* builder,
++                                     int32_t alpha,
++                                     float dx,
++                                     float dy);
++FlutterSpiResult SpiScenePop(FlutterSpiSceneBuilder* builder);
++FlutterSpiResult SpiSceneAddPicture(FlutterSpiSceneBuilder* builder,
++                                    float dx,
++                                    float dy,
++                                    FlutterSpiPicture* picture,
++                                    bool is_complex,
++                                    bool will_change);
++FlutterSpiResult SpiSceneBuild(FlutterSpiSceneBuilder* builder,
++                               int64_t width_px,
++                               int64_t height_px,
++                               FlutterSpiScene** out_scene);
++FlutterSpiResult SpiSceneBuilderRelease(FlutterSpiSceneBuilder* builder);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_SCENE_SPI_SCENE_BUILDER_H_
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_builder_parity_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_scene_builder_parity_unittests.cc
+new file mode 100644
+index 00000000000..8c1cab0a508
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_builder_parity_unittests.cc
+@@ -0,0 +1,192 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/scene/spi_canvas.h"
++
++#include <memory>
++
++#include "flutter/display_list/dl_builder.h"
++#include "flutter/display_list/geometry/dl_path_builder.h"
++#include "flutter/flow/layers/clip_path_layer.h"
++#include "flutter/flow/layers/clip_rect_layer.h"
++#include "flutter/flow/layers/clip_rrect_layer.h"
++#include "flutter/flow/layers/container_layer.h"
++#include "flutter/flow/layers/display_list_layer.h"
++#include "flutter/flow/layers/layer_tree.h"
++#include "flutter/flow/layers/opacity_layer.h"
++#include "flutter/flow/layers/transform_layer.h"
++#include "flutter/runtime_spi/scene/spi_scene_builder.h"
++#include "flutter/runtime_spi/scene/spi_scene_trace.h"
++#include "flutter/runtime_spi/scene/spi_paint.h"
++#include "flutter/runtime_spi/spi_scene.h"
++#include "flutter/runtime_spi/spi_runtime_backend.h"
++#include "flutter/testing/testing.h"
++
++namespace flutter::testing {
++namespace {
++
++constexpr FlutterSpiRect kClipRect = {
++    .left = 0.0f, .top = 1.0f, .right = 60.0f, .bottom = 70.0f};
++constexpr FlutterSpiRect kPictureRect = {
++    .left = 10.0f, .top = 11.0f, .right = 30.0f, .bottom = 31.0f};
++constexpr FlutterSpiRRect kClipRRect = {
++    .rect = {.left = 2.0f, .top = 3.0f, .right = 50.0f, .bottom = 60.0f},
++    .radii = {{.x = 4.0f, .y = 5.0f},
++              {.x = 6.0f, .y = 7.0f},
++              {.x = 8.0f, .y = 9.0f},
++              {.x = 10.0f, .y = 11.0f}}};
++constexpr FlutterSpiPaint kPaint = {
++    .struct_size = sizeof(FlutterSpiPaint),
++    .color = {.red = 0.1f,
++              .green = 0.2f,
++              .blue = 0.3f,
++              .alpha = 1.0f,
++              .color_space = kFlutterSpiColorSpaceSRGB},
++    .blend_mode = kFlutterSpiBlendModeSrcOver,
++    .style = kFlutterSpiPaintStyleFill,
++    .stroke_width = 1.0f,
++    .stroke_cap = kFlutterSpiStrokeCapButt,
++    .stroke_join = kFlutterSpiStrokeJoinMiter,
++    .stroke_miter = 4.0f,
++    .anti_alias = true,
++    .invert_colors = false,
++};
++
++sk_sp<DisplayList> MakePicture() {
++  DisplayListBuilder builder(DisplayListBuilder::kMaxCullRect);
++  builder.DrawRect(DlRect::MakeLTRB(10.0f, 11.0f, 30.0f, 31.0f),
++                   ToDlPaint(kPaint));
++  builder.DrawCircle({20.0f, 21.0f}, 5.0f,
++                     ToDlPaint(kPaint));
++  return builder.Build();
++}
++
++const DisplayList* FindPictureLayer(const Layer* layer) {
++  if (const auto* picture = layer->as_display_list_layer(); picture != nullptr) {
++    return picture->display_list();
++  }
++  const auto* container = layer->as_container_layer();
++  if (container == nullptr) {
++    return nullptr;
++  }
++  for (const auto& child : container->layers()) {
++    if (const auto* picture = FindPictureLayer(child.get()); picture != nullptr) {
++      return picture;
++    }
++  }
++  return nullptr;
++}
++
++std::shared_ptr<LayerTree> MakeExpectedTree(sk_sp<DisplayList> picture) {
++  auto root = std::make_shared<ContainerLayer>();
++  auto transform = std::make_shared<TransformLayer>(
++      DlMatrix::MakeTranslation({3.0f, 4.0f}));
++  auto clip_rect = std::make_shared<ClipRectLayer>(
++      DlRect::MakeLTRB(0.0f, 1.0f, 60.0f, 70.0f), Clip::kHardEdge);
++  auto clip_rrect = std::make_shared<ClipRRectLayer>(
++      DlRoundRect::MakeRectRadii(
++          DlRect::MakeLTRB(2.0f, 3.0f, 50.0f, 60.0f),
++          {.top_left = {4.0f, 5.0f},
++           .top_right = {6.0f, 7.0f},
++           .bottom_left = {10.0f, 11.0f},
++           .bottom_right = {8.0f, 9.0f}}),
++      Clip::kAntiAlias);
++  DlPathBuilder path_builder;
++  path_builder.AddRect(DlRect::MakeLTRB(0.0f, 1.0f, 60.0f, 70.0f));
++  auto clip_path = std::make_shared<ClipPathLayer>(path_builder.TakePath(),
++                                                   Clip::kAntiAliasWithSaveLayer);
++  auto opacity = std::make_shared<OpacityLayer>(128, DlPoint(5.0f, 6.0f));
++  auto display_list = std::make_shared<DisplayListLayer>(
++      DlPoint(1.0f, 2.0f), std::move(picture), true, true);
++  opacity->Add(display_list);
++  clip_path->Add(opacity);
++  clip_rrect->Add(clip_path);
++  clip_rect->Add(clip_rrect);
++  transform->Add(clip_rect);
++  root->Add(transform);
++  return std::make_shared<LayerTree>(root, DlISize(100, 80));
++}
++
++class SpiSceneBuilderTest : public ::testing::Test {
++ protected:
++  const FlutterSpiSceneApi* api() const { return SpiSceneApi(); }
++
++  FlutterSpiEngine* engine() { return &engine_; }
++
++ private:
++  FlutterSpiEngine engine_{};
++};
++
++TEST_F(SpiSceneBuilderTest, PushesMatchDirectLayerTree) {
++  FlutterSpiPictureRecorder* recorder = nullptr;
++  ASSERT_EQ(api()->recorder_create(engine(), nullptr, &recorder), kFlutterSpiOk);
++  ASSERT_EQ(api()->canvas_draw_rect(recorder, &kPictureRect, &kPaint),
++            kFlutterSpiOk);
++  const FlutterSpiPoint center = {.x = 20.0f, .y = 21.0f};
++  ASSERT_EQ(api()->canvas_draw_circle(recorder, &center, 5.0f, &kPaint),
++            kFlutterSpiOk);
++  FlutterSpiPicture* picture = nullptr;
++  ASSERT_EQ(api()->recorder_finish(recorder, &picture), kFlutterSpiOk);
++
++  FlutterSpiSceneBuilder* builder = nullptr;
++  ASSERT_EQ(api()->scene_builder_create(engine(), &builder), kFlutterSpiOk);
++  FlutterSpiMatrix matrix = {};
++  matrix.m[0] = matrix.m[5] = matrix.m[10] = matrix.m[15] = 1.0f;
++  matrix.m[12] = 3.0f;
++  matrix.m[13] = 4.0f;
++  ASSERT_EQ(api()->scene_push_transform(builder, &matrix), kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_push_clip_rect(builder, &kClipRect,
++                                        kFlutterSpiClipHardEdge),
++            kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_push_clip_rrect(builder, &kClipRRect,
++                                         kFlutterSpiClipAntiAlias),
++            kFlutterSpiOk);
++  FlutterSpiPath* path = nullptr;
++  ASSERT_EQ(api()->path_create(engine(), &path), kFlutterSpiOk);
++  ASSERT_EQ(api()->path_add_rect(path, &kClipRect), kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_push_clip_path(builder, path,
++                                        kFlutterSpiClipAntiAliasWithSaveLayer),
++            kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_push_opacity(builder, 128, 5.0f, 6.0f),
++            kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_add_picture(builder, 1.0f, 2.0f, picture, true, true),
++            kFlutterSpiOk);
++
++  FlutterSpiScene* scene = nullptr;
++  ASSERT_EQ(api()->scene_build(builder, 100, 80, &scene), kFlutterSpiOk);
++  ASSERT_EQ(api()->path_release(path), kFlutterSpiOk);
++  ASSERT_EQ(api()->picture_release(picture), kFlutterSpiOk);
++
++  auto expected = MakeExpectedTree(MakePicture());
++  ASSERT_NE(scene->layer_tree, nullptr);
++  EXPECT_EQ(SceneTrace(*scene->layer_tree), SceneTrace(*expected));
++  ASSERT_NE(FindPictureLayer(scene->layer_tree->root_layer()), nullptr);
++  EXPECT_TRUE(FindPictureLayer(scene->layer_tree->root_layer())
++                  ->Equals(*FindPictureLayer(expected->root_layer())));
++  EXPECT_EQ(SpiSceneRelease(scene), kFlutterSpiOk);
++}
++
++TEST_F(SpiSceneBuilderTest, PopBeyondRootIsIgnored) {
++  FlutterSpiSceneBuilder* builder = nullptr;
++  ASSERT_EQ(api()->scene_builder_create(engine(), &builder), kFlutterSpiOk);
++  EXPECT_EQ(api()->scene_pop(builder), kFlutterSpiOk);
++  FlutterSpiScene* scene = nullptr;
++  ASSERT_EQ(api()->scene_build(builder, 10, 20, &scene), kFlutterSpiOk);
++  EXPECT_EQ(SceneTrace(*scene->layer_tree), "scene 10x20\ncontainer\n");
++  EXPECT_EQ(SpiSceneRelease(scene), kFlutterSpiOk);
++  EXPECT_EQ(api()->scene_builder_release(builder), kFlutterSpiInvalidHandle);
++}
++
++TEST_F(SpiSceneBuilderTest, BuildClosesOpenLayersAndConsumesBuilder) {
++  FlutterSpiSceneBuilder* builder = nullptr;
++  ASSERT_EQ(api()->scene_builder_create(engine(), &builder), kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_push_offset(builder, 7.0f, 8.0f), kFlutterSpiOk);
++  FlutterSpiScene* scene = nullptr;
++  ASSERT_EQ(api()->scene_build(builder, 10, 20, &scene), kFlutterSpiOk);
++  EXPECT_EQ(api()->scene_pop(builder), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiSceneRelease(scene), kFlutterSpiOk);
++}
++
++}  // namespace
++}  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_trace.cc b/engine/src/flutter/runtime_spi/scene/spi_scene_trace.cc
+new file mode 100644
+index 00000000000..fcfc1fd4fa1
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_trace.cc
+@@ -0,0 +1,443 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/scene/spi_scene_trace.h"
++
++#include <array>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++
++#include "flutter/display_list/dl_op_receiver.h"
++#include "flutter/display_list/display_list.h"
++#include "flutter/display_list/geometry/dl_path.h"
++#include "flutter/display_list/utils/dl_receiver_utils.h"
++#include "flutter/flow/layers/clip_path_layer.h"
++#include "flutter/flow/layers/clip_rect_layer.h"
++#include "flutter/flow/layers/clip_rrect_layer.h"
++#include "flutter/flow/layers/container_layer.h"
++#include "flutter/flow/layers/display_list_layer.h"
++#include "flutter/flow/layers/layer_tree.h"
++#include "flutter/flow/layers/opacity_layer.h"
++#include "flutter/flow/layers/transform_layer.h"
++#include "flutter/runtime_spi/spi_scene.h"
++
++namespace flutter {
++namespace {
++
++constexpr int kIndentWidth = 2;
++
++std::string Indent(int depth) {
++  return std::string(static_cast<size_t>(depth * kIndentWidth), ' ');
++}
++
++void AppendNumber(std::string* output, float value) {
++  std::array<char, 64> buffer = {};
++  std::snprintf(buffer.data(), buffer.size(), "%.6g", value);
++  output->append(buffer.data());
++}
++
++void AppendRect(std::string* output, const DlRect& rect) {
++  AppendNumber(output, rect.GetLeft());
++  output->push_back(' ');
++  AppendNumber(output, rect.GetTop());
++  output->push_back(' ');
++  AppendNumber(output, rect.GetRight());
++  output->push_back(' ');
++  AppendNumber(output, rect.GetBottom());
++}
++
++void AppendPoint(std::string* output, const DlPoint& point) {
++  AppendNumber(output, point.x);
++  output->push_back(' ');
++  AppendNumber(output, point.y);
++}
++
++class PathTraceReceiver final : public impeller::PathReceiver {
++ public:
++  explicit PathTraceReceiver(std::string* output) : output_(output) {}
++
++  void MoveTo(const impeller::Point& point, bool will_be_closed) override {
++    Append("move ", point);
++    if (will_be_closed) {
++      output_->append(" closed");
++    }
++  }
++
++  void LineTo(const impeller::Point& point) override {
++    Append("line ", point);
++  }
++
++  void QuadTo(const impeller::Point& control_point,
++              const impeller::Point& point) override {
++    output_->append("quad ");
++    AppendPoint(output_, control_point);
++    output_->push_back(' ');
++    AppendPoint(output_, point);
++  }
++
++  bool ConicTo(const impeller::Point& control_point,
++               const impeller::Point& point,
++               impeller::Scalar weight) override {
++    output_->append("conic ");
++    AppendPoint(output_, control_point);
++    output_->push_back(' ');
++    AppendPoint(output_, point);
++    output_->push_back(' ');
++    AppendNumber(output_, weight);
++    return true;
++  }
++
++  void CubicTo(const impeller::Point& control_point_1,
++               const impeller::Point& control_point_2,
++               const impeller::Point& point) override {
++    output_->append("cubic ");
++    AppendPoint(output_, control_point_1);
++    output_->push_back(' ');
++    AppendPoint(output_, control_point_2);
++    output_->push_back(' ');
++    AppendPoint(output_, point);
++  }
++
++  void Close() override { output_->append("close"); }
++
++ private:
++  void Append(const char* prefix, const impeller::Point& point) {
++    output_->append(prefix);
++    AppendPoint(output_, point);
++  }
++
++  std::string* output_;
++};
++
++void AppendPath(std::string* output, const DlPath& path) {
++  output->append(path.GetFillType() == DlPathFillType::kOdd ? "odd" :
++                                                                  "nonzero");
++  output->push_back(' ');
++  PathTraceReceiver receiver(output);
++  path.Dispatch(receiver);
++}
++
++void AppendRRect(std::string* output, const DlRoundRect& rrect) {
++  AppendRect(output, rrect.GetBounds());
++  const auto& radii = rrect.GetRadii();
++  output->push_back(' ');
++  AppendNumber(output, radii.top_left.width);
++  output->push_back(' ');
++  AppendNumber(output, radii.top_left.height);
++  output->push_back(' ');
++  AppendNumber(output, radii.top_right.width);
++  output->push_back(' ');
++  AppendNumber(output, radii.top_right.height);
++  output->push_back(' ');
++  AppendNumber(output, radii.bottom_right.width);
++  output->push_back(' ');
++  AppendNumber(output, radii.bottom_right.height);
++  output->push_back(' ');
++  AppendNumber(output, radii.bottom_left.width);
++  output->push_back(' ');
++  AppendNumber(output, radii.bottom_left.height);
++}
++
++class DisplayListTraceReceiver final
++    : public IgnoreAttributeDispatchHelper,
++      public IgnoreClipDispatchHelper,
++      public IgnoreTransformDispatchHelper,
++      public IgnoreDrawDispatchHelper {
++ public:
++  DisplayListTraceReceiver(std::string* output, int depth)
++      : output_(output), indent_(Indent(depth)) {}
++
++  void setAntiAlias(bool value) override { AppendOperation("setAntiAlias"); }
++  void setInvertColors(bool value) override {
++    AppendOperation("setInvertColors");
++  }
++  void setStrokeCap(DlStrokeCap value) override {
++    AppendOperation("setStrokeCap");
++  }
++  void setStrokeJoin(DlStrokeJoin value) override {
++    AppendOperation("setStrokeJoin");
++  }
++  void setDrawStyle(DlDrawStyle value) override {
++    AppendOperation("setDrawStyle");
++  }
++  void setStrokeWidth(float value) override {
++    AppendOperation("setStrokeWidth");
++  }
++  void setStrokeMiter(float value) override {
++    AppendOperation("setStrokeMiter");
++  }
++  void setColor(DlColor value) override { AppendOperation("setColor"); }
++  void setBlendMode(DlBlendMode value) override {
++    AppendOperation("setBlendMode");
++  }
++  void setColorSource(const DlColorSource* value) override {
++    AppendOperation("setColorSource");
++  }
++  void setImageFilter(const DlImageFilter* value) override {
++    AppendOperation("setImageFilter");
++  }
++  void setColorFilter(const DlColorFilter* value) override {
++    AppendOperation("setColorFilter");
++  }
++  void setMaskFilter(const DlMaskFilter* value) override {
++    AppendOperation("setMaskFilter");
++  }
++
++  void save() override { AppendOperation("save"); }
++  void saveLayer(const DlRect& bounds,
++                 const SaveLayerOptions options,
++                 const DlImageFilter* backdrop,
++                 std::optional<int64_t> backdrop_id) override {
++    AppendOperation("saveLayer");
++  }
++  void restore() override { AppendOperation("restore"); }
++
++  void drawColor(DlColor color, DlBlendMode mode) override {
++    AppendOperation("drawColor");
++  }
++  void drawPaint() override { AppendOperation("drawPaint"); }
++  void drawLine(const DlPoint& p0, const DlPoint& p1) override {
++    AppendOperation("drawLine");
++  }
++  void drawDashedLine(const DlPoint& p0,
++                      const DlPoint& p1,
++                      DlScalar on_length,
++                      DlScalar off_length) override {
++    AppendOperation("drawDashedLine");
++  }
++  void drawRect(const DlRect& rect) override {
++    output_->append(indent_);
++    output_->append("drawRect ");
++    AppendRect(output_, rect);
++    output_->push_back('\n');
++  }
++  void drawOval(const DlRect& bounds) override {
++    AppendOperation("drawOval");
++  }
++  void drawCircle(const DlPoint& center, DlScalar radius) override {
++    output_->append(indent_);
++    output_->append("drawCircle ");
++    AppendPoint(output_, center);
++    output_->push_back(' ');
++    AppendNumber(output_, radius);
++    output_->push_back('\n');
++  }
++  void drawRoundRect(const DlRoundRect& rrect) override {
++    AppendOperation("drawRRect");
++  }
++  void drawDiffRoundRect(const DlRoundRect& outer,
++                         const DlRoundRect& inner) override {
++    AppendOperation("drawDRRect");
++  }
++  void drawRoundSuperellipse(const DlRoundSuperellipse& rse) override {
++    AppendOperation("drawRSuperellipse");
++  }
++  void drawPath(const DlPath& path) override { AppendOperation("drawPath"); }
++  void drawArc(const DlRect& oval_bounds,
++               DlScalar start_degrees,
++               DlScalar sweep_degrees,
++               bool use_center) override {
++    AppendOperation("drawArc");
++  }
++  void drawPoints(DlPointMode mode,
++                  uint32_t count,
++                  const DlPoint points[]) override {
++    AppendOperation("drawPoints");
++  }
++  void drawVertices(const std::shared_ptr<DlVertices>& vertices,
++                    DlBlendMode mode) override {
++    AppendOperation("drawVertices");
++  }
++  void drawImage(const sk_sp<DlImage> image,
++                 const DlPoint& point,
++                 DlImageSampling sampling,
++                 bool render_with_attributes) override {
++    AppendOperation("drawImage");
++  }
++  void drawImageRect(const sk_sp<DlImage> image,
++                     const DlRect& src,
++                     const DlRect& dst,
++                     DlImageSampling sampling,
++                     bool render_with_attributes,
++                     DlSrcRectConstraint constraint) override {
++    AppendOperation("drawImageRect");
++  }
++  void drawImageNine(const sk_sp<DlImage> image,
++                     const DlIRect& center,
++                     const DlRect& dst,
++                     DlFilterMode filter,
++                     bool render_with_attributes) override {
++    AppendOperation("drawImageNine");
++  }
++  void drawAtlas(const sk_sp<DlImage> atlas,
++                 const DlRSTransform xform[],
++                 const DlRect tex[],
++                 const DlColor colors[],
++                 int count,
++                 DlBlendMode mode,
++                 DlImageSampling sampling,
++                 const DlRect* cull_rect,
++                 bool render_with_attributes) override {
++    AppendOperation("drawAtlas");
++  }
++  void drawDisplayList(const sk_sp<DisplayList> display_list,
++                       DlScalar opacity) override {
++    AppendOperation("drawDisplayList");
++  }
++  void drawText(const std::shared_ptr<DlText>& text,
++                DlScalar x,
++                DlScalar y) override {
++    AppendOperation("drawText");
++  }
++  void drawShadow(const DlPath& path,
++                  const DlColor color,
++                  const DlScalar elevation,
++                  bool transparent_occluder,
++                  DlScalar dpr) override {
++    AppendOperation("drawShadow");
++  }
++
++ private:
++  void AppendOperation(const char* name) {
++    output_->append(indent_);
++    output_->append("op ");
++    output_->append(name);
++    output_->push_back('\n');
++  }
++
++  std::string* output_;
++  std::string indent_;
++};
++
++void TraceDisplayList(const DisplayList& display_list,
++                      std::string* output,
++                      int depth) {
++  DisplayListTraceReceiver receiver(output, depth);
++  display_list.Dispatch(receiver);
++}
++
++void TraceChildren(const ContainerLayer& layer,
++                   std::string* output,
++                   int depth);
++
++void TraceLayer(const Layer& layer, std::string* output, int depth) {
++  const std::string indent = Indent(depth);
++  if (const auto* picture = layer.as_display_list_layer(); picture != nullptr) {
++    output->append(indent);
++    output->append("picture ");
++    AppendPoint(output, picture->offset());
++    output->push_back('\n');
++    TraceDisplayList(*picture->display_list(), output, depth + 1);
++    return;
++  }
++  if (const auto* transform = layer.as_transform_layer(); transform != nullptr) {
++    output->append(indent);
++    output->append("transform [");
++    for (size_t index = 0; index < 16; ++index) {
++      if (index != 0) {
++        output->push_back(' ');
++      }
++      AppendNumber(output, transform->transform().m[index]);
++    }
++    output->append("]\n");
++    TraceChildren(*transform, output, depth + 1);
++    return;
++  }
++  if (const auto* clip_rect = layer.as_clip_rect_layer();
++      clip_rect != nullptr) {
++    output->append(indent);
++    output->append("clip_rect ");
++    AppendRect(output, clip_rect->clip_shape());
++    output->push_back(' ');
++    AppendNumber(output, static_cast<float>(clip_rect->clip_behavior()));
++    output->push_back('\n');
++    TraceChildren(*clip_rect, output, depth + 1);
++    return;
++  }
++  if (const auto* clip_rrect = layer.as_clip_rrect_layer();
++      clip_rrect != nullptr) {
++    output->append(indent);
++    output->append("clip_rrect ");
++    AppendRRect(output, clip_rrect->clip_shape());
++    output->push_back(' ');
++    AppendNumber(output, static_cast<float>(clip_rrect->clip_behavior()));
++    output->push_back('\n');
++    TraceChildren(*clip_rrect, output, depth + 1);
++    return;
++  }
++  if (const auto* clip_path = layer.as_clip_path_layer(); clip_path != nullptr) {
++    output->append(indent);
++    output->append("clip_path ");
++    AppendPath(output, clip_path->clip_shape());
++    output->push_back(' ');
++    AppendNumber(output, static_cast<float>(clip_path->clip_behavior()));
++    output->push_back('\n');
++    TraceChildren(*clip_path, output, depth + 1);
++    return;
++  }
++  if (const auto* opacity = layer.as_opacity_layer(); opacity != nullptr) {
++    output->append(indent);
++    output->append("opacity ");
++    AppendNumber(output, static_cast<float>(opacity->alpha()));
++    output->push_back(' ');
++    AppendPoint(output, opacity->offset());
++    output->push_back('\n');
++    TraceChildren(*opacity, output, depth + 1);
++    return;
++  }
++  if (layer.as_container_layer() != nullptr) {
++    output->append(indent);
++    output->append("container\n");
++    TraceChildren(*layer.as_container_layer(), output, depth + 1);
++    return;
++  }
++  output->append(indent);
++  output->append("layer <desconhecida>\n");
++}
++
++void TraceChildren(const ContainerLayer& layer,
++                   std::string* output,
++                   int depth) {
++  for (const auto& child : layer.layers()) {
++    TraceLayer(*child, output, depth);
++  }
++}
++
++}  // namespace
++
++std::string SceneTrace(const LayerTree& layer_tree) {
++  std::string output = "scene ";
++  AppendNumber(&output, static_cast<float>(layer_tree.frame_size().width));
++  output.push_back('x');
++  AppendNumber(&output, static_cast<float>(layer_tree.frame_size().height));
++  output.push_back('\n');
++  TraceLayer(*layer_tree.root_layer(), &output, 0);
++  return output;
++}
++
++FlutterSpiResult SpiSceneTrace(FlutterSpiScene* scene, char** out_utf8) {
++  if (scene == nullptr || scene->layer_tree == nullptr || out_utf8 == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const std::string trace = SceneTrace(*scene->layer_tree);
++  char* result = static_cast<char*>(std::malloc(trace.size() + 1));
++  if (result == nullptr) {
++    return kFlutterSpiInternalError;
++  }
++  std::memcpy(result, trace.c_str(), trace.size() + 1);
++  *out_utf8 = result;
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiTraceFree(char* trace) {
++  if (trace == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  std::free(trace);
++  return kFlutterSpiOk;
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_trace.h b/engine/src/flutter/runtime_spi/scene/spi_scene_trace.h
+new file mode 100644
+index 00000000000..48908573753
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_trace.h
+@@ -0,0 +1,23 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_SCENE_SPI_SCENE_TRACE_H_
++#define FLUTTER_RUNTIME_SPI_SCENE_SPI_SCENE_TRACE_H_
++
++#include <string>
++
++#include "flutter/runtime_spi/include/flutter_scene.h"
++
++namespace flutter {
++
++class LayerTree;
++
++std::string SceneTrace(const LayerTree& layer_tree);
++
++FlutterSpiResult SpiSceneTrace(FlutterSpiScene* scene, char** out_utf8);
++FlutterSpiResult SpiTraceFree(char* trace);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_SCENE_SPI_SCENE_TRACE_H_
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_trace_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_scene_trace_unittests.cc
+new file mode 100644
+index 00000000000..15d1383181d
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_trace_unittests.cc
+@@ -0,0 +1,33 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/scene/spi_scene_trace.h"
++
++#include <regex>
++
++#include "flutter/display_list/dl_builder.h"
++#include "flutter/flow/layers/container_layer.h"
++#include "flutter/flow/layers/display_list_layer.h"
++#include "flutter/flow/layers/layer_tree.h"
++#include "flutter/testing/testing.h"
++
++namespace flutter::testing {
++namespace {
++
++TEST(SpiSceneTraceTest, KnownTreeHasStableFormatWithoutAddresses) {
++  DisplayListBuilder builder(DisplayListBuilder::kMaxCullRect);
++  builder.DrawRect(DlRect::MakeLTRB(1.0f, 2.0f, 3.0f, 4.0f), DlPaint());
++  auto picture = builder.Build();
++  auto root = std::make_shared<ContainerLayer>();
++  root->Add(std::make_shared<DisplayListLayer>(DlPoint(5.0f, 6.0f), picture,
++                                               false, false));
++  LayerTree tree(root, DlISize(20, 30));
++
++  const std::string trace = SceneTrace(tree);
++  EXPECT_EQ(trace, "scene 20x30\ncontainer\n  picture 5 6\n    drawRect 1 2 3 4\n");
++  EXPECT_FALSE(std::regex_search(trace, std::regex(R"(0x[0-9a-fA-F]{6,})")));
++}
++
++}  // namespace
++}  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index 35d07633c39..a968e51b636 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -6,6 +6,7 @@
+ 
+ #include "flutter/runtime_spi/spi_runtime_backend.h"
+ #include "flutter/runtime_spi/spi_scene.h"
++#include "flutter/runtime_spi/scene/spi_canvas.h"
+ 
+ namespace flutter {
+ 
+@@ -17,7 +18,7 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+       .capabilities = kFlutterSpiCapTasks | kFlutterSpiCapPlatformMessages |
+                       kFlutterSpiCapPointerEvents | kFlutterSpiCapKeyEvents |
+                       kFlutterSpiCapSemantics | kFlutterSpiCapViewFocus |
+-                      kFlutterSpiCapEmptyScene,
++                      kFlutterSpiCapEmptyScene | kFlutterSpiCapScene,
+       .request_frame = RequestFrame,
+       .scene_create_empty = SceneCreateEmpty,
+       .scene_release = SceneRelease,
+@@ -29,7 +30,7 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+       .now_ns = NowNs,
+       .log = Log,
+       .report_error = ReportError,
+-      .scene = nullptr,
++      .scene = SpiSceneApi(),
+   };
+ }
+ 
+diff --git a/engine/src/flutter/runtime_spi/spi_scene.cc b/engine/src/flutter/runtime_spi/spi_scene.cc
+index 69dc764f419..57649c76101 100644
+--- a/engine/src/flutter/runtime_spi/spi_scene.cc
++++ b/engine/src/flutter/runtime_spi/spi_scene.cc
+@@ -25,6 +25,27 @@ FlutterSpiResult SpiSceneCreateEmpty(int64_t width_px,
+   return kFlutterSpiOk;
+ }
+ 
++FlutterSpiResult SpiSceneCreateFromLayerTree(
++    int64_t width_px,
++    int64_t height_px,
++    std::shared_ptr<flutter::ContainerLayer> root_layer,
++    FlutterSpiScene** out_scene) {
++  if (out_scene == nullptr || root_layer == nullptr || width_px <= 0 ||
++      height_px <= 0) {
++    return kFlutterSpiInvalidArgument;
++  }
++
++  auto scene = std::make_unique<FlutterSpiScene>();
++  scene->width_px = width_px;
++  scene->height_px = height_px;
++  scene->layer_tree = std::make_unique<flutter::LayerTree>(
++      std::move(root_layer),
++      flutter::DlISize(static_cast<int32_t>(width_px),
++                       static_cast<int32_t>(height_px)));
++  *out_scene = scene.release();
++  return kFlutterSpiOk;
++}
++
+ FlutterSpiResult SpiSceneRelease(FlutterSpiScene* scene) {
+   delete scene;
+   return kFlutterSpiOk;
+diff --git a/engine/src/flutter/runtime_spi/spi_scene.h b/engine/src/flutter/runtime_spi/spi_scene.h
+index c2b78fdbc31..101582d1e97 100644
+--- a/engine/src/flutter/runtime_spi/spi_scene.h
++++ b/engine/src/flutter/runtime_spi/spi_scene.h
+@@ -13,6 +13,7 @@
+ namespace flutter {
+ 
+ class LayerTree;
++class ContainerLayer;
+ 
+ }  // namespace flutter
+ 
+@@ -26,6 +27,12 @@ FlutterSpiResult SpiSceneCreateEmpty(int64_t width_px,
+                                      int64_t height_px,
+                                      FlutterSpiScene** out_scene);
+ 
++FlutterSpiResult SpiSceneCreateFromLayerTree(
++    int64_t width_px,
++    int64_t height_px,
++    std::shared_ptr<flutter::ContainerLayer> root_layer,
++    FlutterSpiScene** out_scene);
++
+ FlutterSpiResult SpiSceneRelease(FlutterSpiScene* scene);
+ 
+ #endif  // FLUTTER_RUNTIME_SPI_SPI_SCENE_H_
