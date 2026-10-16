@@ -1,0 +1,740 @@
+# Why: Why: Exercise the Shell-facing runtime SPI contract end to end,
+including lifecycle, views, frames, input, platform messages, borrowed data,
+stale scenes, and shutdown behavior. The suite also closes the report_error
+seam semantics by stopping callbacks immediately, posting stop on the UI
+runner, completing pending responses, and preserving single stop and destroy
+calls. Link the explicit ShellTest fixture sources, fixture implementation,
+and generated fixture assets so the test binary resolves without changing
+production targets.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 383a7bed211..dde80fe3b32 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -53,6 +53,7 @@ executable("runtime_spi_unittests") {
+   testonly = true
+   sources = [
+     "spi_abi_frozen_unittests.cc",
++    "spi_conformance_unittests.cc",
+     "spi_runtime_backend_unittests.cc",
+   ]
+   deps = [
+@@ -63,7 +64,9 @@ executable("runtime_spi_unittests") {
+     "//flutter/fml",
+     "//flutter/runtime",
+     "//flutter/shell/common:shell_test_fixture_sources",
++    "//flutter/shell/common:shell_unittests_fixtures",
+     "//flutter/testing",
++    "//flutter/testing:fixture_test",
+   ]
+ }
+ 
+diff --git a/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+new file mode 100644
+index 00000000000..5869e6726a1
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+@@ -0,0 +1,429 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/spi_runtime_backend_factory.h"
++
++#include <cstdint>
++#include <cstdlib>
++#include <cstring>
++#include <memory>
++#include <string>
++#include <utility>
++#include <vector>
++
++#include "flutter/fml/mapping.h"
++#include "flutter/fml/synchronization/waitable_event.h"
++#include "flutter/lib/ui/window/key_data_packet.h"
++#include "flutter/lib/ui/window/pointer_data_packet.h"
++#include "flutter/runtime/dart_vm.h"
++#include "flutter/runtime_spi/testing/c_test_runtime.h"
++#include "flutter/shell/common/platform_message_handler.h"
++#include "flutter/shell/common/platform_view.h"
++#include "flutter/shell/common/shell_test.h"
++#include "flutter/shell/common/shell_test_platform_view.h"
++#include "flutter/testing/testing.h"
++
++namespace flutter::testing {
++namespace {
++
++constexpr int64_t kTestViewId = 2;
++constexpr int64_t kImplicitViewId = 0;
++constexpr char kPlatformChannel[] = "spi/test";
++constexpr char kPlatformPayload[] = "payload";
++
++void PostSync(const fml::RefPtr<fml::TaskRunner>& task_runner,
++              const fml::closure& task) {
++  fml::AutoResetWaitableEvent latch;
++  fml::TaskRunner::RunNowOrPostTask(task_runner, [&latch, &task] {
++    task();
++    latch.Signal();
++  });
++  latch.Wait();
++}
++
++class CapturingResponse final : public PlatformMessageResponse {
++ public:
++  void Complete(std::unique_ptr<fml::Mapping> data) override {
++    if (data != nullptr) {
++      bytes_.assign(data->GetMapping(), data->GetMapping() + data->GetSize());
++    }
++    latch_.Signal();
++  }
++
++  void CompleteEmpty() override { latch_.Signal(); }
++
++  void Wait() { latch_.Wait(); }
++
++  const std::vector<uint8_t>& bytes() const { return bytes_; }
++
++ private:
++  fml::AutoResetWaitableEvent latch_;
++  std::vector<uint8_t> bytes_;
++};
++
++class MutatingResponse final : public PlatformMessageResponse {
++ public:
++  explicit MutatingResponse(uint8_t* source) : source_(source) {}
++
++  void Complete(std::unique_ptr<fml::Mapping> data) override {
++    source_[0] = 'n';
++    latch_.Signal();
++  }
++
++  void CompleteEmpty() override { latch_.Signal(); }
++
++  void Wait() { latch_.Wait(); }
++
++ private:
++  uint8_t* source_;
++  fml::AutoResetWaitableEvent latch_;
++};
++
++class ReplyingPlatformMessageHandler final : public PlatformMessageHandler {
++ public:
++  void HandlePlatformMessage(
++      std::unique_ptr<PlatformMessage> message) override {
++    if (message->response()) {
++      message->response()->Complete(std::make_unique<fml::MallocMapping>(
++          fml::MallocMapping::Copy("reply", 5)));
++    }
++    handled_ = true;
++    latch_.Signal();
++  }
++
++  bool DoesHandlePlatformMessageOnPlatformThread() const override {
++    return false;
++  }
++
++  void InvokePlatformMessageResponseCallback(
++      int response_id,
++      std::unique_ptr<fml::Mapping> mapping) override {}
++
++  void InvokePlatformMessageEmptyResponseCallback(int response_id) override {}
++
++  void Wait() { latch_.Wait(); }
++
++  bool handled() const { return handled_; }
++
++ private:
++  fml::AutoResetWaitableEvent latch_;
++  bool handled_ = false;
++};
++
++class HandlerPlatformView final : public PlatformView {
++ public:
++  HandlerPlatformView(Shell& shell,
++                      const TaskRunners& task_runners,
++                      std::shared_ptr<PlatformMessageHandler> handler)
++      : PlatformView(shell, task_runners), handler_(std::move(handler)) {}
++
++  std::shared_ptr<PlatformMessageHandler> GetPlatformMessageHandler()
++      const override {
++    return handler_;
++  }
++
++ private:
++  std::shared_ptr<PlatformMessageHandler> handler_;
++};
++
++class SpiConformance : public ShellTest {
++ protected:
++  void SetUp() override {
++    runtime_ = c_test_runtime_create();
++    task_runners_ = std::make_unique<TaskRunners>(GetTaskRunnersForFixture());
++  }
++
++  void TearDown() override {
++    if (shell_ != nullptr) {
++      DestroyShell(std::move(shell_), *task_runners_);
++    }
++    c_test_runtime_free(runtime_);
++  }
++
++  void StartShell() {
++    auto settings = CreateSettingsForFixture();
++    auto factory = std::make_shared<SpiRuntimeBackendFactory>(
++        c_test_runtime_table(runtime_));
++    shell_ = Shell::Create(
++        PlatformData(), *task_runners_, settings,
++        ShellTestPlatformViewBuilder({}),
++        [](Shell& shell) { return std::make_unique<Rasterizer>(shell); },
++        factory);
++
++    ASSERT_TRUE(shell_->IsSetup());
++    ASSERT_EQ(shell_->GetDartVM(), nullptr);
++    PlatformViewNotifyCreated(shell_.get());
++    RunEngine(shell_.get(), RunConfiguration::InferFromSettings(settings));
++  }
++
++  void StartShellWithHandler(
++      const std::shared_ptr<PlatformMessageHandler>& handler) {
++    auto settings = CreateSettingsForFixture();
++    auto factory = std::make_shared<SpiRuntimeBackendFactory>(
++        c_test_runtime_table(runtime_));
++    shell_ = Shell::Create(
++        PlatformData(), *task_runners_, settings,
++        [handler](Shell& shell) {
++          return std::make_unique<HandlerPlatformView>(
++              shell, shell.GetTaskRunners(), handler);
++        },
++        [](Shell& shell) { return std::make_unique<Rasterizer>(shell); },
++        factory);
++
++    ASSERT_TRUE(shell_->IsSetup());
++    ASSERT_EQ(shell_->GetDartVM(), nullptr);
++    RunEngine(shell_.get(), RunConfiguration::InferFromSettings(settings));
++  }
++
++  void FlushUi() {
++    PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [] {});
++  }
++
++  CTestRuntime* runtime_ = nullptr;
++  std::unique_ptr<TaskRunners> task_runners_;
++  std::unique_ptr<Shell> shell_;
++};
++
++TEST_F(SpiConformance, HandshakeStartsRuntimeWithoutDartVM) {
++  ASSERT_FALSE(DartVMRef::IsInstanceRunning());
++
++  StartShell();
++
++  EXPECT_EQ(runtime_->start_count, 1u);
++  EXPECT_FALSE(DartVMRef::IsInstanceRunning());
++}
++
++TEST_F(SpiConformance, ViewMetricsReachRuntime) {
++  StartShell();
++  ViewportMetrics metrics;
++  metrics.device_pixel_ratio = 2.0;
++  metrics.physical_width = 800;
++  metrics.physical_height = 600;
++  metrics.physical_padding_top = 11;
++  metrics.physical_view_inset_bottom = 13;
++
++  PostSync(shell_->GetTaskRunners().GetPlatformTaskRunner(), [&] {
++    shell_->GetPlatformView()->SetViewportMetrics(kImplicitViewId, metrics);
++  });
++  FlushUi();
++
++  ASSERT_TRUE(runtime_->has_last_view_metrics);
++  EXPECT_EQ(runtime_->last_view_metrics.view_id, kImplicitViewId);
++  EXPECT_EQ(runtime_->last_view_metrics.device_pixel_ratio, 2.0);
++  EXPECT_EQ(runtime_->last_view_metrics.physical_width, 800.0);
++  EXPECT_EQ(runtime_->last_view_metrics.physical_height, 600.0);
++  EXPECT_EQ(runtime_->last_view_metrics.physical_padding_top, 11.0);
++  EXPECT_EQ(runtime_->last_view_metrics.physical_view_inset_bottom, 13.0);
++}
++
++TEST_F(SpiConformance, FrameRoundTrip) {
++  runtime_->submit_on_begin_frame = true;
++  StartShell();
++
++  PumpOneFrame(shell_.get());
++  PostSync(shell_->GetTaskRunners().GetRasterTaskRunner(), [&] {
++    auto* layer_tree =
++        shell_->GetRasterizer()->GetLastLayerTree(kImplicitViewId);
++    ASSERT_NE(layer_tree, nullptr);
++    EXPECT_EQ(layer_tree->frame_size(), DlISize(1, 1));
++  });
++}
++
++TEST_F(SpiConformance, PointerEventsReachRuntime) {
++  StartShell();
++  auto packet = std::make_unique<PointerDataPacket>(1);
++  packet->SetPointerData(0, PointerData{
++                                .change = PointerData::Change::kDown,
++                                .physical_x = 23,
++                                .physical_y = 29,
++                                .view_id = kImplicitViewId,
++                            });
++
++  DispatchPointerData(shell_.get(), std::move(packet));
++  FlushUi();
++
++  ASSERT_EQ(runtime_->pointer_event_count, 1u);
++  EXPECT_EQ(runtime_->pointer_events[0].view_id, kImplicitViewId);
++  EXPECT_EQ(runtime_->pointer_events[0].change, kFlutterSpiPointerChangeDown);
++  EXPECT_EQ(runtime_->pointer_events[0].physical_x, 23.0);
++  EXPECT_EQ(runtime_->pointer_events[0].physical_y, 29.0);
++}
++
++TEST_F(SpiConformance, KeyEventReachesRuntime) {
++  runtime_->key_event_handled = true;
++  StartShell();
++  KeyData key_data;
++  key_data.Clear();
++  key_data.timestamp = 17;
++  key_data.type = KeyEventType::kDown;
++  key_data.physical = 23;
++  key_data.logical = 29;
++  key_data.device_type = KeyEventDeviceType::kKeyboard;
++  KeyDataPacket packet(key_data, "a");
++  auto response = fml::AdoptRef(new CapturingResponse());
++  auto message = std::make_unique<PlatformMessage>(
++      "flutter/keydata",
++      fml::MallocMapping::Copy(packet.data().data(), packet.data().size()),
++      response);
++
++  SendPlatformMessage(shell_.get(), std::move(message));
++  FlushUi();
++  response->Wait();
++
++  ASSERT_TRUE(runtime_->has_last_key_event);
++  EXPECT_EQ(runtime_->last_key_event.timestamp_us, 17u);
++  EXPECT_EQ(runtime_->last_key_event.physical, 23u);
++  EXPECT_EQ(runtime_->last_key_event.logical, 29u);
++  EXPECT_STREQ(runtime_->last_key_event.character, "a");
++  ASSERT_EQ(response->bytes().size(), 1u);
++  EXPECT_EQ(response->bytes()[0], 1u);
++}
++
++TEST_F(SpiConformance, PlatformMessageRoundTrip) {
++  runtime_->respond_to_messages = true;
++  StartShell();
++  auto response = fml::AdoptRef(new CapturingResponse());
++  auto message = std::make_unique<PlatformMessage>(
++      kPlatformChannel,
++      fml::MallocMapping::Copy(kPlatformPayload, sizeof(kPlatformPayload) - 1),
++      response);
++
++  SendPlatformMessage(shell_.get(), std::move(message));
++  FlushUi();
++  response->Wait();
++
++  ASSERT_EQ(runtime_->platform_message_count, 1u);
++  EXPECT_STREQ(runtime_->last_channel, kPlatformChannel);
++  ASSERT_EQ(runtime_->last_payload_size, sizeof(kPlatformPayload) - 1);
++  EXPECT_EQ(std::memcmp(runtime_->last_payload, kPlatformPayload,
++                        runtime_->last_payload_size),
++            0);
++  EXPECT_EQ(
++      response->bytes(),
++      std::vector<uint8_t>(kPlatformPayload,
++                           kPlatformPayload + sizeof(kPlatformPayload) - 1));
++}
++
++TEST_F(SpiConformance, RuntimeSendsPlatformMessageAndGetsReply) {
++  auto handler = std::make_shared<ReplyingPlatformMessageHandler>();
++  StartShellWithHandler(handler);
++  FlushUi();
++
++  PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++    const uint8_t payload[] = {'r', 'e', 'q'};
++    const FlutterSpiResult result = runtime_->engine_api->send_platform_message(
++        runtime_->engine, "outgoing", payload, sizeof(payload), nullptr,
++        nullptr);
++    EXPECT_EQ(result, kFlutterSpiOk);
++  });
++  handler->Wait();
++
++  EXPECT_TRUE(handler->handled());
++}
++
++TEST_F(SpiConformance, DataIsOnlyBorrowed) {
++  runtime_->respond_to_messages = true;
++  StartShell();
++  auto* source = static_cast<uint8_t*>(std::malloc(3));
++  ASSERT_NE(source, nullptr);
++  std::memcpy(source, "old", 3);
++  auto response = fml::AdoptRef(new MutatingResponse(source));
++  auto message = std::make_unique<PlatformMessage>(
++      "borrowed", fml::MallocMapping(source, 3), response);
++
++  SendPlatformMessage(shell_.get(), std::move(message));
++  FlushUi();
++  response->Wait();
++
++  ASSERT_EQ(runtime_->last_payload_size, 3u);
++  EXPECT_EQ(runtime_->last_payload[0], 'o');
++}
++
++TEST_F(SpiConformance, UnansweredMessageIsCompletedEmptyOnDestroy) {
++  runtime_->respond_to_messages = false;
++  StartShell();
++  auto response = fml::AdoptRef(new CapturingResponse());
++  auto message = std::make_unique<PlatformMessage>(
++      "unanswered", fml::MallocMapping::Copy("x", 1), response);
++
++  SendPlatformMessage(shell_.get(), std::move(message));
++  FlushUi();
++  ASSERT_NE(runtime_->pending_response, nullptr);
++  DestroyShell(std::move(shell_), *task_runners_);
++  response->Wait();
++  EXPECT_TRUE(response->bytes().empty());
++}
++
++TEST_F(SpiConformance, SubmitAfterViewRemovedIsStale) {
++  StartShell();
++  ViewportMetrics metrics;
++  metrics.physical_width = 10;
++  metrics.physical_height = 10;
++  fml::AutoResetWaitableEvent view_latch;
++  bool added = false;
++  PostSync(shell_->GetTaskRunners().GetPlatformTaskRunner(), [&] {
++    shell_->GetPlatformView()->AddView(kTestViewId, metrics,
++                                       [&added, &view_latch](bool success) {
++                                         added = success;
++                                         view_latch.Signal();
++                                       });
++  });
++  view_latch.Wait();
++  ASSERT_TRUE(added);
++  FlushUi();
++
++  fml::AutoResetWaitableEvent remove_latch;
++  bool removed = false;
++  PostSync(shell_->GetTaskRunners().GetPlatformTaskRunner(), [&] {
++    shell_->GetPlatformView()->RemoveView(
++        kTestViewId, [&removed, &remove_latch](bool success) {
++          removed = success;
++          remove_latch.Signal();
++        });
++  });
++  remove_latch.Wait();
++  ASSERT_TRUE(removed);
++  FlushUi();
++
++  FlutterSpiScene* scene = nullptr;
++  PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++    ASSERT_EQ(runtime_->engine_api->scene_create_empty(runtime_->engine, 10, 10,
++                                                       &scene),
++              kFlutterSpiOk);
++    EXPECT_EQ(runtime_->engine_api->submit_frame(
++                  runtime_->engine, kTestViewId,
++                  runtime_->last_frame_info.frame_token, scene, 1.0),
++              kFlutterSpiStaleFrame);
++  });
++}
++
++TEST_F(SpiConformance, ReportErrorStopsRuntime) {
++  StartShell();
++  PumpOneFrame(shell_.get());
++  const size_t begin_frame_count = runtime_->begin_frame_count;
++
++  PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++    EXPECT_EQ(runtime_->engine_api->report_error(runtime_->engine, "failure"),
++              kFlutterSpiOk);
++  });
++  PumpOneFrame(shell_.get());
++
++  EXPECT_EQ(runtime_->begin_frame_count, begin_frame_count);
++  EXPECT_EQ(runtime_->stop_count, 1u);
++
++  DestroyShell(std::move(shell_), *task_runners_);
++  EXPECT_EQ(runtime_->destroy_count, 1u);
++}
++
++TEST_F(SpiConformance, ShutdownCallsStopThenDestroyOnce) {
++  StartShell();
++
++  DestroyShell(std::move(shell_), *task_runners_);
++
++  EXPECT_EQ(runtime_->stop_count, 1u);
++  EXPECT_EQ(runtime_->destroy_count, 1u);
++}
++
++}  // namespace
++}  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+index 3302117cbd2..c31f5468831 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+@@ -103,10 +103,7 @@ SpiRuntimeBackend::SpiRuntimeBackend(
+ }
+ 
+ SpiRuntimeBackend::~SpiRuntimeBackend() {
+-  if (started_ && table_.stop != nullptr) {
+-    table_.stop(table_.user_data);
+-  }
+-  CompletePendingResponses();
++  StopRuntime();
+   live_backends_.erase(this);
+   if (table_.destroy != nullptr) {
+     table_.destroy(table_.user_data);
+@@ -141,12 +138,20 @@ bool SpiRuntimeBackend::Launch(
+       table_.start(table_.user_data, &engine_api_, engine_handle_);
+   started_ = result == kFlutterSpiOk;
+   running_ = started_;
++  stop_requested_ = false;
++  stop_called_ = false;
+   return started_;
+ }
+ 
+ void SpiRuntimeBackend::AddView(int64_t view_id,
+                                 const ViewportMetrics& view_metrics,
+                                 AddViewCallback callback) {
++  if (stop_requested_) {
++    if (callback != nullptr) {
++      callback(true);
++    }
++    return;
++  }
+   FlutterSpiViewMetrics metrics = ConvertMetrics(view_id, view_metrics);
+   views_[view_id] = metrics;
+   if (table_.add_view != nullptr) {
+@@ -158,6 +163,9 @@ void SpiRuntimeBackend::AddView(int64_t view_id,
+ }
+ 
+ bool SpiRuntimeBackend::RemoveView(int64_t view_id) {
++  if (stop_requested_) {
++    return true;
++  }
+   views_.erase(view_id);
+   if (table_.remove_view != nullptr) {
+     table_.remove_view(table_.user_data, view_id);
+@@ -167,6 +175,9 @@ bool SpiRuntimeBackend::RemoveView(int64_t view_id) {
+ 
+ bool SpiRuntimeBackend::SetViewportMetrics(int64_t view_id,
+                                            const ViewportMetrics& metrics) {
++  if (stop_requested_) {
++    return true;
++  }
+   FlutterSpiViewMetrics spi_metrics = ConvertMetrics(view_id, metrics);
+   views_[view_id] = spi_metrics;
+   if (table_.set_view_metrics != nullptr) {
+@@ -183,7 +194,7 @@ bool SpiRuntimeBackend::SetDisplays(
+ 
+ bool SpiRuntimeBackend::BeginFrame(fml::TimePoint frame_time,
+                                    uint64_t frame_number) {
+-  if (table_.begin_frame == nullptr) {
++  if (stop_requested_ || table_.begin_frame == nullptr) {
+     return true;
+   }
+   FlutterSpiFrameInfo frame_info = {
+@@ -200,7 +211,7 @@ bool SpiRuntimeBackend::BeginFrame(fml::TimePoint frame_time,
+ 
+ bool SpiRuntimeBackend::DispatchPlatformMessage(
+     std::unique_ptr<PlatformMessage> message) {
+-  if (message == nullptr) {
++  if (stop_requested_ || message == nullptr) {
+     return false;
+   }
+   if (message->channel() == kKeyDataChannel) {
+@@ -211,7 +222,7 @@ bool SpiRuntimeBackend::DispatchPlatformMessage(
+ 
+ bool SpiRuntimeBackend::DispatchPointerDataPacket(
+     const PointerDataPacket& packet) {
+-  if (table_.pointer_events == nullptr) {
++  if (stop_requested_ || table_.pointer_events == nullptr) {
+     return true;
+   }
+   std::vector<FlutterSpiPointerEvent> events;
+@@ -242,7 +253,7 @@ bool SpiRuntimeBackend::DispatchSemanticsAction(int64_t view_id,
+                                                 int32_t node_id,
+                                                 SemanticsAction action,
+                                                 fml::MallocMapping args) {
+-  if (table_.semantics_action != nullptr) {
++  if (!stop_requested_ && table_.semantics_action != nullptr) {
+     table_.semantics_action(table_.user_data, view_id, node_id,
+                             static_cast<int32_t>(action), args.GetMapping(),
+                             args.GetSize());
+@@ -251,14 +262,14 @@ bool SpiRuntimeBackend::DispatchSemanticsAction(int64_t view_id,
+ }
+ 
+ bool SpiRuntimeBackend::SetSemanticsEnabled(bool enabled) {
+-  if (table_.set_semantics_enabled != nullptr) {
++  if (!stop_requested_ && table_.set_semantics_enabled != nullptr) {
+     table_.set_semantics_enabled(table_.user_data, enabled);
+   }
+   return true;
+ }
+ 
+ bool SpiRuntimeBackend::SetAccessibilityFeatures(int32_t flags) {
+-  if (table_.set_accessibility_features != nullptr) {
++  if (!stop_requested_ && table_.set_accessibility_features != nullptr) {
+     table_.set_accessibility_features(table_.user_data, flags);
+   }
+   return true;
+@@ -266,7 +277,7 @@ bool SpiRuntimeBackend::SetAccessibilityFeatures(int32_t flags) {
+ 
+ bool SpiRuntimeBackend::SetLocales(
+     const std::vector<std::string>& locale_data) {
+-  if (table_.set_locales == nullptr) {
++  if (stop_requested_ || table_.set_locales == nullptr) {
+     return true;
+   }
+   std::vector<const char*> locales;
+@@ -279,21 +290,21 @@ bool SpiRuntimeBackend::SetLocales(
+ }
+ 
+ bool SpiRuntimeBackend::SetUserSettingsData(const std::string& data) {
+-  if (table_.set_user_settings != nullptr) {
++  if (!stop_requested_ && table_.set_user_settings != nullptr) {
+     table_.set_user_settings(table_.user_data, data.c_str());
+   }
+   return true;
+ }
+ 
+ bool SpiRuntimeBackend::SetInitialLifecycleState(const std::string& data) {
+-  if (table_.set_lifecycle_state != nullptr) {
++  if (!stop_requested_ && table_.set_lifecycle_state != nullptr) {
+     table_.set_lifecycle_state(table_.user_data, data.c_str());
+   }
+   return true;
+ }
+ 
+ bool SpiRuntimeBackend::SendViewFocusEvent(const ViewFocusEvent& event) {
+-  if (table_.view_focus != nullptr) {
++  if (!stop_requested_ && table_.view_focus != nullptr) {
+     table_.view_focus(table_.user_data, event.view_id(),
+                       static_cast<int32_t>(event.state()),
+                       static_cast<int32_t>(event.direction()));
+@@ -302,7 +313,7 @@ bool SpiRuntimeBackend::SendViewFocusEvent(const ViewFocusEvent& event) {
+ }
+ 
+ bool SpiRuntimeBackend::NotifyIdle(fml::TimeDelta deadline) {
+-  if (table_.notify_idle != nullptr) {
++  if (!stop_requested_ && table_.notify_idle != nullptr) {
+     table_.notify_idle(table_.user_data, deadline.ToNanoseconds());
+   }
+   return true;
+@@ -371,8 +382,23 @@ void SpiRuntimeBackend::CompletePendingResponses() {
+   response_handles_.clear();
+ }
+ 
++void SpiRuntimeBackend::StopRuntime() {
++  if (!started_ || stop_called_) {
++    return;
++  }
++  CompletePendingResponses();
++  if (table_.stop != nullptr) {
++    table_.stop(table_.user_data);
++  }
++  stop_called_ = true;
++}
++
+ bool SpiRuntimeBackend::DispatchKeyDataMessage(
+     const PlatformMessage& message) {
++  if (stop_requested_) {
++    SendKeyDataResponse(message.response(), false);
++    return true;
++  }
+   bool handled = false;
+   const fml::Mapping& mapping = message.data();
+   const size_t minimum_size = kKeyDataCharacterSize + sizeof(KeyData);
+@@ -412,7 +438,7 @@ bool SpiRuntimeBackend::DispatchKeyDataMessage(
+ 
+ bool SpiRuntimeBackend::DispatchRegularPlatformMessage(
+     std::unique_ptr<PlatformMessage> message) {
+-  if (table_.platform_message == nullptr) {
++  if (stop_requested_ || table_.platform_message == nullptr) {
+     return true;
+   }
+   FlutterSpiResponseHandle* handle = nullptr;
+@@ -446,6 +472,9 @@ void SpiRuntimeBackend::SendKeyDataResponse(
+ }
+ 
+ FlutterSpiResult SpiRuntimeBackend::RequestFrame() {
++  if (stop_requested_) {
++    return kFlutterSpiInternalError;
++  }
+   if (!HasUiThread()) {
+     return kFlutterSpiWrongThread;
+   }
+@@ -457,6 +486,10 @@ FlutterSpiResult SpiRuntimeBackend::SubmitFrame(int64_t view_id,
+                                                 uint64_t frame_token,
+                                                 FlutterSpiScene* scene,
+                                                 double device_pixel_ratio) {
++  if (stop_requested_) {
++    SpiSceneRelease(scene);
++    return kFlutterSpiInternalError;
++  }
+   if (!HasUiThread()) {
+     return kFlutterSpiWrongThread;
+   }
+@@ -473,6 +506,9 @@ FlutterSpiResult SpiRuntimeBackend::SubmitFrame(int64_t view_id,
+ }
+ 
+ FlutterSpiResult SpiRuntimeBackend::FramesDone() {
++  if (stop_requested_) {
++    return kFlutterSpiInternalError;
++  }
+   if (!HasUiThread()) {
+     return kFlutterSpiWrongThread;
+   }
+@@ -486,6 +522,9 @@ FlutterSpiResult SpiRuntimeBackend::SendPlatformMessage(
+     size_t data_size,
+     void (*on_reply)(void* user_data, const uint8_t* data, size_t size),
+     void* reply_user_data) {
++  if (stop_requested_) {
++    return kFlutterSpiInternalError;
++  }
+   if (!HasUiThread()) {
+     return kFlutterSpiWrongThread;
+   }
+@@ -531,6 +570,9 @@ FlutterSpiResult SpiRuntimeBackend::Respond(FlutterSpiResponseHandle* response,
+ FlutterSpiResult SpiRuntimeBackend::PostTask(void (*task)(void* user_data),
+                                              void* user_data,
+                                              int64_t delay_ns) {
++  if (stop_requested_) {
++    return kFlutterSpiInternalError;
++  }
+   if (task == nullptr || !task_runners_.GetUITaskRunner()) {
+     return kFlutterSpiInvalidArgument;
+   }
+@@ -553,11 +595,16 @@ void SpiRuntimeBackend::Log(int32_t level,
+ }
+ 
+ FlutterSpiResult SpiRuntimeBackend::ReportError(const char* message) {
++  if (stop_requested_) {
++    return kFlutterSpiInternalError;
++  }
+   if (!HasUiThread()) {
+     return kFlutterSpiWrongThread;
+   }
+   FML_LOG(ERROR) << (message == nullptr ? "Runtime SPI error" : message);
+   running_ = false;
++  stop_requested_ = true;
++  task_runners_.GetUITaskRunner()->PostTask([this]() { StopRuntime(); });
+   return kFlutterSpiOk;
+ }
+ 
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.h b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+index f2fd1584ad4..b763ff27103 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.h
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+@@ -108,6 +108,7 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+   bool HasCapability(FlutterSpiCapabilities capability) const;
+   bool IsTableCompatible() const;
+   bool IsCallbackAvailable(size_t offset, size_t size) const;
++  void StopRuntime();
+   void CompletePendingResponses();
+   static SpiRuntimeBackend* FindBackendForResponse(
+       FlutterSpiResponseHandle* response);
+@@ -127,6 +128,8 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+   int64_t current_frame_deadline_ns_ = 0;
+   bool running_ = false;
+   bool started_ = false;
++  bool stop_requested_ = false;
++  bool stop_called_ = false;
+ 
+   static std::unordered_set<SpiRuntimeBackend*> live_backends_;
+ };
