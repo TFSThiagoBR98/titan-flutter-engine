@@ -1,0 +1,566 @@
+# Why: Why: expose validated path, geometry, and paint primitives for the
+Runtime SPI scene API.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 3bed01fa742..5cab935c901 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -55,7 +55,21 @@ source_set("runtime_spi_c_api") {
+ }
+ 
+ source_set("scene") {
+-  public = [ "scene/spi_handle_table.h" ]
++  public = [
++    "scene/spi_geometry.h",
++    "scene/spi_handle_table.h",
++    "scene/spi_paint.h",
++    "scene/spi_path.h",
++  ]
++  sources = [
++    "scene/spi_geometry.cc",
++    "scene/spi_paint.cc",
++    "scene/spi_path.cc",
++  ]
++  public_deps = [
++    ":runtime_spi_c_api",
++    "//flutter/display_list",
++  ]
+   assert_no_deps = [
+     "//flutter/third_party/dart/*",
+     "//flutter/third_party/tonic/*",
+@@ -72,6 +86,8 @@ if (enable_unittests) {
+       "spi_abi_frozen_unittests.cc",
+       "spi_conformance_unittests.cc",
+       "scene/spi_handle_table_unittests.cc",
++      "scene/spi_path_unittests.cc",
++      "scene/spi_paint_unittests.cc",
+       "spi_runtime_backend_unittests.cc",
+     ]
+     deps = [
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index fc8b343bd33..7383a4f9d99 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -12,17 +12,6 @@ extern "C" {
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+ #define FLUTTER_SPI_VERSION_MINOR 2
+ 
+-typedef enum {
+-  kFlutterSpiOk = 0,
+-  kFlutterSpiInvalidArgument,
+-  kFlutterSpiIncompatibleVersion,
+-  kFlutterSpiUnsupported,
+-  kFlutterSpiInvalidHandle,
+-  kFlutterSpiStaleFrame,
+-  kFlutterSpiWrongThread,
+-  kFlutterSpiInternalError,
+-} FlutterSpiResult;
+-
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+ enum {
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_scene.h b/engine/src/flutter/runtime_spi/include/flutter_scene.h
+index 96da742e48f..77dc503180f 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_scene.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_scene.h
+@@ -9,6 +9,17 @@
+ extern "C" {
+ #endif
+ 
++typedef enum {
++  kFlutterSpiOk = 0,
++  kFlutterSpiInvalidArgument,
++  kFlutterSpiIncompatibleVersion,
++  kFlutterSpiUnsupported,
++  kFlutterSpiInvalidHandle,
++  kFlutterSpiStaleFrame,
++  kFlutterSpiWrongThread,
++  kFlutterSpiInternalError,
++} FlutterSpiResult;
++
+ typedef struct FlutterSpiEngine FlutterSpiEngine;
+ typedef struct FlutterSpiPath FlutterSpiPath;
+ typedef struct FlutterSpiPictureRecorder FlutterSpiPictureRecorder;
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_geometry.cc b/engine/src/flutter/runtime_spi/scene/spi_geometry.cc
+new file mode 100644
+index 00000000000..b7d7e26b735
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/scene/spi_geometry.cc
+@@ -0,0 +1,80 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/scene/spi_geometry.h"
++
++#include <cmath>
++
++namespace flutter {
++namespace {
++
++bool IsFinite(const FlutterSpiPoint& point) {
++  return std::isfinite(point.x) && std::isfinite(point.y);
++}
++
++bool IsFinite(const FlutterSpiRect& rect) {
++  return std::isfinite(rect.left) && std::isfinite(rect.top) &&
++         std::isfinite(rect.right) && std::isfinite(rect.bottom);
++}
++
++}  // namespace
++
++DlColor ToDlColor(const FlutterSpiColor& color) {
++  return DlColor(color.alpha, color.red, color.green, color.blue,
++                 static_cast<DlColorSpace>(color.color_space));
++}
++
++bool ToDlPoint(const FlutterSpiPoint& point, DlPoint* out_point) {
++  if (out_point == nullptr || !IsFinite(point)) {
++    return false;
++  }
++  *out_point = DlPoint(point.x, point.y);
++  return true;
++}
++
++bool ToDlRect(const FlutterSpiRect& rect, DlRect* out_rect) {
++  if (out_rect == nullptr || !IsFinite(rect)) {
++    return false;
++  }
++  *out_rect = DlRect::MakeLTRB(rect.left, rect.top, rect.right, rect.bottom);
++  return true;
++}
++
++bool ToDlRoundRect(const FlutterSpiRRect& round_rect,
++                  DlRoundRect* out_rrect) {
++  if (out_rrect == nullptr || !IsFinite(round_rect.rect) ||
++      !IsFinite(round_rect.radii[0]) || !IsFinite(round_rect.radii[1]) ||
++      !IsFinite(round_rect.radii[2]) || !IsFinite(round_rect.radii[3])) {
++    return false;
++  }
++
++  *out_rrect = DlRoundRect::MakeRectRadii(
++      DlRect::MakeLTRB(round_rect.rect.left, round_rect.rect.top,
++                       round_rect.rect.right, round_rect.rect.bottom),
++      {
++          .top_left = DlSize(round_rect.radii[0].x, round_rect.radii[0].y),
++          .top_right = DlSize(round_rect.radii[1].x, round_rect.radii[1].y),
++          .bottom_left = DlSize(round_rect.radii[3].x, round_rect.radii[3].y),
++          .bottom_right =
++              DlSize(round_rect.radii[2].x, round_rect.radii[2].y),
++      });
++  return true;
++}
++
++bool ToDlMatrix(const FlutterSpiMatrix& matrix, DlMatrix* out_matrix) {
++  if (out_matrix == nullptr) {
++    return false;
++  }
++  for (float value : matrix.m) {
++    if (!std::isfinite(value)) {
++      return false;
++    }
++  }
++  for (size_t index = 0; index < 16; ++index) {
++    out_matrix->m[index] = matrix.m[index];
++  }
++  return true;
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_geometry.h b/engine/src/flutter/runtime_spi/scene/spi_geometry.h
+new file mode 100644
+index 00000000000..d83482b4d18
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/scene/spi_geometry.h
+@@ -0,0 +1,22 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_SCENE_SPI_GEOMETRY_H_
++#define FLUTTER_RUNTIME_SPI_SCENE_SPI_GEOMETRY_H_
++
++#include "flutter/display_list/dl_color.h"
++#include "flutter/display_list/geometry/dl_geometry_types.h"
++#include "flutter/runtime_spi/include/flutter_scene.h"
++
++namespace flutter {
++
++DlColor ToDlColor(const FlutterSpiColor& color);
++bool ToDlPoint(const FlutterSpiPoint& point, DlPoint* out_point);
++bool ToDlRect(const FlutterSpiRect& rect, DlRect* out_rect);
++bool ToDlRoundRect(const FlutterSpiRRect& round_rect, DlRoundRect* out_rrect);
++bool ToDlMatrix(const FlutterSpiMatrix& matrix, DlMatrix* out_matrix);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_SCENE_SPI_GEOMETRY_H_
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_paint.cc b/engine/src/flutter/runtime_spi/scene/spi_paint.cc
+new file mode 100644
+index 00000000000..1fb82d7a912
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/scene/spi_paint.cc
+@@ -0,0 +1,62 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/scene/spi_paint.h"
++
++#include <cstddef>
++
++#include "flutter/runtime_spi/scene/spi_geometry.h"
++
++namespace flutter {
++namespace {
++
++bool ContainsField(size_t struct_size, size_t offset, size_t field_size) {
++  return struct_size >= offset && struct_size - offset >= field_size;
++}
++
++}  // namespace
++
++DlPaint ToDlPaint(const FlutterSpiPaint& paint) {
++  DlPaint result;
++  if (ContainsField(paint.struct_size, offsetof(FlutterSpiPaint, color),
++                    sizeof(paint.color))) {
++    result.setColor(ToDlColor(paint.color));
++  }
++  if (ContainsField(paint.struct_size, offsetof(FlutterSpiPaint, blend_mode),
++                    sizeof(paint.blend_mode))) {
++    result.setBlendMode(static_cast<DlBlendMode>(paint.blend_mode));
++  }
++  if (ContainsField(paint.struct_size, offsetof(FlutterSpiPaint, style),
++                    sizeof(paint.style))) {
++    result.setDrawStyle(static_cast<DlDrawStyle>(paint.style));
++  }
++  if (ContainsField(paint.struct_size, offsetof(FlutterSpiPaint, stroke_width),
++                    sizeof(paint.stroke_width))) {
++    result.setStrokeWidth(paint.stroke_width);
++  }
++  if (ContainsField(paint.struct_size, offsetof(FlutterSpiPaint, stroke_cap),
++                    sizeof(paint.stroke_cap))) {
++    result.setStrokeCap(static_cast<DlStrokeCap>(paint.stroke_cap));
++  }
++  if (ContainsField(paint.struct_size, offsetof(FlutterSpiPaint, stroke_join),
++                    sizeof(paint.stroke_join))) {
++    result.setStrokeJoin(static_cast<DlStrokeJoin>(paint.stroke_join));
++  }
++  if (ContainsField(paint.struct_size, offsetof(FlutterSpiPaint, stroke_miter),
++                    sizeof(paint.stroke_miter))) {
++    result.setStrokeMiter(paint.stroke_miter);
++  }
++  if (ContainsField(paint.struct_size, offsetof(FlutterSpiPaint, anti_alias),
++                    sizeof(paint.anti_alias))) {
++    result.setAntiAlias(paint.anti_alias);
++  }
++  if (ContainsField(paint.struct_size,
++                    offsetof(FlutterSpiPaint, invert_colors),
++                    sizeof(paint.invert_colors))) {
++    result.setInvertColors(paint.invert_colors);
++  }
++  return result;
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_paint.h b/engine/src/flutter/runtime_spi/scene/spi_paint.h
+new file mode 100644
+index 00000000000..cd14e2b67da
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/scene/spi_paint.h
+@@ -0,0 +1,17 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_SCENE_SPI_PAINT_H_
++#define FLUTTER_RUNTIME_SPI_SCENE_SPI_PAINT_H_
++
++#include "flutter/display_list/dl_paint.h"
++#include "flutter/runtime_spi/include/flutter_scene.h"
++
++namespace flutter {
++
++DlPaint ToDlPaint(const FlutterSpiPaint& paint);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_SCENE_SPI_PAINT_H_
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_paint_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_paint_unittests.cc
+new file mode 100644
+index 00000000000..6d57cb5ce5e
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/scene/spi_paint_unittests.cc
+@@ -0,0 +1,72 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/scene/spi_paint.h"
++
++#include <cstddef>
++
++#include "flutter/display_list/dl_paint.h"
++#include "flutter/runtime_spi/include/flutter_scene.h"
++#include "flutter/testing/testing.h"
++
++namespace flutter::testing {
++namespace {
++
++TEST(SpiPaint, ConvertsEveryField) {
++  const FlutterSpiPaint input = {
++      .struct_size = sizeof(FlutterSpiPaint),
++      .color = {.red = 0.1f,
++                .green = 0.2f,
++                .blue = 0.3f,
++                .alpha = 0.4f,
++                .color_space = kFlutterSpiColorSpaceDisplayP3},
++      .blend_mode = kFlutterSpiBlendModeMultiply,
++      .style = kFlutterSpiPaintStyleStrokeAndFill,
++      .stroke_width = 2.5f,
++      .stroke_cap = kFlutterSpiStrokeCapRound,
++      .stroke_join = kFlutterSpiStrokeJoinBevel,
++      .stroke_miter = 3.5f,
++      .anti_alias = false,
++      .invert_colors = true,
++  };
++
++  const DlPaint paint = ToDlPaint(input);
++
++  EXPECT_EQ(paint.getColor(),
++            DlColor(0.4f, 0.1f, 0.2f, 0.3f, DlColorSpace::kDisplayP3));
++  EXPECT_EQ(paint.getBlendMode(), DlBlendMode::kMultiply);
++  EXPECT_EQ(paint.getDrawStyle(), DlDrawStyle::kStrokeAndFill);
++  EXPECT_EQ(paint.getStrokeWidth(), 2.5f);
++  EXPECT_EQ(paint.getStrokeCap(), DlStrokeCap::kRound);
++  EXPECT_EQ(paint.getStrokeJoin(), DlStrokeJoin::kBevel);
++  EXPECT_EQ(paint.getStrokeMiter(), 3.5f);
++  EXPECT_FALSE(paint.isAntiAlias());
++  EXPECT_TRUE(paint.isInvertColors());
++}
++
++TEST(SpiPaint, OlderStructUsesDlPaintDefaults) {
++  const FlutterSpiPaint input = {
++      .struct_size = offsetof(FlutterSpiPaint, blend_mode),
++      .color = {.red = 0.1f,
++                .green = 0.2f,
++                .blue = 0.3f,
++                .alpha = 0.4f,
++                .color_space = kFlutterSpiColorSpaceSRGB},
++  };
++
++  const DlPaint paint = ToDlPaint(input);
++
++  EXPECT_EQ(paint.getColor(), DlColor::ARGB(0.4f, 0.1f, 0.2f, 0.3f));
++  EXPECT_EQ(paint.getBlendMode(), DlPaint::kDefault.getBlendMode());
++  EXPECT_EQ(paint.getDrawStyle(), DlPaint::kDefault.getDrawStyle());
++  EXPECT_EQ(paint.getStrokeWidth(), DlPaint::kDefaultWidth);
++  EXPECT_EQ(paint.getStrokeCap(), DlPaint::kDefault.getStrokeCap());
++  EXPECT_EQ(paint.getStrokeJoin(), DlPaint::kDefault.getStrokeJoin());
++  EXPECT_EQ(paint.getStrokeMiter(), DlPaint::kDefaultMiter);
++  EXPECT_EQ(paint.isAntiAlias(), DlPaint::kDefaultAntiAlias);
++  EXPECT_FALSE(paint.isInvertColors());
++}
++
++}  // namespace
++}  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_path.cc b/engine/src/flutter/runtime_spi/scene/spi_path.cc
+new file mode 100644
+index 00000000000..81756cd24e0
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/scene/spi_path.cc
+@@ -0,0 +1,58 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/scene/spi_path.h"
++
++namespace flutter {
++
++void SpiPath::SetFillType(DlPathFillType fill_type) {
++  builder_.SetFillType(fill_type);
++}
++
++void SpiPath::MoveTo(DlPoint point) {
++  builder_.MoveTo(point);
++}
++
++void SpiPath::LineTo(DlPoint point) {
++  builder_.LineTo(point);
++}
++
++void SpiPath::QuadraticCurveTo(DlPoint control_point, DlPoint point) {
++  builder_.QuadraticCurveTo(control_point, point);
++}
++
++void SpiPath::ConicCurveTo(DlPoint control_point,
++                           DlPoint point,
++                           DlScalar weight) {
++  builder_.ConicCurveTo(control_point, point, weight);
++}
++
++void SpiPath::CubicCurveTo(DlPoint control_point_1,
++                           DlPoint control_point_2,
++                           DlPoint point) {
++  builder_.CubicCurveTo(control_point_1, control_point_2, point);
++}
++
++void SpiPath::Close() {
++  builder_.Close();
++}
++
++void SpiPath::AddRect(const DlRect& rect) {
++  builder_.AddRect(rect);
++}
++
++void SpiPath::AddOval(const DlRect& bounds) {
++  builder_.AddOval(bounds);
++}
++
++void SpiPath::AddRoundRect(const DlRoundRect& round_rect) {
++  builder_.AddRoundRect(round_rect);
++}
++
++const DlPath& SpiPath::path() {
++  path_ = builder_.CopyPath();
++  return path_;
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_path.h b/engine/src/flutter/runtime_spi/scene/spi_path.h
+new file mode 100644
+index 00000000000..e42de26aa4a
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/scene/spi_path.h
+@@ -0,0 +1,38 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_SCENE_SPI_PATH_H_
++#define FLUTTER_RUNTIME_SPI_SCENE_SPI_PATH_H_
++
++#include "flutter/display_list/geometry/dl_path_builder.h"
++
++namespace flutter {
++
++class SpiPath final {
++ public:
++  SpiPath() = default;
++
++  void SetFillType(DlPathFillType fill_type);
++  void MoveTo(DlPoint point);
++  void LineTo(DlPoint point);
++  void QuadraticCurveTo(DlPoint control_point, DlPoint point);
++  void ConicCurveTo(DlPoint control_point, DlPoint point, DlScalar weight);
++  void CubicCurveTo(DlPoint control_point_1,
++                    DlPoint control_point_2,
++                    DlPoint point);
++  void Close();
++  void AddRect(const DlRect& rect);
++  void AddOval(const DlRect& bounds);
++  void AddRoundRect(const DlRoundRect& round_rect);
++
++  const DlPath& path();
++
++ private:
++  DlPathBuilder builder_;
++  DlPath path_;
++};
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_SCENE_SPI_PATH_H_
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_path_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_path_unittests.cc
+new file mode 100644
+index 00000000000..a9a0e9f1990
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/scene/spi_path_unittests.cc
+@@ -0,0 +1,87 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/scene/spi_geometry.h"
++#include "flutter/runtime_spi/scene/spi_path.h"
++
++#include <cmath>
++
++#include "flutter/display_list/geometry/dl_path_builder.h"
++#include "flutter/runtime_spi/include/flutter_scene.h"
++#include "flutter/testing/testing.h"
++
++namespace flutter::testing {
++namespace {
++
++TEST(SpiPath, ABIOperationsMatchDirectPathBuilder) {
++  SpiPath actual;
++  actual.SetFillType(DlPathFillType::kOdd);
++  actual.MoveTo({1.0f, 2.0f});
++  actual.LineTo({3.0f, 4.0f});
++  actual.QuadraticCurveTo({5.0f, 6.0f}, {7.0f, 8.0f});
++  actual.ConicCurveTo({9.0f, 10.0f}, {11.0f, 12.0f}, 0.75f);
++  actual.CubicCurveTo({13.0f, 14.0f}, {15.0f, 16.0f}, {17.0f, 18.0f});
++  actual.Close();
++  actual.AddRect(DlRect::MakeLTRB(1.0f, 2.0f, 30.0f, 40.0f));
++  actual.AddOval(DlRect::MakeLTRB(2.0f, 3.0f, 20.0f, 30.0f));
++  actual.AddRoundRect(DlRoundRect::MakeRectXY(
++      DlRect::MakeLTRB(4.0f, 5.0f, 40.0f, 50.0f), 6.0f, 7.0f));
++
++  DlPathBuilder expected;
++  expected.SetFillType(DlPathFillType::kOdd)
++      .MoveTo({1.0f, 2.0f})
++      .LineTo({3.0f, 4.0f})
++      .QuadraticCurveTo({5.0f, 6.0f}, {7.0f, 8.0f})
++      .ConicCurveTo({9.0f, 10.0f}, {11.0f, 12.0f}, 0.75f)
++      .CubicCurveTo({13.0f, 14.0f}, {15.0f, 16.0f}, {17.0f, 18.0f})
++      .Close()
++      .AddRect(DlRect::MakeLTRB(1.0f, 2.0f, 30.0f, 40.0f))
++      .AddOval(DlRect::MakeLTRB(2.0f, 3.0f, 20.0f, 30.0f))
++      .AddRoundRect(DlRoundRect::MakeRectXY(
++          DlRect::MakeLTRB(4.0f, 5.0f, 40.0f, 50.0f), 6.0f, 7.0f));
++
++  EXPECT_EQ(actual.path(), expected.CopyPath());
++}
++
++TEST(SpiGeometry, ConvertsFiniteValues) {
++  const FlutterSpiPoint spi_point = {.x = 1.0f, .y = 2.0f};
++  const FlutterSpiRect spi_rect = {
++      .left = 1.0f, .top = 2.0f, .right = 30.0f, .bottom = 40.0f};
++  const FlutterSpiRRect spi_rrect = {
++      .rect = spi_rect,
++      .radii = {{3.0f, 4.0f}, {5.0f, 6.0f}, {7.0f, 8.0f}, {9.0f, 10.0f}},
++  };
++  FlutterSpiMatrix spi_matrix = {};
++  for (size_t index = 0; index < 16; ++index) {
++    spi_matrix.m[index] = static_cast<float>(index);
++  }
++
++  DlPoint point;
++  DlRect rect;
++  DlRoundRect rrect;
++  DlMatrix matrix;
++
++  ASSERT_TRUE(ToDlPoint(spi_point, &point));
++  ASSERT_TRUE(ToDlRect(spi_rect, &rect));
++  ASSERT_TRUE(ToDlRoundRect(spi_rrect, &rrect));
++  ASSERT_TRUE(ToDlMatrix(spi_matrix, &matrix));
++
++  EXPECT_EQ(point, DlPoint(1.0f, 2.0f));
++  EXPECT_EQ(rect, DlRect::MakeLTRB(1.0f, 2.0f, 30.0f, 40.0f));
++  EXPECT_TRUE(rrect.IsFinite());
++  for (size_t index = 0; index < 16; ++index) {
++    EXPECT_EQ(matrix.m[index], static_cast<float>(index));
++  }
++}
++
++TEST(SpiGeometry, RejectsNonFiniteMatrix) {
++  FlutterSpiMatrix spi_matrix = {};
++  spi_matrix.m[7] = NAN;
++  DlMatrix matrix;
++
++  EXPECT_FALSE(ToDlMatrix(spi_matrix, &matrix));
++}
++
++}  // namespace
++}  // namespace flutter::testing
