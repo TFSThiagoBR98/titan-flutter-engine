@@ -1,0 +1,1015 @@
+# Why: Why: expose DisplayListBuilder recording through the Runtime SPI while
+retaining pictures independently from their handles and rejecting invalid
+recorder operations.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 5cab935c901..4e2f6d0f784 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -60,8 +60,10 @@ source_set("scene") {
+     "scene/spi_handle_table.h",
+     "scene/spi_paint.h",
+     "scene/spi_path.h",
++    "scene/spi_canvas.h",
+   ]
+   sources = [
++    "scene/spi_canvas.cc",
+     "scene/spi_geometry.cc",
+     "scene/spi_paint.cc",
+     "scene/spi_path.cc",
+@@ -86,6 +88,7 @@ if (enable_unittests) {
+       "spi_abi_frozen_unittests.cc",
+       "spi_conformance_unittests.cc",
+       "scene/spi_handle_table_unittests.cc",
++      "scene/spi_canvas_parity_unittests.cc",
+       "scene/spi_path_unittests.cc",
+       "scene/spi_paint_unittests.cc",
+       "spi_runtime_backend_unittests.cc",
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+new file mode 100644
+index 00000000000..a5b6a1d80a3
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+@@ -0,0 +1,809 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/scene/spi_canvas.h"
++
++#include <cmath>
++#include <cstdint>
++#include <limits>
++#include <memory>
++#include <optional>
++#include <vector>
++
++#include "flutter/display_list/dl_builder.h"
++#include "flutter/runtime_spi/scene/spi_geometry.h"
++#include "flutter/runtime_spi/scene/spi_handle_table.h"
++#include "flutter/runtime_spi/scene/spi_paint.h"
++#include "flutter/runtime_spi/scene/spi_path.h"
++
++namespace flutter {
++namespace {
++
++constexpr float kRadiansToDegrees = 180.0f / 3.14159265358979323846f;
++
++template <typename Handle>
++uintptr_t HandleValue(Handle* handle) {
++  return reinterpret_cast<uintptr_t>(handle);
++}
++
++template <typename Handle>
++Handle* MakeHandle(uintptr_t value) {
++  return reinterpret_cast<Handle*>(value);
++}
++
++DlClipOp ToDlClipOp(int32_t clip_op) {
++  return clip_op == kFlutterSpiClipOpDifference ? DlClipOp::kDifference
++                                                : DlClipOp::kIntersect;
++}
++
++bool IsValidClipOp(int32_t clip_op) {
++  return clip_op == kFlutterSpiClipOpDifference ||
++         clip_op == kFlutterSpiClipOpIntersect;
++}
++
++bool IsValidPointMode(int32_t point_mode) {
++  return point_mode >= kFlutterSpiPointModePoints &&
++         point_mode <= kFlutterSpiPointModePolygon;
++}
++
++DlPointMode ToDlPointMode(int32_t point_mode) {
++  return static_cast<DlPointMode>(point_mode);
++}
++
++class SpiPictureRecorder final {
++ public:
++  explicit SpiPictureRecorder(const DlRect& cull_rect)
++      : builder_(std::make_unique<DisplayListBuilder>(cull_rect)) {}
++
++  DisplayListBuilder* builder() { return builder_.get(); }
++
++  sk_sp<DisplayList> Finish() {
++    if (builder_ == nullptr) {
++      return nullptr;
++    }
++    return builder_->Build();
++  }
++
++ private:
++  std::unique_ptr<DisplayListBuilder> builder_;
++};
++
++class SpiPicture final {
++ public:
++  explicit SpiPicture(sk_sp<DisplayList> display_list)
++      : display_list_(std::move(display_list)) {}
++
++  const DisplayList* display_list() const { return display_list_.get(); }
++
++ private:
++  sk_sp<DisplayList> display_list_;
++};
++
++SpiHandleTable<SpiPath>& Paths() {
++  static SpiHandleTable<SpiPath> paths;
++  return paths;
++}
++
++SpiHandleTable<SpiPictureRecorder>& Recorders() {
++  static SpiHandleTable<SpiPictureRecorder> recorders;
++  return recorders;
++}
++
++SpiHandleTable<SpiPicture>& Pictures() {
++  static SpiHandleTable<SpiPicture> pictures;
++  return pictures;
++}
++
++std::shared_ptr<SpiPath> FindPath(FlutterSpiPath* path) {
++  return Paths().Find(HandleValue(path));
++}
++
++std::shared_ptr<SpiPictureRecorder> FindRecorder(
++    FlutterSpiPictureRecorder* recorder) {
++  return Recorders().Find(HandleValue(recorder));
++}
++
++std::shared_ptr<SpiPicture> FindPicture(FlutterSpiPicture* picture) {
++  return Pictures().Find(HandleValue(picture));
++}
++
++FlutterSpiResult ToResult(bool succeeded) {
++  return succeeded ? kFlutterSpiOk : kFlutterSpiInvalidHandle;
++}
++
++FlutterSpiResult PathCreate(FlutterSpiEngine* engine,
++                            FlutterSpiPath** out_path) {
++  if (engine == nullptr || out_path == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const uintptr_t handle = Paths().Insert(std::make_shared<SpiPath>());
++  *out_path = MakeHandle<FlutterSpiPath>(handle);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult PathSetFillType(FlutterSpiPath* path, int32_t fill_type) {
++  const auto path_value = FindPath(path);
++  if (path_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (fill_type != kFlutterSpiFillTypeNonZero &&
++      fill_type != kFlutterSpiFillTypeEvenOdd) {
++    return kFlutterSpiInvalidArgument;
++  }
++  path_value->SetFillType(fill_type == kFlutterSpiFillTypeNonZero
++                              ? DlPathFillType::kNonZero
++                              : DlPathFillType::kOdd);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult PathMoveTo(FlutterSpiPath* path, float x, float y) {
++  const auto path_value = FindPath(path);
++  DlPoint point;
++  if (path_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!ToDlPoint({x, y}, &point)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  path_value->MoveTo(point);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult PathLineTo(FlutterSpiPath* path, float x, float y) {
++  const auto path_value = FindPath(path);
++  DlPoint point;
++  if (path_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!ToDlPoint({x, y}, &point)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  path_value->LineTo(point);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult PathQuadTo(FlutterSpiPath* path,
++                            float x1,
++                            float y1,
++                            float x2,
++                            float y2) {
++  const auto path_value = FindPath(path);
++  DlPoint control_point;
++  DlPoint point;
++  if (path_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!ToDlPoint({x1, y1}, &control_point) || !ToDlPoint({x2, y2}, &point)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  path_value->QuadraticCurveTo(control_point, point);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult PathConicTo(FlutterSpiPath* path,
++                             float x1,
++                             float y1,
++                             float x2,
++                             float y2,
++                             float weight) {
++  const auto path_value = FindPath(path);
++  DlPoint control_point;
++  DlPoint point;
++  if (path_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!ToDlPoint({x1, y1}, &control_point) || !ToDlPoint({x2, y2}, &point) ||
++      !std::isfinite(weight)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  path_value->ConicCurveTo(control_point, point, weight);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult PathCubicTo(FlutterSpiPath* path,
++                             float x1,
++                             float y1,
++                             float x2,
++                             float y2,
++                             float x3,
++                             float y3) {
++  const auto path_value = FindPath(path);
++  DlPoint control_point_1;
++  DlPoint control_point_2;
++  DlPoint point;
++  if (path_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!ToDlPoint({x1, y1}, &control_point_1) ||
++      !ToDlPoint({x2, y2}, &control_point_2) || !ToDlPoint({x3, y3}, &point)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  path_value->CubicCurveTo(control_point_1, control_point_2, point);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult PathClose(FlutterSpiPath* path) {
++  const auto path_value = FindPath(path);
++  if (path_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  path_value->Close();
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult PathAddRect(FlutterSpiPath* path, const FlutterSpiRect* rect) {
++  const auto path_value = FindPath(path);
++  DlRect dl_rect;
++  if (path_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (rect == nullptr || !ToDlRect(*rect, &dl_rect)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  path_value->AddRect(dl_rect);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult PathAddOval(FlutterSpiPath* path,
++                             const FlutterSpiRect* bounds) {
++  const auto path_value = FindPath(path);
++  DlRect dl_bounds;
++  if (path_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (bounds == nullptr || !ToDlRect(*bounds, &dl_bounds)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  path_value->AddOval(dl_bounds);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult PathAddRRect(FlutterSpiPath* path,
++                              const FlutterSpiRRect* rrect) {
++  const auto path_value = FindPath(path);
++  DlRoundRect dl_rrect;
++  if (path_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (rrect == nullptr || !ToDlRoundRect(*rrect, &dl_rrect)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  path_value->AddRoundRect(dl_rrect);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult PathRetain(FlutterSpiPath* path) {
++  return ToResult(Paths().Retain(HandleValue(path)));
++}
++
++FlutterSpiResult PathRelease(FlutterSpiPath* path) {
++  return ToResult(Paths().Release(HandleValue(path)));
++}
++
++FlutterSpiResult RecorderCreate(FlutterSpiEngine* engine,
++                                const FlutterSpiRect* cull_rect,
++                                FlutterSpiPictureRecorder** out_recorder) {
++  if (engine == nullptr || out_recorder == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  DlRect dl_cull_rect = DisplayListBuilder::kMaxCullRect;
++  if (cull_rect != nullptr && !ToDlRect(*cull_rect, &dl_cull_rect)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const uintptr_t handle =
++      Recorders().Insert(std::make_shared<SpiPictureRecorder>(dl_cull_rect));
++  *out_recorder = MakeHandle<FlutterSpiPictureRecorder>(handle);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasSave(FlutterSpiPictureRecorder* recorder) {
++  const auto recorder_value = FindRecorder(recorder);
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  recorder_value->builder()->Save();
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasSaveLayer(FlutterSpiPictureRecorder* recorder,
++                                 const FlutterSpiRect* bounds,
++                                 const FlutterSpiPaint* paint) {
++  const auto recorder_value = FindRecorder(recorder);
++  std::optional<DlRect> dl_bounds;
++  std::optional<DlPaint> dl_paint;
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (bounds != nullptr) {
++    DlRect value;
++    if (!ToDlRect(*bounds, &value)) {
++      return kFlutterSpiInvalidArgument;
++    }
++    dl_bounds = value;
++  }
++  if (paint != nullptr) {
++    dl_paint = ToDlPaint(*paint);
++  }
++  recorder_value->builder()->SaveLayer(dl_bounds,
++                                       dl_paint.has_value() ? &*dl_paint
++                                                             : nullptr);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasRestore(FlutterSpiPictureRecorder* recorder) {
++  const auto recorder_value = FindRecorder(recorder);
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  recorder_value->builder()->Restore();
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasRestoreToCount(FlutterSpiPictureRecorder* recorder,
++                                      int32_t count) {
++  const auto recorder_value = FindRecorder(recorder);
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (count < 1) {
++    return kFlutterSpiInvalidArgument;
++  }
++  recorder_value->builder()->RestoreToCount(count);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasGetSaveCount(FlutterSpiPictureRecorder* recorder,
++                                    int32_t* out_count) {
++  const auto recorder_value = FindRecorder(recorder);
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr ||
++      out_count == nullptr) {
++    return recorder_value == nullptr ? kFlutterSpiInvalidHandle
++                                     : kFlutterSpiInvalidArgument;
++  }
++  *out_count = recorder_value->builder()->GetSaveCount();
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasTranslate(FlutterSpiPictureRecorder* recorder,
++                                 float dx,
++                                 float dy) {
++  const auto recorder_value = FindRecorder(recorder);
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!std::isfinite(dx) || !std::isfinite(dy)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  recorder_value->builder()->Translate(dx, dy);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasScale(FlutterSpiPictureRecorder* recorder,
++                             float sx,
++                             float sy) {
++  const auto recorder_value = FindRecorder(recorder);
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!std::isfinite(sx) || !std::isfinite(sy)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  recorder_value->builder()->Scale(sx, sy);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasRotate(FlutterSpiPictureRecorder* recorder,
++                              float radians) {
++  const auto recorder_value = FindRecorder(recorder);
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!std::isfinite(radians)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  recorder_value->builder()->Rotate(radians * kRadiansToDegrees);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasSkew(FlutterSpiPictureRecorder* recorder,
++                            float sx,
++                            float sy) {
++  const auto recorder_value = FindRecorder(recorder);
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!std::isfinite(sx) || !std::isfinite(sy)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  recorder_value->builder()->Skew(sx, sy);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasTransform(FlutterSpiPictureRecorder* recorder,
++                                 const FlutterSpiMatrix* matrix) {
++  const auto recorder_value = FindRecorder(recorder);
++  DlMatrix dl_matrix;
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (matrix == nullptr || !ToDlMatrix(*matrix, &dl_matrix)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  recorder_value->builder()->Transform(dl_matrix);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasClipRect(FlutterSpiPictureRecorder* recorder,
++                                const FlutterSpiRect* rect,
++                                int32_t clip_op,
++                                bool anti_alias) {
++  const auto recorder_value = FindRecorder(recorder);
++  DlRect dl_rect;
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (rect == nullptr || !ToDlRect(*rect, &dl_rect) ||
++      !IsValidClipOp(clip_op)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  recorder_value->builder()->ClipRect(dl_rect, ToDlClipOp(clip_op), anti_alias);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasClipRRect(FlutterSpiPictureRecorder* recorder,
++                                 const FlutterSpiRRect* rrect,
++                                 int32_t clip_op,
++                                 bool anti_alias) {
++  const auto recorder_value = FindRecorder(recorder);
++  DlRoundRect dl_rrect;
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (rrect == nullptr || !ToDlRoundRect(*rrect, &dl_rrect) ||
++      !IsValidClipOp(clip_op)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  recorder_value->builder()->ClipRoundRect(dl_rrect, ToDlClipOp(clip_op),
++                                           anti_alias);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasClipPath(FlutterSpiPictureRecorder* recorder,
++                                FlutterSpiPath* path,
++                                int32_t clip_op,
++                                bool anti_alias) {
++  const auto recorder_value = FindRecorder(recorder);
++  const auto path_value = FindPath(path);
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr ||
++      path_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!IsValidClipOp(clip_op)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  recorder_value->builder()->ClipPath(path_value->path(), ToDlClipOp(clip_op),
++                                      anti_alias);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasDrawColor(FlutterSpiPictureRecorder* recorder,
++                                 const FlutterSpiColor* color,
++                                 int32_t blend_mode) {
++  const auto recorder_value = FindRecorder(recorder);
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (color == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  recorder_value->builder()->DrawColor(
++      ToDlColor(*color), static_cast<DlBlendMode>(blend_mode));
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasDrawPaint(FlutterSpiPictureRecorder* recorder,
++                                 const FlutterSpiPaint* paint) {
++  const auto recorder_value = FindRecorder(recorder);
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (paint == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  recorder_value->builder()->DrawPaint(ToDlPaint(*paint));
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasDrawLine(FlutterSpiPictureRecorder* recorder,
++                                const FlutterSpiPoint* start,
++                                const FlutterSpiPoint* end,
++                                const FlutterSpiPaint* paint) {
++  const auto recorder_value = FindRecorder(recorder);
++  DlPoint dl_start;
++  DlPoint dl_end;
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (start == nullptr || end == nullptr || paint == nullptr ||
++      !ToDlPoint(*start, &dl_start) || !ToDlPoint(*end, &dl_end)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  recorder_value->builder()->DrawLine(dl_start, dl_end, ToDlPaint(*paint));
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasDrawRect(FlutterSpiPictureRecorder* recorder,
++                                const FlutterSpiRect* rect,
++                                const FlutterSpiPaint* paint) {
++  const auto recorder_value = FindRecorder(recorder);
++  DlRect dl_rect;
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (rect == nullptr || paint == nullptr || !ToDlRect(*rect, &dl_rect)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  recorder_value->builder()->DrawRect(dl_rect, ToDlPaint(*paint));
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasDrawRRect(FlutterSpiPictureRecorder* recorder,
++                                 const FlutterSpiRRect* rrect,
++                                 const FlutterSpiPaint* paint) {
++  const auto recorder_value = FindRecorder(recorder);
++  DlRoundRect dl_rrect;
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (rrect == nullptr || paint == nullptr ||
++      !ToDlRoundRect(*rrect, &dl_rrect)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  recorder_value->builder()->DrawRoundRect(dl_rrect, ToDlPaint(*paint));
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasDrawDiffRRect(FlutterSpiPictureRecorder* recorder,
++                                     const FlutterSpiRRect* outer,
++                                     const FlutterSpiRRect* inner,
++                                     const FlutterSpiPaint* paint) {
++  const auto recorder_value = FindRecorder(recorder);
++  DlRoundRect dl_outer;
++  DlRoundRect dl_inner;
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (outer == nullptr || inner == nullptr || paint == nullptr ||
++      !ToDlRoundRect(*outer, &dl_outer) || !ToDlRoundRect(*inner, &dl_inner)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  recorder_value->builder()->DrawDiffRoundRect(dl_outer, dl_inner,
++                                               ToDlPaint(*paint));
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasDrawOval(FlutterSpiPictureRecorder* recorder,
++                                const FlutterSpiRect* bounds,
++                                const FlutterSpiPaint* paint) {
++  const auto recorder_value = FindRecorder(recorder);
++  DlRect dl_bounds;
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (bounds == nullptr || paint == nullptr ||
++      !ToDlRect(*bounds, &dl_bounds)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  recorder_value->builder()->DrawOval(dl_bounds, ToDlPaint(*paint));
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasDrawCircle(FlutterSpiPictureRecorder* recorder,
++                                  const FlutterSpiPoint* center,
++                                  float radius,
++                                  const FlutterSpiPaint* paint) {
++  const auto recorder_value = FindRecorder(recorder);
++  DlPoint dl_center;
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (center == nullptr || paint == nullptr || !ToDlPoint(*center, &dl_center) ||
++      !std::isfinite(radius)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  recorder_value->builder()->DrawCircle(dl_center, radius, ToDlPaint(*paint));
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasDrawArc(FlutterSpiPictureRecorder* recorder,
++                               const FlutterSpiRect* rect,
++                               float start_radians,
++                               float sweep_radians,
++                               bool use_center,
++                               const FlutterSpiPaint* paint) {
++  const auto recorder_value = FindRecorder(recorder);
++  DlRect dl_rect;
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (rect == nullptr || paint == nullptr || !ToDlRect(*rect, &dl_rect) ||
++      !std::isfinite(start_radians) || !std::isfinite(sweep_radians)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  recorder_value->builder()->DrawArc(
++      dl_rect, start_radians * kRadiansToDegrees,
++      sweep_radians * kRadiansToDegrees, use_center, ToDlPaint(*paint));
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasDrawPath(FlutterSpiPictureRecorder* recorder,
++                                FlutterSpiPath* path,
++                                const FlutterSpiPaint* paint) {
++  const auto recorder_value = FindRecorder(recorder);
++  const auto path_value = FindPath(path);
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr ||
++      path_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (paint == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  recorder_value->builder()->DrawPath(path_value->path(), ToDlPaint(*paint));
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasDrawPoints(FlutterSpiPictureRecorder* recorder,
++                                  int32_t point_mode,
++                                  const FlutterSpiPoint* points,
++                                  size_t count,
++                                  const FlutterSpiPaint* paint) {
++  const auto recorder_value = FindRecorder(recorder);
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!IsValidPointMode(point_mode) || points == nullptr || paint == nullptr ||
++      count > std::numeric_limits<uint32_t>::max()) {
++    return kFlutterSpiInvalidArgument;
++  }
++  std::vector<DlPoint> dl_points;
++  dl_points.reserve(count);
++  for (size_t index = 0; index < count; ++index) {
++    DlPoint point;
++    if (!ToDlPoint(points[index], &point)) {
++      return kFlutterSpiInvalidArgument;
++    }
++    dl_points.push_back(point);
++  }
++  recorder_value->builder()->DrawPoints(ToDlPointMode(point_mode), count,
++                                        dl_points.data(), ToDlPaint(*paint));
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasDrawPicture(FlutterSpiPictureRecorder* recorder,
++                                   FlutterSpiPicture* picture) {
++  const auto recorder_value = FindRecorder(recorder);
++  const auto picture_value = FindPicture(picture);
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr ||
++      picture_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  recorder_value->builder()->DrawDisplayList(
++      sk_ref_sp(picture_value->display_list()));
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasDrawShadow(FlutterSpiPictureRecorder* recorder,
++                                  FlutterSpiPath* path,
++                                  const FlutterSpiColor* color,
++                                  float elevation,
++                                  bool transparent_occluder,
++                                  float device_pixel_ratio) {
++  const auto recorder_value = FindRecorder(recorder);
++  const auto path_value = FindPath(path);
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr ||
++      path_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (color == nullptr || !std::isfinite(elevation) ||
++      !std::isfinite(device_pixel_ratio)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  recorder_value->builder()->DrawShadow(path_value->path(), ToDlColor(*color),
++                                        elevation, transparent_occluder,
++                                        device_pixel_ratio);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult RecorderFinish(FlutterSpiPictureRecorder* recorder,
++                                FlutterSpiPicture** out_picture) {
++  const auto recorder_value = FindRecorder(recorder);
++  if (recorder_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (out_picture == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  sk_sp<DisplayList> display_list = recorder_value->Finish();
++  if (display_list == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  Recorders().Release(HandleValue(recorder));
++  const uintptr_t handle =
++      Pictures().Insert(std::make_shared<SpiPicture>(std::move(display_list)));
++  *out_picture = MakeHandle<FlutterSpiPicture>(handle);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult RecorderRelease(FlutterSpiPictureRecorder* recorder) {
++  return ToResult(Recorders().Release(HandleValue(recorder)));
++}
++
++FlutterSpiResult PictureRetain(FlutterSpiPicture* picture) {
++  return ToResult(Pictures().Retain(HandleValue(picture)));
++}
++
++FlutterSpiResult PictureRelease(FlutterSpiPicture* picture) {
++  return ToResult(Pictures().Release(HandleValue(picture)));
++}
++
++const FlutterSpiSceneApi kSceneApi = {
++    .struct_size = sizeof(FlutterSpiSceneApi),
++    .path_create = PathCreate,
++    .path_set_fill_type = PathSetFillType,
++    .path_move_to = PathMoveTo,
++    .path_line_to = PathLineTo,
++    .path_quad_to = PathQuadTo,
++    .path_conic_to = PathConicTo,
++    .path_cubic_to = PathCubicTo,
++    .path_close = PathClose,
++    .path_add_rect = PathAddRect,
++    .path_add_oval = PathAddOval,
++    .path_add_rrect = PathAddRRect,
++    .path_retain = PathRetain,
++    .path_release = PathRelease,
++    .recorder_create = RecorderCreate,
++    .canvas_save = CanvasSave,
++    .canvas_save_layer = CanvasSaveLayer,
++    .canvas_restore = CanvasRestore,
++    .canvas_restore_to_count = CanvasRestoreToCount,
++    .canvas_get_save_count = CanvasGetSaveCount,
++    .canvas_translate = CanvasTranslate,
++    .canvas_scale = CanvasScale,
++    .canvas_rotate = CanvasRotate,
++    .canvas_skew = CanvasSkew,
++    .canvas_transform = CanvasTransform,
++    .canvas_clip_rect = CanvasClipRect,
++    .canvas_clip_rrect = CanvasClipRRect,
++    .canvas_clip_path = CanvasClipPath,
++    .canvas_draw_color = CanvasDrawColor,
++    .canvas_draw_paint = CanvasDrawPaint,
++    .canvas_draw_line = CanvasDrawLine,
++    .canvas_draw_rect = CanvasDrawRect,
++    .canvas_draw_rrect = CanvasDrawRRect,
++    .canvas_draw_drrect = CanvasDrawDiffRRect,
++    .canvas_draw_oval = CanvasDrawOval,
++    .canvas_draw_circle = CanvasDrawCircle,
++    .canvas_draw_arc = CanvasDrawArc,
++    .canvas_draw_path = CanvasDrawPath,
++    .canvas_draw_points = CanvasDrawPoints,
++    .canvas_draw_picture = CanvasDrawPicture,
++    .canvas_draw_shadow = CanvasDrawShadow,
++    .recorder_finish = RecorderFinish,
++    .recorder_release = RecorderRelease,
++    .picture_retain = PictureRetain,
++    .picture_release = PictureRelease,
++};
++
++}  // namespace
++
++const FlutterSpiSceneApi* SpiSceneApi() {
++  return &kSceneApi;
++}
++
++const DisplayList* SpiPictureDisplayListForTesting(FlutterSpiPicture* picture) {
++  const auto picture_value = FindPicture(picture);
++  return picture_value == nullptr ? nullptr : picture_value->display_list();
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas.h b/engine/src/flutter/runtime_spi/scene/spi_canvas.h
+new file mode 100644
+index 00000000000..c768f97dd4f
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas.h
+@@ -0,0 +1,19 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_SCENE_SPI_CANVAS_H_
++#define FLUTTER_RUNTIME_SPI_SCENE_SPI_CANVAS_H_
++
++#include "flutter/runtime_spi/include/flutter_scene.h"
++
++namespace flutter {
++
++class DisplayList;
++
++const FlutterSpiSceneApi* SpiSceneApi();
++const DisplayList* SpiPictureDisplayListForTesting(FlutterSpiPicture* picture);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_SCENE_SPI_CANVAS_H_
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas_parity_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_canvas_parity_unittests.cc
+new file mode 100644
+index 00000000000..b6dd40b7214
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas_parity_unittests.cc
+@@ -0,0 +1,143 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/scene/spi_canvas.h"
++
++#include <cmath>
++#include <memory>
++
++#include "flutter/display_list/dl_builder.h"
++#include "flutter/runtime_spi/spi_runtime_backend.h"
++#include "flutter/runtime_spi/scene/spi_paint.h"
++#include "flutter/runtime_spi/testing/c_test_runtime.h"
++#include "flutter/testing/testing.h"
++
++namespace flutter::testing {
++namespace {
++
++constexpr FlutterSpiRect kRect = {
++    .left = 1.0f, .top = 2.0f, .right = 30.0f, .bottom = 40.0f};
++constexpr FlutterSpiPaint kPaint = {
++    .struct_size = sizeof(FlutterSpiPaint),
++    .color = {.red = 0.1f,
++              .green = 0.2f,
++              .blue = 0.3f,
++              .alpha = 0.4f,
++              .color_space = kFlutterSpiColorSpaceSRGB},
++    .blend_mode = kFlutterSpiBlendModeSrcOver,
++    .style = kFlutterSpiPaintStyleFill,
++    .stroke_width = 1.0f,
++    .stroke_cap = kFlutterSpiStrokeCapButt,
++    .stroke_join = kFlutterSpiStrokeJoinMiter,
++    .stroke_miter = 4.0f,
++    .anti_alias = true,
++    .invert_colors = false,
++};
++
++class SpiCanvasTest : public ::testing::Test {
++ protected:
++  void SetUp() override { engine_ = std::make_unique<FlutterSpiEngine>(); }
++
++  const FlutterSpiSceneApi* api() const { return SpiSceneApi(); }
++
++  FlutterSpiEngine* engine() const { return engine_.get(); }
++
++ private:
++  std::unique_ptr<FlutterSpiEngine> engine_;
++};
++
++TEST_F(SpiCanvasTest, AbiSequenceMatchesDisplayListBuilder) {
++  FlutterSpiPictureRecorder* recorder = nullptr;
++  ASSERT_EQ(api()->recorder_create(engine(), &kRect, &recorder), kFlutterSpiOk);
++  ASSERT_EQ(api()->canvas_save(recorder), kFlutterSpiOk);
++  ASSERT_EQ(api()->canvas_translate(recorder, 3.0f, 4.0f), kFlutterSpiOk);
++  ASSERT_EQ(api()->canvas_draw_rect(recorder, &kRect, &kPaint), kFlutterSpiOk);
++  ASSERT_EQ(api()->canvas_restore(recorder), kFlutterSpiOk);
++
++  FlutterSpiPicture* picture = nullptr;
++  ASSERT_EQ(api()->recorder_finish(recorder, &picture), kFlutterSpiOk);
++
++  DisplayListBuilder expected(DlRect::MakeLTRB(1, 2, 30, 40));
++  expected.Save();
++  expected.Translate(3.0f, 4.0f);
++  expected.DrawRect(DlRect::MakeLTRB(1, 2, 30, 40), ToDlPaint(kPaint));
++  expected.Restore();
++  const auto expected_list = expected.Build();
++
++  ASSERT_NE(SpiPictureDisplayListForTesting(picture), nullptr);
++  EXPECT_TRUE(SpiPictureDisplayListForTesting(picture)->Equals(expected_list));
++
++  ASSERT_EQ(api()->picture_release(picture), kFlutterSpiOk);
++  ASSERT_EQ(api()->recorder_release(recorder), kFlutterSpiInvalidHandle);
++}
++
++TEST_F(SpiCanvasTest, FinishConsumesRecorder) {
++  FlutterSpiPictureRecorder* recorder = nullptr;
++  ASSERT_EQ(api()->recorder_create(engine(), nullptr, &recorder), kFlutterSpiOk);
++  FlutterSpiPicture* picture = nullptr;
++  ASSERT_EQ(api()->recorder_finish(recorder, &picture), kFlutterSpiOk);
++  EXPECT_EQ(api()->canvas_save(recorder), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(api()->picture_release(picture), kFlutterSpiOk);
++}
++
++TEST_F(SpiCanvasTest, NonFiniteGeometryIsRejected) {
++  FlutterSpiPictureRecorder* recorder = nullptr;
++  ASSERT_EQ(api()->recorder_create(engine(), nullptr, &recorder), kFlutterSpiOk);
++  const FlutterSpiRect invalid_rect = {
++      .left = NAN, .top = 2.0f, .right = 30.0f, .bottom = 40.0f};
++  EXPECT_EQ(api()->canvas_draw_rect(recorder, &invalid_rect, &kPaint),
++            kFlutterSpiInvalidArgument);
++  FlutterSpiPicture* picture = nullptr;
++  ASSERT_EQ(api()->recorder_finish(recorder, &picture), kFlutterSpiOk);
++  EXPECT_EQ(api()->picture_release(picture), kFlutterSpiOk);
++}
++
++TEST_F(SpiCanvasTest, PictureOutlivesItsHandle) {
++  FlutterSpiPictureRecorder* source_recorder = nullptr;
++  ASSERT_EQ(api()->recorder_create(engine(), nullptr, &source_recorder),
++            kFlutterSpiOk);
++  ASSERT_EQ(api()->canvas_draw_rect(source_recorder, &kRect, &kPaint),
++            kFlutterSpiOk);
++  FlutterSpiPicture* picture = nullptr;
++  ASSERT_EQ(api()->recorder_finish(source_recorder, &picture), kFlutterSpiOk);
++
++  FlutterSpiPictureRecorder* target_recorder = nullptr;
++  ASSERT_EQ(api()->recorder_create(engine(), nullptr, &target_recorder),
++            kFlutterSpiOk);
++  ASSERT_EQ(api()->canvas_draw_picture(target_recorder, picture), kFlutterSpiOk);
++  ASSERT_EQ(api()->picture_release(picture), kFlutterSpiOk);
++  FlutterSpiPicture* target_picture = nullptr;
++  ASSERT_EQ(api()->recorder_finish(target_recorder, &target_picture),
++            kFlutterSpiOk);
++
++  DisplayListBuilder inner(DisplayListBuilder::kMaxCullRect);
++  inner.DrawRect(DlRect::MakeLTRB(1, 2, 30, 40), ToDlPaint(kPaint));
++  const auto expected_inner = inner.Build();
++
++  DisplayListBuilder expected(DisplayListBuilder::kMaxCullRect);
++  expected.DrawDisplayList(expected_inner, 1.0f);
++  const auto expected_list = expected.Build();
++  ASSERT_NE(SpiPictureDisplayListForTesting(target_picture), nullptr);
++  EXPECT_TRUE(
++      SpiPictureDisplayListForTesting(target_picture)->Equals(expected_list));
++  EXPECT_EQ(api()->picture_release(target_picture), kFlutterSpiOk);
++}
++
++TEST_F(SpiCanvasTest, SaveCountMatchesBuilder) {
++  FlutterSpiPictureRecorder* recorder = nullptr;
++  ASSERT_EQ(api()->recorder_create(engine(), nullptr, &recorder), kFlutterSpiOk);
++  int32_t count = 0;
++  ASSERT_EQ(api()->canvas_get_save_count(recorder, &count), kFlutterSpiOk);
++  EXPECT_EQ(count, 1);
++  ASSERT_EQ(api()->canvas_save(recorder), kFlutterSpiOk);
++  ASSERT_EQ(api()->canvas_get_save_count(recorder, &count), kFlutterSpiOk);
++  EXPECT_EQ(count, 2);
++  ASSERT_EQ(api()->canvas_restore_to_count(recorder, 1), kFlutterSpiOk);
++  ASSERT_EQ(api()->canvas_get_save_count(recorder, &count), kFlutterSpiOk);
++  EXPECT_EQ(count, 1);
++  EXPECT_EQ(api()->recorder_release(recorder), kFlutterSpiOk);
++}
++
++}  // namespace
++}  // namespace flutter::testing
