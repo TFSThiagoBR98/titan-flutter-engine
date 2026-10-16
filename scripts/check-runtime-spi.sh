@@ -43,7 +43,19 @@ ninja=${TITAN_NINJA:-$TITAN_WORK_DIR/depot_tools/ninja}
 run_engine_tests=${TITAN_RUN_ENGINE_TESTS:-$repository_root/scripts/run-engine-tests.sh}
 engine_source="$TITAN_WORK_DIR/flutter/engine/src"
 output_directory="$engine_source/out/host_debug"
+no_unittests_output_directory="$engine_source/out/host_debug_no_unittests"
 args_file="$output_directory/args.gn"
+
+mkdir -p "$output_directory" "$no_unittests_output_directory"
+exec {build_lock_fd}>"$output_directory/.titan-build.lock"
+if ! flock -n "$build_lock_fd"; then
+  die "another build is running in $output_directory"
+fi
+exec {no_unittests_build_lock_fd}>"$no_unittests_output_directory/.titan-build.lock"
+if ! flock -n "$no_unittests_build_lock_fd"; then
+  die "another build is running in $no_unittests_output_directory"
+fi
+export TITAN_BUILD_LOCK_HELD=1
 
 export CCACHE_DIR="$TITAN_WORK_DIR/ccache"
 export VPYTHON_VIRTUALENV_ROOT="$TITAN_WORK_DIR/vpython-root"

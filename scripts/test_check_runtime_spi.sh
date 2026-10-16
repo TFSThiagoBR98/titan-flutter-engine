@@ -49,6 +49,10 @@ cat > "$fake_bin/build-engine" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
+[[ "${TITAN_BUILD_LOCK_HELD:-}" == 1 ]] || {
+  printf 'build-engine was not called under the check lock\n' >&2
+  exit 91
+}
 printf '%s\n' "$@" >> "$BUILD_LOG"
 mkdir -p "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug"
 printf '%s\n' "$FAKE_ARGS_GN" > \
@@ -101,6 +105,27 @@ run_check() {
   FAKE_ARGS_GN="${FAKE_ARGS_GN:-enable_unittests = true}" \
   FAKE_NINJA_STATUS="${FAKE_NINJA_STATUS:-0}" \
     "$check_script" "$@"
+}
+
+start_lock_holder() {
+  local lock_path=$1 ready_path=$2
+  (
+    exec 9>"$lock_path"
+    flock -n 9
+    : > "$ready_path"
+    sleep 30
+  ) &
+  lock_holder_pid=$!
+  for _ in {1..100}; do
+    [[ -f "$ready_path" ]] && return 0
+    sleep 0.01
+  done
+  fail 'the test lock holder did not become ready'
+}
+
+stop_lock_holder() {
+  kill "$lock_holder_pid" 2>/dev/null || true
+  wait "$lock_holder_pid" 2>/dev/null || true
 }
 
 if run_check >"$output_log" 2>&1; then
@@ -166,5 +191,39 @@ rm -f "$runner_log" "$order_log"
 run_check --skip-tests >"$output_log" 2>&1
 [[ ! -e "$runner_log" ]] || fail 'runner ran with --skip-tests'
 assert_not_exact_line "$output_log" 'tests: ok' 'skip-tests summary'
+
+lock_directory="$work_directory/flutter/engine/src/out/host_debug"
+lock_path="$lock_directory/.titan-build.lock"
+lock_ready="$temporary_directory/check-lock-ready"
+mkdir -p "$lock_directory"
+start_lock_holder "$lock_path" "$lock_ready"
+: > "$build_log"
+rm -f "$ninja_log" "$runner_log"
+if timeout 10 env \
+  TITAN_WORK_DIR="$work_directory" \
+  TITAN_BUILD_ENGINE="$fake_bin/build-engine" \
+  TITAN_NINJA="$fake_bin/ninja" \
+  TITAN_RUN_ENGINE_TESTS="$fake_bin/run-engine-tests" \
+  BUILD_LOG="$build_log" \
+  NINJA_LOG="$ninja_log" \
+  NINJA_ENVIRONMENT="$ninja_environment" \
+  RUNNER_LOG="$runner_log" \
+  ORDER_LOG="$order_log" \
+  FAKE_NO_UNIT_BUILD_STATUS=0 \
+  FAKE_ARGS_GN='enable_unittests = true' \
+  FAKE_NINJA_STATUS=0 \
+  "$check_script" >"$output_log" 2>&1; then
+  stop_lock_holder
+  fail 'check should refuse a concurrent build'
+else
+  status=$?
+fi
+stop_lock_holder
+[[ "$status" -ne 0 ]] || fail 'concurrent check returned success'
+assert_contains "$output_log" "another build is running in $lock_directory" \
+  'concurrent check diagnostic'
+[[ ! -s "$build_log" ]] || fail 'build-engine ran while the check lock was held'
+[[ ! -e "$ninja_log" ]] || fail 'ninja ran while the check lock was held'
+[[ ! -e "$runner_log" ]] || fail 'runner ran while the check lock was held'
 
 printf 'test_check_runtime_spi.sh: ok\n'

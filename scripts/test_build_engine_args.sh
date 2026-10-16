@@ -152,6 +152,28 @@ run_engine() {
     "$standalone_repository/scripts/build-engine.sh" "$@"
 }
 
+start_lock_holder() {
+  local lock_path=$1 ready_path=$2
+  (
+    exec 9>"$lock_path"
+    flock -n 9
+    : > "$ready_path"
+    sleep 30
+  ) &
+  lock_holder_pid=$!
+  for _ in {1..100}; do
+    [[ -f "$ready_path" ]] && return 0
+    sleep 0.01
+  done
+  printf 'the test lock holder did not become ready\n' >&2
+  exit 1
+}
+
+stop_lock_holder() {
+  kill "$lock_holder_pid" 2>/dev/null || true
+  wait "$lock_holder_pid" 2>/dev/null || true
+}
+
 bootstrap_repository="$temporary_directory/bootstrap-repository"
 bootstrap_work="$temporary_directory/bootstrap-work"
 bootstrap_remote="$temporary_directory/bootstrap-remote"
@@ -266,6 +288,48 @@ fi
 }
 [[ "$(git -C "$bootstrap_flutter" rev-parse HEAD)" == "$bootstrap_commit" ]] || {
   printf 'new Flutter checkout is not at flutter_commit\n' >&2
+  exit 1
+}
+
+lock_directory="$flutter_directory/engine/src/out/host_debug"
+lock_path="$lock_directory/.titan-build.lock"
+lock_ready="$temporary_directory/build-engine-lock-ready"
+mkdir -p "$lock_directory"
+start_lock_holder "$lock_path" "$lock_ready"
+: > "$gn_log"
+: > "$ninja_log"
+if timeout 10 env \
+  TITAN_GN="$fake_gn" \
+  TITAN_GN_LOG="$gn_log" \
+  TITAN_PYTHON_LOG="$python_log" \
+  TITAN_REAL_PYTHON="$real_python" \
+  TITAN_HOST_SYSROOT="$host_sysroot" \
+  TITAN_NINJA_LOG="$ninja_log" \
+  TITAN_WORK_DIR="$temporary_directory/work" \
+  TITAN_BUNDLE_DIR="$temporary_directory/bundle" \
+  FVM_ROOT="$temporary_directory/fvm" \
+  PATH="$fake_bin:$PATH" \
+  "$standalone_repository/scripts/build-engine.sh" --ninja-target first/target \
+  >"$temporary_directory/build-engine-lock.out" 2>&1; then
+  stop_lock_holder
+  printf 'build-engine should refuse a concurrent build\n' >&2
+  exit 1
+else
+  status=$?
+fi
+stop_lock_holder
+[[ "$status" -ne 0 ]] || {
+  printf 'concurrent build-engine returned success\n' >&2
+  exit 1
+}
+assert_log_contains "$temporary_directory/build-engine-lock.out" \
+  "another build is running in $lock_directory"
+[[ ! -s "$gn_log" ]] || {
+  printf 'GN ran while the build lock was held\n' >&2
+  exit 1
+}
+[[ ! -s "$ninja_log" ]] || {
+  printf 'ninja ran while the build lock was held\n' >&2
   exit 1
 }
 

@@ -47,6 +47,12 @@ O checker também executa uma segunda configuração GN sem `--unittests`, em um
 diretório de saída separado, para detectar dependências indevidas de alvos de
 teste antes de iniciar o ninja.
 
+Cada diretório de saída é protegido por `<out_dir>/.titan-build.lock`. O
+checker mantém as travas dos dois diretórios durante GN, Ninja e os testes; o
+`build-engine.sh` chamado por ele recebe essa trava por ambiente. Uma segunda
+execução no mesmo diretório termina imediatamente com o diagnóstico
+`another build is running in <out_dir>`.
+
 Com um build que tenha os testes habilitados, também é possível executar os
 gtests diretamente a partir do diretório de saída:
 

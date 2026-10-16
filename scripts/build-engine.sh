@@ -620,6 +620,15 @@ if [[ "$mode" != release ]]; then
   gn_args+=(--no-lto)
 fi
 
+out_dir="$engine_src/out/$out_name"
+if [[ "${TITAN_BUILD_LOCK_HELD:-}" != 1 ]]; then
+  mkdir -p "$out_dir"
+  exec {build_lock_fd}>"$out_dir/.titan-build.lock"
+  if ! flock -n "$build_lock_fd"; then
+    die "another build is running in $out_dir"
+  fi
+fi
+
 printf 'configuring Flutter Engine: mode=%s cpu=%s\n' "$mode" "$cpu"
 "${TITAN_GN:-$engine_src/flutter/tools/gn}" --target-dir "$out_name" "${gn_args[@]}"
 
@@ -628,7 +637,6 @@ if ((gn_only)); then
   exit 0
 fi
 
-out_dir="$engine_src/out/$out_name"
 printf 'building Flutter Engine in %s\n' "$out_dir"
 if ((${#ninja_targets[@]} > 0)); then
   run_within_cpu_budget ninja -C "$out_dir" -j "$jobs" -l "$load" "${ninja_targets[@]}"
