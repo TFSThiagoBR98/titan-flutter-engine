@@ -20,6 +20,7 @@ Options:
   --libc glibc|musl                 Target libc (default: glibc)
   --target-sysroot <dir>             Target sysroot for cross-compilation
   --gn-only                          Configure GN without running Ninja
+  --unittests                        Enable engine unit tests and benchmarks
   --jobs N                           Ninja parallel jobs (default: TITAN_JOBS, half the cores)
   --load N                           Ninja load limit (default: host CPU count)
   --out <dir>                        Bundle output directory
@@ -117,6 +118,7 @@ out_dir_arg=
 zip_output=0
 work_dir_arg=
 gn_only=0
+enable_unittests=0
 jobs_arg=
 load_arg=
 gtk_shell=0
@@ -173,6 +175,10 @@ while (($# > 0)); do
       ;;
     --gn-only)
       gn_only=1
+      shift
+      ;;
+    --unittests)
+      enable_unittests=1
       shift
       ;;
     --jobs)
@@ -549,10 +555,12 @@ gn_args=(
   --no-goma
   --no-build-glfw-shell
   --no-build-embedder-examples
-  --no-enable-unittests
   --gn-args
   "build_linux_gtk_shell=$([[ "$gtk_shell" == 1 ]] && printf true || printf false) titan_target_libc=\"$libc\""
 )
+if ((!enable_unittests)); then
+  gn_args+=(--no-enable-unittests)
+fi
 if ((enable_fontconfig)); then
   gn_args+=(--enable-fontconfig)
 fi

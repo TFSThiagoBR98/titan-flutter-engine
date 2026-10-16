@@ -243,6 +243,51 @@ assert_log_not_contains() {
   fi
 }
 
+runtime_test_repository="$temporary_directory/runtime-test-repository"
+runtime_test_out="$runtime_test_repository/out"
+mkdir -p "$runtime_test_repository/scripts" "$runtime_test_repository/tests/runtime-spi" "$runtime_test_out"
+cp "$repository_root/scripts/run-engine-tests.sh" "$runtime_test_repository/scripts/run-engine-tests.sh"
+chmod +x "$runtime_test_repository/scripts/run-engine-tests.sh"
+cat > "$runtime_test_repository/tests/runtime-spi/gtest-targets.txt" <<'EOF'
+fake-suite:pass_binary
+fake-suite:fail_binary
+EOF
+cat > "$runtime_test_out/pass_binary" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cat > test_detail.json <<'JSON'
+{"testsuites":[{"name":"GoodSuite","testsuite":[{"name":"Passes","result":"COMPLETED","status":"RUN","failures":[]}]}]}
+JSON
+EOF
+cat > "$runtime_test_out/fail_binary" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cat > test_detail.json <<'JSON'
+{"testsuites":[{"name":"FailSuite","testsuite":[{"name":"Fails","result":"COMPLETED","status":"RUN","failures":[{"failure":"expected failure"}]}]}]}
+JSON
+exit 1
+EOF
+chmod +x "$runtime_test_out/pass_binary" "$runtime_test_out/fail_binary"
+
+runtime_test_failure="$temporary_directory/runtime-test-failure.log"
+if (
+  cd "$runtime_test_repository"
+  timeout 600 scripts/run-engine-tests.sh "$runtime_test_out"
+) >"$runtime_test_failure" 2>&1; then
+  printf 'run-engine-tests accepted a failing test without a baseline\n' >&2
+  exit 1
+fi
+assert_log_contains "$runtime_test_failure" 'PASS GoodSuite.Passes'
+assert_log_contains "$runtime_test_failure" 'FAIL FailSuite.Fails'
+printf '%s\n' 'FailSuite.Fails' > "$temporary_directory/runtime-baseline.txt"
+runtime_test_baseline="$temporary_directory/runtime-test-baseline.log"
+(
+  cd "$runtime_test_repository"
+  timeout 600 scripts/run-engine-tests.sh "$runtime_test_out" \
+    --baseline "$temporary_directory/runtime-baseline.txt"
+) >"$runtime_test_baseline" 2>&1
+assert_log_contains "$runtime_test_baseline" 'FAIL FailSuite.Fails'
+
 run_bootstrap_engine --gn-only
 [[ "$(<"$gclient_log")" == "$bootstrap_flutter" ]] || {
   printf 'gclient did not run at the root of the Flutter checkout: %s\n' "$(<"$gclient_log")" >&2
@@ -276,6 +321,14 @@ assert_log_contains "$gn_log" '--target-dir host_debug'
 assert_log_contains "$gn_log" 'build_linux_gtk_shell=false titan_target_libc="glibc"'
 assert_log_not_contains "$gn_log" '--enable-fontconfig'
 assert_log_not_contains "$python_log" 'install-sysroot.py --arch=i386'
+
+: > "$gn_log"
+run_engine --gn-only --unittests
+assert_log_not_contains "$gn_log" '--no-enable-unittests'
+
+: > "$gn_log"
+run_engine --gn-only
+assert_log_contains "$gn_log" '--no-enable-unittests'
 [[ "$(<"$flutter_directory/README")" == 'patched Flutter checkout' ]] || {
   printf 'Flutter repository patch was not applied\n' >&2
   exit 1
