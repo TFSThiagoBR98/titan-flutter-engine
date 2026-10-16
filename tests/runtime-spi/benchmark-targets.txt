@@ -1,2 +1,3 @@
+flutter/runtime_spi:runtime_spi_benchmarks
 flutter/shell/common:shell_benchmarks
 flutter/lib/ui:ui_benchmarks

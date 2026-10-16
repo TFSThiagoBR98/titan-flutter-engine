@@ -1,0 +1,256 @@
+# Why: the conformance runtime and benchmark target cover scene construction
+through the SPI frame boundary
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 603c89ed8f3..a27e43c58c7 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -122,6 +122,16 @@ if (enable_unittests) {
+     sources = [ "testing/c_test_runtime.c" ]
+     deps = [ ":runtime_spi_c_api" ]
+   }
++
++  executable("runtime_spi_benchmarks") {
++    testonly = true
++    sources = [ "spi_scene_benchmarks.cc" ]
++    deps = [
++      ":scene",
++      ":spi_backend",
++      "//flutter/benchmarking",
++    ]
++  }
+ }
+ 
+ source_set("dart_runtime_extensions") {
+diff --git a/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+index 5869e6726a1..2573476ad8a 100644
+--- a/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+@@ -18,6 +18,7 @@
+ #include "flutter/lib/ui/window/pointer_data_packet.h"
+ #include "flutter/runtime/dart_vm.h"
+ #include "flutter/runtime_spi/testing/c_test_runtime.h"
++#include "flutter/runtime_spi/scene/spi_scene_trace.h"
+ #include "flutter/shell/common/platform_message_handler.h"
+ #include "flutter/shell/common/platform_view.h"
+ #include "flutter/shell/common/shell_test.h"
+@@ -230,6 +231,35 @@ TEST_F(SpiConformance, FrameRoundTrip) {
+   });
+ }
+ 
++TEST_F(SpiConformance, SceneBuilderFrameRoundTrip) {
++  runtime_->draw_scene_on_begin_frame = true;
++  StartShell();
++
++  PumpOneFrame(shell_.get());
++  PostSync(shell_->GetTaskRunners().GetRasterTaskRunner(), [&] {
++    auto* layer_tree =
++        shell_->GetRasterizer()->GetLastLayerTree(kImplicitViewId);
++    ASSERT_NE(layer_tree, nullptr);
++    EXPECT_EQ(
++        SceneTrace(*layer_tree),
++        "scene 1x1\n"
++        "container\n"
++        "  transform [1 0 0 0 0 1 0 0 0 0 1 0 3 4 0 1]\n"
++        "    opacity 128 5 6\n"
++        "      picture 1 2\n"
++        "        drawRect 1 2 3 4\n"
++        "        drawCircle 5 6 2\n");
++  });
++}
++
++TEST_F(SpiConformance, SceneApiAnnouncedByCapability) {
++  StartShell();
++
++  ASSERT_NE(runtime_->engine_api, nullptr);
++  ASSERT_NE(runtime_->engine_api->scene, nullptr);
++  EXPECT_NE(runtime_->engine_api->capabilities & kFlutterSpiCapScene, 0u);
++}
++
+ TEST_F(SpiConformance, PointerEventsReachRuntime) {
+   StartShell();
+   auto packet = std::make_unique<PointerDataPacket>(1);
+diff --git a/engine/src/flutter/runtime_spi/spi_scene_benchmarks.cc b/engine/src/flutter/runtime_spi/spi_scene_benchmarks.cc
+new file mode 100644
+index 00000000000..ef4ed04c335
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/spi_scene_benchmarks.cc
+@@ -0,0 +1,62 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/benchmarking/benchmarking.h"
++
++#include "flutter/display_list/dl_builder.h"
++#include "flutter/runtime_spi/scene/spi_canvas.h"
++
++namespace flutter {
++namespace {
++
++constexpr int kDrawCount = 10000;
++const DlRect kRect = DlRect::MakeLTRB(1.0f, 2.0f, 3.0f, 4.0f);
++
++FlutterSpiEngine* BenchmarkEngine() {
++  return reinterpret_cast<FlutterSpiEngine*>(1);
++}
++
++void BM_SpiCanvasDrawRect(benchmark::State& state) {
++  const FlutterSpiSceneApi* api = SpiSceneApi();
++  const FlutterSpiRect rect = {
++      .left = kRect.GetLeft(),
++      .top = kRect.GetTop(),
++      .right = kRect.GetRight(),
++      .bottom = kRect.GetBottom(),
++  };
++  const FlutterSpiPaint paint = {.struct_size = sizeof(FlutterSpiPaint)};
++  FlutterSpiPictureRecorder* recorder = nullptr;
++
++  while (state.KeepRunning()) {
++    const FlutterSpiResult create_result =
++        api->recorder_create(BenchmarkEngine(), nullptr, &recorder);
++    if (create_result != kFlutterSpiOk) {
++      state.SkipWithError("could not create the SPI picture recorder");
++      return;
++    }
++    for (int index = 0; index < kDrawCount; ++index) {
++      const FlutterSpiResult result =
++          api->canvas_draw_rect(recorder, &rect, &paint);
++      benchmark::DoNotOptimize(result);
++    }
++    api->recorder_release(recorder);
++  }
++}
++
++void BM_DlBuilderDrawRect(benchmark::State& state) {
++  while (state.KeepRunning()) {
++    DisplayListBuilder builder(DisplayListBuilder::kMaxCullRect);
++    for (int index = 0; index < kDrawCount; ++index) {
++      builder.DrawRect(kRect, DlPaint());
++    }
++    benchmark::DoNotOptimize(builder.Build());
++  }
++}
++
++}  // namespace
++
++BENCHMARK(BM_SpiCanvasDrawRect);
++BENCHMARK(BM_DlBuilderDrawRect);
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.c b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+index 82267210128..49d32f01fb8 100644
+--- a/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+@@ -64,6 +64,10 @@ static void copy_pointer_events(CTestRuntime* runtime,
+   runtime->pointer_event_count = count;
+ }
+ 
++static void test_runtime_submit_drawn_scene(
++    CTestRuntime* runtime,
++    const FlutterSpiFrameInfo* frame_info);
++
+ static FlutterSpiResult test_runtime_start(void* user_data,
+                                            const FlutterSpiEngineApi* api,
+                                            FlutterSpiEngine* engine) {
+@@ -115,11 +119,17 @@ static void test_runtime_begin_frame(void* user_data,
+     runtime->last_frame_info = *frame_info;
+     runtime->has_last_frame_info = true;
+   }
+-  if (!runtime->submit_on_begin_frame || frame_info == NULL ||
++  if ((!runtime->submit_on_begin_frame &&
++       !runtime->draw_scene_on_begin_frame) ||
++      frame_info == NULL ||
+       !runtime->has_last_view_metrics || runtime->engine_api == NULL ||
+       runtime->engine == NULL) {
+     return;
+   }
++  if (runtime->draw_scene_on_begin_frame) {
++    test_runtime_submit_drawn_scene(runtime, frame_info);
++    return;
++  }
+   if (runtime->engine_api->scene_create_empty(
+           runtime->engine,
+           (int64_t)runtime->last_view_metrics.physical_width,
+@@ -240,6 +250,70 @@ static void test_runtime_notify_idle(void* user_data, int64_t deadline_ns) {
+   ((CTestRuntime*)user_data)->notify_idle_count++;
+ }
+ 
++static const FlutterSpiPaint k_scene_paint = {
++    .struct_size = sizeof(FlutterSpiPaint),
++    .color = {.alpha = 1.0f, .color_space = kFlutterSpiColorSpaceSRGB},
++    .blend_mode = kFlutterSpiBlendModeSrcOver,
++    .style = kFlutterSpiPaintStyleFill,
++    .anti_alias = true,
++};
++
++static bool create_scene_picture(const FlutterSpiSceneApi* api,
++                                FlutterSpiEngine* engine,
++                                FlutterSpiPicture** out_picture) {
++  FlutterSpiPictureRecorder* recorder = NULL;
++  const FlutterSpiRect rect = {
++      .left = 1.0f, .top = 2.0f, .right = 3.0f, .bottom = 4.0f};
++  const FlutterSpiPoint circle_center = {.x = 5.0f, .y = 6.0f};
++
++  if (api->recorder_create(engine, NULL, &recorder) != kFlutterSpiOk ||
++      api->canvas_draw_rect(recorder, &rect, &k_scene_paint) !=
++          kFlutterSpiOk ||
++      api->canvas_draw_circle(recorder, &circle_center, 2.0f, &k_scene_paint) !=
++          kFlutterSpiOk ||
++      api->recorder_finish(recorder, out_picture) != kFlutterSpiOk) {
++    if (recorder != NULL) {
++      api->recorder_release(recorder);
++    }
++    return false;
++  }
++  return true;
++}
++
++static void test_runtime_submit_drawn_scene(CTestRuntime* runtime,
++                                            const FlutterSpiFrameInfo* frame_info) {
++  const FlutterSpiSceneApi* api = runtime->engine_api->scene;
++  FlutterSpiPicture* picture = NULL;
++  FlutterSpiSceneBuilder* builder = NULL;
++  FlutterSpiScene* scene = NULL;
++
++  if (api == NULL ||
++      !create_scene_picture(api, runtime->engine, &picture) ||
++      api->scene_builder_create(runtime->engine, &builder) != kFlutterSpiOk ||
++      api->scene_push_offset(builder, 3.0f, 4.0f) != kFlutterSpiOk ||
++      api->scene_push_opacity(builder, 128, 5.0f, 6.0f) != kFlutterSpiOk ||
++      api->scene_add_picture(builder, 1.0f, 2.0f, picture, false, false) !=
++          kFlutterSpiOk ||
++      api->scene_build(builder,
++                       (int64_t)runtime->last_view_metrics.physical_width,
++                       (int64_t)runtime->last_view_metrics.physical_height,
++                       &scene) != kFlutterSpiOk) {
++    if (builder != NULL) {
++      api->scene_builder_release(builder);
++    }
++    if (picture != NULL) {
++      api->picture_release(picture);
++    }
++    return;
++  }
++
++  api->picture_release(picture);
++  runtime->engine_api->submit_frame(
++      runtime->engine, runtime->last_view_metrics.view_id,
++      frame_info->frame_token, scene,
++      runtime->last_view_metrics.device_pixel_ratio);
++}
++
+ CTestRuntime* c_test_runtime_create(void) {
+   return (CTestRuntime*)calloc(1, sizeof(CTestRuntime));
+ }
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.h b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+index a4273ffdad9..c5df03d6dd1 100644
+--- a/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+@@ -44,6 +44,7 @@ typedef struct CTestRuntime {
+ 
+   bool respond_to_messages;
+   bool submit_on_begin_frame;
++  bool draw_scene_on_begin_frame;
+   bool fail_start;
+   bool key_event_handled;
+ } CTestRuntime;
