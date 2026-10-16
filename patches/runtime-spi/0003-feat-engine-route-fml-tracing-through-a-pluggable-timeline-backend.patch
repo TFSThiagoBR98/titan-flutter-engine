@@ -1,0 +1,808 @@
+# Why: route fml tracing through a pluggable timeline backend
+diff --git a/engine/src/flutter/fml/BUILD.gn b/engine/src/flutter/fml/BUILD.gn
+index 85c6171dbd2..b555eacf708 100644
+--- a/engine/src/flutter/fml/BUILD.gn
++++ b/engine/src/flutter/fml/BUILD.gn
+@@ -360,6 +360,7 @@ if (enable_unittests) {
+       "task_runner_util_unittests.cc",
+       "task_source_unittests.cc",
+       "thread_unittests.cc",
++      "trace_event_unittests.cc",
+       "time/chrono_timestamp_provider.cc",
+       "time/chrono_timestamp_provider.h",
+       "time/time_delta_unittest.cc",
+diff --git a/engine/src/flutter/fml/trace_event.cc b/engine/src/flutter/fml/trace_event.cc
+index 28e7105f0ae..a96b4d8c8a4 100644
+--- a/engine/src/flutter/fml/trace_event.cc
++++ b/engine/src/flutter/fml/trace_event.cc
+@@ -24,7 +24,8 @@ int64_t DefaultMicrosSource() {
+ }
+ 
+ AsciiTrie gAllowlist;
+-std::atomic<TimelineEventHandler> gTimelineEventHandler;
++std::atomic<const TimelineBackend*> gTimelineBackend = nullptr;
++TimelineBackend gLegacyTimelineBackend = {};
+ std::atomic<TimelineMicrosSource> gTimelineMicrosSource = DefaultMicrosSource;
+ 
+ inline void FlutterTimelineEvent(const char* label,
+@@ -32,15 +33,16 @@ inline void FlutterTimelineEvent(const char* label,
+                                  int64_t timestamp1_or_async_id,
+                                  intptr_t flow_id_count,
+                                  const int64_t* flow_ids,
+-                                 Dart_Timeline_Event_Type type,
++                                 TimelineEventType type,
+                                  intptr_t argument_count,
+                                  const char** argument_names,
+                                  const char** argument_values) {
+-  TimelineEventHandler handler =
+-      gTimelineEventHandler.load(std::memory_order_relaxed);
+-  if (handler && gAllowlist.Query(label)) {
+-    handler(label, timestamp0, timestamp1_or_async_id, flow_id_count, flow_ids,
+-            type, argument_count, argument_names, argument_values);
++  const TimelineBackend* backend =
++      gTimelineBackend.load(std::memory_order_relaxed);
++  if (backend && backend->record && gAllowlist.Query(label)) {
++    backend->record(label, timestamp0, timestamp1_or_async_id, flow_id_count,
++                    flow_ids, type, argument_count, argument_names,
++                    argument_values);
+   }
+ }
+ }  // namespace
+@@ -49,13 +51,21 @@ void TraceSetAllowlist(const std::vector<std::string>& allowlist) {
+   gAllowlist.Fill(allowlist);
+ }
+ 
++void SetTimelineBackend(const TimelineBackend* backend) {
++  gTimelineBackend.store(backend, std::memory_order_relaxed);
++}
++
++bool HasTimelineBackend() {
++  return gTimelineBackend.load(std::memory_order_relaxed) != nullptr;
++}
++
+ void TraceSetTimelineEventHandler(TimelineEventHandler handler) {
+-  gTimelineEventHandler = handler;
++  gLegacyTimelineBackend.record = handler;
++  SetTimelineBackend(handler ? &gLegacyTimelineBackend : nullptr);
+ }
+ 
+ bool TraceHasTimelineEventHandler() {
+-  return static_cast<bool>(
+-      gTimelineEventHandler.load(std::memory_order_relaxed));
++  return HasTimelineBackend();
+ }
+ 
+ int64_t TraceGetTimelineMicros() {
+@@ -77,7 +87,7 @@ void TraceTimelineEvent(TraceArg category_group,
+                         TraceIDArg identifier,
+                         size_t flow_id_count,
+                         const uint64_t* flow_ids,
+-                        Dart_Timeline_Event_Type type,
++                        TimelineEventType type,
+                         const std::vector<const char*>& c_names,
+                         const std::vector<std::string>& values) {
+   const auto argument_count = std::min(c_names.size(), values.size());
+@@ -107,7 +117,7 @@ void TraceTimelineEvent(TraceArg category_group,
+                         TraceIDArg identifier,
+                         size_t flow_id_count,
+                         const uint64_t* flow_ids,
+-                        Dart_Timeline_Event_Type type,
++                        TimelineEventType type,
+                         const std::vector<const char*>& c_names,
+                         const std::vector<std::string>& values) {
+   TraceTimelineEvent(category_group,                  // group
+@@ -131,7 +141,7 @@ void TraceEvent0(TraceArg category_group,
+                        0,              // timestamp1_or_async_id
+                        flow_id_count,  // flow_id_count
+                        reinterpret_cast<const int64_t*>(flow_ids),  // flow_ids
+-                       Dart_Timeline_Event_Begin,  // event type
++                       TimelineEventType::Begin,  // event type
+                        0,                          // argument_count
+                        nullptr,                    // argument_names
+                        nullptr                     // argument_values
+@@ -151,7 +161,7 @@ void TraceEvent1(TraceArg category_group,
+                        0,              // timestamp1_or_async_id
+                        flow_id_count,  // flow_id_count
+                        reinterpret_cast<const int64_t*>(flow_ids),  // flow_ids
+-                       Dart_Timeline_Event_Begin,  // event type
++                       TimelineEventType::Begin,  // event type
+                        1,                          // argument_count
+                        arg_names,                  // argument_names
+                        arg_values                  // argument_values
+@@ -173,7 +183,7 @@ void TraceEvent2(TraceArg category_group,
+                        0,              // timestamp1_or_async_id
+                        flow_id_count,  // flow_id_count
+                        reinterpret_cast<const int64_t*>(flow_ids),  // flow_ids
+-                       Dart_Timeline_Event_Begin,  // event type
++                       TimelineEventType::Begin,  // event type
+                        2,                          // argument_count
+                        arg_names,                  // argument_names
+                        arg_values                  // argument_values
+@@ -186,7 +196,7 @@ void TraceEventEnd(TraceArg name) {
+                        0,                        // timestamp1_or_async_id
+                        0,                        // flow_id_count
+                        nullptr,                  // flow_ids
+-                       Dart_Timeline_Event_End,  // event type
++                       TimelineEventType::End,  // event type
+                        0,                        // argument_count
+                        nullptr,                  // argument_names
+                        nullptr                   // argument_values
+@@ -203,7 +213,7 @@ void TraceEventAsyncBegin0(TraceArg category_group,
+                        id,             // timestamp1_or_async_id
+                        flow_id_count,  // flow_id_count
+                        reinterpret_cast<const int64_t*>(flow_ids),  // flow_ids
+-                       Dart_Timeline_Event_Async_Begin,  // event type
++                       TimelineEventType::Async_Begin,  // event type
+                        0,                                // argument_count
+                        nullptr,                          // argument_names
+                        nullptr                           // argument_values
+@@ -218,7 +228,7 @@ void TraceEventAsyncEnd0(TraceArg category_group,
+                        id,                             // timestamp1_or_async_id
+                        0,                              // flow_id_count
+                        nullptr,                        // flow_ids
+-                       Dart_Timeline_Event_Async_End,  // event type
++                       TimelineEventType::Async_End,  // event type
+                        0,                              // argument_count
+                        nullptr,                        // argument_names
+                        nullptr                         // argument_values
+@@ -239,7 +249,7 @@ void TraceEventAsyncBegin1(TraceArg category_group,
+                        id,             // timestamp1_or_async_id
+                        flow_id_count,  // flow_id_count
+                        reinterpret_cast<const int64_t*>(flow_ids),  // flow_ids
+-                       Dart_Timeline_Event_Async_Begin,  // event type
++                       TimelineEventType::Async_Begin,  // event type
+                        1,                                // argument_count
+                        arg_names,                        // argument_names
+                        arg_values                        // argument_values
+@@ -258,7 +268,7 @@ void TraceEventAsyncEnd1(TraceArg category_group,
+                        id,                             // timestamp1_or_async_id
+                        0,                              // flow_id_count
+                        nullptr,                        // flow_ids
+-                       Dart_Timeline_Event_Async_End,  // event type
++                       TimelineEventType::Async_End,  // event type
+                        1,                              // argument_count
+                        arg_names,                      // argument_names
+                        arg_values                      // argument_values
+@@ -274,7 +284,7 @@ void TraceEventInstant0(TraceArg category_group,
+                        0,              // timestamp1_or_async_id
+                        flow_id_count,  // flow_id_count
+                        reinterpret_cast<const int64_t*>(flow_ids),  // flow_ids
+-                       Dart_Timeline_Event_Instant,  // event type
++                       TimelineEventType::Instant,  // event type
+                        0,                            // argument_count
+                        nullptr,                      // argument_names
+                        nullptr                       // argument_values
+@@ -294,7 +304,7 @@ void TraceEventInstant1(TraceArg category_group,
+                        0,              // timestamp1_or_async_id
+                        flow_id_count,  // flow_id_count
+                        reinterpret_cast<const int64_t*>(flow_ids),  // flow_ids
+-                       Dart_Timeline_Event_Instant,  // event type
++                       TimelineEventType::Instant,  // event type
+                        1,                            // argument_count
+                        arg_names,                    // argument_names
+                        arg_values                    // argument_values
+@@ -316,7 +326,7 @@ void TraceEventInstant2(TraceArg category_group,
+                        0,              // timestamp1_or_async_id
+                        flow_id_count,  // flow_id_count
+                        reinterpret_cast<const int64_t*>(flow_ids),  // flow_ids
+-                       Dart_Timeline_Event_Instant,  // event type
++                       TimelineEventType::Instant,  // event type
+                        2,                            // argument_count
+                        arg_names,                    // argument_names
+                        arg_values                    // argument_values
+@@ -331,7 +341,7 @@ void TraceEventFlowBegin0(TraceArg category_group,
+                        id,       // timestamp1_or_async_id
+                        0,        // flow_id_count
+                        nullptr,  // flow_ids
+-                       Dart_Timeline_Event_Flow_Begin,  // event type
++                       TimelineEventType::Flow_Begin,  // event type
+                        0,                               // argument_count
+                        nullptr,                         // argument_names
+                        nullptr                          // argument_values
+@@ -346,7 +356,7 @@ void TraceEventFlowStep0(TraceArg category_group,
+                        id,                             // timestamp1_or_async_id
+                        0,                              // flow_id_count
+                        nullptr,                        // flow_ids
+-                       Dart_Timeline_Event_Flow_Step,  // event type
++                       TimelineEventType::Flow_Step,  // event type
+                        0,                              // argument_count
+                        nullptr,                        // argument_names
+                        nullptr                         // argument_values
+@@ -359,7 +369,7 @@ void TraceEventFlowEnd0(TraceArg category_group, TraceArg name, TraceIDArg id) {
+                        id,                            // timestamp1_or_async_id
+                        0,                             // flow_id_count
+                        nullptr,                       // flow_ids
+-                       Dart_Timeline_Event_Flow_End,  // event type
++                       TimelineEventType::Flow_End,  // event type
+                        0,                             // argument_count
+                        nullptr,                       // argument_names
+                        nullptr                        // argument_values
+@@ -370,6 +380,12 @@ void TraceEventFlowEnd0(TraceArg category_group, TraceArg name, TraceIDArg id) {
+ 
+ void TraceSetAllowlist(const std::vector<std::string>& allowlist) {}
+ 
++void SetTimelineBackend(const TimelineBackend* backend) {}
++
++bool HasTimelineBackend() {
++  return false;
++}
++
+ void TraceSetTimelineEventHandler(TimelineEventHandler handler) {}
+ 
+ bool TraceHasTimelineEventHandler() {
+@@ -392,7 +408,7 @@ void TraceTimelineEvent(TraceArg category_group,
+                         TraceIDArg identifier,
+                         size_t flow_id_count,
+                         const uint64_t* flow_ids,
+-                        Dart_Timeline_Event_Type type,
++                        TimelineEventType type,
+                         const std::vector<const char*>& c_names,
+                         const std::vector<std::string>& values) {}
+ 
+@@ -401,7 +417,7 @@ void TraceTimelineEvent(TraceArg category_group,
+                         TraceIDArg identifier,
+                         size_t flow_id_count,
+                         const uint64_t* flow_ids,
+-                        Dart_Timeline_Event_Type type,
++                        TimelineEventType type,
+                         const std::vector<const char*>& c_names,
+                         const std::vector<std::string>& values) {}
+ 
+diff --git a/engine/src/flutter/fml/trace_event.h b/engine/src/flutter/fml/trace_event.h
+index a6a5a29823f..5d67ee858a6 100644
+--- a/engine/src/flutter/fml/trace_event.h
++++ b/engine/src/flutter/fml/trace_event.h
+@@ -61,7 +61,6 @@
+ 
+ #include "flutter/fml/macros.h"
+ #include "flutter/fml/time/time_point.h"
+-#include "third_party/dart/runtime/include/dart_tools_api.h"
+ 
+ #if (FLUTTER_RELEASE && !defined(OS_FUCHSIA) && !defined(FML_OS_ANDROID))
+ #define FLUTTER_TIMELINE_ENABLED 0
+@@ -212,20 +211,41 @@ namespace tracing {
+ using TraceArg = const char*;
+ using TraceIDArg = int64_t;
+ 
+-void TraceSetAllowlist(const std::vector<std::string>& allowlist);
++enum class TimelineEventType : int {
++  Begin = 0,
++  End = 1,
++  Instant = 2,
++  Async_Begin = 4,
++  Async_End = 5,
++  Async_Instant = 6,
++  Counter = 7,
++  Flow_Begin = 8,
++  Flow_Step = 9,
++  Flow_End = 10,
++};
++
++struct TimelineBackend {
++  void (*record)(const char* label,
++                 int64_t timestamp0,
++                 int64_t timestamp1_or_id,
++                 intptr_t flow_id_count,
++                 const int64_t* flow_ids,
++                 TimelineEventType type,
++                 intptr_t argument_count,
++                 const char** argument_names,
++                 const char** argument_values);
++};
+ 
+-typedef void (*TimelineEventHandler)(const char*,
+-                                     int64_t,
+-                                     int64_t,
+-                                     intptr_t,
+-                                     const int64_t*,
+-                                     Dart_Timeline_Event_Type,
+-                                     intptr_t,
+-                                     const char**,
+-                                     const char**);
++void TraceSetAllowlist(const std::vector<std::string>& allowlist);
+ 
+ using TimelineMicrosSource = int64_t (*)();
+ 
++void SetTimelineBackend(const TimelineBackend* backend);
++
++bool HasTimelineBackend();
++
++using TimelineEventHandler = decltype(TimelineBackend::record);
++
+ void TraceSetTimelineEventHandler(TimelineEventHandler handler);
+ 
+ bool TraceHasTimelineEventHandler();
+@@ -240,7 +260,7 @@ void TraceTimelineEvent(TraceArg category_group,
+                         TraceIDArg id,
+                         size_t flow_id_count,
+                         const uint64_t* flow_ids,
+-                        Dart_Timeline_Event_Type type,
++                        TimelineEventType type,
+                         const std::vector<const char*>& names,
+                         const std::vector<std::string>& values);
+ 
+@@ -249,7 +269,7 @@ void TraceTimelineEvent(TraceArg category_group,
+                         TraceIDArg id,
+                         size_t flow_id_count,
+                         const uint64_t* flow_ids,
+-                        Dart_Timeline_Event_Type type,
++                        TimelineEventType type,
+                         const std::vector<const char*>& names,
+                         const std::vector<std::string>& values);
+ 
+@@ -308,7 +328,7 @@ void TraceCounter(TraceArg category,
+ #if FLUTTER_TIMELINE_ENABLED
+   auto split = SplitArguments(args...);
+   TraceTimelineEvent(category, name, identifier, /*flow_id_count=*/0,
+-                     /*flow_ids=*/nullptr, Dart_Timeline_Event_Counter,
++                     /*flow_ids=*/nullptr, TimelineEventType::Counter,
+                      split.first, split.second);
+ #endif  // FLUTTER_TIMELINE_ENABLED
+ }
+@@ -330,7 +350,7 @@ void TraceEvent(TraceArg category,
+ #if FLUTTER_TIMELINE_ENABLED
+   auto split = SplitArguments(std::move(args)...);
+   TraceTimelineEvent(category, name, 0, flow_id_count, flow_ids,
+-                     Dart_Timeline_Event_Begin, split.first, split.second);
++                     TimelineEventType::Begin, split.first, split.second);
+ #endif  // FLUTTER_TIMELINE_ENABLED
+ }
+ 
+@@ -380,7 +400,7 @@ void TraceEventAsyncComplete(TraceArg category_group,
+                      identifier,                       // identifier
+                      0,                                // flow_id_count
+                      nullptr,                          // flow_ids
+-                     Dart_Timeline_Event_Async_Begin,  // type
++                     TimelineEventType::Async_Begin,  // type
+                      split.first,                      // names
+                      split.second                      // values
+   );
+@@ -391,7 +411,7 @@ void TraceEventAsyncComplete(TraceArg category_group,
+                      identifier,                     // identifier
+                      0,                              // flow_id_count
+                      nullptr,                        // flow_ids
+-                     Dart_Timeline_Event_Async_End,  // type
++                     TimelineEventType::Async_End,  // type
+                      split.first,                    // names
+                      split.second                    // values
+   );
+diff --git a/engine/src/flutter/fml/trace_event_unittests.cc b/engine/src/flutter/fml/trace_event_unittests.cc
+new file mode 100644
+index 00000000000..28c40e5a3e7
+--- /dev/null
++++ b/engine/src/flutter/fml/trace_event_unittests.cc
+@@ -0,0 +1,103 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/fml/trace_event.h"
++
++#include <string>
++#include <vector>
++
++#include "gtest/gtest.h"
++
++namespace fml {
++namespace tracing {
++namespace {
++
++struct RecordedEvent {
++  std::string label;
++  TimelineEventType type;
++  std::vector<std::string> argument_names;
++  std::vector<std::string> argument_values;
++};
++
++class TimelineRecorder {
++ public:
++  void Record(const char* label,
++              int64_t timestamp0,
++              int64_t timestamp1_or_id,
++              intptr_t flow_id_count,
++              const int64_t* flow_ids,
++              TimelineEventType type,
++              intptr_t argument_count,
++              const char** argument_names,
++              const char** argument_values) {
++    RecordedEvent event{.label = label, .type = type};
++    for (intptr_t index = 0; index < argument_count; index++) {
++      event.argument_names.emplace_back(argument_names[index]);
++      event.argument_values.emplace_back(argument_values[index]);
++    }
++    events.push_back(std::move(event));
++  }
++
++  std::vector<RecordedEvent> events;
++};
++
++TimelineRecorder* g_recorder = nullptr;
++
++void RecordEvent(const char* label,
++                 int64_t timestamp0,
++                 int64_t timestamp1_or_id,
++                 intptr_t flow_id_count,
++                 const int64_t* flow_ids,
++                 TimelineEventType type,
++                 intptr_t argument_count,
++                 const char** argument_names,
++                 const char** argument_values) {
++  g_recorder->Record(label, timestamp0, timestamp1_or_id, flow_id_count,
++                     flow_ids, type, argument_count, argument_names,
++                     argument_values);
++}
++
++TEST(TraceEventTest, ForwardsToInstalledBackend) {
++  TimelineRecorder recorder;
++  g_recorder = &recorder;
++  const TimelineBackend backend = {.record = RecordEvent};
++  SetTimelineBackend(&backend);
++
++  TRACE_EVENT0("flutter", "sync event");
++  TRACE_EVENT_ASYNC_BEGIN0("flutter", "async event", 42);
++  FML_TRACE_COUNTER("flutter", "counter event", 7, "value", 3);
++
++  SetTimelineBackend(nullptr);
++  g_recorder = nullptr;
++
++  ASSERT_EQ(recorder.events.size(), 4u);
++  EXPECT_EQ(recorder.events[0].label, "sync event");
++  EXPECT_EQ(recorder.events[0].type, TimelineEventType::Begin);
++  EXPECT_EQ(recorder.events[1].type, TimelineEventType::End);
++  EXPECT_EQ(recorder.events[2].label, "async event");
++  EXPECT_EQ(recorder.events[2].type, TimelineEventType::Async_Begin);
++  EXPECT_EQ(recorder.events[3].label, "counter event");
++  EXPECT_EQ(recorder.events[3].type, TimelineEventType::Counter);
++  ASSERT_EQ(recorder.events[3].argument_names.size(), 1u);
++  EXPECT_EQ(recorder.events[3].argument_names[0], "value");
++  EXPECT_EQ(recorder.events[3].argument_values[0], "3");
++}
++
++TEST(TraceEventTest, NoBackendIsANoOp) {
++  TimelineRecorder recorder;
++  g_recorder = &recorder;
++  SetTimelineBackend(nullptr);
++
++  TRACE_EVENT0("flutter", "sync event");
++  TRACE_EVENT_ASYNC_BEGIN0("flutter", "async event", 42);
++  FML_TRACE_COUNTER("flutter", "counter event", 7, "value", 3);
++
++  g_recorder = nullptr;
++
++  EXPECT_TRUE(recorder.events.empty());
++}
++
++}  // namespace
++}  // namespace tracing
++}  // namespace fml
+diff --git a/engine/src/flutter/runtime/dart_vm_initializer.cc b/engine/src/flutter/runtime/dart_vm_initializer.cc
+index f47198f5a7e..bfc9e05a929 100644
+--- a/engine/src/flutter/runtime/dart_vm_initializer.cc
++++ b/engine/src/flutter/runtime/dart_vm_initializer.cc
+@@ -12,6 +12,7 @@
+ #include "flutter/lib/ui/window/platform_configuration.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/logging/dart_error.h"
++#include "third_party/dart/runtime/include/dart_tools_api.h"
+ 
+ #include "dart_timestamp_provider.h"
+ 
+@@ -20,6 +21,32 @@ namespace {
+ // APIs.
+ static std::atomic<bool> gDartInitialized;
+ 
++static_assert(static_cast<int>(fml::tracing::TimelineEventType::Begin) ==
++                  Dart_Timeline_Event_Begin);
++static_assert(static_cast<int>(fml::tracing::TimelineEventType::End) ==
++                  Dart_Timeline_Event_End);
++static_assert(static_cast<int>(fml::tracing::TimelineEventType::Instant) ==
++                  Dart_Timeline_Event_Instant);
++static_assert(
++    static_cast<int>(fml::tracing::TimelineEventType::Async_Begin) ==
++    Dart_Timeline_Event_Async_Begin);
++static_assert(
++    static_cast<int>(fml::tracing::TimelineEventType::Async_End) ==
++    Dart_Timeline_Event_Async_End);
++static_assert(
++    static_cast<int>(fml::tracing::TimelineEventType::Async_Instant) ==
++    Dart_Timeline_Event_Async_Instant);
++static_assert(static_cast<int>(fml::tracing::TimelineEventType::Counter) ==
++                  Dart_Timeline_Event_Counter);
++static_assert(
++    static_cast<int>(fml::tracing::TimelineEventType::Flow_Begin) ==
++    Dart_Timeline_Event_Flow_Begin);
++static_assert(
++    static_cast<int>(fml::tracing::TimelineEventType::Flow_Step) ==
++    Dart_Timeline_Event_Flow_Step);
++static_assert(static_cast<int>(fml::tracing::TimelineEventType::Flow_End) ==
++                  Dart_Timeline_Event_Flow_End);
++
+ void LogUnhandledException(Dart_Handle exception_handle,
+                            Dart_Handle stack_trace_handle) {
+   const std::string error =
+@@ -102,7 +129,10 @@ void DartVMInitializer::Initialize(Dart_InitializeParams* params,
+       fml::tracing::TraceSetTimelineMicrosSource(
+           []() -> int64_t { return -1; });
+     }
+-    fml::tracing::TraceSetTimelineEventHandler(LogDartTimelineEvent);
++    static const fml::tracing::TimelineBackend backend = {
++        .record = LogDartTimelineEvent,
++    };
++    fml::tracing::SetTimelineBackend(&backend);
+   }
+ 
+   fml::TimePoint::SetClockSource(flutter::DartTimelineTicksSinceEpoch);
+@@ -143,13 +173,14 @@ void DartVMInitializer::LogDartTimelineEvent(const char* label,
+                                              int64_t timestamp1_or_async_id,
+                                              intptr_t flow_id_count,
+                                              const int64_t* flow_ids,
+-                                             Dart_Timeline_Event_Type type,
++                                             fml::tracing::TimelineEventType type,
+                                              intptr_t argument_count,
+                                              const char** argument_names,
+                                              const char** argument_values) {
+   if (gDartInitialized) {
+-    Dart_RecordTimelineEvent(label, timestamp0, timestamp1_or_async_id,
+-                             flow_id_count, flow_ids, type, argument_count,
+-                             argument_names, argument_values);
++    Dart_RecordTimelineEvent(
++        label, timestamp0, timestamp1_or_async_id, flow_id_count, flow_ids,
++        static_cast<Dart_Timeline_Event_Type>(type), argument_count,
++        argument_names, argument_values);
+   }
+ }
+diff --git a/engine/src/flutter/runtime/dart_vm_initializer.h b/engine/src/flutter/runtime/dart_vm_initializer.h
+index 9889d2402ce..528653a96ca 100644
+--- a/engine/src/flutter/runtime/dart_vm_initializer.h
++++ b/engine/src/flutter/runtime/dart_vm_initializer.h
+@@ -5,8 +5,8 @@
+ #ifndef FLUTTER_RUNTIME_DART_VM_INITIALIZER_H_
+ #define FLUTTER_RUNTIME_DART_VM_INITIALIZER_H_
+ 
++#include "flutter/fml/trace_event.h"
+ #include "third_party/dart/runtime/include/dart_api.h"
+-#include "third_party/dart/runtime/include/dart_tools_api.h"
+ 
+ class DartVMInitializer {
+  public:
+@@ -21,7 +21,7 @@ class DartVMInitializer {
+                                    int64_t timestamp1_or_async_id,
+                                    intptr_t flow_id_count,
+                                    const int64_t* flow_ids,
+-                                   Dart_Timeline_Event_Type type,
++                                   fml::tracing::TimelineEventType type,
+                                    intptr_t argument_count,
+                                    const char** argument_names,
+                                    const char** argument_values);
+diff --git a/engine/src/flutter/runtime_spi/tools/check_no_dart_deps.py b/engine/src/flutter/runtime_spi/tools/check_no_dart_deps.py
+index 3026d991a5a..a2db97f2417 100755
+--- a/engine/src/flutter/runtime_spi/tools/check_no_dart_deps.py
++++ b/engine/src/flutter/runtime_spi/tools/check_no_dart_deps.py
+@@ -15,15 +15,27 @@ FORBIDDEN_PREFIXES = (
+     "//flutter/third_party/tonic",
+     "//flutter/runtime",
+ )
++FORBIDDEN_INCLUDE_PREFIXES = (
++    "third_party/dart/",
++    "third_party/tonic/",
++    "flutter/runtime/",
++    "flutter/lib/ui/",
++)
+ FORBIDDEN_LABEL = "//flutter/lib/ui:ui"
+ GN_LABEL_PATTERN = re.compile(r"//[^\s]+")
++INCLUDE_PATTERN = re.compile(r'^\s*#\s*include\s*[<"]([^">]+)[">]')
+ 
+ 
+ def engine_source_directory() -> Path:
+     return Path(__file__).resolve().parents[3]
+ 
+ 
+-def run_gn_desc(output_directory: Path, label: str) -> subprocess.CompletedProcess[str]:
++def run_gn_desc(
++    output_directory: Path,
++    label: str,
++    query: str,
++    *query_arguments: str,
++) -> subprocess.CompletedProcess[str]:
+     engine_source = engine_source_directory()
+     gn = engine_source / "flutter/third_party/gn/gn"
+     environment = os.environ.copy()
+@@ -32,7 +44,7 @@ def run_gn_desc(output_directory: Path, label: str) -> subprocess.CompletedProce
+     environment["VPYTHON_VIRTUALENV_ROOT"] = str(engine_source / "../../../vpython-root")
+     environment["CIPD_CACHE_DIR"] = str(engine_source / "../../../cipd-cache")
+     return subprocess.run(
+-        [str(gn), "desc", str(output_directory), label, "deps", "--all"],
++        [str(gn), "desc", str(output_directory), label, query, *query_arguments],
+         cwd=engine_source,
+         env=environment,
+         check=False,
+@@ -52,7 +64,7 @@ def forbidden_dependencies(description: str) -> list[str]:
+ 
+ 
+ def check_label(output_directory: Path, label: str) -> bool:
+-    result = run_gn_desc(output_directory, label)
++    result = run_gn_desc(output_directory, label, "deps", "--all")
+     if result.returncode != 0:
+         sys.stderr.write(result.stderr)
+         return False
+@@ -68,13 +80,80 @@ def check_label(output_directory: Path, label: str) -> bool:
+     return True
+ 
+ 
++def source_paths(output_directory: Path, label: str) -> tuple[Path, ...] | None:
++    engine_source = engine_source_directory()
++    paths: set[Path] = set()
++    for query in ("sources", "public"):
++        result = run_gn_desc(output_directory, label, query)
++        if result.returncode != 0:
++            sys.stderr.write(result.stderr)
++            return None
++        for line in result.stdout.splitlines():
++            if line.startswith("//"):
++                paths.add(engine_source / line[2:])
++    return tuple(sorted(paths))
++
++
++def forbidden_include(include: str, allowed_ui_headers: set[str]) -> bool:
++    if not any(include.startswith(prefix) for prefix in FORBIDDEN_INCLUDE_PREFIXES):
++        return False
++    return include not in allowed_ui_headers
++
++
++def check_includes(output_directory: Path, label: str) -> bool:
++    paths = source_paths(output_directory, label)
++    if paths is None:
++        return False
++
++    ui_core_paths = source_paths(output_directory, "//flutter/lib/ui:ui_core_types")
++    if ui_core_paths is None:
++        return False
++    engine_source = engine_source_directory()
++    allowed_ui_headers = {
++        path.relative_to(engine_source).as_posix()
++        for path in ui_core_paths
++        if path.is_file()
++    }
++
++    violations: list[str] = []
++    for path in paths:
++        if not path.is_file():
++            continue
++        relative_path = path.relative_to(engine_source).as_posix()
++        for line_number, line in enumerate(
++            path.read_text(encoding="utf-8").splitlines(), start=1
++        ):
++            match = INCLUDE_PATTERN.match(line)
++            if match is None:
++                continue
++            include = match.group(1)
++            if forbidden_include(include, allowed_ui_headers):
++                violations.append(f"{relative_path}:{line_number}: {include}")
++
++    if violations:
++        print(f"{label}: forbidden Dart includes:")
++        for violation in violations:
++            print(f"  {violation}")
++        return False
++
++    print(f"{label}: no forbidden Dart includes")
++    return True
++
++
+ def main(arguments: list[str]) -> int:
++    includes_mode = arguments[:1] == ["--includes"]
++    if includes_mode:
++        arguments = arguments[1:]
+     if len(arguments) < 2:
+-        print(f"usage: {Path(sys.argv[0]).name} <out_dir> <label>...", file=sys.stderr)
++        print(
++            f"usage: {Path(sys.argv[0]).name} [--includes] <out_dir> <label>...",
++            file=sys.stderr,
++        )
+         return 2
+ 
+     output_directory = Path(arguments[0])
+-    return 0 if all(check_label(output_directory, label) for label in arguments[1:]) else 1
++    checker = check_includes if includes_mode else check_label
++    return 0 if all(checker(output_directory, label) for label in arguments[1:]) else 1
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/engine/src/flutter/runtime_spi/tools/test_check_no_dart_deps.py b/engine/src/flutter/runtime_spi/tools/test_check_no_dart_deps.py
+new file mode 100644
+index 00000000000..6997a677afc
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/tools/test_check_no_dart_deps.py
+@@ -0,0 +1,92 @@
++#!/usr/bin/env python3
++
++from __future__ import annotations
++
++import os
++from pathlib import Path
++import shutil
++import stat
++import subprocess
++import sys
++import tempfile
++import unittest
++
++
++CHECKER_PATH = Path(__file__).with_name("check_no_dart_deps.py")
++
++
++class CheckNoDartDepsTest(unittest.TestCase):
++    def run_checker(self, source: str, label: str = "//flutter/fml:fml") -> subprocess.CompletedProcess[str]:
++        with tempfile.TemporaryDirectory() as temporary_directory:
++            root = Path(temporary_directory)
++            engine_source = root / "engine/src"
++            checker = engine_source / "flutter/runtime_spi/tools/check_no_dart_deps.py"
++            checker.parent.mkdir(parents=True)
++            shutil.copyfile(CHECKER_PATH, checker)
++
++            gn = engine_source / "flutter/third_party/gn/gn"
++            gn.parent.mkdir(parents=True)
++            gn.write_text(
++                """#!/usr/bin/env python3
++import sys
++
++label = sys.argv[3]
++query = sys.argv[4]
++if query == 'sources':
++    if label == '//flutter/lib/ui:ui_core_types':
++        print('//flutter/lib/ui/window/viewport_metrics.h')
++    else:
++        print('//flutter/fml/trace_event.h')
++elif query == 'public':
++    print('*')
++else:
++    print('//flutter/third_party/dart:runtime')
++"""
++            )
++            gn.chmod(gn.stat().st_mode | stat.S_IEXEC)
++
++            source_path = engine_source / "flutter/fml/trace_event.h"
++            source_path.parent.mkdir(parents=True)
++            source_path.write_text(source)
++            ui_core_header = (
++                engine_source / "flutter/lib/ui/window/viewport_metrics.h"
++            )
++            ui_core_header.parent.mkdir(parents=True)
++            ui_core_header.write_text("")
++
++            environment = os.environ.copy()
++            return subprocess.run(
++                [
++                    sys.executable,
++                    str(checker),
++                    "--includes",
++                    "out/host_debug",
++                    label,
++                ],
++                cwd=engine_source,
++                env=environment,
++                capture_output=True,
++                text=True,
++                check=False,
++            )
++
++    def test_forbidden_include_is_reported_with_line(self) -> None:
++        result = self.run_checker('#include "third_party/dart/runtime/include/dart_api.h"\n')
++
++        self.assertNotEqual(result.returncode, 0)
++        self.assertIn("flutter/fml/trace_event.h:1", result.stdout)
++        self.assertIn("third_party/dart/runtime/include/dart_api.h", result.stdout)
++
++    def test_ui_core_types_include_is_allowed(self) -> None:
++        result = self.run_checker('#include "flutter/lib/ui/window/viewport_metrics.h"\n')
++
++        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++
++    def test_comment_with_dart_does_not_count(self) -> None:
++        result = self.run_checker('// #include "third_party/dart/runtime/include/dart_api.h"\n')
++
++        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++
++
++if __name__ == "__main__":
++    unittest.main()
