@@ -1,0 +1,548 @@
+# Why: Expose the versioned scene ABI and freeze its value and engine API
+layouts while keeping the existing S2 engine implementation scene-disabled.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index ecf698a01cb..48ccb91f1a4 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -47,7 +47,10 @@ source_set("spi_backend") {
+ }
+ 
+ source_set("runtime_spi_c_api") {
+-  public = [ "include/flutter_runtime_spi.h" ]
++  public = [
++    "include/flutter_runtime_spi.h",
++    "include/flutter_scene.h",
++  ]
+   sources = [ "abi_layout_check.c" ]
+ }
+ 
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index e000949e5d2..fa4b6973ebb 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -156,6 +156,49 @@ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, notify_idle,
+                   sizeof(void*) == 8 ? 168 : 96);
+ SPI_EXPECT_SIZE(FlutterSpiRuntimeTable, sizeof(void*) == 8 ? 176 : 104);
+ 
++SPI_EXPECT_OFFSET(FlutterSpiColor, red, 0);
++SPI_EXPECT_OFFSET(FlutterSpiColor, green, 4);
++SPI_EXPECT_OFFSET(FlutterSpiColor, blue, 8);
++SPI_EXPECT_OFFSET(FlutterSpiColor, alpha, 12);
++SPI_EXPECT_OFFSET(FlutterSpiColor, color_space, 16);
++SPI_EXPECT_SIZE(FlutterSpiColor, 20);
++
++SPI_EXPECT_OFFSET(FlutterSpiPoint, x, 0);
++SPI_EXPECT_OFFSET(FlutterSpiPoint, y, 4);
++SPI_EXPECT_SIZE(FlutterSpiPoint, 8);
++
++SPI_EXPECT_OFFSET(FlutterSpiRect, left, 0);
++SPI_EXPECT_OFFSET(FlutterSpiRect, top, 4);
++SPI_EXPECT_OFFSET(FlutterSpiRect, right, 8);
++SPI_EXPECT_OFFSET(FlutterSpiRect, bottom, 12);
++SPI_EXPECT_SIZE(FlutterSpiRect, 16);
++
++SPI_EXPECT_OFFSET(FlutterSpiRRect, rect, 0);
++SPI_EXPECT_OFFSET(FlutterSpiRRect, radii, 16);
++SPI_EXPECT_SIZE(FlutterSpiRRect, 48);
++
++SPI_EXPECT_OFFSET(FlutterSpiMatrix, m, 0);
++SPI_EXPECT_SIZE(FlutterSpiMatrix, 64);
++
++SPI_EXPECT_OFFSET(FlutterSpiPaint, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiPaint, color, sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiPaint, blend_mode,
++                  sizeof(void*) == 8 ? 28 : 24);
++SPI_EXPECT_OFFSET(FlutterSpiPaint, style, sizeof(void*) == 8 ? 32 : 28);
++SPI_EXPECT_OFFSET(FlutterSpiPaint, stroke_width,
++                  sizeof(void*) == 8 ? 36 : 32);
++SPI_EXPECT_OFFSET(FlutterSpiPaint, stroke_cap,
++                  sizeof(void*) == 8 ? 40 : 36);
++SPI_EXPECT_OFFSET(FlutterSpiPaint, stroke_join,
++                  sizeof(void*) == 8 ? 44 : 40);
++SPI_EXPECT_OFFSET(FlutterSpiPaint, stroke_miter,
++                  sizeof(void*) == 8 ? 48 : 44);
++SPI_EXPECT_OFFSET(FlutterSpiPaint, anti_alias,
++                  sizeof(void*) == 8 ? 52 : 48);
++SPI_EXPECT_OFFSET(FlutterSpiPaint, invert_colors,
++                  sizeof(void*) == 8 ? 53 : 49);
++SPI_EXPECT_SIZE(FlutterSpiPaint, sizeof(void*) == 8 ? 56 : 52);
++
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, version_major,
+                   sizeof(void*) == 8 ? 8 : 4);
+@@ -185,4 +228,6 @@ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, log,
+                   sizeof(void*) == 8 ? 96 : 60);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, report_error,
+                   sizeof(void*) == 8 ? 104 : 64);
+-SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 112 : 72);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, scene,
++                  sizeof(void*) == 8 ? 112 : 68);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 120 : 72);
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index 5c339b956e5..fc8b343bd33 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 1
++#define FLUTTER_SPI_VERSION_MINOR 2
+ 
+ typedef enum {
+   kFlutterSpiOk = 0,
+@@ -33,6 +33,7 @@ enum {
+   kFlutterSpiCapSemantics = 1ULL << 4,
+   kFlutterSpiCapViewFocus = 1ULL << 5,
+   kFlutterSpiCapEmptyScene = 1ULL << 6,
++  kFlutterSpiCapScene = 1ULL << 7,
+ };
+ 
+ typedef struct FlutterSpiEngine FlutterSpiEngine;
+@@ -40,6 +41,8 @@ typedef struct FlutterSpiScene FlutterSpiScene;
+ typedef struct FlutterSpiResponseHandle FlutterSpiResponseHandle;
+ typedef struct FlutterSpiEngineApi FlutterSpiEngineApi;
+ 
++#include "flutter_scene.h"
++
+ typedef struct {
+   size_t struct_size;
+   int64_t view_id;
+@@ -214,6 +217,7 @@ struct FlutterSpiEngineApi {
+               const char* message);
+   FlutterSpiResult (*report_error)(FlutterSpiEngine* engine,
+                                    const char* message);
++  const FlutterSpiSceneApi* scene;
+ };
+ 
+ /*
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_scene.h b/engine/src/flutter/runtime_spi/include/flutter_scene.h
+new file mode 100644
+index 00000000000..96da742e48f
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/include/flutter_scene.h
+@@ -0,0 +1,310 @@
++#ifndef FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_SCENE_H_
++#define FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_SCENE_H_
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef struct FlutterSpiEngine FlutterSpiEngine;
++typedef struct FlutterSpiPath FlutterSpiPath;
++typedef struct FlutterSpiPictureRecorder FlutterSpiPictureRecorder;
++typedef struct FlutterSpiPicture FlutterSpiPicture;
++typedef struct FlutterSpiSceneBuilder FlutterSpiSceneBuilder;
++typedef struct FlutterSpiScene FlutterSpiScene;
++typedef struct FlutterSpiSceneApi FlutterSpiSceneApi;
++
++typedef enum {
++  kFlutterSpiColorSpaceSRGB = 0,
++  kFlutterSpiColorSpaceExtendedSRGB = 1,
++  kFlutterSpiColorSpaceDisplayP3 = 2,
++} FlutterSpiColorSpace;
++
++typedef struct {
++  float red;
++  float green;
++  float blue;
++  float alpha;
++  int32_t color_space;
++} FlutterSpiColor;
++
++typedef struct {
++  float x;
++  float y;
++} FlutterSpiPoint;
++
++typedef struct {
++  float left;
++  float top;
++  float right;
++  float bottom;
++} FlutterSpiRect;
++
++typedef struct {
++  FlutterSpiRect rect;
++  FlutterSpiPoint radii[4];
++} FlutterSpiRRect;
++
++typedef struct {
++  float m[16];
++} FlutterSpiMatrix;
++
++enum {
++  kFlutterSpiBlendModeClear = 0,
++  kFlutterSpiBlendModeSrc,
++  kFlutterSpiBlendModeDst,
++  kFlutterSpiBlendModeSrcOver,
++  kFlutterSpiBlendModeDstOver,
++  kFlutterSpiBlendModeSrcIn,
++  kFlutterSpiBlendModeDstIn,
++  kFlutterSpiBlendModeSrcOut,
++  kFlutterSpiBlendModeDstOut,
++  kFlutterSpiBlendModeSrcATop,
++  kFlutterSpiBlendModeDstATop,
++  kFlutterSpiBlendModeXor,
++  kFlutterSpiBlendModePlus,
++  kFlutterSpiBlendModeModulate,
++  kFlutterSpiBlendModeScreen,
++  kFlutterSpiBlendModeOverlay,
++  kFlutterSpiBlendModeDarken,
++  kFlutterSpiBlendModeLighten,
++  kFlutterSpiBlendModeColorDodge,
++  kFlutterSpiBlendModeColorBurn,
++  kFlutterSpiBlendModeHardLight,
++  kFlutterSpiBlendModeSoftLight,
++  kFlutterSpiBlendModeDifference,
++  kFlutterSpiBlendModeExclusion,
++  kFlutterSpiBlendModeMultiply,
++  kFlutterSpiBlendModeHue,
++  kFlutterSpiBlendModeSaturation,
++  kFlutterSpiBlendModeColor,
++  kFlutterSpiBlendModeLuminosity,
++};
++
++enum {
++  kFlutterSpiPaintStyleFill = 0,
++  kFlutterSpiPaintStyleStroke,
++  kFlutterSpiPaintStyleStrokeAndFill,
++};
++
++enum {
++  kFlutterSpiStrokeCapButt = 0,
++  kFlutterSpiStrokeCapRound,
++  kFlutterSpiStrokeCapSquare,
++};
++
++enum {
++  kFlutterSpiStrokeJoinMiter = 0,
++  kFlutterSpiStrokeJoinRound,
++  kFlutterSpiStrokeJoinBevel,
++};
++
++enum {
++  kFlutterSpiFillTypeNonZero = 0,
++  kFlutterSpiFillTypeEvenOdd,
++};
++
++enum {
++  kFlutterSpiClipOpDifference = 0,
++  kFlutterSpiClipOpIntersect,
++};
++
++enum {
++  kFlutterSpiPointModePoints = 0,
++  kFlutterSpiPointModeLines,
++  kFlutterSpiPointModePolygon,
++};
++
++enum {
++  kFlutterSpiClipNone = 0,
++  kFlutterSpiClipHardEdge,
++  kFlutterSpiClipAntiAlias,
++  kFlutterSpiClipAntiAliasWithSaveLayer,
++};
++
++typedef struct {
++  size_t struct_size;
++  FlutterSpiColor color;
++  int32_t blend_mode;
++  int32_t style;
++  float stroke_width;
++  int32_t stroke_cap;
++  int32_t stroke_join;
++  float stroke_miter;
++  bool anti_alias;
++  bool invert_colors;
++} FlutterSpiPaint;
++
++struct FlutterSpiSceneApi {
++  size_t struct_size;
++
++  FlutterSpiResult (*path_create)(FlutterSpiEngine* engine,
++                                  FlutterSpiPath** out_path);
++  FlutterSpiResult (*path_set_fill_type)(FlutterSpiPath* path,
++                                         int32_t fill_type);
++  FlutterSpiResult (*path_move_to)(FlutterSpiPath* path, float x, float y);
++  FlutterSpiResult (*path_line_to)(FlutterSpiPath* path, float x, float y);
++  FlutterSpiResult (*path_quad_to)(FlutterSpiPath* path,
++                                   float x1,
++                                   float y1,
++                                   float x2,
++                                   float y2);
++  FlutterSpiResult (*path_conic_to)(FlutterSpiPath* path,
++                                    float x1,
++                                    float y1,
++                                    float x2,
++                                    float y2,
++                                    float weight);
++  FlutterSpiResult (*path_cubic_to)(FlutterSpiPath* path,
++                                    float x1,
++                                    float y1,
++                                    float x2,
++                                    float y2,
++                                    float x3,
++                                    float y3);
++  FlutterSpiResult (*path_close)(FlutterSpiPath* path);
++  FlutterSpiResult (*path_add_rect)(FlutterSpiPath* path,
++                                    const FlutterSpiRect* rect);
++  FlutterSpiResult (*path_add_oval)(FlutterSpiPath* path,
++                                    const FlutterSpiRect* bounds);
++  FlutterSpiResult (*path_add_rrect)(FlutterSpiPath* path,
++                                     const FlutterSpiRRect* rrect);
++  FlutterSpiResult (*path_retain)(FlutterSpiPath* path);
++  FlutterSpiResult (*path_release)(FlutterSpiPath* path);
++
++  FlutterSpiResult (*recorder_create)(FlutterSpiEngine* engine,
++                                      const FlutterSpiRect* cull_rect,
++                                      FlutterSpiPictureRecorder** out_recorder);
++  FlutterSpiResult (*canvas_save)(FlutterSpiPictureRecorder* recorder);
++  FlutterSpiResult (*canvas_save_layer)(FlutterSpiPictureRecorder* recorder,
++                                        const FlutterSpiRect* bounds,
++                                        const FlutterSpiPaint* paint);
++  FlutterSpiResult (*canvas_restore)(FlutterSpiPictureRecorder* recorder);
++  FlutterSpiResult (*canvas_restore_to_count)(FlutterSpiPictureRecorder* recorder,
++                                              int32_t count);
++  FlutterSpiResult (*canvas_get_save_count)(FlutterSpiPictureRecorder* recorder,
++                                            int32_t* out_count);
++  FlutterSpiResult (*canvas_translate)(FlutterSpiPictureRecorder* recorder,
++                                       float dx,
++                                       float dy);
++  FlutterSpiResult (*canvas_scale)(FlutterSpiPictureRecorder* recorder,
++                                   float sx,
++                                   float sy);
++  FlutterSpiResult (*canvas_rotate)(FlutterSpiPictureRecorder* recorder,
++                                    float radians);
++  FlutterSpiResult (*canvas_skew)(FlutterSpiPictureRecorder* recorder,
++                                  float sx,
++                                  float sy);
++  FlutterSpiResult (*canvas_transform)(FlutterSpiPictureRecorder* recorder,
++                                       const FlutterSpiMatrix* matrix);
++  FlutterSpiResult (*canvas_clip_rect)(FlutterSpiPictureRecorder* recorder,
++                                       const FlutterSpiRect* rect,
++                                       int32_t clip_op,
++                                       bool anti_alias);
++  FlutterSpiResult (*canvas_clip_rrect)(FlutterSpiPictureRecorder* recorder,
++                                        const FlutterSpiRRect* rrect,
++                                        int32_t clip_op,
++                                        bool anti_alias);
++  FlutterSpiResult (*canvas_clip_path)(FlutterSpiPictureRecorder* recorder,
++                                       FlutterSpiPath* path,
++                                       int32_t clip_op,
++                                       bool anti_alias);
++  FlutterSpiResult (*canvas_draw_color)(FlutterSpiPictureRecorder* recorder,
++                                        const FlutterSpiColor* color,
++                                        int32_t blend_mode);
++  FlutterSpiResult (*canvas_draw_paint)(FlutterSpiPictureRecorder* recorder,
++                                        const FlutterSpiPaint* paint);
++  FlutterSpiResult (*canvas_draw_line)(FlutterSpiPictureRecorder* recorder,
++                                       const FlutterSpiPoint* start,
++                                       const FlutterSpiPoint* end,
++                                       const FlutterSpiPaint* paint);
++  FlutterSpiResult (*canvas_draw_rect)(FlutterSpiPictureRecorder* recorder,
++                                       const FlutterSpiRect* rect,
++                                       const FlutterSpiPaint* paint);
++  FlutterSpiResult (*canvas_draw_rrect)(FlutterSpiPictureRecorder* recorder,
++                                        const FlutterSpiRRect* rrect,
++                                        const FlutterSpiPaint* paint);
++  FlutterSpiResult (*canvas_draw_drrect)(FlutterSpiPictureRecorder* recorder,
++                                         const FlutterSpiRRect* outer,
++                                         const FlutterSpiRRect* inner,
++                                         const FlutterSpiPaint* paint);
++  FlutterSpiResult (*canvas_draw_oval)(FlutterSpiPictureRecorder* recorder,
++                                       const FlutterSpiRect* bounds,
++                                       const FlutterSpiPaint* paint);
++  FlutterSpiResult (*canvas_draw_circle)(FlutterSpiPictureRecorder* recorder,
++                                         const FlutterSpiPoint* center,
++                                         float radius,
++                                         const FlutterSpiPaint* paint);
++  FlutterSpiResult (*canvas_draw_arc)(FlutterSpiPictureRecorder* recorder,
++                                      const FlutterSpiRect* rect,
++                                      float start_radians,
++                                      float sweep_radians,
++                                      bool use_center,
++                                      const FlutterSpiPaint* paint);
++  FlutterSpiResult (*canvas_draw_path)(FlutterSpiPictureRecorder* recorder,
++                                       FlutterSpiPath* path,
++                                       const FlutterSpiPaint* paint);
++  FlutterSpiResult (*canvas_draw_points)(FlutterSpiPictureRecorder* recorder,
++                                         int32_t point_mode,
++                                         const FlutterSpiPoint* points,
++                                         size_t count,
++                                         const FlutterSpiPaint* paint);
++  FlutterSpiResult (*canvas_draw_picture)(FlutterSpiPictureRecorder* recorder,
++                                          FlutterSpiPicture* picture);
++  FlutterSpiResult (*canvas_draw_shadow)(FlutterSpiPictureRecorder* recorder,
++                                         FlutterSpiPath* path,
++                                         const FlutterSpiColor* color,
++                                         float elevation,
++                                         bool transparent_occluder,
++                                         float device_pixel_ratio);
++  FlutterSpiResult (*recorder_finish)(FlutterSpiPictureRecorder* recorder,
++                                      FlutterSpiPicture** out_picture);
++  FlutterSpiResult (*recorder_release)(FlutterSpiPictureRecorder* recorder);
++  FlutterSpiResult (*picture_retain)(FlutterSpiPicture* picture);
++  FlutterSpiResult (*picture_release)(FlutterSpiPicture* picture);
++
++  FlutterSpiResult (*scene_builder_create)(FlutterSpiEngine* engine,
++                                           FlutterSpiSceneBuilder** out_builder);
++  FlutterSpiResult (*scene_push_transform)(FlutterSpiSceneBuilder* builder,
++                                           const FlutterSpiMatrix* matrix);
++  FlutterSpiResult (*scene_push_offset)(FlutterSpiSceneBuilder* builder,
++                                        float dx,
++                                        float dy);
++  FlutterSpiResult (*scene_push_clip_rect)(FlutterSpiSceneBuilder* builder,
++                                           const FlutterSpiRect* rect,
++                                           int32_t clip_behavior);
++  FlutterSpiResult (*scene_push_clip_rrect)(FlutterSpiSceneBuilder* builder,
++                                            const FlutterSpiRRect* rrect,
++                                            int32_t clip_behavior);
++  FlutterSpiResult (*scene_push_clip_path)(FlutterSpiSceneBuilder* builder,
++                                           FlutterSpiPath* path,
++                                           int32_t clip_behavior);
++  FlutterSpiResult (*scene_push_opacity)(FlutterSpiSceneBuilder* builder,
++                                         int32_t alpha,
++                                         float dx,
++                                         float dy);
++  FlutterSpiResult (*scene_pop)(FlutterSpiSceneBuilder* builder);
++  FlutterSpiResult (*scene_add_picture)(FlutterSpiSceneBuilder* builder,
++                                        float dx,
++                                        float dy,
++                                        FlutterSpiPicture* picture,
++                                        bool is_complex,
++                                        bool will_change);
++  FlutterSpiResult (*scene_build)(FlutterSpiSceneBuilder* builder,
++                                  int64_t width_px,
++                                  int64_t height_px,
++                                  FlutterSpiScene** out_scene);
++  FlutterSpiResult (*scene_builder_release)(FlutterSpiSceneBuilder* builder);
++
++  FlutterSpiResult (*scene_trace)(FlutterSpiScene* scene, char** out_utf8);
++  FlutterSpiResult (*trace_free)(char* trace);
++};
++
++#ifdef __cplusplus
++}  // extern "C"
++#endif
++
++#endif  // FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_SCENE_H_
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index c380147dfa1..3b27a2fee29 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -4,6 +4,8 @@
+ 
+ #include <cstddef>
+ 
++#include "flutter/display_list/dl_color.h"
++#include "flutter/display_list/dl_paint.h"
+ #include "flutter/runtime_spi/include/flutter_runtime_spi.h"
+ #include "flutter/testing/testing.h"
+ 
+@@ -34,6 +36,78 @@ TEST(SpiAbi, CapabilityValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiCapSemantics, 1u << 4);
+   EXPECT_EQ(kFlutterSpiCapViewFocus, 1u << 5);
+   EXPECT_EQ(kFlutterSpiCapEmptyScene, 1u << 6);
++  EXPECT_EQ(kFlutterSpiCapScene, 1u << 7);
++}
++
++TEST(SpiAbi, SceneEnumValuesMatchDisplayList) {
++  static_assert(kFlutterSpiColorSpaceSRGB ==
++                    static_cast<int32_t>(DlColorSpace::kSRGB));
++  static_assert(kFlutterSpiColorSpaceExtendedSRGB ==
++                    static_cast<int32_t>(DlColorSpace::kExtendedSRGB));
++  static_assert(kFlutterSpiColorSpaceDisplayP3 ==
++                    static_cast<int32_t>(DlColorSpace::kDisplayP3));
++  static_assert(kFlutterSpiBlendModeClear ==
++                    static_cast<int32_t>(DlBlendMode::kClear));
++  static_assert(kFlutterSpiBlendModeSrcOver ==
++                    static_cast<int32_t>(DlBlendMode::kSrcOver));
++  static_assert(kFlutterSpiBlendModeLuminosity ==
++                    static_cast<int32_t>(DlBlendMode::kLuminosity));
++  static_assert(kFlutterSpiPaintStyleFill ==
++                    static_cast<int32_t>(DlDrawStyle::kFill));
++  static_assert(kFlutterSpiPaintStyleStroke ==
++                    static_cast<int32_t>(DlDrawStyle::kStroke));
++  static_assert(kFlutterSpiPaintStyleStrokeAndFill ==
++                    static_cast<int32_t>(DlDrawStyle::kStrokeAndFill));
++  static_assert(kFlutterSpiStrokeCapButt ==
++                    static_cast<int32_t>(DlStrokeCap::kButt));
++  static_assert(kFlutterSpiStrokeCapRound ==
++                    static_cast<int32_t>(DlStrokeCap::kRound));
++  static_assert(kFlutterSpiStrokeCapSquare ==
++                    static_cast<int32_t>(DlStrokeCap::kSquare));
++  static_assert(kFlutterSpiStrokeJoinMiter ==
++                    static_cast<int32_t>(DlStrokeJoin::kMiter));
++  static_assert(kFlutterSpiStrokeJoinRound ==
++                    static_cast<int32_t>(DlStrokeJoin::kRound));
++  static_assert(kFlutterSpiStrokeJoinBevel ==
++                    static_cast<int32_t>(DlStrokeJoin::kBevel));
++}
++
++TEST(SpiAbi, SceneValueLayoutsAreFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiColor, red, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiColor, green, 4, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiColor, blue, 8, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiColor, alpha, 12, 12);
++  EXPECT_SPI_OFFSET(FlutterSpiColor, color_space, 16, 16);
++  EXPECT_EQ(sizeof(FlutterSpiColor), 20u);
++
++  EXPECT_SPI_OFFSET(FlutterSpiPoint, x, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiPoint, y, 4, 4);
++  EXPECT_EQ(sizeof(FlutterSpiPoint), 8u);
++
++  EXPECT_SPI_OFFSET(FlutterSpiRect, left, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiRect, top, 4, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiRect, right, 8, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiRect, bottom, 12, 12);
++  EXPECT_EQ(sizeof(FlutterSpiRect), 16u);
++
++  EXPECT_SPI_OFFSET(FlutterSpiRRect, rect, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiRRect, radii, 16, 16);
++  EXPECT_EQ(sizeof(FlutterSpiRRect), 48u);
++
++  EXPECT_SPI_OFFSET(FlutterSpiMatrix, m, 0, 0);
++  EXPECT_EQ(sizeof(FlutterSpiMatrix), 64u);
++
++  EXPECT_SPI_OFFSET(FlutterSpiPaint, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiPaint, color, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiPaint, blend_mode, 28, 24);
++  EXPECT_SPI_OFFSET(FlutterSpiPaint, style, 32, 28);
++  EXPECT_SPI_OFFSET(FlutterSpiPaint, stroke_width, 36, 32);
++  EXPECT_SPI_OFFSET(FlutterSpiPaint, stroke_cap, 40, 36);
++  EXPECT_SPI_OFFSET(FlutterSpiPaint, stroke_join, 44, 40);
++  EXPECT_SPI_OFFSET(FlutterSpiPaint, stroke_miter, 48, 44);
++  EXPECT_SPI_OFFSET(FlutterSpiPaint, anti_alias, 52, 48);
++  EXPECT_SPI_OFFSET(FlutterSpiPaint, invert_colors, 53, 49);
++  EXPECT_EQ(sizeof(FlutterSpiPaint), sizeof(void*) == 8 ? 56u : 52u);
+ }
+ 
+ TEST(SpiAbi, PointerEnumValuesAreFrozen) {
+@@ -172,7 +246,8 @@ TEST(SpiAbi, EngineApiLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, now_ns, 88, 56);
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, log, 96, 60);
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, report_error, 104, 64);
+-  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 112u : 72u);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, scene, 112, 68);
++  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 120u : 72u);
+ }
+ 
+ TEST(SpiAbi, HeaderIsPureC) {
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index a3fbe985f8a..35d07633c39 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -29,6 +29,7 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+       .now_ns = NowNs,
+       .log = Log,
+       .report_error = ReportError,
++      .scene = nullptr,
+   };
+ }
+ 
