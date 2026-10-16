@@ -5,3 +5,4 @@ linux-compiler-runtime
 linux-musl
 linux-riscv
 sdk-dart-packages
+runtime-spi

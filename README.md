@@ -72,12 +72,27 @@ Detalhes em [docs/artefatos-sdk.md](docs/artefatos-sdk.md).
 
 `patches/series` lista as pastas **por assunto** (`impeller-vulkan`,
 `linux-embedder-only`, `linux-target-matrix`, `linux-compiler-runtime`,
-`linux-musl`, `sdk-dart-packages`), na ordem de aplicação. A série não usa condições: o
+`linux-musl`, `sdk-dart-packages`, `runtime-spi`), na ordem de aplicação. A série não usa condições: o
 `build-engine.sh` sempre aplica todas as pastas e todos os `.patch`, em ordem
 lexicográfica, e cada patch se limita ao alvo certo por condições no próprio
 GN. Assim, builds de alvos diferentes compartilham o mesmo checkout. Cada pasta
 tem um README com a tabela patch → por quê → plataformas afetadas. O parser
 continua aceitando condições `chave=valor` para séries antigas.
+
+O fluxo `runtime-spi` mantém os seams do engine em um branch baseado no commit
+de `flutter.lock`, sem alterar o checkout usado pelo build. Prepare o worktree,
+desenvolva cada mudança em um commit e exporte os commits como patches:
+
+```sh
+scripts/patch-branch.sh prepare .build_flutter/flutter .build_flutter/runtime-spi-src
+# edite o worktree e faça commits com um corpo que explique o porquê
+scripts/patch-branch.sh export .build_flutter/runtime-spi-src runtime-spi
+```
+
+`prepare` cria o branch `titan/runtime-spi`, aplica a série anterior em um
+commit base e reaplica os patches existentes de `runtime-spi` como commits
+separados. `export` reescreve os patches numerados a partir desses commits; o
+corpo de cada commit vira o cabeçalho `# Why:`.
 
 Um patch que modifica uma dependência do gclient começa com `# Repo: <caminho>`; os caminhos
 do diff são relativos a esse repositório. Sem essa linha, o patch pertence ao repositório do
