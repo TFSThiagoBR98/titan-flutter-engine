@@ -1,0 +1,1426 @@
+# Why: drive the runtime through a RuntimeBackend interface
+diff --git a/engine/src/flutter/runtime/runtime_controller.cc b/engine/src/flutter/runtime/runtime_controller.cc
+index 5bda3b0c12c..95176b0dfe5 100644
+--- a/engine/src/flutter/runtime/runtime_controller.cc
++++ b/engine/src/flutter/runtime/runtime_controller.cc
+@@ -47,7 +47,7 @@ RuntimeController::RuntimeController(
+       context_(p_context),
+       pointer_data_packet_converter_(*this) {}
+ 
+-std::unique_ptr<RuntimeController> RuntimeController::Spawn(
++std::unique_ptr<RuntimeBackend> RuntimeController::Spawn(
+     RuntimeDelegate& p_client,
+     const std::string& advisory_script_uri,
+     const std::string& advisory_script_entrypoint,
+@@ -102,6 +102,22 @@ RuntimeController::~RuntimeController() {
+   }
+ }
+ 
++bool RuntimeController::Launch(
++    const Settings& settings,
++    const fml::closure& root_isolate_create_callback,
++    std::optional<std::string> dart_entrypoint,
++    std::optional<std::string> dart_entrypoint_library,
++    const std::vector<std::string>& dart_entrypoint_args,
++    std::unique_ptr<IsolateConfiguration> isolate_configuration,
++    std::shared_ptr<NativeAssetsManager> native_assets_manager,
++    std::optional<int64_t> engine_id) {
++  return LaunchRootIsolate(
++      settings, std::move(root_isolate_create_callback),
++      std::move(dart_entrypoint), std::move(dart_entrypoint_library),
++      dart_entrypoint_args, std::move(isolate_configuration),
++      std::move(native_assets_manager), engine_id);
++}
++
+ bool RuntimeController::IsRootIsolateRunning() const {
+   std::shared_ptr<DartIsolate> root_isolate = root_isolate_.lock();
+   if (root_isolate) {
+@@ -110,7 +126,11 @@ bool RuntimeController::IsRootIsolateRunning() const {
+   return false;
+ }
+ 
+-std::unique_ptr<RuntimeController> RuntimeController::Clone() const {
++bool RuntimeController::IsRunning() const {
++  return IsRootIsolateRunning();
++}
++
++std::unique_ptr<RuntimeBackend> RuntimeController::Clone() const {
+   return std::make_unique<RuntimeController>(client_,                      //
+                                              vm_,                          //
+                                              isolate_snapshot_,            //
+diff --git a/engine/src/flutter/runtime/runtime_controller.h b/engine/src/flutter/runtime/runtime_controller.h
+index a909666d556..2e455a59a0b 100644
+--- a/engine/src/flutter/runtime/runtime_controller.h
++++ b/engine/src/flutter/runtime/runtime_controller.h
+@@ -26,6 +26,8 @@
+ #include "flutter/runtime/dart_vm.h"
+ #include "flutter/runtime/platform_data.h"
+ #include "flutter/runtime/platform_isolate_manager.h"
++#include "flutter/runtime_spi/dart_runtime_extensions.h"
++#include "flutter/runtime_spi/runtime_backend.h"
+ 
+ namespace flutter {
+ 
+@@ -49,7 +51,9 @@ class Window;
+ /// `RuntimeController` and flushed to the Dart VM when the isolate becomes
+ /// ready before the entrypoint function. See `PlatformData`.
+ ///
+-class RuntimeController : public PlatformConfigurationClient,
++class RuntimeController : public RuntimeBackend,
++                          public DartRuntimeExtensions,
++                          public PlatformConfigurationClient,
+                           PointerDataPacketConverter::Delegate {
+  public:
+   /// A callback that's invoked after this `RuntimeController` attempts to
+@@ -60,7 +64,7 @@ class RuntimeController : public PlatformConfigurationClient,
+   ///
+   /// The `added` parameter is false if the add operation fails or was
+   /// cancelled while pending using `RemoveView`.
+-  using AddViewCallback = std::function<void(bool added)>;
++  using AddViewCallback = RuntimeBackend::AddViewCallback;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Creates a new instance of a runtime controller. This is
+@@ -114,7 +118,7 @@ class RuntimeController : public PlatformConfigurationClient,
+   /// @return     A RuntimeController with a running isolate.
+   /// @see        RuntimeController::RuntimeController
+   ///
+-  std::unique_ptr<RuntimeController> Spawn(
++  std::unique_ptr<RuntimeBackend> Spawn(
+       RuntimeDelegate& p_client,
+       const std::string& advisory_script_uri,
+       const std::string& advisory_script_entrypoint,
+@@ -131,6 +135,16 @@ class RuntimeController : public PlatformConfigurationClient,
+   // |PlatformConfigurationClient|
+   ~RuntimeController() override;
+ 
++  bool Launch(
++      const Settings& settings,
++      const fml::closure& root_isolate_create_callback,
++      std::optional<std::string> dart_entrypoint,
++      std::optional<std::string> dart_entrypoint_library,
++      const std::vector<std::string>& dart_entrypoint_args,
++      std::unique_ptr<IsolateConfiguration> isolate_configuration,
++      std::shared_ptr<NativeAssetsManager> native_assets_manager,
++      std::optional<int64_t> engine_id) override;
++
+   //----------------------------------------------------------------------------
+   /// @brief      Launches the isolate using the window data associated with
+   ///             this runtime controller. Before this call, the Dart isolate
+@@ -173,7 +187,7 @@ class RuntimeController : public PlatformConfigurationClient,
+       const std::vector<std::string>& dart_entrypoint_args,
+       std::unique_ptr<IsolateConfiguration> isolate_configuration,
+       std::shared_ptr<NativeAssetsManager> native_assets_manager,
+-      std::optional<int64_t> engine_id);
++      std::optional<int64_t> engine_id) override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Clone the runtime controller. Launching an isolate with a
+@@ -184,7 +198,7 @@ class RuntimeController : public PlatformConfigurationClient,
+   ///
+   /// @return     A clone of the existing runtime controller.
+   ///
+-  std::unique_ptr<RuntimeController> Clone() const;
++  std::unique_ptr<RuntimeBackend> Clone() const override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Notify the isolate that a new view is available.
+@@ -209,7 +223,7 @@ class RuntimeController : public PlatformConfigurationClient,
+   ///
+   void AddView(int64_t view_id,
+                const ViewportMetrics& view_metrics,
+-               AddViewCallback callback);
++               AddViewCallback callback) override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Notify the isolate that a view is no longer available.
+@@ -229,14 +243,14 @@ class RuntimeController : public PlatformConfigurationClient,
+   ///             isolate. False if the view does not exist. If the Dart isolate
+   ///             is not running, then the pending view creation (if any) is
+   ///             cancelled and the return value is always false.
+-  bool RemoveView(int64_t view_id);
++  bool RemoveView(int64_t view_id) override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Notify the isolate that the focus state of a native view has
+   ///             changed.
+   ///
+   /// @param[in]  event  The focus event describing the change.
+-  bool SendViewFocusEvent(const ViewFocusEvent& event);
++  bool SendViewFocusEvent(const ViewFocusEvent& event) override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Forward the specified viewport metrics to the running isolate.
+@@ -248,7 +262,8 @@ class RuntimeController : public PlatformConfigurationClient,
+   ///
+   /// @return     If the window metrics were forwarded to the running isolate.
+   ///
+-  bool SetViewportMetrics(int64_t view_id, const ViewportMetrics& metrics);
++  bool SetViewportMetrics(int64_t view_id,
++                          const ViewportMetrics& metrics) override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Forward the specified display metrics to the running isolate.
+@@ -256,7 +271,7 @@ class RuntimeController : public PlatformConfigurationClient,
+   ///             flushed to the isolate when it starts.
+   ///
+   /// @param[in]  displays  The available displays.
+-  bool SetDisplays(const std::vector<DisplayData>& displays);
++  bool SetDisplays(const std::vector<DisplayData>& displays) override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Forward the specified locale data to the running isolate. If
+@@ -271,7 +286,7 @@ class RuntimeController : public PlatformConfigurationClient,
+   ///
+   /// @return     If the locale data was forwarded to the running isolate.
+   ///
+-  bool SetLocales(const std::vector<std::string>& locale_data);
++  bool SetLocales(const std::vector<std::string>& locale_data) override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Forward the user settings data to the running isolate. If the
+@@ -286,7 +301,7 @@ class RuntimeController : public PlatformConfigurationClient,
+   /// @return     If the user settings data was forwarded to the running
+   ///             isolate.
+   ///
+-  bool SetUserSettingsData(const std::string& data);
++  bool SetUserSettingsData(const std::string& data) override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Forward the initial lifecycle state data to the running
+@@ -303,7 +318,7 @@ class RuntimeController : public PlatformConfigurationClient,
+   /// @return     If the lifecycle state data was forwarded to the running
+   ///             isolate.
+   ///
+-  bool SetInitialLifecycleState(const std::string& data);
++  bool SetInitialLifecycleState(const std::string& data) override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Notifies the running isolate about whether the semantics tree
+@@ -316,7 +331,7 @@ class RuntimeController : public PlatformConfigurationClient,
+   /// @return     If the semantics tree generation preference was forwarded to
+   ///             the running isolate.
+   ///
+-  bool SetSemanticsEnabled(bool enabled);
++  bool SetSemanticsEnabled(bool enabled) override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Forward the preference of accessibility features that must be
+@@ -330,7 +345,7 @@ class RuntimeController : public PlatformConfigurationClient,
+   /// @return     If the preference of accessibility features was forwarded to
+   ///             the running isolate.
+   ///
+-  bool SetAccessibilityFeatures(int32_t flags);
++  bool SetAccessibilityFeatures(int32_t flags) override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Notifies the running isolate that it should start generating a
+@@ -345,7 +360,7 @@ class RuntimeController : public PlatformConfigurationClient,
+   /// @return     If notification to begin frame rendering was delivered to the
+   ///             running isolate.
+   ///
+-  bool BeginFrame(fml::TimePoint frame_time, uint64_t frame_number);
++  bool BeginFrame(fml::TimePoint frame_time, uint64_t frame_number) override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Dart code cannot fully measure the time it takes for a
+@@ -373,7 +388,7 @@ class RuntimeController : public PlatformConfigurationClient,
+   ///                      are measured against the system monotonic clock
+   ///                      measured in microseconds.
+   ///
+-  bool ReportTimings(std::vector<int64_t> timings);
++  bool ReportTimings(std::vector<int64_t> timings) override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Notify the Dart VM that no frame workloads are expected on the
+@@ -444,7 +459,7 @@ class RuntimeController : public PlatformConfigurationClient,
+   ///
+   /// @return     If the idle notification was forwarded to the running isolate.
+   ///
+-  virtual bool NotifyIdle(fml::TimeDelta deadline);
++  bool NotifyIdle(fml::TimeDelta deadline) override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Returns if the root isolate is running. The isolate must be
+@@ -455,6 +470,8 @@ class RuntimeController : public PlatformConfigurationClient,
+   ///
+   virtual bool IsRootIsolateRunning() const;
+ 
++  bool IsRunning() const override;
++
+   //----------------------------------------------------------------------------
+   /// @brief      Dispatch the specified platform message to running root
+   ///             isolate.
+@@ -464,8 +481,8 @@ class RuntimeController : public PlatformConfigurationClient,
+   /// @return     If the message was dispatched to the running root isolate.
+   ///             This may fail is an isolate is not running.
+   ///
+-  virtual bool DispatchPlatformMessage(
+-      std::unique_ptr<PlatformMessage> message);
++  bool DispatchPlatformMessage(
++      std::unique_ptr<PlatformMessage> message) override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Dispatch the specified pointer data message to the running
+@@ -476,7 +493,7 @@ class RuntimeController : public PlatformConfigurationClient,
+   /// @return     If the pointer data message was dispatched. This may fail is
+   ///             an isolate is not running.
+   ///
+-  bool DispatchPointerDataPacket(const PointerDataPacket& packet);
++  bool DispatchPointerDataPacket(const PointerDataPacket& packet) override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Requests to perform framework hit test from the engine.
+@@ -487,7 +504,8 @@ class RuntimeController : public PlatformConfigurationClient,
+   ///
+   /// @return     The hit test response.
+   ///
+-  HitTestResponse HitTest(int64_t view_id, const flutter::PointData offset);
++  HitTestResponse HitTest(int64_t view_id, const flutter::PointData offset)
++      override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Dispatch the semantics action to the specified accessibility
+@@ -513,7 +531,7 @@ class RuntimeController : public PlatformConfigurationClient,
+   /// @return     The main port identifier. If no root isolate is running,
+   ///             returns `ILLEGAL_PORT`.
+   ///
+-  Dart_Port GetMainPort();
++  Dart_Port GetMainPort() override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Gets the debug name of the root isolate. But default, the
+@@ -528,7 +546,7 @@ class RuntimeController : public PlatformConfigurationClient,
+   ///
+   /// @return     The debug name of the root isolate.
+   ///
+-  std::string GetIsolateName();
++  std::string GetIsolateName() override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Returns if the root isolate has any live receive ports.
+@@ -536,7 +554,7 @@ class RuntimeController : public PlatformConfigurationClient,
+   /// @return     True if there are live receive ports, False otherwise. Return
+   ///             False if the root isolate is not running as well.
+   ///
+-  bool HasLivePorts();
++  bool HasLivePorts() override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Returns if the root isolate has any pending microtasks.
+@@ -545,14 +563,14 @@ class RuntimeController : public PlatformConfigurationClient,
+   ///             run, False otherwise. Return False if the root isolate is not
+   ///             running as well.
+   ///
+-  bool HasPendingMicrotasks();
++  bool HasPendingMicrotasks() override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Get the last error encountered by the microtask queue.
+   ///
+   /// @return     The last error encountered by the microtask queue.
+   ///
+-  tonic::DartErrorHandleType GetLastError();
++  tonic::DartErrorHandleType GetLastError() override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Get the service ID of the root isolate if the root isolate is
+@@ -560,7 +578,7 @@ class RuntimeController : public PlatformConfigurationClient,
+   ///
+   /// @return     The root isolate service id.
+   ///
+-  std::optional<std::string> GetRootIsolateServiceID() const;
++  std::optional<std::string> GetRootIsolateServiceID() const override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Get the return code specified by the root isolate (if one is
+@@ -568,7 +586,7 @@ class RuntimeController : public PlatformConfigurationClient,
+   ///
+   /// @return     The root isolate return code if the isolate has specified one.
+   ///
+-  std::optional<uint32_t> GetRootIsolateReturnCode();
++  std::optional<uint32_t> GetRootIsolateReturnCode() override;
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Get an identifier that represents the Dart isolate group the
+@@ -612,7 +630,7 @@ class RuntimeController : public PlatformConfigurationClient,
+   void LoadDartDeferredLibrary(
+       intptr_t loading_unit_id,
+       std::unique_ptr<const fml::Mapping> snapshot_data,
+-      std::unique_ptr<const fml::Mapping> snapshot_instructions);
++      std::unique_ptr<const fml::Mapping> snapshot_instructions) override;
+ 
+   //--------------------------------------------------------------------------
+   /// @brief      Indicates to the dart VM that the request to load a deferred
+@@ -636,9 +654,9 @@ class RuntimeController : public PlatformConfigurationClient,
+   ///                              errors are permanent and attempts to
+   ///                              re-request the library will instantly
+   ///                              complete with an error.
+-  virtual void LoadDartDeferredLibraryError(intptr_t loading_unit_id,
+-                                            const std::string error_message,
+-                                            bool transient);
++  void LoadDartDeferredLibraryError(intptr_t loading_unit_id,
++                                    const std::string error_message,
++                                    bool transient) override;
+ 
+   // |PlatformConfigurationClient|
+   void RequestDartDeferredLibrary(intptr_t loading_unit_id) override;
+@@ -659,7 +677,7 @@ class RuntimeController : public PlatformConfigurationClient,
+     return context_.io_manager;
+   }
+ 
+-  virtual DartVM* GetDartVM() const { return vm_; }
++  DartVM* GetDartVM() const override { return vm_; }
+ 
+   const fml::RefPtr<const DartSnapshot>& GetIsolateSnapshot() const {
+     return isolate_snapshot_;
+@@ -680,7 +698,7 @@ class RuntimeController : public PlatformConfigurationClient,
+     return root_isolate_;
+   }
+ 
+-  void FlushMicrotaskQueue() {
++  void FlushMicrotaskQueue() override {
+     if (auto isolate = root_isolate_.lock()) {
+       isolate->FlushMicrotasksNow();
+     }
+@@ -690,13 +708,15 @@ class RuntimeController : public PlatformConfigurationClient,
+     return platform_isolate_manager_;
+   }
+ 
+-  void SetRootIsolateOwnerToCurrentThread();
++  void SetRootIsolateOwnerToCurrentThread() override;
+ 
+   //--------------------------------------------------------------------------
+   /// @brief      Shuts down all registered platform isolates. Must be called
+   ///             from the platform thread.
+   ///
+-  void ShutdownPlatformIsolates();
++  void ShutdownPlatformIsolates() override;
++
++  DartRuntimeExtensions* AsDart() override { return this; }
+ 
+  protected:
+   /// Constructor for Mocks.
+diff --git a/engine/src/flutter/runtime_spi/dart_runtime_extensions.h b/engine/src/flutter/runtime_spi/dart_runtime_extensions.h
+new file mode 100644
+index 00000000000..2c23c3b51da
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/dart_runtime_extensions.h
+@@ -0,0 +1,64 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_DART_RUNTIME_EXTENSIONS_H_
++#define FLUTTER_RUNTIME_SPI_DART_RUNTIME_EXTENSIONS_H_
++
++#include <cstdint>
++#include <functional>
++#include <memory>
++#include <optional>
++#include <string>
++#include <vector>
++
++#include "flutter/fml/closure.h"
++#include "flutter/fml/mapping.h"
++
++namespace flutter {
++
++class DartVM;
++class DartSnapshot;
++class IsolateConfiguration;
++class NativeAssetsManager;
++class Settings;
++
++class DartRuntimeExtensions {
++ public:
++  virtual ~DartRuntimeExtensions() = default;
++
++  virtual DartVM* GetDartVM() const = 0;
++  virtual int64_t GetMainPort() = 0;
++  virtual std::string GetIsolateName() = 0;
++  virtual std::optional<std::string> GetRootIsolateServiceID() const = 0;
++  virtual std::optional<uint32_t> GetRootIsolateReturnCode() = 0;
++  virtual bool HasLivePorts() = 0;
++  virtual bool HasPendingMicrotasks() = 0;
++  virtual void FlushMicrotaskQueue() = 0;
++
++  virtual bool LaunchRootIsolate(
++      const Settings& settings,
++      const fml::closure& root_isolate_create_callback,
++      std::optional<std::string> dart_entrypoint,
++      std::optional<std::string> dart_entrypoint_library,
++      const std::vector<std::string>& dart_entrypoint_args,
++      std::unique_ptr<IsolateConfiguration> isolate_configuration,
++      std::shared_ptr<NativeAssetsManager> native_assets_manager,
++      std::optional<int64_t> engine_id) = 0;
++
++  virtual void LoadDartDeferredLibrary(
++      intptr_t loading_unit_id,
++      std::unique_ptr<const fml::Mapping> snapshot_data,
++      std::unique_ptr<const fml::Mapping> snapshot_instructions) = 0;
++
++  virtual void LoadDartDeferredLibraryError(intptr_t loading_unit_id,
++                                            const std::string error_message,
++                                            bool transient) = 0;
++
++  virtual void ShutdownPlatformIsolates() = 0;
++  virtual void SetRootIsolateOwnerToCurrentThread() = 0;
++};
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_DART_RUNTIME_EXTENSIONS_H_
+diff --git a/engine/src/flutter/runtime_spi/runtime_backend.h b/engine/src/flutter/runtime_spi/runtime_backend.h
+new file mode 100644
+index 00000000000..1df30bf7af5
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/runtime_backend.h
+@@ -0,0 +1,110 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_RUNTIME_BACKEND_H_
++#define FLUTTER_RUNTIME_SPI_RUNTIME_BACKEND_H_
++
++#include <cstdint>
++#include <functional>
++#include <memory>
++#include <optional>
++#include <string>
++#include <vector>
++
++#include "flutter/common/settings.h"
++#include "flutter/fml/closure.h"
++#include "flutter/fml/mapping.h"
++#include "flutter/fml/memory/weak_ptr.h"
++#include "flutter/fml/time/time_delta.h"
++#include "flutter/fml/time/time_point.h"
++#include "flutter/lib/ui/window/hit_test_response.h"
++#include "flutter/lib/ui/semantics/semantics_node.h"
++#include "flutter/lib/ui/window/point_data.h"
++#include "flutter/lib/ui/window/pointer_data_packet.h"
++#include "flutter/lib/ui/window/platform_message.h"
++#include "flutter/lib/ui/window/viewport_metrics.h"
++#include "flutter/lib/ui/window/view_focus.h"
++#include "flutter/runtime/platform_data.h"
++#include "third_party/tonic/logging/dart_error.h"
++
++namespace flutter {
++
++class DartRuntimeExtensions;
++class ImageDecoder;
++class ImageGeneratorRegistry;
++class IOManager;
++class IsolateConfiguration;
++class LayerTree;
++class NativeAssetsManager;
++class RuntimeDelegate;
++class SnapshotDelegate;
++class ViewportMetrics;
++
++class RuntimeBackend {
++ public:
++  using AddViewCallback = std::function<void(bool added)>;
++
++  virtual ~RuntimeBackend() = default;
++
++  virtual std::unique_ptr<RuntimeBackend> Spawn(
++      RuntimeDelegate& p_client,
++      const std::string& advisory_script_uri,
++      const std::string& advisory_script_entrypoint,
++      const std::function<void(int64_t)>& idle_notification_callback,
++      const fml::closure& isolate_create_callback,
++      const fml::closure& isolate_shutdown_callback,
++      const std::shared_ptr<const fml::Mapping>& persistent_isolate_data,
++      fml::WeakPtr<IOManager> io_manager,
++      fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
++      fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
++          image_generator_registry,
++      fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate) const =
++      0;
++
++  virtual std::unique_ptr<RuntimeBackend> Clone() const = 0;
++
++  virtual bool Launch(
++      const Settings& settings,
++      const fml::closure& root_isolate_create_callback,
++      std::optional<std::string> dart_entrypoint,
++      std::optional<std::string> dart_entrypoint_library,
++      const std::vector<std::string>& dart_entrypoint_args,
++      std::unique_ptr<IsolateConfiguration> isolate_configuration,
++      std::shared_ptr<NativeAssetsManager> native_assets_manager,
++      std::optional<int64_t> engine_id) = 0;
++
++  virtual void AddView(int64_t view_id,
++                       const ViewportMetrics& view_metrics,
++                       AddViewCallback callback) = 0;
++  virtual bool RemoveView(int64_t view_id) = 0;
++  virtual bool SetViewportMetrics(int64_t view_id,
++                                  const ViewportMetrics& metrics) = 0;
++  virtual bool SetDisplays(const std::vector<DisplayData>& displays) = 0;
++  virtual bool BeginFrame(fml::TimePoint frame_time,
++                          uint64_t frame_number) = 0;
++  virtual bool DispatchPlatformMessage(
++      std::unique_ptr<PlatformMessage> message) = 0;
++  virtual bool DispatchPointerDataPacket(const PointerDataPacket& packet) = 0;
++  virtual bool DispatchSemanticsAction(int64_t view_id,
++                                       int32_t node_id,
++                                       SemanticsAction action,
++                                       fml::MallocMapping args) = 0;
++  virtual bool SetSemanticsEnabled(bool enabled) = 0;
++  virtual bool SetAccessibilityFeatures(int32_t flags) = 0;
++  virtual bool SetLocales(const std::vector<std::string>& locale_data) = 0;
++  virtual bool SetUserSettingsData(const std::string& data) = 0;
++  virtual bool SetInitialLifecycleState(const std::string& data) = 0;
++  virtual bool SendViewFocusEvent(const ViewFocusEvent& event) = 0;
++  virtual bool NotifyIdle(fml::TimeDelta deadline) = 0;
++  virtual bool ReportTimings(std::vector<int64_t> timings) = 0;
++  virtual HitTestResponse HitTest(int64_t view_id, PointData offset) = 0;
++  virtual bool IsRunning() const = 0;
++  virtual tonic::DartErrorHandleType GetLastError() = 0;
++
++  virtual DartRuntimeExtensions* AsDart() { return nullptr; }
++};
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_RUNTIME_BACKEND_H_
+diff --git a/engine/src/flutter/shell/common/BUILD.gn b/engine/src/flutter/shell/common/BUILD.gn
+index 7efe2f56a8e..cf5645c8e64 100644
+--- a/engine/src/flutter/shell/common/BUILD.gn
++++ b/engine/src/flutter/shell/common/BUILD.gn
+@@ -323,6 +323,8 @@ if (enable_unittests) {
+       "dl_op_spy_unittests.cc",
+       "engine_animator_unittests.cc",
+       "engine_unittests.cc",
++      "fake_runtime_backend.cc",
++      "fake_runtime_backend.h",
+       "persistent_cache_unittests.cc",
+       "pipeline_unittests.cc",
+       "rasterizer_unittests.cc",
+diff --git a/engine/src/flutter/shell/common/engine.cc b/engine/src/flutter/shell/common/engine.cc
+index 48b5f0433ef..6db5fbe098a 100644
+--- a/engine/src/flutter/shell/common/engine.cc
++++ b/engine/src/flutter/shell/common/engine.cc
+@@ -15,6 +15,7 @@
+ #include "flutter/fml/trace_event.h"
+ #include "flutter/impeller/core/runtime_types.h"
+ #include "flutter/lib/ui/text/font_collection.h"
++#include "flutter/runtime/runtime_controller.h"
+ #include "flutter/shell/common/animator.h"
+ #include "rapidjson/document.h"
+ 
+@@ -41,12 +42,12 @@ Engine::Engine(
+     std::unique_ptr<Animator> animator,
+     const fml::WeakPtr<IOManager>& io_manager,
+     const std::shared_ptr<FontCollection>& font_collection,
+-    std::unique_ptr<RuntimeController> runtime_controller,
++    std::unique_ptr<RuntimeBackend> runtime_backend,
+     const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch)
+     : delegate_(delegate),
+       settings_(settings),
+       animator_(std::move(animator)),
+-      runtime_controller_(std::move(runtime_controller)),
++      runtime_backend_(std::move(runtime_backend)),
+       font_collection_(font_collection),
+       image_decoder_(ImageDecoder::Make(settings_,
+                                         task_runners,
+@@ -78,7 +79,7 @@ Engine::Engine(Delegate& delegate,
+              std::make_shared<FontCollection>(),
+              nullptr,
+              gpu_disabled_switch) {
+-  runtime_controller_ = std::make_unique<RuntimeController>(
++  runtime_backend_ = std::make_unique<RuntimeController>(
+       *this,                                 // runtime delegate
+       &vm,                                   // VM
+       std::move(isolate_snapshot),           // isolate snapshot
+@@ -116,7 +117,7 @@ std::unique_ptr<Engine> Engine::Spawn(
+   auto result = std::make_unique<Engine>(
+       /*delegate=*/delegate,
+       /*image_decoder_task_runner=*/
+-      runtime_controller_->GetDartVM()->GetConcurrentWorkerTaskRunner(),
++      runtime_backend_->AsDart()->GetDartVM()->GetConcurrentWorkerTaskRunner(),
+       /*task_runners=*/task_runners_,
+       /*settings=*/settings,
+       /*animator=*/std::move(animator),
+@@ -124,7 +125,7 @@ std::unique_ptr<Engine> Engine::Spawn(
+       /*font_collection=*/font_collection_,
+       /*runtime_controller=*/nullptr,
+       /*gpu_disabled_switch=*/gpu_disabled_switch);
+-  result->runtime_controller_ = runtime_controller_->Spawn(
++  result->runtime_backend_ = runtime_backend_->Spawn(
+       /*p_client=*/*result,
+       /*advisory_script_uri=*/settings.advisory_script_uri,
+       /*advisory_script_entrypoint=*/settings.advisory_script_entrypoint,
+@@ -143,6 +144,11 @@ std::unique_ptr<Engine> Engine::Spawn(
+ 
+ Engine::~Engine() = default;
+ 
++const RuntimeController* Engine::GetRuntimeController() const {
++  auto* dart = runtime_backend_->AsDart();
++  return static_cast<const RuntimeController*>(dart);
++}
++
+ fml::TaskRunnerAffineWeakPtr<Engine> Engine::GetWeakPtr() const {
+   return weak_factory_.GetWeakPtr();
+ }
+@@ -202,7 +208,7 @@ bool Engine::Restart(RunConfiguration configuration) {
+     return false;
+   }
+   delegate_.OnPreEngineRestart();
+-  runtime_controller_ = runtime_controller_->Clone();
++  runtime_backend_ = runtime_backend_->Clone();
+   UpdateAssetManager(nullptr);
+   return Run(std::move(configuration)) == Engine::RunStatus::Success;
+ }
+@@ -224,7 +230,7 @@ Engine::RunStatus Engine::Run(RunConfiguration configuration) {
+ 
+   UpdateAssetManager(configuration.GetAssetManager());
+ 
+-  if (runtime_controller_->IsRootIsolateRunning()) {
++  if (runtime_backend_->IsRunning()) {
+     return RunStatus::FailureAlreadyRunning;
+   }
+ 
+@@ -245,12 +251,14 @@ Engine::RunStatus Engine::Run(RunConfiguration configuration) {
+     // queued by LaunchRootIsolate that execute the app's Dart code.
+     task_runners_.GetUITaskRunner()->PostTask([engine = GetWeakPtr()]() {
+       if (engine) {
+-        engine->runtime_controller_->SetRootIsolateOwnerToCurrentThread();
++        if (auto* dart = engine->runtime_backend_->AsDart()) {
++          dart->SetRootIsolateOwnerToCurrentThread();
++        }
+       }
+     });
+   }
+ 
+-  if (!runtime_controller_->LaunchRootIsolate(
++  if (!runtime_backend_->Launch(
+           settings_,                                 //
+           root_isolate_create_callback,              //
+           configuration.GetEntrypoint(),             //
+@@ -263,7 +271,8 @@ Engine::RunStatus Engine::Run(RunConfiguration configuration) {
+     return RunStatus::Failure;
+   }
+ 
+-  auto service_id = runtime_controller_->GetRootIsolateServiceID();
++  auto* dart = runtime_backend_->AsDart();
++  auto service_id = dart ? dart->GetRootIsolateServiceID() : std::nullopt;
+   if (service_id.has_value()) {
+     std::unique_ptr<PlatformMessage> service_id_message =
+         std::make_unique<flutter::PlatformMessage>(
+@@ -287,58 +296,68 @@ Engine::RunStatus Engine::Run(RunConfiguration configuration) {
+ }
+ 
+ void Engine::BeginFrame(fml::TimePoint frame_time, uint64_t frame_number) {
+-  runtime_controller_->BeginFrame(frame_time, frame_number);
++  runtime_backend_->BeginFrame(frame_time, frame_number);
+ }
+ 
+ void Engine::ReportTimings(std::vector<int64_t> timings) {
+-  runtime_controller_->ReportTimings(std::move(timings));
++  runtime_backend_->ReportTimings(std::move(timings));
+ }
+ 
+ void Engine::NotifyIdle(fml::TimeDelta deadline) {
+-  runtime_controller_->NotifyIdle(deadline);
++  runtime_backend_->NotifyIdle(deadline);
+ }
+ 
+ std::optional<uint32_t> Engine::GetUIIsolateReturnCode() {
+-  return runtime_controller_->GetRootIsolateReturnCode();
++  auto* dart = runtime_backend_->AsDart();
++  return dart ? dart->GetRootIsolateReturnCode() : std::nullopt;
+ }
+ 
+ Dart_Port Engine::GetUIIsolateMainPort() {
+-  return runtime_controller_->GetMainPort();
++  auto* dart = runtime_backend_->AsDart();
++  return dart ? dart->GetMainPort() : ILLEGAL_PORT;
+ }
+ 
+ std::string Engine::GetUIIsolateName() {
+-  return runtime_controller_->GetIsolateName();
++  auto* dart = runtime_backend_->AsDart();
++  return dart ? dart->GetIsolateName() : std::string();
++}
++
++std::optional<std::string> Engine::GetUIIsolateServiceID() {
++  auto* dart = runtime_backend_->AsDart();
++  return dart ? dart->GetRootIsolateServiceID() : std::nullopt;
+ }
+ 
+ bool Engine::UIIsolateHasLivePorts() {
+-  return runtime_controller_->HasLivePorts();
++  auto* dart = runtime_backend_->AsDart();
++  return dart && dart->HasLivePorts();
+ }
+ 
+ bool Engine::UIIsolateHasPendingMicrotasks() {
+-  return runtime_controller_->HasPendingMicrotasks();
++  auto* dart = runtime_backend_->AsDart();
++  return dart && dart->HasPendingMicrotasks();
+ }
+ 
+ tonic::DartErrorHandleType Engine::GetUIIsolateLastError() {
+-  return runtime_controller_->GetLastError();
++  return runtime_backend_->GetLastError();
+ }
+ 
+ void Engine::AddView(int64_t view_id,
+                      const ViewportMetrics& view_metrics,
+                      std::function<void(bool added)> callback) {
+-  runtime_controller_->AddView(view_id, view_metrics, std::move(callback));
++  runtime_backend_->AddView(view_id, view_metrics, std::move(callback));
+ }
+ 
+ bool Engine::RemoveView(int64_t view_id) {
+-  return runtime_controller_->RemoveView(view_id);
++  return runtime_backend_->RemoveView(view_id);
+ }
+ 
+ bool Engine::SendViewFocusEvent(const ViewFocusEvent& event) {
+-  return runtime_controller_->SendViewFocusEvent(event);
++  return runtime_backend_->SendViewFocusEvent(event);
+ }
+ 
+ void Engine::SetViewportMetrics(int64_t view_id,
+                                 const ViewportMetrics& metrics) {
+-  runtime_controller_->SetViewportMetrics(view_id, metrics);
++  runtime_backend_->SetViewportMetrics(view_id, metrics);
+   ScheduleFrame();
+ }
+ 
+@@ -355,15 +374,15 @@ void Engine::DispatchPlatformMessage(std::unique_ptr<PlatformMessage> message) {
+   } else if (channel == kSettingsChannel) {
+     HandleSettingsPlatformMessage(message.get());
+     return;
+-  } else if (!runtime_controller_->IsRootIsolateRunning() &&
++  } else if (!runtime_backend_->IsRunning() &&
+              channel == kNavigationChannel) {
+     // If there's no runtime_, we may still need to set the initial route.
+     HandleNavigationPlatformMessage(std::move(message));
+     return;
+   }
+ 
+-  if (runtime_controller_->IsRootIsolateRunning() &&
+-      runtime_controller_->DispatchPlatformMessage(std::move(message))) {
++  if (runtime_backend_->IsRunning() &&
++      runtime_backend_->DispatchPlatformMessage(std::move(message))) {
+     return;
+   }
+ 
+@@ -382,7 +401,7 @@ bool Engine::HandleLifecyclePlatformMessage(PlatformMessage* message) {
+       state == "AppLifecycleState.inactive") {
+     ScheduleFrame();
+   }
+-  runtime_controller_->SetInitialLifecycleState(state);
++  runtime_backend_->SetInitialLifecycleState(state);
+   // Always forward these messages to the framework by returning false.
+   return false;
+ }
+@@ -445,7 +464,7 @@ bool Engine::HandleLocalizationPlatformMessage(PlatformMessage* message) {
+       locale_data.push_back(args->value[locale_index + 3].GetString());
+     }
+ 
+-    return runtime_controller_->SetLocales(locale_data);
++  return runtime_backend_->SetLocales(locale_data);
+   }
+   return false;
+ }
+@@ -454,7 +473,7 @@ void Engine::HandleSettingsPlatformMessage(PlatformMessage* message) {
+   const auto& data = message->data();
+   std::string jsonData(reinterpret_cast<const char*>(data.GetMapping()),
+                        data.GetSize());
+-  if (runtime_controller_->SetUserSettingsData(jsonData)) {
++  if (runtime_backend_->SetUserSettingsData(jsonData)) {
+     ScheduleFrame();
+   }
+ }
+@@ -467,17 +486,19 @@ void Engine::DispatchPointerDataPacket(
+                              /*flow_ids=*/&trace_flow_id);
+   TRACE_FLOW_STEP("flutter", "PointerEvent", trace_flow_id);
+   animator_->EnqueueTraceFlowId(trace_flow_id);
+-  if (runtime_controller_) {
+-    runtime_controller_->DispatchPointerDataPacket(*packet);
+-    runtime_controller_->FlushMicrotaskQueue();
++  if (runtime_backend_) {
++    runtime_backend_->DispatchPointerDataPacket(*packet);
++    if (auto* dart = runtime_backend_->AsDart()) {
++      dart->FlushMicrotaskQueue();
++    }
+   }
+   animator_->MaybeCleanTraceFlowIds();
+ }
+ 
+ HitTestResponse Engine::HitTest(int64_t view_id,
+                                 const flutter::PointData offset) {
+-  if (runtime_controller_) {
+-    return runtime_controller_->HitTest(view_id, offset);
++  if (runtime_backend_) {
++    return runtime_backend_->HitTest(view_id, offset);
+   }
+   return {.has_platform_view = false};
+ }
+@@ -486,16 +507,16 @@ void Engine::DispatchSemanticsAction(int64_t view_id,
+                                      int node_id,
+                                      SemanticsAction action,
+                                      fml::MallocMapping args) {
+-  runtime_controller_->DispatchSemanticsAction(view_id, node_id, action,
+-                                               std::move(args));
++  runtime_backend_->DispatchSemanticsAction(view_id, node_id, action,
++                                             std::move(args));
+ }
+ 
+ void Engine::SetSemanticsEnabled(bool enabled) {
+-  runtime_controller_->SetSemanticsEnabled(enabled);
++  runtime_backend_->SetSemanticsEnabled(enabled);
+ }
+ 
+ void Engine::SetAccessibilityFeatures(int32_t flags) {
+-  runtime_controller_->SetAccessibilityFeatures(flags);
++  runtime_backend_->SetAccessibilityFeatures(flags);
+ }
+ 
+ std::string Engine::DefaultRouteName() {
+@@ -642,10 +663,10 @@ void Engine::LoadDartDeferredLibrary(
+     intptr_t loading_unit_id,
+     std::unique_ptr<const fml::Mapping> snapshot_data,
+     std::unique_ptr<const fml::Mapping> snapshot_instructions) {
+-  if (runtime_controller_->IsRootIsolateRunning()) {
+-    runtime_controller_->LoadDartDeferredLibrary(
+-        loading_unit_id, std::move(snapshot_data),
+-        std::move(snapshot_instructions));
++  auto* dart = runtime_backend_->AsDart();
++  if (dart && runtime_backend_->IsRunning()) {
++    dart->LoadDartDeferredLibrary(loading_unit_id, std::move(snapshot_data),
++                                  std::move(snapshot_instructions));
+   } else {
+     LoadDartDeferredLibraryError(loading_unit_id, "No running root isolate.",
+                                  true);
+@@ -655,9 +676,10 @@ void Engine::LoadDartDeferredLibrary(
+ void Engine::LoadDartDeferredLibraryError(intptr_t loading_unit_id,
+                                           const std::string& error_message,
+                                           bool transient) {
+-  if (runtime_controller_->IsRootIsolateRunning()) {
+-    runtime_controller_->LoadDartDeferredLibraryError(loading_unit_id,
+-                                                      error_message, transient);
++  auto* dart = runtime_backend_->AsDart();
++  if (dart && runtime_backend_->IsRunning()) {
++    dart->LoadDartDeferredLibraryError(loading_unit_id, error_message,
++                                       transient);
+   }
+ }
+ 
+@@ -666,16 +688,20 @@ const std::weak_ptr<VsyncWaiter> Engine::GetVsyncWaiter() const {
+ }
+ 
+ void Engine::SetDisplays(const std::vector<DisplayData>& displays) {
+-  runtime_controller_->SetDisplays(displays);
++  runtime_backend_->SetDisplays(displays);
+   ScheduleFrame();
+ }
+ 
+ void Engine::ShutdownPlatformIsolates() {
+-  runtime_controller_->ShutdownPlatformIsolates();
++  if (auto* dart = runtime_backend_->AsDart()) {
++    dart->ShutdownPlatformIsolates();
++  }
+ }
+ 
+ void Engine::FlushMicrotaskQueue() {
+-  runtime_controller_->FlushMicrotaskQueue();
++  if (auto* dart = runtime_backend_->AsDart()) {
++    dart->FlushMicrotaskQueue();
++  }
+ }
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/shell/common/engine.h b/engine/src/flutter/shell/common/engine.h
+index 740a9a1477e..accf71dcc42 100644
+--- a/engine/src/flutter/shell/common/engine.h
++++ b/engine/src/flutter/shell/common/engine.h
+@@ -22,13 +22,16 @@
+ #include "flutter/lib/ui/window/platform_message.h"
+ #include "flutter/lib/ui/window/viewport_metrics.h"
+ #include "flutter/runtime/dart_vm.h"
+-#include "flutter/runtime/runtime_controller.h"
+ #include "flutter/runtime/runtime_delegate.h"
++#include "flutter/runtime_spi/runtime_backend.h"
+ #include "flutter/shell/common/animator.h"
+ #include "flutter/shell/common/run_configuration.h"
++#include "third_party/tonic/logging/dart_error.h"
+ 
+ namespace flutter {
+ 
++class RuntimeController;
++
+ //------------------------------------------------------------------------------
+ /// The engine is a component owned by the shell that resides on the UI task
+ /// runner and is responsible for managing the needs of the root isolate and its
+@@ -372,7 +375,7 @@ class Engine final : public RuntimeDelegate {
+          std::unique_ptr<Animator> animator,
+          const fml::WeakPtr<IOManager>& io_manager,
+          const std::shared_ptr<FontCollection>& font_collection,
+-         std::unique_ptr<RuntimeController> runtime_controller,
++         std::unique_ptr<RuntimeBackend> runtime_backend,
+          const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch);
+ 
+   //----------------------------------------------------------------------------
+@@ -672,6 +675,8 @@ class Engine final : public RuntimeDelegate {
+   ///
+   std::string GetUIIsolateName();
+ 
++  std::optional<std::string> GetUIIsolateServiceID();
++
+   //----------------------------------------------------------------------------
+   /// @brief      It is an unexpected challenge to determine when a Dart
+   ///             application is "done". The application cannot simply terminate
+@@ -1005,9 +1010,7 @@ class Engine final : public RuntimeDelegate {
+   //--------------------------------------------------------------------------
+   /// @brief      Accessor for the RuntimeController.
+   ///
+-  const RuntimeController* GetRuntimeController() const {
+-    return runtime_controller_.get();
+-  }
++  const RuntimeController* GetRuntimeController() const;
+ 
+   const std::weak_ptr<VsyncWaiter> GetVsyncWaiter() const;
+ 
+@@ -1093,7 +1096,7 @@ class Engine final : public RuntimeDelegate {
+   Engine::Delegate& delegate_;
+   const Settings settings_;
+   std::unique_ptr<Animator> animator_;
+-  std::unique_ptr<RuntimeController> runtime_controller_;
++  std::unique_ptr<RuntimeBackend> runtime_backend_;
+ 
+   std::string last_entry_point_;
+   std::string last_entry_point_library_;
+diff --git a/engine/src/flutter/shell/common/engine_unittests.cc b/engine/src/flutter/shell/common/engine_unittests.cc
+index 8b9989b8a97..fc940071c38 100644
+--- a/engine/src/flutter/shell/common/engine_unittests.cc
++++ b/engine/src/flutter/shell/common/engine_unittests.cc
+@@ -7,9 +7,12 @@
+ #include <cstring>
+ 
+ #include "flutter/runtime/dart_vm_lifecycle.h"
++#include "flutter/flow/layers/container_layer.h"
+ #include "flutter/shell/common/thread_host.h"
++#include "flutter/shell/common/fake_runtime_backend.h"
+ #include "flutter/testing/fixture_test.h"
+ #include "flutter/testing/testing.h"
++#include "flutter/shell/common/vsync_waiters_test.h"
+ #include "fml/mapping.h"
+ #include "gmock/gmock.h"
+ #include "lib/ui/text/font_collection.h"
+@@ -174,6 +177,30 @@ class MockRuntimeController : public RuntimeController {
+   MOCK_METHOD(bool, NotifyIdle, (fml::TimeDelta), (override));
+ };
+ 
++class MockAnimatorDelegate : public Animator::Delegate {
++ public:
++  MOCK_METHOD(void,
++              OnAnimatorBeginFrame,
++              (fml::TimePoint, uint64_t),
++              (override));
++  MOCK_METHOD(void,
++              OnAnimatorNotifyIdle,
++              (fml::TimeDelta),
++              (override));
++  MOCK_METHOD(void,
++              OnAnimatorUpdateLatestFrameTargetTime,
++              (fml::TimePoint),
++              (override));
++  MOCK_METHOD(void,
++              OnAnimatorDraw,
++              (std::shared_ptr<FramePipeline>),
++              (override));
++  MOCK_METHOD(void,
++              OnAnimatorDrawLastLayerTrees,
++              (std::unique_ptr<FrameTimingsRecorder>),
++              (override));
++};
++
+ class MockFontCollection : public FontCollection {
+  public:
+   MOCK_METHOD(void,
+@@ -262,6 +289,86 @@ TEST_F(EngineTest, Create) {
+   });
+ }
+ 
++TEST_F(EngineTest, BeginFrameReachesFakeBackend) {
++  PostUITaskSync([this] {
++    auto fake_backend = std::make_unique<FakeRuntimeBackend>(task_runners_);
++    auto* backend = fake_backend.get();
++    auto engine = std::make_unique<Engine>(
++        delegate_, image_decoder_task_runner_, task_runners_, settings_,
++        nullptr, io_manager_, std::make_shared<FontCollection>(),
++        std::move(fake_backend), std::make_shared<fml::SyncSwitch>());
++
++    engine->BeginFrame(fml::TimePoint::Now(), 17);
++
++    EXPECT_EQ(backend->begin_frame_count(), 1u);
++  });
++}
++
++TEST_F(EngineTest, RenderFromFakeBackendReachesAnimator) {
++  PostUITaskSync([this] {
++    MockAnimatorDelegate animator_delegate;
++    fml::AutoResetWaitableEvent draw_latch;
++    std::unique_ptr<Engine> engine;
++    auto animator = std::make_unique<Animator>(
++        animator_delegate, task_runners_,
++        std::make_unique<testing::ConstantFiringVsyncWaiter>(task_runners_));
++    auto fake_backend = std::make_unique<FakeRuntimeBackend>(task_runners_);
++    auto* backend = fake_backend.get();
++
++    EXPECT_CALL(animator_delegate, OnAnimatorBeginFrame)
++        .WillOnce([&engine](fml::TimePoint frame_time, uint64_t frame_number) {
++          engine->BeginFrame(frame_time, frame_number);
++        });
++    EXPECT_CALL(animator_delegate, OnAnimatorDraw)
++        .WillOnce([&draw_latch](std::shared_ptr<FramePipeline> pipeline) {
++          pipeline->Consume([&](std::unique_ptr<FrameItem> item) {
++            ASSERT_EQ(item->layer_tree_tasks.size(), 1u);
++            EXPECT_EQ(item->layer_tree_tasks[0]->layer_tree->frame_size(),
++                      DlISize(1, 1));
++          });
++          draw_latch.Signal();
++        });
++
++    engine = std::make_unique<Engine>(
++        delegate_, image_decoder_task_runner_, task_runners_, settings_,
++        std::move(animator), io_manager_, std::make_shared<FontCollection>(),
++        std::move(fake_backend), std::make_shared<fml::SyncSwitch>());
++    backend->SetRuntimeDelegate(*engine);
++    backend->ScheduleFrame();
++
++    draw_latch.Wait();
++  });
++}
++
++TEST_F(EngineTest, DartOnlyGettersWithoutDartBackend) {
++  PostUITaskSync([this] {
++    auto fake_backend = std::make_unique<FakeRuntimeBackend>(task_runners_);
++    auto engine = std::make_unique<Engine>(
++        delegate_, image_decoder_task_runner_, task_runners_, settings_,
++        nullptr, io_manager_, std::make_shared<FontCollection>(),
++        std::move(fake_backend), std::make_shared<fml::SyncSwitch>());
++
++    EXPECT_EQ(engine->GetUIIsolateName(), "");
++    EXPECT_FALSE(engine->GetUIIsolateServiceID().has_value());
++    EXPECT_FALSE(engine->UIIsolateHasLivePorts());
++  });
++}
++
++TEST_F(EngineTest, DartExtensionsAvailableWithRuntimeController) {
++  PostUITaskSync([this] {
++    MockRuntimeDelegate client;
++    auto runtime_controller =
++        std::make_unique<MockRuntimeController>(client, task_runners_);
++    auto* runtime_controller_pointer = runtime_controller.get();
++    auto engine = std::make_unique<Engine>(
++        delegate_, image_decoder_task_runner_, task_runners_, settings_,
++        nullptr, io_manager_, std::make_shared<FontCollection>(),
++        std::move(runtime_controller), std::make_shared<fml::SyncSwitch>());
++
++    EXPECT_EQ(engine->GetRuntimeController(), runtime_controller_pointer);
++  });
++}
++
+ TEST_F(EngineTest, DispatchPlatformMessageUnknown) {
+   PostUITaskSync([this] {
+     MockRuntimeDelegate client;
+diff --git a/engine/src/flutter/shell/common/fake_runtime_backend.cc b/engine/src/flutter/shell/common/fake_runtime_backend.cc
+new file mode 100644
+index 00000000000..0e13bac23e6
+--- /dev/null
++++ b/engine/src/flutter/shell/common/fake_runtime_backend.cc
+@@ -0,0 +1,187 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/shell/common/fake_runtime_backend.h"
++
++#include "flutter/common/constants.h"
++#include "flutter/flow/layers/container_layer.h"
++#include "flutter/flow/layers/layer_tree.h"
++#include "flutter/runtime/runtime_delegate.h"
++#include "flutter/runtime/isolate_configuration.h"
++
++namespace flutter {
++
++FakeRuntimeBackend::FakeRuntimeBackend(const TaskRunners& task_runners)
++    : task_runners_(task_runners) {}
++
++FakeRuntimeBackend::~FakeRuntimeBackend() = default;
++
++void FakeRuntimeBackend::SetRuntimeDelegate(RuntimeDelegate& runtime_delegate) {
++  AssertOnUITaskRunner();
++  runtime_delegate_ = &runtime_delegate;
++}
++
++void FakeRuntimeBackend::ScheduleFrame() {
++  AssertOnUITaskRunner();
++  if (runtime_delegate_) {
++    runtime_delegate_->ScheduleFrame();
++  }
++}
++
++std::unique_ptr<RuntimeBackend> FakeRuntimeBackend::Spawn(
++    RuntimeDelegate& p_client,
++    const std::string& advisory_script_uri,
++    const std::string& advisory_script_entrypoint,
++    const std::function<void(int64_t)>& idle_notification_callback,
++    const fml::closure& isolate_create_callback,
++    const fml::closure& isolate_shutdown_callback,
++    const std::shared_ptr<const fml::Mapping>& persistent_isolate_data,
++    fml::WeakPtr<IOManager> io_manager,
++    fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
++    fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
++        image_generator_registry,
++    fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate) const {
++  AssertOnUITaskRunner();
++  return nullptr;
++}
++
++std::unique_ptr<RuntimeBackend> FakeRuntimeBackend::Clone() const {
++  AssertOnUITaskRunner();
++  return nullptr;
++}
++
++bool FakeRuntimeBackend::Launch(
++    const Settings& settings,
++    const fml::closure& root_isolate_create_callback,
++    std::optional<std::string> dart_entrypoint,
++    std::optional<std::string> dart_entrypoint_library,
++    const std::vector<std::string>& dart_entrypoint_args,
++    std::unique_ptr<IsolateConfiguration> isolate_configuration,
++    std::shared_ptr<NativeAssetsManager> native_assets_manager,
++    std::optional<int64_t> engine_id) {
++  AssertOnUITaskRunner();
++  return false;
++}
++
++void FakeRuntimeBackend::AddView(int64_t view_id,
++                                 const ViewportMetrics& view_metrics,
++                                 AddViewCallback callback) {
++  AssertOnUITaskRunner();
++  callback(false);
++}
++
++bool FakeRuntimeBackend::RemoveView(int64_t view_id) {
++  AssertOnUITaskRunner();
++  return false;
++}
++
++bool FakeRuntimeBackend::SetViewportMetrics(int64_t view_id,
++                                            const ViewportMetrics& metrics) {
++  AssertOnUITaskRunner();
++  return false;
++}
++
++bool FakeRuntimeBackend::SetDisplays(const std::vector<DisplayData>& displays) {
++  AssertOnUITaskRunner();
++  return false;
++}
++
++bool FakeRuntimeBackend::BeginFrame(fml::TimePoint frame_time,
++                                    uint64_t frame_number) {
++  AssertOnUITaskRunner();
++  begin_frame_count_++;
++  RenderEmptyFrame();
++  return true;
++}
++
++bool FakeRuntimeBackend::DispatchPlatformMessage(
++    std::unique_ptr<PlatformMessage> message) {
++  AssertOnUITaskRunner();
++  return false;
++}
++
++bool FakeRuntimeBackend::DispatchPointerDataPacket(
++    const PointerDataPacket& packet) {
++  AssertOnUITaskRunner();
++  return false;
++}
++
++bool FakeRuntimeBackend::DispatchSemanticsAction(int64_t view_id,
++                                                 int32_t node_id,
++                                                 SemanticsAction action,
++                                                 fml::MallocMapping args) {
++  AssertOnUITaskRunner();
++  return false;
++}
++
++bool FakeRuntimeBackend::SetSemanticsEnabled(bool enabled) {
++  AssertOnUITaskRunner();
++  return false;
++}
++
++bool FakeRuntimeBackend::SetAccessibilityFeatures(int32_t flags) {
++  AssertOnUITaskRunner();
++  return false;
++}
++
++bool FakeRuntimeBackend::SetLocales(const std::vector<std::string>& locale_data) {
++  AssertOnUITaskRunner();
++  return false;
++}
++
++bool FakeRuntimeBackend::SetUserSettingsData(const std::string& data) {
++  AssertOnUITaskRunner();
++  return false;
++}
++
++bool FakeRuntimeBackend::SetInitialLifecycleState(const std::string& data) {
++  AssertOnUITaskRunner();
++  return false;
++}
++
++bool FakeRuntimeBackend::SendViewFocusEvent(const ViewFocusEvent& event) {
++  AssertOnUITaskRunner();
++  return false;
++}
++
++bool FakeRuntimeBackend::NotifyIdle(fml::TimeDelta deadline) {
++  AssertOnUITaskRunner();
++  return false;
++}
++
++bool FakeRuntimeBackend::ReportTimings(std::vector<int64_t> timings) {
++  AssertOnUITaskRunner();
++  return false;
++}
++
++HitTestResponse FakeRuntimeBackend::HitTest(int64_t view_id, PointData offset) {
++  AssertOnUITaskRunner();
++  return {.has_platform_view = false};
++}
++
++bool FakeRuntimeBackend::IsRunning() const {
++  AssertOnUITaskRunner();
++  return false;
++}
++
++tonic::DartErrorHandleType FakeRuntimeBackend::GetLastError() {
++  AssertOnUITaskRunner();
++  return tonic::DartErrorHandleType::kNoError;
++}
++
++void FakeRuntimeBackend::AssertOnUITaskRunner() const {
++  FML_DCHECK(task_runners_.GetUITaskRunner()->RunsTasksOnCurrentThread());
++}
++
++void FakeRuntimeBackend::RenderEmptyFrame() {
++  if (!runtime_delegate_) {
++    return;
++  }
++  auto layer_tree = std::make_unique<LayerTree>(
++      std::make_shared<ContainerLayer>(), DlISize(1, 1));
++  runtime_delegate_->Render(kFlutterImplicitViewId, std::move(layer_tree), 1.0f);
++  runtime_delegate_->OnAllViewsRendered();
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/shell/common/fake_runtime_backend.h b/engine/src/flutter/shell/common/fake_runtime_backend.h
+new file mode 100644
+index 00000000000..37f712c06bf
+--- /dev/null
++++ b/engine/src/flutter/shell/common/fake_runtime_backend.h
+@@ -0,0 +1,92 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_SHELL_COMMON_FAKE_RUNTIME_BACKEND_H_
++#define FLUTTER_SHELL_COMMON_FAKE_RUNTIME_BACKEND_H_
++
++#include <cstddef>
++
++#include "flutter/common/task_runners.h"
++#include "flutter/runtime_spi/runtime_backend.h"
++
++namespace flutter {
++
++class RuntimeDelegate;
++
++class FakeRuntimeBackend final : public RuntimeBackend {
++ public:
++  explicit FakeRuntimeBackend(const TaskRunners& task_runners);
++  ~FakeRuntimeBackend() override;
++
++  void SetRuntimeDelegate(RuntimeDelegate& runtime_delegate);
++  void ScheduleFrame();
++
++  size_t begin_frame_count() const { return begin_frame_count_; }
++
++  std::unique_ptr<RuntimeBackend> Spawn(
++      RuntimeDelegate& p_client,
++      const std::string& advisory_script_uri,
++      const std::string& advisory_script_entrypoint,
++      const std::function<void(int64_t)>& idle_notification_callback,
++      const fml::closure& isolate_create_callback,
++      const fml::closure& isolate_shutdown_callback,
++      const std::shared_ptr<const fml::Mapping>& persistent_isolate_data,
++      fml::WeakPtr<IOManager> io_manager,
++      fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
++      fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
++          image_generator_registry,
++      fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate) const
++      override;
++
++  std::unique_ptr<RuntimeBackend> Clone() const override;
++
++  bool Launch(
++      const Settings& settings,
++      const fml::closure& root_isolate_create_callback,
++      std::optional<std::string> dart_entrypoint,
++      std::optional<std::string> dart_entrypoint_library,
++      const std::vector<std::string>& dart_entrypoint_args,
++      std::unique_ptr<IsolateConfiguration> isolate_configuration,
++      std::shared_ptr<NativeAssetsManager> native_assets_manager,
++      std::optional<int64_t> engine_id) override;
++
++  void AddView(int64_t view_id,
++               const ViewportMetrics& view_metrics,
++               AddViewCallback callback) override;
++  bool RemoveView(int64_t view_id) override;
++  bool SetViewportMetrics(int64_t view_id,
++                          const ViewportMetrics& metrics) override;
++  bool SetDisplays(const std::vector<DisplayData>& displays) override;
++  bool BeginFrame(fml::TimePoint frame_time, uint64_t frame_number) override;
++  bool DispatchPlatformMessage(
++      std::unique_ptr<PlatformMessage> message) override;
++  bool DispatchPointerDataPacket(const PointerDataPacket& packet) override;
++  bool DispatchSemanticsAction(int64_t view_id,
++                               int32_t node_id,
++                               SemanticsAction action,
++                               fml::MallocMapping args) override;
++  bool SetSemanticsEnabled(bool enabled) override;
++  bool SetAccessibilityFeatures(int32_t flags) override;
++  bool SetLocales(const std::vector<std::string>& locale_data) override;
++  bool SetUserSettingsData(const std::string& data) override;
++  bool SetInitialLifecycleState(const std::string& data) override;
++  bool SendViewFocusEvent(const ViewFocusEvent& event) override;
++  bool NotifyIdle(fml::TimeDelta deadline) override;
++  bool ReportTimings(std::vector<int64_t> timings) override;
++  HitTestResponse HitTest(int64_t view_id, PointData offset) override;
++  bool IsRunning() const override;
++  tonic::DartErrorHandleType GetLastError() override;
++
++ private:
++  void AssertOnUITaskRunner() const;
++  void RenderEmptyFrame();
++
++  TaskRunners task_runners_;
++  RuntimeDelegate* runtime_delegate_ = nullptr;
++  size_t begin_frame_count_ = 0;
++};
++
++}  // namespace flutter
++
++#endif  // FLUTTER_SHELL_COMMON_FAKE_RUNTIME_BACKEND_H_
