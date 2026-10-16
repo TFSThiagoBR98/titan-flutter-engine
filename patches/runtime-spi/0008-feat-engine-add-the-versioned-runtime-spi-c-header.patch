@@ -1,0 +1,645 @@
+# Why: Why: Freeze a language-neutral, versioned C ABI for runtime handshakes,
+events, frames, and platform messages, with cross-architecture layout checks.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index efc3cd319c4..27368e00822 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -22,6 +22,20 @@ source_set("runtime_spi") {
+   ]
+ }
+ 
++source_set("runtime_spi_c_api") {
++  public = [ "include/flutter_runtime_spi.h" ]
++  sources = [ "abi_layout_check.c" ]
++}
++
++executable("runtime_spi_unittests") {
++  testonly = true
++  sources = [ "spi_abi_frozen_unittests.cc" ]
++  deps = [
++    ":runtime_spi_c_api",
++    "//flutter/testing",
++  ]
++}
++
+ source_set("dart_runtime_extensions") {
+   public = [ "dart_runtime_extensions.h" ]
+   public_deps = [
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+new file mode 100644
+index 00000000000..761fa19fa03
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -0,0 +1,188 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include <stddef.h>
++
++#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
++
++_Static_assert(sizeof(FlutterSpiResult) == 4, "FlutterSpiResult must be 4 bytes");
++
++#if UINTPTR_MAX > UINT32_MAX
++#define SPI_EXPECT_OFFSET(type, member, offset) \
++  _Static_assert(offsetof(type, member) == (offset), "SPI ABI offset changed")
++#define SPI_EXPECT_SIZE(type, size) \
++  _Static_assert(sizeof(type) == (size), "SPI ABI size changed")
++#else
++#define SPI_EXPECT_OFFSET(type, member, offset) \
++  _Static_assert(offsetof(type, member) == (offset), "SPI ABI offset changed")
++#define SPI_EXPECT_SIZE(type, size) \
++  _Static_assert(sizeof(type) == (size), "SPI ABI size changed")
++#endif
++
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, view_id, sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, device_pixel_ratio,
++                  sizeof(void*) == 8 ? 16 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_width,
++                  sizeof(void*) == 8 ? 24 : 20);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_height,
++                  sizeof(void*) == 8 ? 32 : 28);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_padding_top,
++                  sizeof(void*) == 8 ? 40 : 36);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_padding_right,
++                  sizeof(void*) == 8 ? 48 : 44);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_padding_bottom,
++                  sizeof(void*) == 8 ? 56 : 52);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_padding_left,
++                  sizeof(void*) == 8 ? 64 : 60);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_view_inset_top,
++                  sizeof(void*) == 8 ? 72 : 68);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_view_inset_right,
++                  sizeof(void*) == 8 ? 80 : 76);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_view_inset_bottom,
++                  sizeof(void*) == 8 ? 88 : 84);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_view_inset_left,
++                  sizeof(void*) == 8 ? 96 : 92);
++SPI_EXPECT_SIZE(FlutterSpiViewMetrics, sizeof(void*) == 8 ? 104 : 100);
++
++SPI_EXPECT_OFFSET(FlutterSpiFrameInfo, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiFrameInfo, frame_token, sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiFrameInfo, frame_number,
++                  sizeof(void*) == 8 ? 16 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiFrameInfo, frame_start_ns,
++                  sizeof(void*) == 8 ? 24 : 20);
++SPI_EXPECT_OFFSET(FlutterSpiFrameInfo, deadline_ns,
++                  sizeof(void*) == 8 ? 32 : 28);
++SPI_EXPECT_SIZE(FlutterSpiFrameInfo, sizeof(void*) == 8 ? 40 : 36);
++
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, view_id, sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, timestamp_us,
++                  sizeof(void*) == 8 ? 16 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, change,
++                  sizeof(void*) == 8 ? 24 : 20);
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, device_kind,
++                  sizeof(void*) == 8 ? 28 : 24);
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, device,
++                  sizeof(void*) == 8 ? 32 : 28);
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, pointer_id,
++                  sizeof(void*) == 8 ? 40 : 36);
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, physical_x,
++                  sizeof(void*) == 8 ? 48 : 44);
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, physical_y,
++                  sizeof(void*) == 8 ? 56 : 52);
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, buttons,
++                  sizeof(void*) == 8 ? 64 : 60);
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, scroll_delta_x,
++                  sizeof(void*) == 8 ? 72 : 68);
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, scroll_delta_y,
++                  sizeof(void*) == 8 ? 80 : 76);
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, pressure,
++                  sizeof(void*) == 8 ? 88 : 84);
++SPI_EXPECT_SIZE(FlutterSpiPointerEvent, sizeof(void*) == 8 ? 96 : 92);
++
++SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, timestamp_us,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, type, sizeof(void*) == 8 ? 16 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, device_type,
++                  sizeof(void*) == 8 ? 20 : 16);
++SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, physical,
++                  sizeof(void*) == 8 ? 24 : 20);
++SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, logical,
++                  sizeof(void*) == 8 ? 32 : 28);
++SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, character,
++                  sizeof(void*) == 8 ? 40 : 36);
++SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, synthesized,
++                  sizeof(void*) == 8 ? 48 : 40);
++SPI_EXPECT_SIZE(FlutterSpiKeyEvent, sizeof(void*) == 8 ? 56 : 44);
++
++SPI_EXPECT_OFFSET(FlutterSpiPlatformMessage, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiPlatformMessage, channel,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiPlatformMessage, data,
++                  sizeof(void*) == 8 ? 16 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiPlatformMessage, data_size,
++                  sizeof(void*) == 8 ? 24 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiPlatformMessage, response,
++                  sizeof(void*) == 8 ? 32 : 16);
++SPI_EXPECT_SIZE(FlutterSpiPlatformMessage, sizeof(void*) == 8 ? 40 : 20);
++
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, version_major,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, version_minor,
++                  sizeof(void*) == 8 ? 12 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, required_capabilities,
++                  sizeof(void*) == 8 ? 16 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, user_data,
++                  sizeof(void*) == 8 ? 24 : 20);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, start,
++                  sizeof(void*) == 8 ? 32 : 24);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, stop,
++                  sizeof(void*) == 8 ? 40 : 28);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, destroy,
++                  sizeof(void*) == 8 ? 48 : 32);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, add_view,
++                  sizeof(void*) == 8 ? 56 : 36);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, remove_view,
++                  sizeof(void*) == 8 ? 64 : 40);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, set_view_metrics,
++                  sizeof(void*) == 8 ? 72 : 44);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, begin_frame,
++                  sizeof(void*) == 8 ? 80 : 48);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, pointer_events,
++                  sizeof(void*) == 8 ? 88 : 52);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, key_event,
++                  sizeof(void*) == 8 ? 96 : 56);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, platform_message,
++                  sizeof(void*) == 8 ? 104 : 60);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, set_semantics_enabled,
++                  sizeof(void*) == 8 ? 112 : 64);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, semantics_action,
++                  sizeof(void*) == 8 ? 120 : 68);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, set_accessibility_features,
++                  sizeof(void*) == 8 ? 128 : 72);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, set_locales,
++                  sizeof(void*) == 8 ? 136 : 76);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, set_user_settings,
++                  sizeof(void*) == 8 ? 144 : 80);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, set_lifecycle_state,
++                  sizeof(void*) == 8 ? 152 : 84);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, view_focus,
++                  sizeof(void*) == 8 ? 160 : 88);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, notify_idle,
++                  sizeof(void*) == 8 ? 168 : 92);
++SPI_EXPECT_SIZE(FlutterSpiRuntimeTable, sizeof(void*) == 8 ? 176 : 96);
++
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, version_major,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, version_minor,
++                  sizeof(void*) == 8 ? 12 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, capabilities,
++                  sizeof(void*) == 8 ? 16 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, request_frame,
++                  sizeof(void*) == 8 ? 24 : 20);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, scene_create_empty,
++                  sizeof(void*) == 8 ? 32 : 24);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, scene_release,
++                  sizeof(void*) == 8 ? 40 : 28);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, submit_frame,
++                  sizeof(void*) == 8 ? 48 : 32);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, frames_done,
++                  sizeof(void*) == 8 ? 56 : 36);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, send_platform_message,
++                  sizeof(void*) == 8 ? 64 : 40);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, respond,
++                  sizeof(void*) == 8 ? 72 : 44);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, post_task,
++                  sizeof(void*) == 8 ? 80 : 48);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, now_ns,
++                  sizeof(void*) == 8 ? 88 : 52);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, log,
++                  sizeof(void*) == 8 ? 96 : 56);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, report_error,
++                  sizeof(void*) == 8 ? 104 : 60);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 112 : 64);
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+new file mode 100644
+index 00000000000..aec6687ee3d
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -0,0 +1,229 @@
++#ifndef FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_RUNTIME_SPI_H_
++#define FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_RUNTIME_SPI_H_
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define FLUTTER_SPI_VERSION_MAJOR 0
++#define FLUTTER_SPI_VERSION_MINOR 1
++
++typedef enum {
++  kFlutterSpiOk = 0,
++  kFlutterSpiInvalidArgument,
++  kFlutterSpiIncompatibleVersion,
++  kFlutterSpiUnsupported,
++  kFlutterSpiInvalidHandle,
++  kFlutterSpiStaleFrame,
++  kFlutterSpiWrongThread,
++  kFlutterSpiInternalError,
++} FlutterSpiResult;
++
++typedef uint64_t FlutterSpiCapabilities;
++
++enum {
++  kFlutterSpiCapTasks = 1ULL << 0,
++  kFlutterSpiCapPlatformMessages = 1ULL << 1,
++  kFlutterSpiCapPointerEvents = 1ULL << 2,
++  kFlutterSpiCapKeyEvents = 1ULL << 3,
++  kFlutterSpiCapSemantics = 1ULL << 4,
++  kFlutterSpiCapViewFocus = 1ULL << 5,
++  kFlutterSpiCapEmptyScene = 1ULL << 6,
++};
++
++typedef struct FlutterSpiEngine FlutterSpiEngine;
++typedef struct FlutterSpiScene FlutterSpiScene;
++typedef struct FlutterSpiResponseHandle FlutterSpiResponseHandle;
++typedef struct FlutterSpiEngineApi FlutterSpiEngineApi;
++
++typedef struct {
++  size_t struct_size;
++  int64_t view_id;
++  double device_pixel_ratio;
++  double physical_width;
++  double physical_height;
++  double physical_padding_top;
++  double physical_padding_right;
++  double physical_padding_bottom;
++  double physical_padding_left;
++  double physical_view_inset_top;
++  double physical_view_inset_right;
++  double physical_view_inset_bottom;
++  double physical_view_inset_left;
++} FlutterSpiViewMetrics;
++
++typedef struct {
++  size_t struct_size;
++  uint64_t frame_token;
++  uint64_t frame_number;
++  int64_t frame_start_ns;
++  int64_t deadline_ns;
++} FlutterSpiFrameInfo;
++
++typedef enum {
++  kFlutterSpiPointerChangeCancel = 0,
++  kFlutterSpiPointerChangeAdd,
++  kFlutterSpiPointerChangeRemove,
++  kFlutterSpiPointerChangeHover,
++  kFlutterSpiPointerChangeDown,
++  kFlutterSpiPointerChangeMove,
++  kFlutterSpiPointerChangeUp,
++  kFlutterSpiPointerChangePanZoomStart,
++  kFlutterSpiPointerChangePanZoomUpdate,
++  kFlutterSpiPointerChangePanZoomEnd,
++} FlutterSpiPointerChange;
++
++typedef enum {
++  kFlutterSpiPointerDeviceKindTouch = 0,
++  kFlutterSpiPointerDeviceKindMouse,
++  kFlutterSpiPointerDeviceKindStylus,
++  kFlutterSpiPointerDeviceKindInvertedStylus,
++  kFlutterSpiPointerDeviceKindTrackpad,
++} FlutterSpiPointerDeviceKind;
++
++typedef struct {
++  size_t struct_size;
++  int64_t view_id;
++  int64_t timestamp_us;
++  int32_t change;
++  int32_t device_kind;
++  int64_t device;
++  int64_t pointer_id;
++  double physical_x;
++  double physical_y;
++  int64_t buttons;
++  double scroll_delta_x;
++  double scroll_delta_y;
++  double pressure;
++} FlutterSpiPointerEvent;
++
++typedef enum {
++  kFlutterSpiKeyEventTypeDown = 0,
++  kFlutterSpiKeyEventTypeUp,
++  kFlutterSpiKeyEventTypeRepeat,
++} FlutterSpiKeyEventType;
++
++typedef enum {
++  kFlutterSpiKeyEventDeviceTypeKeyboard = 0,
++  kFlutterSpiKeyEventDeviceTypeDirectionalPad,
++  kFlutterSpiKeyEventDeviceTypeGamepad,
++  kFlutterSpiKeyEventDeviceTypeJoystick,
++  kFlutterSpiKeyEventDeviceTypeHdmi,
++} FlutterSpiKeyEventDeviceType;
++
++typedef struct {
++  size_t struct_size;
++  uint64_t timestamp_us;
++  int32_t type;
++  int32_t device_type;
++  uint64_t physical;
++  uint64_t logical;
++  const char* character;
++  bool synthesized;
++} FlutterSpiKeyEvent;
++
++typedef struct {
++  size_t struct_size;
++  const char* channel;
++  const uint8_t* data;
++  size_t data_size;
++  FlutterSpiResponseHandle* response;
++} FlutterSpiPlatformMessage;
++
++typedef struct {
++  size_t struct_size;
++  uint32_t version_major;
++  uint32_t version_minor;
++  FlutterSpiCapabilities required_capabilities;
++  void* user_data;
++  FlutterSpiResult (*start)(void* user_data,
++                            const FlutterSpiEngineApi* api,
++                            FlutterSpiEngine* engine);
++  void (*stop)(void* user_data);
++  void (*destroy)(void* user_data);
++  void (*add_view)(void* user_data, const FlutterSpiViewMetrics* metrics);
++  void (*remove_view)(void* user_data, int64_t view_id);
++  void (*set_view_metrics)(void* user_data,
++                           const FlutterSpiViewMetrics* metrics);
++  void (*begin_frame)(void* user_data, const FlutterSpiFrameInfo* frame_info);
++  void (*pointer_events)(void* user_data,
++                         const FlutterSpiPointerEvent* events,
++                         size_t count);
++  void (*key_event)(void* user_data, const FlutterSpiKeyEvent* event);
++  void (*platform_message)(void* user_data,
++                           const FlutterSpiPlatformMessage* message);
++  void (*set_semantics_enabled)(void* user_data, bool enabled);
++  void (*semantics_action)(void* user_data,
++                           int64_t view_id,
++                           int32_t node_id,
++                           int32_t action,
++                           const uint8_t* args,
++                           size_t args_size);
++  void (*set_accessibility_features)(void* user_data, int32_t flags);
++  void (*set_locales)(void* user_data,
++                      const char* const* locales,
++                      size_t count);
++  void (*set_user_settings)(void* user_data, const char* json);
++  void (*set_lifecycle_state)(void* user_data, const char* state);
++  void (*view_focus)(void* user_data,
++                     int64_t view_id,
++                     int32_t state,
++                     int32_t direction);
++  void (*notify_idle)(void* user_data, int64_t deadline_ns);
++} FlutterSpiRuntimeTable;
++
++struct FlutterSpiEngineApi {
++  size_t struct_size;
++  uint32_t version_major;
++  uint32_t version_minor;
++  FlutterSpiCapabilities capabilities;
++  FlutterSpiResult (*request_frame)(FlutterSpiEngine* engine);
++  FlutterSpiResult (*scene_create_empty)(FlutterSpiEngine* engine,
++                                         int64_t width_px,
++                                         int64_t height_px,
++                                         FlutterSpiScene** out_scene);
++  FlutterSpiResult (*scene_release)(FlutterSpiScene* scene);
++  FlutterSpiResult (*submit_frame)(FlutterSpiEngine* engine,
++                                   int64_t view_id,
++                                   uint64_t frame_token,
++                                   FlutterSpiScene* scene,
++                                   double device_pixel_ratio);
++  FlutterSpiResult (*frames_done)(FlutterSpiEngine* engine);
++  FlutterSpiResult (*send_platform_message)(
++      FlutterSpiEngine* engine,
++      const char* channel,
++      const uint8_t* data,
++      size_t data_size,
++      void (*on_reply)(void* user_data, const uint8_t* data, size_t size),
++      void* reply_user_data);
++  FlutterSpiResult (*respond)(FlutterSpiResponseHandle* response,
++                              const uint8_t* data,
++                              size_t data_size);
++  FlutterSpiResult (*post_task)(FlutterSpiEngine* engine,
++                                void (*task)(void* user_data),
++                                void* user_data,
++                                int64_t delay_ns);
++  int64_t (*now_ns)(FlutterSpiEngine* engine);
++  void (*log)(FlutterSpiEngine* engine,
++              int32_t level,
++              const char* tag,
++              const char* message);
++  FlutterSpiResult (*report_error)(FlutterSpiEngine* engine,
++                                   const char* message);
++};
++
++/*
++ * Input pointers are borrowed and remain valid only for the duration of the
++ * call. Strings are UTF-8 and terminated by zero. The runtime copies every
++ * value it needs after the callback returns.
++ */
++
++#ifdef __cplusplus
++}  // extern "C"
++#endif
++
++#endif  // FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_RUNTIME_SPI_H_
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+new file mode 100644
+index 00000000000..59467de7c47
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -0,0 +1,183 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include <cstddef>
++
++#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
++#include "flutter/testing/testing.h"
++
++namespace flutter {
++namespace testing {
++
++#define EXPECT_SPI_OFFSET(type, member, offset_64, offset_32)                 \
++  EXPECT_EQ(offsetof(type, member),                                         \
++            static_cast<std::size_t>(sizeof(void*) == 8 ? offset_64 : offset_32))
++
++TEST(SpiAbi, ResultValuesAreFrozen) {
++  EXPECT_EQ(kFlutterSpiOk, 0);
++  EXPECT_EQ(kFlutterSpiInvalidArgument, 1);
++  EXPECT_EQ(kFlutterSpiIncompatibleVersion, 2);
++  EXPECT_EQ(kFlutterSpiUnsupported, 3);
++  EXPECT_EQ(kFlutterSpiInvalidHandle, 4);
++  EXPECT_EQ(kFlutterSpiStaleFrame, 5);
++  EXPECT_EQ(kFlutterSpiWrongThread, 6);
++  EXPECT_EQ(kFlutterSpiInternalError, 7);
++  EXPECT_EQ(sizeof(FlutterSpiResult), 4u);
++}
++
++TEST(SpiAbi, CapabilityValuesAreFrozen) {
++  EXPECT_EQ(kFlutterSpiCapTasks, 1u << 0);
++  EXPECT_EQ(kFlutterSpiCapPlatformMessages, 1u << 1);
++  EXPECT_EQ(kFlutterSpiCapPointerEvents, 1u << 2);
++  EXPECT_EQ(kFlutterSpiCapKeyEvents, 1u << 3);
++  EXPECT_EQ(kFlutterSpiCapSemantics, 1u << 4);
++  EXPECT_EQ(kFlutterSpiCapViewFocus, 1u << 5);
++  EXPECT_EQ(kFlutterSpiCapEmptyScene, 1u << 6);
++}
++
++TEST(SpiAbi, PointerEnumValuesAreFrozen) {
++  EXPECT_EQ(kFlutterSpiPointerChangeCancel, 0);
++  EXPECT_EQ(kFlutterSpiPointerChangeAdd, 1);
++  EXPECT_EQ(kFlutterSpiPointerChangeRemove, 2);
++  EXPECT_EQ(kFlutterSpiPointerChangeHover, 3);
++  EXPECT_EQ(kFlutterSpiPointerChangeDown, 4);
++  EXPECT_EQ(kFlutterSpiPointerChangeMove, 5);
++  EXPECT_EQ(kFlutterSpiPointerChangeUp, 6);
++  EXPECT_EQ(kFlutterSpiPointerChangePanZoomStart, 7);
++  EXPECT_EQ(kFlutterSpiPointerChangePanZoomUpdate, 8);
++  EXPECT_EQ(kFlutterSpiPointerChangePanZoomEnd, 9);
++  EXPECT_EQ(kFlutterSpiPointerDeviceKindTouch, 0);
++  EXPECT_EQ(kFlutterSpiPointerDeviceKindMouse, 1);
++  EXPECT_EQ(kFlutterSpiPointerDeviceKindStylus, 2);
++  EXPECT_EQ(kFlutterSpiPointerDeviceKindInvertedStylus, 3);
++  EXPECT_EQ(kFlutterSpiPointerDeviceKindTrackpad, 4);
++}
++
++TEST(SpiAbi, KeyEnumValuesAreFrozen) {
++  EXPECT_EQ(kFlutterSpiKeyEventTypeDown, 0);
++  EXPECT_EQ(kFlutterSpiKeyEventTypeUp, 1);
++  EXPECT_EQ(kFlutterSpiKeyEventTypeRepeat, 2);
++  EXPECT_EQ(kFlutterSpiKeyEventDeviceTypeKeyboard, 0);
++  EXPECT_EQ(kFlutterSpiKeyEventDeviceTypeDirectionalPad, 1);
++  EXPECT_EQ(kFlutterSpiKeyEventDeviceTypeGamepad, 2);
++  EXPECT_EQ(kFlutterSpiKeyEventDeviceTypeJoystick, 3);
++  EXPECT_EQ(kFlutterSpiKeyEventDeviceTypeHdmi, 4);
++}
++
++TEST(SpiAbi, ViewMetricsLayoutIsFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, view_id, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, device_pixel_ratio, 16, 12);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_width, 24, 20);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_height, 32, 28);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_padding_top, 40, 36);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_padding_right, 48, 44);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_padding_bottom, 56, 52);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_padding_left, 64, 60);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_view_inset_top, 72, 68);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_view_inset_right, 80, 76);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_view_inset_bottom, 88, 84);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_view_inset_left, 96, 92);
++  EXPECT_EQ(sizeof(FlutterSpiViewMetrics), sizeof(void*) == 8 ? 104u : 100u);
++}
++
++TEST(SpiAbi, FrameInfoLayoutIsFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiFrameInfo, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiFrameInfo, frame_token, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiFrameInfo, frame_number, 16, 12);
++  EXPECT_SPI_OFFSET(FlutterSpiFrameInfo, frame_start_ns, 24, 20);
++  EXPECT_SPI_OFFSET(FlutterSpiFrameInfo, deadline_ns, 32, 28);
++  EXPECT_EQ(sizeof(FlutterSpiFrameInfo), sizeof(void*) == 8 ? 40u : 36u);
++}
++
++TEST(SpiAbi, PointerEventLayoutIsFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, view_id, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, timestamp_us, 16, 12);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, change, 24, 20);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, device_kind, 28, 24);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, device, 32, 28);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, pointer_id, 40, 36);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, physical_x, 48, 44);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, physical_y, 56, 52);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, buttons, 64, 60);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, scroll_delta_x, 72, 68);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, scroll_delta_y, 80, 76);
++  EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, pressure, 88, 84);
++  EXPECT_EQ(sizeof(FlutterSpiPointerEvent), sizeof(void*) == 8 ? 96u : 92u);
++}
++
++TEST(SpiAbi, KeyEventLayoutIsFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiKeyEvent, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiKeyEvent, timestamp_us, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiKeyEvent, type, 16, 12);
++  EXPECT_SPI_OFFSET(FlutterSpiKeyEvent, device_type, 20, 16);
++  EXPECT_SPI_OFFSET(FlutterSpiKeyEvent, physical, 24, 20);
++  EXPECT_SPI_OFFSET(FlutterSpiKeyEvent, logical, 32, 28);
++  EXPECT_SPI_OFFSET(FlutterSpiKeyEvent, character, 40, 36);
++  EXPECT_SPI_OFFSET(FlutterSpiKeyEvent, synthesized, 48, 40);
++  EXPECT_EQ(sizeof(FlutterSpiKeyEvent), sizeof(void*) == 8 ? 56u : 44u);
++}
++
++TEST(SpiAbi, PlatformMessageLayoutIsFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiPlatformMessage, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiPlatformMessage, channel, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiPlatformMessage, data, 16, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiPlatformMessage, data_size, 24, 12);
++  EXPECT_SPI_OFFSET(FlutterSpiPlatformMessage, response, 32, 16);
++  EXPECT_EQ(sizeof(FlutterSpiPlatformMessage), sizeof(void*) == 8 ? 40u : 20u);
++}
++
++TEST(SpiAbi, RuntimeTableLayoutIsFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, version_major, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, version_minor, 12, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, required_capabilities, 16, 12);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, user_data, 24, 20);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, start, 32, 24);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, stop, 40, 28);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, destroy, 48, 32);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, add_view, 56, 36);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, remove_view, 64, 40);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, set_view_metrics, 72, 44);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, begin_frame, 80, 48);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, pointer_events, 88, 52);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, key_event, 96, 56);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, platform_message, 104, 60);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, set_semantics_enabled, 112, 64);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, semantics_action, 120, 68);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, set_accessibility_features, 128, 72);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, set_locales, 136, 76);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, set_user_settings, 144, 80);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, set_lifecycle_state, 152, 84);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, view_focus, 160, 88);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, notify_idle, 168, 92);
++  EXPECT_EQ(sizeof(FlutterSpiRuntimeTable), sizeof(void*) == 8 ? 176u : 96u);
++}
++
++TEST(SpiAbi, EngineApiLayoutIsFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, version_major, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, version_minor, 12, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, capabilities, 16, 12);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, request_frame, 24, 20);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, scene_create_empty, 32, 24);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, scene_release, 40, 28);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, submit_frame, 48, 32);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, frames_done, 56, 36);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, send_platform_message, 64, 40);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, respond, 72, 44);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, post_task, 80, 48);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, now_ns, 88, 52);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, log, 96, 56);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, report_error, 104, 60);
++  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 112u : 64u);
++}
++
++TEST(SpiAbi, HeaderIsPureC) {
++  SUCCEED();
++}
++
++}  // namespace testing
++}  // namespace flutter

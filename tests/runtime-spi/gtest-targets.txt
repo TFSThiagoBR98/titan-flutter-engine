@@ -4,3 +4,4 @@ flutter/shell/common:shell_unittests
 flutter/lib/ui:ui_unittests
 flutter/shell/platform/embedder:embedder_unittests
 flutter/flow:flow_unittests
+flutter/runtime_spi:runtime_spi_unittests
