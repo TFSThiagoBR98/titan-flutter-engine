@@ -4,5 +4,3 @@ flutter/shell/common:shell_unittests
 flutter/lib/ui:ui_unittests
 flutter/shell/platform/embedder:embedder_unittests
 flutter/flow:flow_unittests
-flutter/shell/common:shell_benchmarks
-flutter/lib/ui:ui_benchmarks

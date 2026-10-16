@@ -17,3 +17,22 @@ O fluxo é:
    motivo.
 3. `scripts/patch-branch.sh export <worktree_dir> runtime-spi` converte os
    commits em patches numerados para a série.
+
+## Verificar o build
+
+Com um build que tenha os testes habilitados, execute os gtests a partir do
+diretório de saída:
+
+```bash
+scripts/run-engine-tests.sh <out_dir> \
+  --baseline tests/runtime-spi/baseline-failures.txt
+```
+
+Os benchmarks estão listados separadamente em
+`tests/runtime-spi/benchmark-targets.txt` e não são executados pelo runner de
+gtests. Para medir a participação do Dart, use a biblioteca não despojada:
+
+```bash
+scripts/measure-dart-footprint.sh \
+  <out_dir>/lib.unstripped/libflutter_engine.so
+```

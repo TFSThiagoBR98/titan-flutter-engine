@@ -32,6 +32,17 @@ sections = subprocess.run(
     capture_output=True,
     text=True,
 ).stdout
+has_symbol_table = any(
+    re.search(r"\]\s+\.symtab\s", line) for line in sections.splitlines()
+)
+if not has_symbol_table:
+    print(
+        f"error: no symbol table in {library}; "
+        f"use lib.unstripped/{os.path.basename(library)}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
 section_pattern = re.compile(
     r"^\s*\[\s*\d+\]\s+(\S+)\s+\S+\s+\S+\s+\S+\s+([0-9A-Fa-f]+)"
 )
@@ -58,17 +69,29 @@ groups = {
     "Other": 0,
 }
 snapshot_size = 0
+seen_addresses = set()
 
 for line in symbols.splitlines():
     fields = line.split(maxsplit=3)
     if len(fields) != 4:
         continue
     try:
+        address = int(fields[0], 16)
         size = int(fields[1], 16)
     except ValueError:
         continue
+    if address in seen_addresses:
+        continue
+    seen_addresses.add(address)
     symbol = fields[3]
-    if symbol.startswith(("kDartVmSnapshot", "kDartIsolateSnapshot")):
+    if symbol.startswith(
+        (
+            "kDartSnapshot",
+            "kDartVmSnapshot",
+            "kDartIsolateSnapshot",
+            "kPlatformStrongDill",
+        )
+    ):
         snapshot_size += size
     elif symbol.startswith(("dart::", "Dart_")):
         groups["dart::/Dart_ (VM)"] += size
@@ -96,5 +119,5 @@ for section_name in (".text", ".rodata", ".data"):
     print(f"| {section_name} | {section_sizes[section_name]} |")
 for group_name, size in groups.items():
     print(f"| {group_name} | {size} |")
-print(f"| kDartVmSnapshot*/kDartIsolateSnapshot* | {snapshot_size} |")
+print(f"| Dart snapshots and kernel | {snapshot_size} |")
 PY

@@ -1,0 +1,2 @@
+flutter/shell/common:shell_benchmarks
+flutter/lib/ui:ui_benchmarks

@@ -33,6 +33,7 @@ while (($# > 0)); do
   esac
 done
 [[ -d "$out_dir" ]] || die "output directory does not exist: $out_dir"
+out_dir=$(cd "$out_dir" && pwd -P)
 [[ -f "$target_file" ]] || die "gtest target list does not exist: $target_file"
 if [[ -n "$baseline_file" && ! -f "$baseline_file" ]]; then
   die "baseline file does not exist: $baseline_file"
@@ -61,13 +62,13 @@ while IFS= read -r target; do
 
   test_directory="$temporary_directory/$binary"
   mkdir -p "$test_directory"
+  result_file="$test_directory/test_detail.json"
   binary_status=0
   reported_failure=0
   (
-    cd "$test_directory"
-    "$binary_path" --gtest_output=json
+    cd "$out_dir/../.."
+    "$binary_path" "--gtest_output=json:$result_file"
   ) || binary_status=$?
-  result_file="$test_directory/test_detail.json"
   if [[ ! -f "$result_file" ]]; then
     printf 'FAIL %s\n' "$target"
     new_failure=1
