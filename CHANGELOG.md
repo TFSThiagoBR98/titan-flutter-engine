@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/build-engine.sh --unittests` builds the engine gtests and benchmarks;
+  `scripts/run-engine-tests.sh` runs them from `engine/src` against a list of known failures.
+- `scripts/patch-branch.sh` keeps a patch folder as commits in a worktree of the Flutter checkout and exports
+  them back (`prepare`/`export`); the `runtime-spi` folder is maintained this way.
+- `scripts/measure-dart-footprint.sh` reports the Dart share of an unstripped engine library (VM code, snapshots
+  and kernel).
+- Patch folder `runtime-spi` (S1): Dart-free `lib/ui` data types, pluggable `fml` tracing, a `RuntimeBackend`
+  interface between the engine and its runtime, and a shell created through a runtime backend factory. Dart apps
+  render the same frame as before (probe hash unchanged on x64 and arm64-musl).
+
 ### Fixed
 
 - `LICENSE` holds the unmodified Apache 2.0 text, so GitHub detects it; the
