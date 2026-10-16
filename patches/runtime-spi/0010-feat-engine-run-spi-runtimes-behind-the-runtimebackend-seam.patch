@@ -1,0 +1,1645 @@
+# Why: Why: connect the versioned C runtime SPI to the RuntimeBackend seam
+while keeping production SPI targets free of Dart dependencies.
+diff --git a/engine/src/flutter/runtime/BUILD.gn b/engine/src/flutter/runtime/BUILD.gn
+index 1444b60a6ab..43077d070be 100644
+--- a/engine/src/flutter/runtime/BUILD.gn
++++ b/engine/src/flutter/runtime/BUILD.gn
+@@ -70,6 +70,31 @@ source_set("platform_data") {
+   ]
+ }
+ 
++source_set("runtime_delegate") {
++  public = [ "runtime_delegate.h" ]
++  sources = [
++    "runtime_delegate.cc",
++    "runtime_delegate.h",
++  ]
++
++  public_deps = [
++    "//flutter/assets",
++    "//flutter/flow",
++    "//flutter/lib/ui:ui_core_types",
++    "//flutter/shell/common:platform_message_handler",
++  ]
++
++  public_configs = [ "//flutter:config" ]
++
++  assert_no_deps = [
++    "//flutter/third_party/dart/*",
++    "//flutter/third_party/tonic/*",
++    "//flutter/runtime:runtime",
++    "//flutter/runtime:libdart",
++    "//flutter/lib/ui:ui",
++  ]
++}
++
+ source_set("runtime") {
+   sources = [
+     "dart_isolate.cc",
+@@ -99,8 +124,6 @@ source_set("runtime") {
+     "ptrace_check.h",
+     "runtime_controller.cc",
+     "runtime_controller.h",
+-    "runtime_delegate.cc",
+-    "runtime_delegate.h",
+     "service_protocol.cc",
+     "service_protocol.h",
+     "skia_concurrent_executor.cc",
+@@ -114,6 +137,7 @@ source_set("runtime") {
+ 
+   public_deps = [
+     ":platform_data",
++    ":runtime_delegate",
+     "//flutter/lib/gpu",
+     "//flutter/lib/ui",
+     "//flutter/runtime_spi:dart_runtime_extensions",
+diff --git a/engine/src/flutter/runtime/runtime_delegate.h b/engine/src/flutter/runtime/runtime_delegate.h
+index 4de5b0f2ba1..e73231d1a3e 100644
+--- a/engine/src/flutter/runtime/runtime_delegate.h
++++ b/engine/src/flutter/runtime/runtime_delegate.h
+@@ -5,21 +5,23 @@
+ #ifndef FLUTTER_RUNTIME_RUNTIME_DELEGATE_H_
+ #define FLUTTER_RUNTIME_RUNTIME_DELEGATE_H_
+ 
++#include <cstdint>
+ #include <memory>
++#include <string>
+ #include <vector>
+ 
+ #include "flutter/assets/asset_manager.h"
+ #include "flutter/flow/layers/layer_tree.h"
+ #include "flutter/lib/ui/semantics/custom_accessibility_action.h"
+ #include "flutter/lib/ui/semantics/semantics_node.h"
+-#include "flutter/lib/ui/text/font_collection.h"
+ #include "flutter/lib/ui/window/platform_message.h"
+ #include "flutter/lib/ui/window/view_focus.h"
+ #include "flutter/shell/common/platform_message_handler.h"
+-#include "third_party/dart/runtime/include/dart_api.h"
+ 
+ namespace flutter {
+ 
++class FontCollection;
++
+ class RuntimeDelegate {
+  public:
+   virtual std::string DefaultRouteName() = 0;
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 50fec11ecbf..383a7bed211 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -22,6 +22,28 @@ source_set("runtime_spi") {
+   ]
+ }
+ 
++source_set("spi_backend") {
++  public = [
++    "spi_runtime_backend.h",
++    "spi_runtime_backend_factory.h",
++  ]
++  sources = [
++    "spi_engine_api.cc",
++    "spi_engine_api.h",
++    "spi_runtime_backend.cc",
++    "spi_runtime_backend.h",
++    "spi_runtime_backend_factory.cc",
++    "spi_runtime_backend_factory.h",
++    "spi_scene.cc",
++    "spi_scene.h",
++  ]
++  public_deps = [
++    ":runtime_spi",
++    ":runtime_spi_c_api",
++    "//flutter/flow",
++  ]
++}
++
+ source_set("runtime_spi_c_api") {
+   public = [ "include/flutter_runtime_spi.h" ]
+   sources = [ "abi_layout_check.c" ]
+@@ -29,9 +51,18 @@ source_set("runtime_spi_c_api") {
+ 
+ executable("runtime_spi_unittests") {
+   testonly = true
+-  sources = [ "spi_abi_frozen_unittests.cc" ]
++  sources = [
++    "spi_abi_frozen_unittests.cc",
++    "spi_runtime_backend_unittests.cc",
++  ]
+   deps = [
++    ":c_test_runtime",
+     ":runtime_spi_c_api",
++    ":spi_backend",
++    "//flutter/common",
++    "//flutter/fml",
++    "//flutter/runtime",
++    "//flutter/shell/common:shell_test_fixture_sources",
+     "//flutter/testing",
+   ]
+ }
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index aec6687ee3d..5c339b956e5 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -153,7 +153,7 @@ typedef struct {
+   void (*pointer_events)(void* user_data,
+                          const FlutterSpiPointerEvent* events,
+                          size_t count);
+-  void (*key_event)(void* user_data, const FlutterSpiKeyEvent* event);
++  bool (*key_event)(void* user_data, const FlutterSpiKeyEvent* event);
+   void (*platform_message)(void* user_data,
+                            const FlutterSpiPlatformMessage* message);
+   void (*set_semantics_enabled)(void* user_data, bool enabled);
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+new file mode 100644
+index 00000000000..a3fbe985f8a
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -0,0 +1,127 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/spi_engine_api.h"
++
++#include "flutter/runtime_spi/spi_runtime_backend.h"
++#include "flutter/runtime_spi/spi_scene.h"
++
++namespace flutter {
++
++FlutterSpiEngineApi SpiEngineApi::Create() {
++  return {
++      .struct_size = sizeof(FlutterSpiEngineApi),
++      .version_major = FLUTTER_SPI_VERSION_MAJOR,
++      .version_minor = FLUTTER_SPI_VERSION_MINOR,
++      .capabilities = kFlutterSpiCapTasks | kFlutterSpiCapPlatformMessages |
++                      kFlutterSpiCapPointerEvents | kFlutterSpiCapKeyEvents |
++                      kFlutterSpiCapSemantics | kFlutterSpiCapViewFocus |
++                      kFlutterSpiCapEmptyScene,
++      .request_frame = RequestFrame,
++      .scene_create_empty = SceneCreateEmpty,
++      .scene_release = SceneRelease,
++      .submit_frame = SubmitFrame,
++      .frames_done = FramesDone,
++      .send_platform_message = SendPlatformMessage,
++      .respond = Respond,
++      .post_task = PostTask,
++      .now_ns = NowNs,
++      .log = Log,
++      .report_error = ReportError,
++  };
++}
++
++FlutterSpiResult SpiEngineApi::RequestFrame(FlutterSpiEngine* engine) {
++  return engine == nullptr ? kFlutterSpiInvalidArgument
++                           : engine->backend->RequestFrame();
++}
++
++FlutterSpiResult SpiEngineApi::SceneCreateEmpty(FlutterSpiEngine* engine,
++                                                int64_t width_px,
++                                                int64_t height_px,
++                                                FlutterSpiScene** out_scene) {
++  if (engine == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return SpiSceneCreateEmpty(width_px, height_px, out_scene);
++}
++
++FlutterSpiResult SpiEngineApi::SceneRelease(FlutterSpiScene* scene) {
++  return scene == nullptr ? kFlutterSpiInvalidArgument
++                          : SpiSceneRelease(scene);
++}
++
++FlutterSpiResult SpiEngineApi::SubmitFrame(FlutterSpiEngine* engine,
++                                           int64_t view_id,
++                                           uint64_t frame_token,
++                                           FlutterSpiScene* scene,
++                                           double device_pixel_ratio) {
++  if (engine == nullptr) {
++    SpiSceneRelease(scene);
++    return kFlutterSpiInvalidArgument;
++  }
++  return engine->backend->SubmitFrame(view_id, frame_token, scene,
++                                      device_pixel_ratio);
++}
++
++FlutterSpiResult SpiEngineApi::FramesDone(FlutterSpiEngine* engine) {
++  return engine == nullptr ? kFlutterSpiInvalidArgument
++                           : engine->backend->FramesDone();
++}
++
++FlutterSpiResult SpiEngineApi::SendPlatformMessage(
++    FlutterSpiEngine* engine,
++    const char* channel,
++    const uint8_t* data,
++    size_t data_size,
++    void (*on_reply)(void* user_data, const uint8_t* data, size_t size),
++    void* reply_user_data) {
++  if (engine == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return engine->backend->SendPlatformMessage(channel, data, data_size,
++                                              on_reply, reply_user_data);
++}
++
++FlutterSpiResult SpiEngineApi::Respond(FlutterSpiResponseHandle* response,
++                                       const uint8_t* data,
++                                       size_t data_size) {
++  SpiRuntimeBackend* backend =
++      SpiRuntimeBackend::FindBackendForResponse(response);
++  if (backend == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  return backend->Respond(response, data, data_size);
++}
++
++FlutterSpiResult SpiEngineApi::PostTask(FlutterSpiEngine* engine,
++                                        void (*task)(void* user_data),
++                                        void* user_data,
++                                        int64_t delay_ns) {
++  if (engine == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return engine->backend->PostTask(task, user_data, delay_ns);
++}
++
++int64_t SpiEngineApi::NowNs(FlutterSpiEngine* engine) {
++  return engine == nullptr ? 0 : engine->backend->NowNs();
++}
++
++void SpiEngineApi::Log(FlutterSpiEngine* engine,
++                       int32_t level,
++                       const char* tag,
++                       const char* message) {
++  if (engine != nullptr) {
++    engine->backend->Log(level, tag, message);
++  }
++}
++
++FlutterSpiResult SpiEngineApi::ReportError(FlutterSpiEngine* engine,
++                                           const char* message) {
++  return engine == nullptr ? kFlutterSpiInvalidArgument
++                           : engine->backend->ReportError(message);
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.h b/engine/src/flutter/runtime_spi/spi_engine_api.h
+new file mode 100644
+index 00000000000..6e674c7217e
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.h
+@@ -0,0 +1,53 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_SPI_ENGINE_API_H_
++#define FLUTTER_RUNTIME_SPI_SPI_ENGINE_API_H_
++
++#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
++
++namespace flutter {
++
++class SpiEngineApi final {
++ public:
++  static FlutterSpiEngineApi Create();
++
++  static FlutterSpiResult RequestFrame(FlutterSpiEngine* engine);
++  static FlutterSpiResult SceneCreateEmpty(FlutterSpiEngine* engine,
++                                            int64_t width_px,
++                                            int64_t height_px,
++                                            FlutterSpiScene** out_scene);
++  static FlutterSpiResult SceneRelease(FlutterSpiScene* scene);
++  static FlutterSpiResult SubmitFrame(FlutterSpiEngine* engine,
++                                      int64_t view_id,
++                                      uint64_t frame_token,
++                                      FlutterSpiScene* scene,
++                                      double device_pixel_ratio);
++  static FlutterSpiResult FramesDone(FlutterSpiEngine* engine);
++  static FlutterSpiResult SendPlatformMessage(
++      FlutterSpiEngine* engine,
++      const char* channel,
++      const uint8_t* data,
++      size_t data_size,
++      void (*on_reply)(void* user_data, const uint8_t* data, size_t size),
++      void* reply_user_data);
++  static FlutterSpiResult Respond(FlutterSpiResponseHandle* response,
++                                  const uint8_t* data,
++                                  size_t data_size);
++  static FlutterSpiResult PostTask(FlutterSpiEngine* engine,
++                                   void (*task)(void* user_data),
++                                   void* user_data,
++                                   int64_t delay_ns);
++  static int64_t NowNs(FlutterSpiEngine* engine);
++  static void Log(FlutterSpiEngine* engine,
++                  int32_t level,
++                  const char* tag,
++                  const char* message);
++  static FlutterSpiResult ReportError(FlutterSpiEngine* engine,
++                                      const char* message);
++};
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_SPI_ENGINE_API_H_
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+new file mode 100644
+index 00000000000..3302117cbd2
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+@@ -0,0 +1,564 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/spi_runtime_backend.h"
++
++#include <algorithm>
++#include <atomic>
++#include <cstring>
++#include <limits>
++#include <string>
++
++#include "flutter/fml/logging.h"
++#include "flutter/fml/make_copyable.h"
++#include "flutter/lib/ui/window/key_data.h"
++#include "flutter/lib/ui/window/platform_message_response.h"
++#include "flutter/runtime/runtime_delegate.h"
++#include "flutter/runtime_spi/spi_engine_api.h"
++#include "flutter/runtime_spi/spi_scene.h"
++
++namespace flutter {
++namespace {
++
++constexpr char kKeyDataChannel[] = "flutter/keydata";
++constexpr size_t kKeyDataCharacterSize = sizeof(uint64_t);
++constexpr size_t kMinimumRuntimeTableSize =
++    offsetof(FlutterSpiRuntimeTable, destroy) +
++    sizeof(void (*)(void*));
++
++FlutterSpiViewMetrics ConvertMetrics(int64_t view_id,
++                                     const ViewportMetrics& metrics) {
++  return {
++      .struct_size = sizeof(FlutterSpiViewMetrics),
++      .view_id = view_id,
++      .device_pixel_ratio = metrics.device_pixel_ratio,
++      .physical_width = metrics.physical_width,
++      .physical_height = metrics.physical_height,
++      .physical_padding_top = metrics.physical_padding_top,
++      .physical_padding_right = metrics.physical_padding_right,
++      .physical_padding_bottom = metrics.physical_padding_bottom,
++      .physical_padding_left = metrics.physical_padding_left,
++      .physical_view_inset_top = metrics.physical_view_inset_top,
++      .physical_view_inset_right = metrics.physical_view_inset_right,
++      .physical_view_inset_bottom = metrics.physical_view_inset_bottom,
++      .physical_view_inset_left = metrics.physical_view_inset_left,
++  };
++}
++
++class SpiEngineResponse final : public PlatformMessageResponse {
++ public:
++  SpiEngineResponse(fml::RefPtr<fml::TaskRunner> ui_task_runner,
++                    void (*on_reply)(void*, const uint8_t*, size_t),
++                    void* user_data)
++      : ui_task_runner_(std::move(ui_task_runner)),
++        on_reply_(on_reply),
++        user_data_(user_data) {}
++
++  void Complete(std::unique_ptr<fml::Mapping> data) override {
++    std::vector<uint8_t> bytes;
++    if (data != nullptr && data->GetSize() != 0) {
++      bytes.assign(data->GetMapping(),
++                   data->GetMapping() + data->GetSize());
++    }
++    CompleteOnUi(std::move(bytes));
++  }
++
++  void CompleteEmpty() override { CompleteOnUi({}); }
++
++ private:
++  void CompleteOnUi(std::vector<uint8_t> data) {
++    if (completed_.exchange(true)) {
++      return;
++    }
++    auto callback = [on_reply = on_reply_, user_data = user_data_,
++                     data = std::move(data)]() {
++      if (on_reply != nullptr) {
++        on_reply(user_data, data.data(), data.size());
++      }
++    };
++    fml::TaskRunner::RunNowOrPostTask(ui_task_runner_, callback);
++  }
++
++  fml::RefPtr<fml::TaskRunner> ui_task_runner_;
++  void (*on_reply_)(void*, const uint8_t*, size_t) = nullptr;
++  void* user_data_ = nullptr;
++  std::atomic_bool completed_ = false;
++};
++
++}  // namespace
++
++std::unordered_set<SpiRuntimeBackend*> SpiRuntimeBackend::live_backends_;
++
++SpiRuntimeBackend::SpiRuntimeBackend(
++    RuntimeDelegate& runtime_delegate,
++    const TaskRunners& task_runners,
++    const FlutterSpiRuntimeTable& table)
++    : runtime_delegate_(runtime_delegate),
++      task_runners_(task_runners),
++      table_(table),
++      engine_api_(SpiEngineApi::Create()),
++      engine_handle_(new FlutterSpiEngine{this}) {
++  live_backends_.insert(this);
++}
++
++SpiRuntimeBackend::~SpiRuntimeBackend() {
++  if (started_ && table_.stop != nullptr) {
++    table_.stop(table_.user_data);
++  }
++  CompletePendingResponses();
++  live_backends_.erase(this);
++  if (table_.destroy != nullptr) {
++    table_.destroy(table_.user_data);
++  }
++  delete engine_handle_;
++}
++
++std::unique_ptr<RuntimeBackend> SpiRuntimeBackend::Clone() const {
++  return nullptr;
++}
++
++bool SpiRuntimeBackend::Launch(
++    RunConfiguration&& configuration,
++    const Settings& settings,
++    const fml::closure& root_isolate_create_callback,
++    std::optional<int64_t> engine_id) {
++  (void)configuration;
++  (void)settings;
++  (void)root_isolate_create_callback;
++  (void)engine_id;
++  if (!IsTableCompatible()) {
++    FML_LOG(ERROR) << "Runtime SPI table is incompatible";
++    return false;
++  }
++  if (table_.version_major != FLUTTER_SPI_VERSION_MAJOR ||
++      table_.version_minor < FLUTTER_SPI_VERSION_MINOR ||
++      (table_.required_capabilities & ~engine_api_.capabilities) != 0) {
++    FML_LOG(ERROR) << "Runtime SPI version or capabilities are incompatible";
++    return false;
++  }
++  const FlutterSpiResult result =
++      table_.start(table_.user_data, &engine_api_, engine_handle_);
++  started_ = result == kFlutterSpiOk;
++  running_ = started_;
++  return started_;
++}
++
++void SpiRuntimeBackend::AddView(int64_t view_id,
++                                const ViewportMetrics& view_metrics,
++                                AddViewCallback callback) {
++  FlutterSpiViewMetrics metrics = ConvertMetrics(view_id, view_metrics);
++  views_[view_id] = metrics;
++  if (table_.add_view != nullptr) {
++    table_.add_view(table_.user_data, &metrics);
++  }
++  if (callback != nullptr) {
++    callback(true);
++  }
++}
++
++bool SpiRuntimeBackend::RemoveView(int64_t view_id) {
++  views_.erase(view_id);
++  if (table_.remove_view != nullptr) {
++    table_.remove_view(table_.user_data, view_id);
++  }
++  return true;
++}
++
++bool SpiRuntimeBackend::SetViewportMetrics(int64_t view_id,
++                                           const ViewportMetrics& metrics) {
++  FlutterSpiViewMetrics spi_metrics = ConvertMetrics(view_id, metrics);
++  views_[view_id] = spi_metrics;
++  if (table_.set_view_metrics != nullptr) {
++    table_.set_view_metrics(table_.user_data, &spi_metrics);
++  }
++  return true;
++}
++
++bool SpiRuntimeBackend::SetDisplays(
++    const std::vector<DisplayData>& displays) {
++  (void)displays;
++  return true;
++}
++
++bool SpiRuntimeBackend::BeginFrame(fml::TimePoint frame_time,
++                                   uint64_t frame_number) {
++  if (table_.begin_frame == nullptr) {
++    return true;
++  }
++  FlutterSpiFrameInfo frame_info = {
++      .struct_size = sizeof(FlutterSpiFrameInfo),
++      .frame_token = ++current_frame_token_,
++      .frame_number = frame_number,
++      .frame_start_ns = 0,
++      .deadline_ns = frame_time.ToEpochDelta().ToNanoseconds(),
++  };
++  current_frame_deadline_ns_ = frame_info.deadline_ns;
++  table_.begin_frame(table_.user_data, &frame_info);
++  return true;
++}
++
++bool SpiRuntimeBackend::DispatchPlatformMessage(
++    std::unique_ptr<PlatformMessage> message) {
++  if (message == nullptr) {
++    return false;
++  }
++  if (message->channel() == kKeyDataChannel) {
++    return DispatchKeyDataMessage(*message);
++  }
++  return DispatchRegularPlatformMessage(std::move(message));
++}
++
++bool SpiRuntimeBackend::DispatchPointerDataPacket(
++    const PointerDataPacket& packet) {
++  if (table_.pointer_events == nullptr) {
++    return true;
++  }
++  std::vector<FlutterSpiPointerEvent> events;
++  events.reserve(packet.GetLength());
++  for (size_t index = 0; index < packet.GetLength(); index++) {
++    const PointerData data = packet.GetPointerData(index);
++    events.push_back({
++        .struct_size = sizeof(FlutterSpiPointerEvent),
++        .view_id = data.view_id,
++        .timestamp_us = data.time_stamp,
++        .change = static_cast<int32_t>(data.change),
++        .device_kind = static_cast<int32_t>(data.kind),
++        .device = data.device,
++        .pointer_id = data.pointer_identifier,
++        .physical_x = data.physical_x,
++        .physical_y = data.physical_y,
++        .buttons = data.buttons,
++        .scroll_delta_x = data.scroll_delta_x,
++        .scroll_delta_y = data.scroll_delta_y,
++        .pressure = data.pressure,
++    });
++  }
++  table_.pointer_events(table_.user_data, events.data(), events.size());
++  return true;
++}
++
++bool SpiRuntimeBackend::DispatchSemanticsAction(int64_t view_id,
++                                                int32_t node_id,
++                                                SemanticsAction action,
++                                                fml::MallocMapping args) {
++  if (table_.semantics_action != nullptr) {
++    table_.semantics_action(table_.user_data, view_id, node_id,
++                            static_cast<int32_t>(action), args.GetMapping(),
++                            args.GetSize());
++  }
++  return true;
++}
++
++bool SpiRuntimeBackend::SetSemanticsEnabled(bool enabled) {
++  if (table_.set_semantics_enabled != nullptr) {
++    table_.set_semantics_enabled(table_.user_data, enabled);
++  }
++  return true;
++}
++
++bool SpiRuntimeBackend::SetAccessibilityFeatures(int32_t flags) {
++  if (table_.set_accessibility_features != nullptr) {
++    table_.set_accessibility_features(table_.user_data, flags);
++  }
++  return true;
++}
++
++bool SpiRuntimeBackend::SetLocales(
++    const std::vector<std::string>& locale_data) {
++  if (table_.set_locales == nullptr) {
++    return true;
++  }
++  std::vector<const char*> locales;
++  locales.reserve(locale_data.size());
++  for (const std::string& locale : locale_data) {
++    locales.push_back(locale.c_str());
++  }
++  table_.set_locales(table_.user_data, locales.data(), locales.size());
++  return true;
++}
++
++bool SpiRuntimeBackend::SetUserSettingsData(const std::string& data) {
++  if (table_.set_user_settings != nullptr) {
++    table_.set_user_settings(table_.user_data, data.c_str());
++  }
++  return true;
++}
++
++bool SpiRuntimeBackend::SetInitialLifecycleState(const std::string& data) {
++  if (table_.set_lifecycle_state != nullptr) {
++    table_.set_lifecycle_state(table_.user_data, data.c_str());
++  }
++  return true;
++}
++
++bool SpiRuntimeBackend::SendViewFocusEvent(const ViewFocusEvent& event) {
++  if (table_.view_focus != nullptr) {
++    table_.view_focus(table_.user_data, event.view_id(),
++                      static_cast<int32_t>(event.state()),
++                      static_cast<int32_t>(event.direction()));
++  }
++  return true;
++}
++
++bool SpiRuntimeBackend::NotifyIdle(fml::TimeDelta deadline) {
++  if (table_.notify_idle != nullptr) {
++    table_.notify_idle(table_.user_data, deadline.ToNanoseconds());
++  }
++  return true;
++}
++
++bool SpiRuntimeBackend::ReportTimings(std::vector<int64_t> timings) {
++  (void)timings;
++  return true;
++}
++
++HitTestResponse SpiRuntimeBackend::HitTest(int64_t view_id, PointData offset) {
++  (void)view_id;
++  (void)offset;
++  return {.has_platform_view = false};
++}
++
++bool SpiRuntimeBackend::IsRunning() const {
++  return running_;
++}
++
++DartRuntimeExtensions* SpiRuntimeBackend::AsDart() {
++  return nullptr;
++}
++
++bool SpiRuntimeBackend::HasUiThread() const {
++  return static_cast<bool>(task_runners_.GetUITaskRunner()) &&
++         task_runners_.GetUITaskRunner()->RunsTasksOnCurrentThread();
++}
++
++bool SpiRuntimeBackend::HasCapability(
++    FlutterSpiCapabilities capability) const {
++  return (engine_api_.capabilities & capability) != 0;
++}
++
++bool SpiRuntimeBackend::IsTableCompatible() const {
++  return table_.struct_size >= kMinimumRuntimeTableSize &&
++         table_.start != nullptr && table_.stop != nullptr &&
++         table_.destroy != nullptr;
++}
++
++bool SpiRuntimeBackend::IsCallbackAvailable(size_t offset, size_t size) const {
++  return table_.struct_size >= offset + size;
++}
++
++SpiRuntimeBackend* SpiRuntimeBackend::FindBackendForResponse(
++    FlutterSpiResponseHandle* response) {
++  if (response == nullptr) {
++    return nullptr;
++  }
++  for (SpiRuntimeBackend* backend : live_backends_) {
++    if (backend->response_handles_.find(response) !=
++        backend->response_handles_.end()) {
++      return backend;
++    }
++  }
++  return nullptr;
++}
++
++void SpiRuntimeBackend::CompletePendingResponses() {
++  for (FlutterSpiResponseHandle* handle : response_handles_) {
++    if (handle->response) {
++      handle->response->CompleteEmpty();
++    }
++    delete handle;
++  }
++  response_handles_.clear();
++}
++
++bool SpiRuntimeBackend::DispatchKeyDataMessage(
++    const PlatformMessage& message) {
++  bool handled = false;
++  const fml::Mapping& mapping = message.data();
++  const size_t minimum_size = kKeyDataCharacterSize + sizeof(KeyData);
++  if (mapping.GetSize() >= minimum_size) {
++    uint64_t character_size = 0;
++    KeyData key_data;
++    std::memcpy(&character_size, mapping.GetMapping(), sizeof(character_size));
++    std::memcpy(&key_data, mapping.GetMapping() + kKeyDataCharacterSize,
++                sizeof(key_data));
++    const size_t remaining_size = mapping.GetSize() - minimum_size;
++    if (character_size <= remaining_size &&
++        character_size < std::numeric_limits<size_t>::max()) {
++      std::string character(
++          reinterpret_cast<const char*>(mapping.GetMapping() + minimum_size),
++          static_cast<size_t>(character_size));
++      character.push_back('\0');
++      FlutterSpiKeyEvent event = {
++          .struct_size = sizeof(FlutterSpiKeyEvent),
++          .timestamp_us = key_data.timestamp,
++          .type = static_cast<int32_t>(key_data.type),
++          .device_type = static_cast<int32_t>(key_data.device_type),
++          .physical = key_data.physical,
++          .logical = key_data.logical,
++          .character = character.c_str(),
++          .synthesized = key_data.synthesized != 0,
++      };
++      if (IsCallbackAvailable(offsetof(FlutterSpiRuntimeTable, key_event),
++                              sizeof(table_.key_event)) &&
++          table_.key_event != nullptr) {
++        handled = table_.key_event(table_.user_data, &event);
++      }
++    }
++  }
++  SendKeyDataResponse(message.response(), handled);
++  return true;
++}
++
++bool SpiRuntimeBackend::DispatchRegularPlatformMessage(
++    std::unique_ptr<PlatformMessage> message) {
++  if (table_.platform_message == nullptr) {
++    return true;
++  }
++  FlutterSpiResponseHandle* handle = nullptr;
++  if (message->response()) {
++    handle = new FlutterSpiResponseHandle{
++        .backend = this,
++        .response = message->response(),
++    };
++    response_handles_.insert(handle);
++  }
++  FlutterSpiPlatformMessage spi_message = {
++      .struct_size = sizeof(FlutterSpiPlatformMessage),
++      .channel = message->channel().c_str(),
++      .data = message->data().GetMapping(),
++      .data_size = message->data().GetSize(),
++      .response = handle,
++  };
++  table_.platform_message(table_.user_data, &spi_message);
++  return true;
++}
++
++void SpiRuntimeBackend::SendKeyDataResponse(
++    const fml::RefPtr<PlatformMessageResponse>& response,
++    bool handled) const {
++  if (!response) {
++    return;
++  }
++  const uint8_t result = handled ? 1 : 0;
++  response->Complete(std::make_unique<fml::MallocMapping>(
++      fml::MallocMapping::Copy(&result, sizeof(result))));
++}
++
++FlutterSpiResult SpiRuntimeBackend::RequestFrame() {
++  if (!HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  runtime_delegate_.ScheduleFrame();
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiRuntimeBackend::SubmitFrame(int64_t view_id,
++                                                uint64_t frame_token,
++                                                FlutterSpiScene* scene,
++                                                double device_pixel_ratio) {
++  if (!HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  if (scene == nullptr || frame_token != current_frame_token_ ||
++      views_.find(view_id) == views_.end()) {
++    SpiSceneRelease(scene);
++    return kFlutterSpiStaleFrame;
++  }
++  std::unique_ptr<LayerTree> layer_tree = std::move(scene->layer_tree);
++  SpiSceneRelease(scene);
++  runtime_delegate_.Render(view_id, std::move(layer_tree),
++                           static_cast<float>(device_pixel_ratio));
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiRuntimeBackend::FramesDone() {
++  if (!HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  runtime_delegate_.OnAllViewsRendered();
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiRuntimeBackend::SendPlatformMessage(
++    const char* channel,
++    const uint8_t* data,
++    size_t data_size,
++    void (*on_reply)(void* user_data, const uint8_t* data, size_t size),
++    void* reply_user_data) {
++  if (!HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  if (channel == nullptr || (data == nullptr && data_size != 0)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  fml::RefPtr<PlatformMessageResponse> response;
++  if (on_reply != nullptr) {
++    response = fml::AdoptRef(new SpiEngineResponse(
++        task_runners_.GetUITaskRunner(), on_reply, reply_user_data));
++  }
++  auto message = std::make_unique<PlatformMessage>(
++      channel, fml::MallocMapping::Copy(data, data_size), response);
++  runtime_delegate_.HandlePlatformMessage(std::move(message));
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiRuntimeBackend::Respond(FlutterSpiResponseHandle* response,
++                                            const uint8_t* data,
++                                            size_t data_size) {
++  if (!HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  if (response_handles_.find(response) == response_handles_.end()) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (data == nullptr && data_size != 0) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (response->response) {
++    if (data_size == 0) {
++      response->response->CompleteEmpty();
++    } else {
++      response->response->Complete(std::make_unique<fml::MallocMapping>(
++          fml::MallocMapping::Copy(data, data_size)));
++    }
++  }
++  response_handles_.erase(response);
++  delete response;
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiRuntimeBackend::PostTask(void (*task)(void* user_data),
++                                             void* user_data,
++                                             int64_t delay_ns) {
++  if (task == nullptr || !task_runners_.GetUITaskRunner()) {
++    return kFlutterSpiInvalidArgument;
++  }
++  task_runners_.GetUITaskRunner()->PostDelayedTask(
++      [task, user_data]() { task(user_data); },
++      fml::TimeDelta::FromNanoseconds(delay_ns));
++  return kFlutterSpiOk;
++}
++
++int64_t SpiRuntimeBackend::NowNs() const {
++  return fml::TimePoint::Now().ToEpochDelta().ToNanoseconds();
++}
++
++void SpiRuntimeBackend::Log(int32_t level,
++                            const char* tag,
++                            const char* message) const {
++  (void)level;
++  FML_LOG(INFO) << (tag == nullptr ? "runtime-spi" : tag) << ": "
++                << (message == nullptr ? "" : message);
++}
++
++FlutterSpiResult SpiRuntimeBackend::ReportError(const char* message) {
++  if (!HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  FML_LOG(ERROR) << (message == nullptr ? "Runtime SPI error" : message);
++  running_ = false;
++  return kFlutterSpiOk;
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.h b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+new file mode 100644
+index 00000000000..f2fd1584ad4
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+@@ -0,0 +1,136 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_SPI_RUNTIME_BACKEND_H_
++#define FLUTTER_RUNTIME_SPI_SPI_RUNTIME_BACKEND_H_
++
++#include <cstdint>
++#include <memory>
++#include <unordered_map>
++#include <unordered_set>
++#include <vector>
++
++#include "flutter/common/task_runners.h"
++#include "flutter/fml/time/time_point.h"
++#include "flutter/lib/ui/window/platform_message_response.h"
++#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
++#include "flutter/runtime_spi/runtime_backend.h"
++
++namespace flutter {
++
++class RuntimeDelegate;
++class SpiRuntimeBackend;
++
++}  // namespace flutter
++
++struct FlutterSpiEngine {
++  flutter::SpiRuntimeBackend* backend = nullptr;
++};
++
++struct FlutterSpiResponseHandle {
++  flutter::SpiRuntimeBackend* backend = nullptr;
++  fml::RefPtr<flutter::PlatformMessageResponse> response;
++};
++
++namespace flutter {
++
++class SpiRuntimeBackend final : public RuntimeBackend {
++ public:
++  SpiRuntimeBackend(RuntimeDelegate& runtime_delegate,
++                    const TaskRunners& task_runners,
++                    const FlutterSpiRuntimeTable& table);
++  ~SpiRuntimeBackend() override;
++
++  std::unique_ptr<RuntimeBackend> Clone() const override;
++
++  bool Launch(RunConfiguration&& configuration,
++              const Settings& settings,
++              const fml::closure& root_isolate_create_callback,
++              std::optional<int64_t> engine_id) override;
++
++  void AddView(int64_t view_id,
++               const ViewportMetrics& view_metrics,
++               AddViewCallback callback) override;
++  bool RemoveView(int64_t view_id) override;
++  bool SetViewportMetrics(int64_t view_id,
++                          const ViewportMetrics& metrics) override;
++  bool SetDisplays(const std::vector<DisplayData>& displays) override;
++  bool BeginFrame(fml::TimePoint frame_time, uint64_t frame_number) override;
++  bool DispatchPlatformMessage(
++      std::unique_ptr<PlatformMessage> message) override;
++  bool DispatchPointerDataPacket(const PointerDataPacket& packet) override;
++  bool DispatchSemanticsAction(int64_t view_id,
++                               int32_t node_id,
++                               SemanticsAction action,
++                               fml::MallocMapping args) override;
++  bool SetSemanticsEnabled(bool enabled) override;
++  bool SetAccessibilityFeatures(int32_t flags) override;
++  bool SetLocales(const std::vector<std::string>& locale_data) override;
++  bool SetUserSettingsData(const std::string& data) override;
++  bool SetInitialLifecycleState(const std::string& data) override;
++  bool SendViewFocusEvent(const ViewFocusEvent& event) override;
++  bool NotifyIdle(fml::TimeDelta deadline) override;
++  bool ReportTimings(std::vector<int64_t> timings) override;
++  HitTestResponse HitTest(int64_t view_id, PointData offset) override;
++  bool IsRunning() const override;
++  DartRuntimeExtensions* AsDart() override;
++
++  FlutterSpiResult RequestFrame();
++  FlutterSpiResult SubmitFrame(int64_t view_id,
++                               uint64_t frame_token,
++                               FlutterSpiScene* scene,
++                               double device_pixel_ratio);
++  FlutterSpiResult FramesDone();
++  FlutterSpiResult SendPlatformMessage(
++      const char* channel,
++      const uint8_t* data,
++      size_t data_size,
++      void (*on_reply)(void* user_data, const uint8_t* data, size_t size),
++      void* reply_user_data);
++  FlutterSpiResult Respond(FlutterSpiResponseHandle* response,
++                           const uint8_t* data,
++                           size_t data_size);
++  FlutterSpiResult PostTask(void (*task)(void* user_data),
++                            void* user_data,
++                            int64_t delay_ns);
++  int64_t NowNs() const;
++  void Log(int32_t level, const char* tag, const char* message) const;
++  FlutterSpiResult ReportError(const char* message);
++
++  const FlutterSpiEngineApi& engine_api() const { return engine_api_; }
++  FlutterSpiEngine* engine_handle() { return engine_handle_; }
++
++ private:
++  friend class SpiEngineApi;
++
++  bool HasUiThread() const;
++  bool HasCapability(FlutterSpiCapabilities capability) const;
++  bool IsTableCompatible() const;
++  bool IsCallbackAvailable(size_t offset, size_t size) const;
++  void CompletePendingResponses();
++  static SpiRuntimeBackend* FindBackendForResponse(
++      FlutterSpiResponseHandle* response);
++  bool DispatchKeyDataMessage(const PlatformMessage& message);
++  bool DispatchRegularPlatformMessage(std::unique_ptr<PlatformMessage> message);
++  void SendKeyDataResponse(const fml::RefPtr<PlatformMessageResponse>& response,
++                           bool handled) const;
++
++  RuntimeDelegate& runtime_delegate_;
++  TaskRunners task_runners_;
++  FlutterSpiRuntimeTable table_ = {};
++  FlutterSpiEngineApi engine_api_ = {};
++  FlutterSpiEngine* engine_handle_ = nullptr;
++  std::unordered_map<int64_t, FlutterSpiViewMetrics> views_;
++  std::unordered_set<FlutterSpiResponseHandle*> response_handles_;
++  uint64_t current_frame_token_ = 0;
++  int64_t current_frame_deadline_ns_ = 0;
++  bool running_ = false;
++  bool started_ = false;
++
++  static std::unordered_set<SpiRuntimeBackend*> live_backends_;
++};
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_SPI_RUNTIME_BACKEND_H_
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc
+new file mode 100644
+index 00000000000..dad91dc9e32
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc
+@@ -0,0 +1,55 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/spi_runtime_backend_factory.h"
++
++#include "flutter/fml/logging.h"
++#include "flutter/runtime_spi/spi_runtime_backend.h"
++
++namespace flutter {
++
++SpiRuntimeBackendFactory::SpiRuntimeBackendFactory(
++    const FlutterSpiRuntimeTable& table)
++    : table_(table),
++      valid_(table.struct_size >=
++                 offsetof(FlutterSpiRuntimeTable, destroy) +
++                     sizeof(void (*)(void*)) &&
++             table.start != nullptr && table.stop != nullptr &&
++             table.destroy != nullptr) {
++  if (!valid_) {
++    FML_LOG(ERROR) << "Runtime SPI table is missing required callbacks";
++  }
++}
++
++SpiRuntimeBackendFactory::~SpiRuntimeBackendFactory() = default;
++
++std::unique_ptr<RuntimeBackend> SpiRuntimeBackendFactory::Create(
++    RuntimeDelegate& runtime_delegate,
++    const TaskRunners& task_runners,
++    const PlatformData& platform_data,
++    const Settings& settings,
++    fml::WeakPtr<IOManager> io_manager,
++    fml::RefPtr<SkiaUnrefQueue> unref_queue,
++    fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
++    fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
++    fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
++        image_generator_registry,
++    const std::shared_future<impeller::RuntimeStageBackend>&
++        runtime_stage_backend) {
++  (void)platform_data;
++  (void)settings;
++  (void)io_manager;
++  (void)unref_queue;
++  (void)snapshot_delegate;
++  (void)image_decoder;
++  (void)image_generator_registry;
++  (void)runtime_stage_backend;
++  if (!valid_) {
++    return nullptr;
++  }
++  return std::make_unique<SpiRuntimeBackend>(runtime_delegate, task_runners,
++                                             table_);
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.h b/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.h
+new file mode 100644
+index 00000000000..7475c028a21
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.h
+@@ -0,0 +1,39 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_SPI_RUNTIME_BACKEND_FACTORY_H_
++#define FLUTTER_RUNTIME_SPI_SPI_RUNTIME_BACKEND_FACTORY_H_
++
++#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
++#include "flutter/runtime_spi/runtime_backend_factory.h"
++
++namespace flutter {
++
++class SpiRuntimeBackendFactory final : public RuntimeBackendFactory {
++ public:
++  explicit SpiRuntimeBackendFactory(const FlutterSpiRuntimeTable& table);
++  ~SpiRuntimeBackendFactory() override;
++
++  std::unique_ptr<RuntimeBackend> Create(
++      RuntimeDelegate& runtime_delegate,
++      const TaskRunners& task_runners,
++      const PlatformData& platform_data,
++      const Settings& settings,
++      fml::WeakPtr<IOManager> io_manager,
++      fml::RefPtr<SkiaUnrefQueue> unref_queue,
++      fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
++      fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
++      fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
++          image_generator_registry,
++      const std::shared_future<impeller::RuntimeStageBackend>&
++          runtime_stage_backend) override;
++
++ private:
++  FlutterSpiRuntimeTable table_ = {};
++  bool valid_ = false;
++};
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_SPI_RUNTIME_BACKEND_FACTORY_H_
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
+new file mode 100644
+index 00000000000..6a425e2c5dc
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
+@@ -0,0 +1,243 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/spi_runtime_backend.h"
++
++#include <atomic>
++#include <thread>
++
++#include "flutter/fml/mapping.h"
++#include "flutter/fml/message_loop.h"
++#include "flutter/lib/ui/semantics/semantics_node.h"
++#include "flutter/lib/ui/text/font_collection.h"
++#include "flutter/runtime/runtime_delegate.h"
++#include "flutter/runtime_spi/testing/c_test_runtime.h"
++#include "flutter/shell/common/run_configuration.h"
++#include "flutter/testing/testing.h"
++
++namespace flutter::testing {
++namespace {
++
++class FakeRuntimeDelegate final : public RuntimeDelegate {
++ public:
++  std::string DefaultRouteName() override { return "/"; }
++
++  void ScheduleFrame(bool regenerate_layer_trees = true) override {
++    schedule_frame_count++;
++  }
++
++  void OnAllViewsRendered() override { all_views_rendered_count++; }
++
++  void Render(int64_t view_id,
++              std::unique_ptr<flutter::LayerTree> layer_tree,
++              float device_pixel_ratio) override {
++    render_count++;
++    last_rendered_view_id = view_id;
++    last_rendered_device_pixel_ratio = device_pixel_ratio;
++    last_layer_tree = std::move(layer_tree);
++  }
++
++  void UpdateSemantics(int64_t view_id,
++                       SemanticsNodeUpdates update,
++                       CustomAccessibilityActionUpdates actions) override {}
++
++  void SetApplicationLocale(std::string locale) override {}
++
++  void SetSemanticsTreeEnabled(bool enabled) override {}
++
++  void HandlePlatformMessage(
++      std::unique_ptr<PlatformMessage> message) override {
++    platform_message_count++;
++    last_platform_message = std::move(message);
++  }
++
++  FontCollection& GetFontCollection() override { return font_collection; }
++
++  std::shared_ptr<AssetManager> GetAssetManager() override { return nullptr; }
++
++  void OnRootIsolateCreated() override {}
++
++  void UpdateIsolateDescription(const std::string isolate_name,
++                                int64_t isolate_port) override {}
++
++  void SetNeedsReportTimings(bool value) override {}
++
++  void ResetInternalState() override {}
++
++  std::unique_ptr<std::vector<std::string>> ComputePlatformResolvedLocale(
++      const std::vector<std::string>& supported_locale_data) override {
++    return nullptr;
++  }
++
++  void RequestDartDeferredLibrary(intptr_t loading_unit_id) override {}
++
++  void RequestViewFocusChange(
++      const ViewFocusChangeRequest& request) override {}
++
++  std::weak_ptr<PlatformMessageHandler> GetPlatformMessageHandler()
++      const override {
++    return {};
++  }
++
++  void SendChannelUpdate(std::string name, bool listening) override {}
++
++  double GetScaledFontSize(double unscaled_font_size,
++                           int configuration_id) const override {
++    return unscaled_font_size;
++  }
++
++  size_t schedule_frame_count = 0;
++  size_t all_views_rendered_count = 0;
++  size_t render_count = 0;
++  size_t platform_message_count = 0;
++  int64_t last_rendered_view_id = 0;
++  float last_rendered_device_pixel_ratio = 0.0f;
++  std::unique_ptr<flutter::LayerTree> last_layer_tree;
++  std::unique_ptr<PlatformMessage> last_platform_message;
++
++ private:
++  FontCollection font_collection;
++};
++
++class TestPlatformMessageResponse final : public PlatformMessageResponse {
++ public:
++  void Complete(std::unique_ptr<fml::Mapping> data) override {
++    complete_count++;
++  }
++
++  void CompleteEmpty() override { complete_empty_count++; }
++
++  size_t complete_count = 0;
++  size_t complete_empty_count = 0;
++};
++
++class SpiRuntimeBackendTest : public ::testing::Test {
++ protected:
++  void SetUp() override {
++    fml::MessageLoop::EnsureInitializedForCurrentThread();
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wdeprecated-declarations"
++    auto task_runner = fml::MessageLoop::GetCurrent().GetTaskRunner();
++#pragma clang diagnostic pop
++    task_runners = std::make_unique<TaskRunners>(
++        "spi-runtime-backend-test", task_runner, task_runner, task_runner,
++        task_runner);
++    runtime = c_test_runtime_create();
++  }
++
++  void TearDown() override { c_test_runtime_free(runtime); }
++
++  std::unique_ptr<SpiRuntimeBackend> CreateBackend(
++      FlutterSpiRuntimeTable table) {
++    return std::make_unique<SpiRuntimeBackend>(delegate, *task_runners, table);
++  }
++
++  void LaunchBackend(SpiRuntimeBackend* backend) {
++    Settings settings;
++    EXPECT_TRUE(backend->Launch(RunConfiguration(nullptr), settings, {}, 1));
++  }
++
++  FakeRuntimeDelegate delegate;
++  std::unique_ptr<TaskRunners> task_runners;
++  CTestRuntime* runtime = nullptr;
++};
++
++TEST_F(SpiRuntimeBackendTest, RejectsMajorVersionMismatch) {
++  auto table = c_test_runtime_table(runtime);
++  table.version_major++;
++  auto backend = CreateBackend(table);
++
++  Settings settings;
++  EXPECT_FALSE(backend->Launch(RunConfiguration(nullptr), settings, {}, 1));
++  EXPECT_EQ(runtime->start_count, 0u);
++}
++
++TEST_F(SpiRuntimeBackendTest, RejectsMissingRequiredCallback) {
++  auto table = c_test_runtime_table(runtime);
++  table.start = nullptr;
++  auto backend = CreateBackend(table);
++
++  Settings settings;
++  EXPECT_FALSE(backend->Launch(RunConfiguration(nullptr), settings, {}, 1));
++  EXPECT_EQ(runtime->start_count, 0u);
++}
++
++TEST_F(SpiRuntimeBackendTest, RejectsUnannouncedCapability) {
++  auto table = c_test_runtime_table(runtime);
++  table.required_capabilities = 1ULL << 63;
++  auto backend = CreateBackend(table);
++
++  Settings settings;
++  EXPECT_FALSE(backend->Launch(RunConfiguration(nullptr), settings, {}, 1));
++  EXPECT_EQ(runtime->start_count, 0u);
++}
++
++TEST_F(SpiRuntimeBackendTest, StartFailureLeavesBackendStopped) {
++  runtime->fail_start = true;
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++
++  Settings settings;
++  EXPECT_FALSE(backend->Launch(RunConfiguration(nullptr), settings, {}, 1));
++  EXPECT_FALSE(backend->IsRunning());
++  EXPECT_EQ(runtime->start_count, 1u);
++}
++
++TEST_F(SpiRuntimeBackendTest, BeginFrameCarriesIncreasingTokens) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++
++  EXPECT_TRUE(backend->BeginFrame(fml::TimePoint::FromTicks(100), 7));
++  const uint64_t first_token = runtime->last_frame_info.frame_token;
++  EXPECT_TRUE(backend->BeginFrame(fml::TimePoint::FromTicks(200), 8));
++
++  EXPECT_GT(runtime->last_frame_info.frame_token, first_token);
++  EXPECT_EQ(runtime->last_frame_info.deadline_ns, 200);
++}
++
++TEST_F(SpiRuntimeBackendTest, SubmitWithStaleTokenIsRejectedAndReleasesScene) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++  EXPECT_TRUE(backend->BeginFrame(fml::TimePoint::FromTicks(100), 7));
++
++  FlutterSpiScene* scene = nullptr;
++  ASSERT_EQ(runtime->engine_api->scene_create_empty(runtime->engine, 10, 10,
++                                                     &scene),
++            kFlutterSpiOk);
++  EXPECT_EQ(runtime->engine_api->submit_frame(runtime->engine, 1,
++                                               runtime->last_frame_info.frame_token - 1,
++                                               scene, 1.0),
++            kFlutterSpiStaleFrame);
++}
++
++TEST_F(SpiRuntimeBackendTest, CallsFromOtherThreadsAreRejected) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++  std::atomic<FlutterSpiResult> result{kFlutterSpiInternalError};
++
++  std::thread worker([&] {
++    result = runtime->engine_api->request_frame(runtime->engine);
++  });
++  worker.join();
++
++  EXPECT_EQ(result.load(), kFlutterSpiWrongThread);
++}
++
++TEST_F(SpiRuntimeBackendTest, RespondTwiceIsInvalidHandle) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++  runtime->respond_to_messages = false;
++  auto response = fml::AdoptRef(new TestPlatformMessageResponse());
++  auto message = std::make_unique<PlatformMessage>(
++      "test", fml::MallocMapping::Copy("payload", 7), response);
++
++  ASSERT_TRUE(backend->DispatchPlatformMessage(std::move(message)));
++  ASSERT_NE(runtime->pending_response, nullptr);
++  EXPECT_EQ(runtime->engine_api->respond(runtime->pending_response, nullptr, 0),
++            kFlutterSpiOk);
++  EXPECT_EQ(runtime->engine_api->respond(runtime->pending_response, nullptr, 0),
++            kFlutterSpiInvalidHandle);
++}
++
++}  // namespace
++}  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/spi_scene.cc b/engine/src/flutter/runtime_spi/spi_scene.cc
+new file mode 100644
+index 00000000000..69dc764f419
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/spi_scene.cc
+@@ -0,0 +1,31 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/spi_scene.h"
++
++#include "flutter/flow/layers/container_layer.h"
++#include "flutter/flow/layers/layer_tree.h"
++
++FlutterSpiResult SpiSceneCreateEmpty(int64_t width_px,
++                                     int64_t height_px,
++                                     FlutterSpiScene** out_scene) {
++  if (out_scene == nullptr || width_px <= 0 || height_px <= 0) {
++    return kFlutterSpiInvalidArgument;
++  }
++
++  auto scene = std::make_unique<FlutterSpiScene>();
++  scene->width_px = width_px;
++  scene->height_px = height_px;
++  scene->layer_tree = std::make_unique<flutter::LayerTree>(
++      std::make_shared<flutter::ContainerLayer>(),
++      flutter::DlISize(static_cast<int32_t>(width_px),
++                       static_cast<int32_t>(height_px)));
++  *out_scene = scene.release();
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiSceneRelease(FlutterSpiScene* scene) {
++  delete scene;
++  return kFlutterSpiOk;
++}
+diff --git a/engine/src/flutter/runtime_spi/spi_scene.h b/engine/src/flutter/runtime_spi/spi_scene.h
+new file mode 100644
+index 00000000000..c2b78fdbc31
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/spi_scene.h
+@@ -0,0 +1,31 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_SPI_SCENE_H_
++#define FLUTTER_RUNTIME_SPI_SPI_SCENE_H_
++
++#include <cstdint>
++#include <memory>
++
++#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
++
++namespace flutter {
++
++class LayerTree;
++
++}  // namespace flutter
++
++struct FlutterSpiScene {
++  std::unique_ptr<flutter::LayerTree> layer_tree;
++  int64_t width_px = 0;
++  int64_t height_px = 0;
++};
++
++FlutterSpiResult SpiSceneCreateEmpty(int64_t width_px,
++                                     int64_t height_px,
++                                     FlutterSpiScene** out_scene);
++
++FlutterSpiResult SpiSceneRelease(FlutterSpiScene* scene);
++
++#endif  // FLUTTER_RUNTIME_SPI_SPI_SCENE_H_
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.c b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+index 2ed31a97c87..82267210128 100644
+--- a/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+@@ -142,19 +142,20 @@ static void test_runtime_pointer_events(void* user_data,
+   copy_pointer_events(runtime, events, count);
+ }
+ 
+-static void test_runtime_key_event(void* user_data,
++static bool test_runtime_key_event(void* user_data,
+                                    const FlutterSpiKeyEvent* event) {
+   CTestRuntime* runtime = (CTestRuntime*)user_data;
+ 
+   runtime->key_event_count++;
+   if (event == NULL) {
+-    return;
++    return false;
+   }
+   free(runtime->last_key_character);
+   runtime->last_key_character = copy_string(event->character);
+   runtime->last_key_event = *event;
+   runtime->last_key_event.character = runtime->last_key_character;
+   runtime->has_last_key_event = true;
++  return runtime->key_event_handled;
+ }
+ 
+ static void test_runtime_platform_message(
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.h b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+index 425986ec2d0..a4273ffdad9 100644
+--- a/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+@@ -45,10 +45,19 @@ typedef struct CTestRuntime {
+   bool respond_to_messages;
+   bool submit_on_begin_frame;
+   bool fail_start;
++  bool key_event_handled;
+ } CTestRuntime;
+ 
++#ifdef __cplusplus
++extern "C" {
++#endif
++
+ FlutterSpiRuntimeTable c_test_runtime_table(CTestRuntime* runtime);
+ CTestRuntime* c_test_runtime_create(void);
+ void c_test_runtime_free(CTestRuntime* runtime);
+ 
++#ifdef __cplusplus
++}  // extern "C"
++#endif
++
+ #endif  // FLUTTER_RUNTIME_SPI_TESTING_C_TEST_RUNTIME_H_
+diff --git a/engine/src/flutter/runtime_spi/tools/check_no_dart_deps.py b/engine/src/flutter/runtime_spi/tools/check_no_dart_deps.py
+index dcf4f975253..12863589a7d 100755
+--- a/engine/src/flutter/runtime_spi/tools/check_no_dart_deps.py
++++ b/engine/src/flutter/runtime_spi/tools/check_no_dart_deps.py
+@@ -25,6 +25,7 @@ FORBIDDEN_LABEL = "//flutter/lib/ui:ui"
+ ALLOWED_DART_FREE_TARGETS = (
+     "//flutter/lib/ui:ui_core_types",
+     "//flutter/runtime:platform_data",
++    "//flutter/runtime:runtime_delegate",
+     "//flutter/shell/common:display",
+ )
+ GN_LABEL_PATTERN = re.compile(r"//[^\s]+")
+@@ -58,6 +59,10 @@ def run_gn_desc(
+     )
+ 
+ 
++def matches_label_prefix(dependency: str, prefix: str) -> bool:
++    return dependency == prefix or dependency.startswith((f"{prefix}:", f"{prefix}/"))
++
++
+ def forbidden_dependencies(description: str) -> list[str]:
+     dependencies = set(GN_LABEL_PATTERN.findall(description))
+     return sorted(
+@@ -65,7 +70,7 @@ def forbidden_dependencies(description: str) -> list[str]:
+         for dependency in dependencies
+         if dependency not in ALLOWED_DART_FREE_TARGETS
+         and (dependency == FORBIDDEN_LABEL
+-        or any(dependency.startswith(prefix) for prefix in FORBIDDEN_PREFIXES)
++        or any(matches_label_prefix(dependency, prefix) for prefix in FORBIDDEN_PREFIXES)
+         )
+     )
+ 
+diff --git a/engine/src/flutter/runtime_spi/tools/test_check_no_dart_deps.py b/engine/src/flutter/runtime_spi/tools/test_check_no_dart_deps.py
+index eda16ca5cc4..a8f431631bf 100644
+--- a/engine/src/flutter/runtime_spi/tools/test_check_no_dart_deps.py
++++ b/engine/src/flutter/runtime_spi/tools/test_check_no_dart_deps.py
+@@ -49,10 +49,19 @@ if label == '//flutter/runtime:gn_error' and query == 'sources':
+     print('gn stderr failure', file=sys.stderr)
+     raise SystemExit(1)
+ if query == 'deps':
+-    if label == '//flutter/runtime:platform_data':
+-        print('//flutter/runtime:platform_data')
++    if label in {
++        '//flutter/runtime:platform_data',
++        '//flutter/runtime:runtime_delegate',
++    }:
++        print(label)
+         print('//flutter/lib/ui:ui_core_types')
+         print('//flutter/shell/common:display')
++    elif label in {
++        '//flutter/runtime_spi:x',
++        '//flutter/runtime:runtime',
++        '//flutter/runtime/sub:x',
++    }:
++        print(label)
+     else:
+         print('//flutter/third_party/dart:runtime')
+ elif query == 'sources':
+@@ -60,6 +69,8 @@ elif query == 'sources':
+         print('//flutter/lib/ui/window/viewport_metrics.h')
+     elif label == '//flutter/runtime:platform_data':
+         print('//flutter/runtime/platform_data.h')
++    elif label == '//flutter/runtime:runtime_delegate':
++        print('//flutter/runtime/runtime_delegate.h')
+     elif label == '//flutter/shell/common:display':
+         print('//flutter/shell/common/display.h')
+     else:
+@@ -140,6 +151,42 @@ else:
+ 
+         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+ 
++    def test_runtime_delegate_target_is_allowed(self) -> None:
++        result = self.run_checker(
++            "",
++            label="//flutter/runtime:runtime_delegate",
++            includes=False,
++        )
++
++        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++
++    def test_runtime_dependency_prefix_matches_label_boundary(self) -> None:
++        result = self.run_checker(
++            "",
++            label="//flutter/runtime_spi:x",
++            includes=False,
++        )
++
++        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++
++        result = self.run_checker(
++            "",
++            label="//flutter/runtime:runtime",
++            includes=False,
++        )
++
++        self.assertNotEqual(result.returncode, 0)
++        self.assertIn("//flutter/runtime:runtime", result.stdout)
++
++        result = self.run_checker(
++            "",
++            label="//flutter/runtime/sub:x",
++            includes=False,
++        )
++
++        self.assertNotEqual(result.returncode, 0)
++        self.assertIn("//flutter/runtime/sub:x", result.stdout)
++
+     def test_public_only_target_is_checked(self) -> None:
+         result = self.run_checker(
+             '#include "third_party/dart/runtime/include/dart_api.h"\n',
