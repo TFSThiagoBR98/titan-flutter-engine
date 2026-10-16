@@ -1,0 +1,175 @@
+# Why: Keep per-engine scene objects behind monotonically increasing handles
+with explicit retain and release lifetimes.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 48ccb91f1a4..3bed01fa742 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -54,17 +54,30 @@ source_set("runtime_spi_c_api") {
+   sources = [ "abi_layout_check.c" ]
+ }
+ 
++source_set("scene") {
++  public = [ "scene/spi_handle_table.h" ]
++  assert_no_deps = [
++    "//flutter/third_party/dart/*",
++    "//flutter/third_party/tonic/*",
++    "//flutter/runtime:runtime",
++    "//flutter/runtime:libdart",
++    "//flutter/lib/ui:ui",
++  ]
++}
++
+ if (enable_unittests) {
+   executable("runtime_spi_unittests") {
+     testonly = true
+     sources = [
+       "spi_abi_frozen_unittests.cc",
+       "spi_conformance_unittests.cc",
++      "scene/spi_handle_table_unittests.cc",
+       "spi_runtime_backend_unittests.cc",
+     ]
+     deps = [
+       ":c_test_runtime",
+       ":runtime_spi_c_api",
++      ":scene",
+       ":spi_backend",
+       "//flutter/common",
+       "//flutter/fml",
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_handle_table.h b/engine/src/flutter/runtime_spi/scene/spi_handle_table.h
+new file mode 100644
+index 00000000000..b02220c87be
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/scene/spi_handle_table.h
+@@ -0,0 +1,66 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_SCENE_SPI_HANDLE_TABLE_H_
++#define FLUTTER_RUNTIME_SPI_SCENE_SPI_HANDLE_TABLE_H_
++
++#include <cstddef>
++#include <cstdint>
++#include <memory>
++#include <unordered_map>
++
++namespace flutter {
++
++template <typename T>
++class SpiHandleTable final {
++ public:
++  uintptr_t Insert(std::shared_ptr<T> value) {
++    const uintptr_t handle = next_handle_++;
++    entries_.emplace(handle, Entry{std::move(value), 1});
++    return handle;
++  }
++
++  std::shared_ptr<T> Find(uintptr_t handle) const {
++    const auto entry = entries_.find(handle);
++    if (entry == entries_.end()) {
++      return nullptr;
++    }
++    return entry->second.value;
++  }
++
++  bool Retain(uintptr_t handle) {
++    const auto entry = entries_.find(handle);
++    if (entry == entries_.end()) {
++      return false;
++    }
++    entry->second.reference_count++;
++    return true;
++  }
++
++  bool Release(uintptr_t handle) {
++    const auto entry = entries_.find(handle);
++    if (entry == entries_.end()) {
++      return false;
++    }
++    if (--entry->second.reference_count == 0) {
++      entries_.erase(entry);
++    }
++    return true;
++  }
++
++  std::size_t size() const { return entries_.size(); }
++
++ private:
++  struct Entry {
++    std::shared_ptr<T> value;
++    std::size_t reference_count;
++  };
++
++  std::unordered_map<uintptr_t, Entry> entries_;
++  uintptr_t next_handle_ = 1;
++};
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_SCENE_SPI_HANDLE_TABLE_H_
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_handle_table_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_handle_table_unittests.cc
+new file mode 100644
+index 00000000000..73720c437fc
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/scene/spi_handle_table_unittests.cc
+@@ -0,0 +1,60 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/scene/spi_handle_table.h"
++
++#include <cstdint>
++#include <memory>
++
++#include "flutter/testing/testing.h"
++
++namespace flutter::testing {
++namespace {
++
++TEST(SpiHandleTable, InsertedIdIsFound) {
++  SpiHandleTable<int> table;
++  auto value = std::make_shared<int>(42);
++
++  const uintptr_t handle = table.Insert(value);
++
++  ASSERT_NE(handle, 0u);
++  EXPECT_EQ(table.Find(handle), value);
++  EXPECT_EQ(table.size(), 1u);
++}
++
++TEST(SpiHandleTable, ReleasedIdIsNeverReused) {
++  SpiHandleTable<int> table;
++  const uintptr_t first_handle = table.Insert(std::make_shared<int>(1));
++
++  EXPECT_TRUE(table.Release(first_handle));
++  auto second_value = std::make_shared<int>(2);
++  const uintptr_t second_handle = table.Insert(second_value);
++
++  EXPECT_NE(second_handle, first_handle);
++  EXPECT_EQ(table.Find(first_handle), nullptr);
++  EXPECT_EQ(table.Find(second_handle), second_value);
++}
++
++TEST(SpiHandleTable, RetainKeepsUntilLastRelease) {
++  SpiHandleTable<int> table;
++  const uintptr_t handle = table.Insert(std::make_shared<int>(7));
++
++  EXPECT_TRUE(table.Retain(handle));
++  EXPECT_TRUE(table.Release(handle));
++  EXPECT_NE(table.Find(handle), nullptr);
++  EXPECT_TRUE(table.Release(handle));
++  EXPECT_EQ(table.Find(handle), nullptr);
++}
++
++TEST(SpiHandleTable, UnknownIdIsNotFound) {
++  SpiHandleTable<int> table;
++
++  EXPECT_EQ(table.Find(0), nullptr);
++  EXPECT_EQ(table.Find(999), nullptr);
++  EXPECT_FALSE(table.Retain(0));
++  EXPECT_FALSE(table.Release(999));
++}
++
++}  // namespace
++}  // namespace flutter::testing
