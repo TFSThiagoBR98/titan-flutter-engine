@@ -52,6 +52,17 @@ diff --git a/README b/README
 +base series content
 EOF
 
+cat > "$standalone_repository/patches/base-series/0002-dependency.patch" <<'EOF'
+# Repo: third_party/dep
+# Why: skip dependency repository
+diff --git a/README b/README
+--- a/README
++++ b/README
+@@ -1 +1 @@
+-base content
++dependency content
+EOF
+
 run_patch_branch() {
   (
     cd "$standalone_repository"
@@ -62,11 +73,15 @@ run_patch_branch() {
 relative_worktree_path=relative-runtime-spi-src
 relative_worktree_directory="$temporary_directory/$relative_worktree_path"
 relative_flutter_path=flutter
+relative_prepare_output="$temporary_directory/relative-prepare.out"
 (
   cd "$temporary_directory"
   "$standalone_repository/scripts/patch-branch.sh" prepare "$relative_flutter_path" \
     "$relative_worktree_path"
-)
+) >"$relative_prepare_output"
+assert_contains "$relative_prepare_output" \
+  "skipping $standalone_repository/patches/base-series/0002-dependency.patch: targets third_party/dep" \
+  'dependency repository patch skip'
 [[ -d "$relative_worktree_directory" ]] || {
   printf 'error: relative prepare did not create the worktree beside the source\n' >&2
   exit 1
@@ -96,7 +111,28 @@ assert_contains "$relative_patch" 'diff --git' 'relative diff header'
 rm -f "$relative_patch"
 git -C "$flutter_directory" worktree remove --force "$relative_worktree_directory"
 
-run_patch_branch prepare "$flutter_directory" "$worktree_directory"
+cat > "$standalone_repository/patches/runtime-spi/0001-invalid-repository.patch" <<'EOF'
+# Repo: third_party/dep
+# Why: invalid runtime repository
+diff --git a/README b/README
+--- a/README
++++ b/README
+@@ -1 +1 @@
+-base content
++invalid runtime content
+EOF
+runtime_repository_output="$temporary_directory/runtime-repository.out"
+if run_patch_branch prepare "$flutter_directory" "$worktree_directory" >"$runtime_repository_output" 2>&1; then
+  printf 'error: prepare accepted a runtime patch for another repository\n' >&2
+  exit 1
+fi
+assert_contains "$runtime_repository_output" \
+  "runtime-spi patches must target the Flutter repository: $standalone_repository/patches/runtime-spi/0001-invalid-repository.patch" \
+  'runtime repository rejection'
+rm -f "$standalone_repository/patches/runtime-spi/0001-invalid-repository.patch"
+
+prepare_output="$temporary_directory/prepare.out"
+run_patch_branch prepare "$flutter_directory" "$worktree_directory" >"$prepare_output"
 [[ "$(git -C "$flutter_directory" rev-parse HEAD)" == "$flutter_head_before" ]] || {
   printf 'error: prepare changed the source HEAD\n' >&2
   exit 1
@@ -131,6 +167,7 @@ assert_contains "$unexported_output" "unexported commits in $worktree_directory"
 
 git -C "$flutter_directory" worktree remove --force "$worktree_directory"
 run_patch_branch prepare "$flutter_directory" "$worktree_directory"
+rm -f "$standalone_repository/patches/base-series/0002-dependency.patch"
 printf '%s\n' 'first runtime change' > "$worktree_directory/first.txt"
 git -C "$worktree_directory" add -- first.txt
 git -C "$worktree_directory" commit --quiet -m 'feat: first seam' -m 'first runtime reason'

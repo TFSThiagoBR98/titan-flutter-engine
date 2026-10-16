@@ -4,6 +4,8 @@ Patches do seam interno entre o core do Flutter Engine e os backends de
 runtime. A pasta começa vazia; cada patch exportado registra uma mudança
 isolada do branch `titan/runtime-spi`.
 
+A série `runtime-spi` só modifica o repositório do Flutter.
+
 | Patch | Por quê | Plataformas |
 |---|---|---|
 

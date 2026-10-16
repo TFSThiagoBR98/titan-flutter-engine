@@ -70,6 +70,23 @@ apply_patch_file() {
   git -C "$repo_root" apply "$patch"
 }
 
+apply_base_patch() {
+  local worktree_dir=$1 patch=$2 repo
+  repo=$(patch_repository "$patch")
+  if [[ "$repo" != . ]]; then
+    printf 'skipping %s: targets %s\n' "$patch" "$repo"
+    return 0
+  fi
+  apply_patch_file "$worktree_dir" "$patch"
+}
+
+validate_runtime_patch_repository() {
+  local patch=$1 repo
+  repo=$(patch_repository "$patch")
+  [[ "$repo" == . ]] || \
+    die "runtime-spi patches must target the Flutter repository: $patch"
+}
+
 stage_changes() {
   local worktree_dir=$1 path
   local -a changed_paths=()
@@ -126,7 +143,7 @@ create_worktree() {
     [[ -n "$folder" && "$folder" != "$runtime_folder" ]] || break
     while IFS= read -r patch; do
       [[ -n "$patch" ]] || continue
-      apply_patch_file "$worktree_dir" "$patch"
+      apply_base_patch "$worktree_dir" "$patch"
     done < <(patch_files "$folder")
   done < <(series_folders)
 
@@ -135,6 +152,7 @@ create_worktree() {
 
   while IFS= read -r patch; do
     [[ -n "$patch" ]] || continue
+    validate_runtime_patch_repository "$patch"
     apply_patch_file "$worktree_dir" "$patch"
     stage_changes "$worktree_dir"
     git -C "$worktree_dir" commit --quiet --allow-empty -m "$(patch_why "$patch")"
