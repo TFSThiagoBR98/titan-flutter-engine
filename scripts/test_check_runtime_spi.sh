@@ -23,6 +23,13 @@ assert_not_contains() {
   fi
 }
 
+assert_not_exact_line() {
+  local file=$1 unexpected=$2 description=$3
+  if grep -Fxq -- "$unexpected" "$file"; then
+    fail "$description: found unexpected line $unexpected"
+  fi
+}
+
 assert_matches() {
   local file=$1 pattern=$2 description=$3
   grep -Eq -- "$pattern" "$file" || fail "$description: pattern $pattern did not match"
@@ -42,11 +49,15 @@ cat > "$fake_bin/build-engine" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-printf '%s\n' "$@" > "$BUILD_LOG"
+printf '%s\n' "$@" >> "$BUILD_LOG"
 mkdir -p "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug"
 printf '%s\n' "$FAKE_ARGS_GN" > \
   "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/args.gn"
 printf 'build\n' >> "$ORDER_LOG"
+if [[ " $* " == *' --out-name host_debug_no_unittests '* ]] &&
+  ((FAKE_NO_UNIT_BUILD_STATUS != 0)); then
+  exit "$FAKE_NO_UNIT_BUILD_STATUS"
+fi
 EOF
 chmod +x "$fake_bin/build-engine"
 
@@ -76,6 +87,7 @@ EOF
 chmod +x "$fake_bin/run-engine-tests"
 
 run_check() {
+  : > "$build_log"
   TITAN_WORK_DIR="$work_directory" \
   TITAN_BUILD_ENGINE="$fake_bin/build-engine" \
   TITAN_NINJA="$fake_bin/ninja" \
@@ -85,6 +97,7 @@ run_check() {
   NINJA_ENVIRONMENT="$ninja_environment" \
   RUNNER_LOG="$runner_log" \
   ORDER_LOG="$order_log" \
+  FAKE_NO_UNIT_BUILD_STATUS="${FAKE_NO_UNIT_BUILD_STATUS:-0}" \
   FAKE_ARGS_GN="${FAKE_ARGS_GN:-enable_unittests = true}" \
   FAKE_NINJA_STATUS="${FAKE_NINJA_STATUS:-0}" \
     "$check_script" "$@"
@@ -97,10 +110,12 @@ else
   fail 'the complete fake check should pass'
 fi
 
-[[ "$(tr '\n' ' ' < "$order_log")" == 'build ninja runner ' ]] || \
+[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner ' ]] || \
   fail 'steps did not run in build, ninja, runner order'
 assert_contains "$build_log" '--unittests' 'build arguments'
 assert_contains "$build_log" '--gn-only' 'build arguments'
+assert_contains "$build_log" '--out-name' 'build arguments'
+assert_contains "$build_log" 'host_debug_no_unittests' 'build arguments'
 assert_contains "$ninja_log" '-k' 'ninja arguments'
 assert_contains "$ninja_log" '0' 'ninja arguments'
 grep -Fxq 'flutter/fml:fml_unittests' "$ninja_log" || \
@@ -111,7 +126,18 @@ assert_contains "$output_log" 'build: ok' 'stage summary'
 assert_contains "$output_log" 'ninja: ok' 'stage summary'
 assert_contains "$output_log" 'tests: ok' 'stage summary'
 
-rm -f "$runner_log" "$order_log"
+rm -f "$runner_log" "$order_log" "$ninja_log"
+if FAKE_NO_UNIT_BUILD_STATUS=29 run_check >"$output_log" 2>&1; then
+  fail 'GN without unit tests failure should fail the check'
+else
+  status=$?
+fi
+[[ "$status" -eq 29 ]] || fail "GN without unit tests failure returned $status instead of 29"
+assert_contains "$output_log" 'gn without unit tests: failed' \
+  'GN without unit tests diagnostic'
+[[ ! -e "$ninja_log" ]] || fail 'ninja ran after GN without unit tests failure'
+
+rm -f "$runner_log" "$order_log" "$ninja_log"
 if FAKE_ARGS_GN='enable_unittests = false' run_check >"$output_log" 2>&1; then
   fail 'disabled unit tests should fail'
 else
@@ -123,7 +149,7 @@ assert_contains "$output_log" 'unit tests are disabled in' 'disabled unit test d
 
 rm -f "$runner_log" "$order_log"
 FAKE_ARGS_GN='# default is enabled' run_check >"$output_log" 2>&1
-[[ "$(tr '\n' ' ' < "$order_log")" == 'build ninja runner ' ]] || \
+[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner ' ]] || \
   fail 'steps did not continue when enable_unittests is absent'
 assert_contains "$output_log" 'tests: ok' 'missing unit test setting summary'
 
@@ -139,6 +165,6 @@ fi
 rm -f "$runner_log" "$order_log"
 run_check --skip-tests >"$output_log" 2>&1
 [[ ! -e "$runner_log" ]] || fail 'runner ran with --skip-tests'
-assert_not_contains "$output_log" 'tests: ok' 'skip-tests summary'
+assert_not_exact_line "$output_log" 'tests: ok' 'skip-tests summary'
 
 printf 'test_check_runtime_spi.sh: ok\n'

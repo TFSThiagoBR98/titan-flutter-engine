@@ -62,6 +62,18 @@ run_build() {
   return "$status"
 }
 
+run_build_without_unittests() {
+  if "$build_engine" --mode debug --gn-only --out-name host_debug_no_unittests; then
+    printf 'gn without unit tests: ok\n'
+    return 0
+  else
+    status=$?
+  fi
+
+  printf 'gn without unit tests: failed (%s)\n' "$status" >&2
+  return "$status"
+}
+
 run_ninja() {
   local -a targets
   if ((${#requested_targets[@]} > 0)); then
@@ -113,5 +125,6 @@ if [[ -f "$args_file" ]] && grep -Eq \
   exit 1
 fi
 
+run_build_without_unittests
 run_ninja
 run_tests

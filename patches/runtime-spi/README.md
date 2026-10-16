@@ -37,6 +37,10 @@ scripts/check-runtime-spi.sh
 Para compilar sem executar os gtests, use `--skip-tests`. Alvos específicos
 podem ser informados repetindo `--target <ninja-target>`.
 
+O checker também executa uma segunda configuração GN sem `--unittests`, em um
+diretório de saída separado, para detectar dependências indevidas de alvos de
+teste antes de iniciar o ninja.
+
 Com um build que tenha os testes habilitados, também é possível executar os
 gtests diretamente a partir do diretório de saída:
 

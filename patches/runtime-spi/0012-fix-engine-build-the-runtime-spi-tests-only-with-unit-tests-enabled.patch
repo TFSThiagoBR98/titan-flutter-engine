@@ -1,0 +1,73 @@
+# Why: Why: the SPI test targets depended on shell test fixtures that only
+exist with enable_unittests, which broke every build configured without unit
+tests
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index dde80fe3b32..ecf698a01cb 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -1,3 +1,5 @@
++import("//flutter/testing/testing.gni")
++
+ source_set("runtime_spi") {
+   public = [
+     "runtime_backend.h",
+@@ -49,32 +51,34 @@ source_set("runtime_spi_c_api") {
+   sources = [ "abi_layout_check.c" ]
+ }
+ 
+-executable("runtime_spi_unittests") {
+-  testonly = true
+-  sources = [
+-    "spi_abi_frozen_unittests.cc",
+-    "spi_conformance_unittests.cc",
+-    "spi_runtime_backend_unittests.cc",
+-  ]
+-  deps = [
+-    ":c_test_runtime",
+-    ":runtime_spi_c_api",
+-    ":spi_backend",
+-    "//flutter/common",
+-    "//flutter/fml",
+-    "//flutter/runtime",
+-    "//flutter/shell/common:shell_test_fixture_sources",
+-    "//flutter/shell/common:shell_unittests_fixtures",
+-    "//flutter/testing",
+-    "//flutter/testing:fixture_test",
+-  ]
+-}
++if (enable_unittests) {
++  executable("runtime_spi_unittests") {
++    testonly = true
++    sources = [
++      "spi_abi_frozen_unittests.cc",
++      "spi_conformance_unittests.cc",
++      "spi_runtime_backend_unittests.cc",
++    ]
++    deps = [
++      ":c_test_runtime",
++      ":runtime_spi_c_api",
++      ":spi_backend",
++      "//flutter/common",
++      "//flutter/fml",
++      "//flutter/runtime",
++      "//flutter/shell/common:shell_test_fixture_sources",
++      "//flutter/shell/common:shell_unittests_fixtures",
++      "//flutter/testing",
++      "//flutter/testing:fixture_test",
++    ]
++  }
+ 
+-source_set("c_test_runtime") {
+-  testonly = true
+-  public = [ "testing/c_test_runtime.h" ]
+-  sources = [ "testing/c_test_runtime.c" ]
+-  deps = [ ":runtime_spi_c_api" ]
++  source_set("c_test_runtime") {
++    testonly = true
++    public = [ "testing/c_test_runtime.h" ]
++    sources = [ "testing/c_test_runtime.c" ]
++    deps = [ ":runtime_spi_c_api" ]
++  }
+ }
+ 
+ source_set("dart_runtime_extensions") {
