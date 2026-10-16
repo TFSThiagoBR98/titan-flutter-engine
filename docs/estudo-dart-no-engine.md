@@ -33,6 +33,25 @@ framework.
 - Isolamento de processos para runtimes neste primeiro desenho.
 - Definir todas as primitivas gráficas e serviços de plataforma da ABI em nível de código.
 
+## Decisões
+
+1. O Engine será dividido entre `libflutter_engine_core.so`, sem Dart e com
+   o core gráfico, e `libflutter_engine.so`, o `flutterDartEngine` que mantém a
+   Dart VM, `dart:ui`, snapshots e a Embedder API atual. A opção de build com
+   Dart permanece padrão; o perfil sem Dart precisa remover essas dependências
+   do grafo GN e dos artefatos.
+2. O Runtime SPI terá uma ABI C versionada e uma API de cena com handles
+   opacos e contagem de referência. A API cobrirá o nível de composição de
+   `dart:ui` sem expor widgets Dart nem tipos C++ privados do Engine.
+3. O runtime alternativo será o repositório `flutter-rs`, com port fiel da
+   arquitetura do framework Flutter no commit fixado em `flutter.lock`. A
+   paridade será conferida por testes portados, `scene_trace`, dumps canônicos
+   de árvores e tolerância numérica `1e-10`.
+
+Os primeiros seams C++ e a medição da S1 estão registrados em
+[runtime-spi-baseline.md](medidas/runtime-spi-baseline.md) e no
+[resultado do Checkpoint B](medidas/runtime-spi-s1.md).
+
 ## Arquitetura proposta
 
 ```mermaid

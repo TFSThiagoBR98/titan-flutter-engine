@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Runtime SPI S1: branch-based patch workflow, on-demand engine tests and Dart
+  footprint measurements, plus the Dart-free type, tracing, runtime backend
+  and shell factory seams with their baseline reports.
 - Flutter SDK host artifacts (Linux x64): the same zips the `flutter` tool
   downloads, built from the patched engine (including the GTK shell,
   `sky_engine` and `flutter_gpu`), assembled in the official storage layout

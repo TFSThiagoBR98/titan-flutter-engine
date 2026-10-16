@@ -8,6 +8,9 @@
 Esta é a referência das fases S1–S6: nenhuma delas pode criar uma falha nova de gtest, mudar o hash do probe ou
 piorar os benchmarks além da variação medida aqui.
 
+O resultado da S1 está em
+[runtime-spi-s1.md](runtime-spi-s1.md).
+
 ## gtests
 
 `scripts/run-engine-tests.sh <out_dir> --baseline tests/runtime-spi/baseline-failures.txt` (roda de `engine/src`):
