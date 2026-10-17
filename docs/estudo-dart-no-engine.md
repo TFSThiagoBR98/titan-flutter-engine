@@ -222,6 +222,35 @@ SPI, incluindo os testes de texto, além de repetição isolada e embaralhada.
 Os detalhes e os resultados de build estão em
 [runtime-spi-s3b1.md](medidas/runtime-spi-s3b1.md).
 
+## S3b-2: imagens
+
+A S3b-2 acrescenta imagens ao Runtime SPI sem colocar código Dart no core. A
+`ImageDescriptorData` separa os dados de `ImageDescriptor` do wrapper de
+`dart:ui`, e o alvo GN `ui_image_decoding` reúne o caminho de decodificação
+sem dependências de Dart. O wrapper Dart continua delegando para os mesmos
+dados, preservando o comportamento existente do caminho `dart:ui`.
+
+A ABI 0.4 expõe `FlutterSpiImageApi`, com handles opacos sobre imagens do
+engine, criação a partir de pixels crus, decodificação de bytes codificados,
+consulta de tamanho, retenção, liberação e desenho de imagens, retângulos,
+nine-patch e atlas. A validação rejeita formatos e buffers inconsistentes
+com resultados explícitos pela ABI. As funções de cena executam no UI runner;
+chamadas de outras threads retornam `kFlutterSpiWrongThread`.
+
+Os callbacks de decodificação são sempre enfileirados para uma tarefa
+posterior no UI runner, inclusive quando o decodificador encontra um erro.
+Bytes sem um `ImageGenerator` compatível e buffers de pixels inválidos são
+rejeitados sem callback. Se o backend parar enquanto uma decodificação estiver
+pendente, o resultado é descartado, o callback do runtime não é chamado e a
+imagem produzida é liberada.
+
+Como o caminho sem Dart não recebe os workers da VM, a fábrica do SPI mantém um
+`ConcurrentMessageLoop` próprio e fornece seu runner concorrente ao core. A
+resolução do tamanho-alvo também reproduz a regra do `dart:ui`: dimensões
+ausentes usam o tamanho original, e uma única dimensão preserva a proporção.
+Os detalhes e os resultados de build estão em
+[runtime-spi-s3b2.md](medidas/runtime-spi-s3b2.md).
+
 ## Ciclo de vida e falhas
 
 O host cria, inicia, encerra e libera o backend. Uma falha recuperável encerra o runtime ativo e limpa os recursos;

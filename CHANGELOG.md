@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime SPI S3b-1: text styles, dynamic font loading, paragraph layout and
   metrics, UTF-16 text queries, paragraph drawing, and end-to-end conformance
   tests.
+- Runtime SPI S3b-2: ABI C11 de imagens, handles e operações de desenho,
+  decodificação assíncrona e testes de conformidade ponta a ponta.
 
 ### Fixed
 

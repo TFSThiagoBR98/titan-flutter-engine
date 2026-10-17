@@ -32,6 +32,11 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0022-feat-engine-add-spi-text-styles-and-font-loading.patch` | Converter estilos para `txt` e carregar fontes dinâmicas pela API do Runtime SPI. | |
 | `0023-feat-engine-add-spi-paragraphs.patch` | Montar, fazer layout e consultar parágrafos com paridade ao `txt` direto. | |
 | `0024-feat-engine-draw-spi-paragraphs-and-exercise-text-end-to-end.patch` | Desenhar parágrafos pela cena e validar texto ponta a ponta pela suíte de conformidade. | |
+| `0025-refactor-engine-separate-image-descriptor-data-from-its-dart-wrapper.patch` | Separar os dados de `ImageDescriptor` do wrapper Dart para permitir a decodificação sem Dart. | |
+| `0026-feat-engine-add-the-runtime-spi-image-header.patch` | Adicionar a ABI C11 0.4 para imagens, pixels, opções de decodificação e transformações. | |
+| `0027-feat-engine-draw-images-through-the-runtime-spi.patch` | Expor handles de imagem e operações de desenho de imagens pela API de cena. | |
+| `0028-feat-engine-decode-images-through-the-runtime-spi.patch` | Decodificar imagens codificadas e pixels crus com callbacks assíncronos no UI runner. | |
+| `0029-feat-engine-decode-spi-images-on-core-workers-and-test-them-end-to-end.patch` | Fornecer workers concorrentes ao core e validar a decodificação de imagens ponta a ponta. | |
 
 O fluxo é:
 
