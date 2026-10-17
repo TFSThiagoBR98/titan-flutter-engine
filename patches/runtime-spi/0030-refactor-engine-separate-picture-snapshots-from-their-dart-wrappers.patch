@@ -1,0 +1,588 @@
+# Why: move snapshot rasterization and deferred image construction into a
+# Dart-free UI target so runtime SPI clients can reuse the engine image path
+# without changing dart:ui behavior.
+diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
+index 52720786a5d..14a1cc1f076 100644
+--- a/engine/src/flutter/lib/ui/BUILD.gn
++++ b/engine/src/flutter/lib/ui/BUILD.gn
+@@ -115,6 +115,51 @@ source_set("ui_image_decoding") {
+   ]
+ }
+ 
++source_set("ui_image_output") {
++  sources = [
++    "painting/display_list_deferred_image_gpu_skia.cc",
++    "painting/display_list_deferred_image_gpu_skia.h",
++    "painting/image_snapshot.cc",
++    "painting/image_snapshot.h",
++  ]
++
++  public_configs = [ "//flutter:config" ]
++
++  public_deps = [
++    ":ui_image_decoding",
++    "//flutter/display_list",
++    "//flutter/fml",
++    "//flutter/skia",
++  ]
++
++  deps = [
++    "//flutter/common",
++    "//flutter/common/graphics",
++    "//flutter/flow",
++    "//flutter/shell/common:snapshot_pixel_format",
++  ]
++
++  if (impeller_supports_rendering) {
++    sources += [
++      "painting/display_list_deferred_image_gpu_impeller.cc",
++      "painting/display_list_deferred_image_gpu_impeller.h",
++    ]
++
++    deps += [
++      "//flutter/impeller",
++      "//flutter/impeller/display_list",
++    ]
++  }
++
++  assert_no_deps = [
++    "//flutter/third_party/dart/*",
++    "//flutter/third_party/tonic/*",
++    "//flutter/runtime:runtime",
++    "//flutter/runtime:libdart",
++    "//flutter/lib/ui:ui",
++  ]
++}
++
+ source_set("ui") {
+   cflags = [
+     # Dart gives us doubles. Skia and Impeller work in floats.
+@@ -152,8 +197,6 @@ source_set("ui") {
+     "painting/codec.h",
+     "painting/color_filter.cc",
+     "painting/color_filter.h",
+-    "painting/display_list_deferred_image_gpu_skia.cc",
+-    "painting/display_list_deferred_image_gpu_skia.h",
+     "painting/engine_layer.cc",
+     "painting/engine_layer.h",
+     "painting/fragment_program.cc",
+@@ -238,6 +281,7 @@ source_set("ui") {
+   public_deps = [
+     ":ui_core_types",
+     ":ui_image_decoding",
++    ":ui_image_output",
+     "//flutter/flow",
+     "//flutter/shell/common:display",
+     "//flutter/shell/common:platform_message_handler",
+@@ -265,8 +309,6 @@ source_set("ui") {
+ 
+   if (impeller_supports_rendering) {
+     sources += [
+-      "painting/display_list_deferred_image_gpu_impeller.cc",
+-      "painting/display_list_deferred_image_gpu_impeller.h",
+       "painting/image_encoding_impeller.cc",
+       "painting/image_encoding_impeller.h",
+       "painting/pixel_deferred_image_gpu_impeller.cc",
+diff --git a/engine/src/flutter/lib/ui/compositing/scene.cc b/engine/src/flutter/lib/ui/compositing/scene.cc
+index 8bf7c2a8693..7a5067d5859 100644
+--- a/engine/src/flutter/lib/ui/compositing/scene.cc
++++ b/engine/src/flutter/lib/ui/compositing/scene.cc
+@@ -5,16 +5,11 @@
+ #include "flutter/lib/ui/compositing/scene.h"
+ 
+ #include "flutter/fml/trace_event.h"
+-#include "flutter/lib/ui/painting/display_list_deferred_image_gpu_skia.h"
+ #include "flutter/lib/ui/painting/image.h"
++#include "flutter/lib/ui/painting/image_snapshot.h"
+ #include "flutter/lib/ui/painting/picture.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/lib/ui/window/platform_configuration.h"
+-#if IMPELLER_SUPPORTS_RENDERING
+-#include "flutter/lib/ui/painting/display_list_deferred_image_gpu_impeller.h"
+-#endif  // IMPELLER_SUPPORTS_RENDERING
+-#include "third_party/skia/include/core/SkImageInfo.h"
+-#include "third_party/skia/include/core/SkSurface.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+@@ -71,34 +66,6 @@ Dart_Handle Scene::toImage(uint32_t width,
+                                             raw_image_callback);
+ }
+ 
+-static sk_sp<DlImage> CreateDeferredImage(
+-    bool impeller,
+-    std::unique_ptr<LayerTree> layer_tree,
+-    fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
+-    fml::RefPtr<fml::TaskRunner> raster_task_runner,
+-    const fml::RefPtr<SkiaUnrefQueue>& unref_queue) {
+-#if IMPELLER_SUPPORTS_RENDERING
+-  if (impeller) {
+-    return DlDeferredImageGPUImpeller::Make(std::move(layer_tree),
+-                                            std::move(snapshot_delegate),
+-                                            std::move(raster_task_runner));
+-  }
+-#endif  // IMPELLER_SUPPORTS_RENDERING
+-
+-#if SLIMPELLER
+-  FML_LOG(FATAL) << "Impeller opt-out unavailable.";
+-  return nullptr;
+-#else   // SLIMPELLER
+-  const auto& frame_size = layer_tree->frame_size();
+-  const SkImageInfo image_info =
+-      SkImageInfo::Make(frame_size.width, frame_size.height,
+-                        kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+-  return DlDeferredImageGPUSkia::MakeFromLayerTree(
+-      image_info, std::move(layer_tree), std::move(snapshot_delegate),
+-      raster_task_runner, unref_queue);
+-#endif  //  SLIMPELLER
+-}
+-
+ void Scene::RasterizeToImage(uint32_t width,
+                              uint32_t height,
+                              Dart_Handle raw_image_handle) {
+@@ -109,11 +76,16 @@ void Scene::RasterizeToImage(uint32_t width,
+   auto unref_queue = dart_state->GetSkiaUnrefQueue();
+   auto snapshot_delegate = dart_state->GetSnapshotDelegate();
+   auto raster_task_runner = dart_state->GetTaskRunners().GetRasterTaskRunner();
++  ImageSnapshotContext context{
++      dart_state->GetTaskRunners().GetUITaskRunner(),
++      raster_task_runner,
++      snapshot_delegate,
++      unref_queue,
++      dart_state->IsImpellerEnabled(),
++  };
+ 
+   auto image = CanvasImage::Create();
+-  auto dl_image = CreateDeferredImage(
+-      dart_state->IsImpellerEnabled(), BuildLayerTree(width, height),
+-      std::move(snapshot_delegate), std::move(raster_task_runner), unref_queue);
++  auto dl_image = CreateDeferredImage(context, BuildLayerTree(width, height));
+   image->set_image(dl_image);
+   image->AssociateWithDartWrapper(raw_image_handle);
+ }
+diff --git a/engine/src/flutter/lib/ui/painting/image_snapshot.cc b/engine/src/flutter/lib/ui/painting/image_snapshot.cc
+new file mode 100644
+index 00000000000..602d931da1b
+--- /dev/null
++++ b/engine/src/flutter/lib/ui/painting/image_snapshot.cc
+@@ -0,0 +1,153 @@
++// Copyright 2013 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/lib/ui/painting/image_snapshot.h"
++
++#include <utility>
++
++#include "flutter/display_list/image/dl_image_skia.h"
++#include "flutter/fml/make_copyable.h"
++#include "flutter/lib/ui/painting/display_list_deferred_image_gpu_skia.h"
++#include "flutter/lib/ui/painting/display_list_image_gpu.h"
++#if IMPELLER_SUPPORTS_RENDERING
++#include "flutter/lib/ui/painting/display_list_deferred_image_gpu_impeller.h"
++#include "impeller/display_list/dl_image_impeller.h"  // nogncheck
++#endif  // IMPELLER_SUPPORTS_RENDERING
++
++namespace flutter {
++
++#if IMPELLER_SUPPORTS_RENDERING
++static sk_sp<DlImage> MakeImpellerImage(
++    const std::shared_ptr<impeller::Texture>& texture) {
++  if (texture) {
++    return impeller::DlImageImpeller::Make(texture,
++                                           DlImage::OwningContext::kRaster);
++  }
++  return nullptr;
++}
++#endif  // IMPELLER_SUPPORTS_RENDERING
++
++void RasterizeToImageAsync(
++    const ImageSnapshotContext& context,
++    sk_sp<DisplayList> display_list,
++    std::unique_ptr<LayerTree> layer_tree,
++    uint32_t width,
++    uint32_t height,
++    std::function<void(sk_sp<DlImage>)> on_ui_thread) {
++  auto ui_task = fml::MakeCopyable(
++      [unref_queue = context.unref_queue,
++       on_ui_thread = std::move(on_ui_thread)](sk_sp<DlImage> image) mutable {
++        if (image && !image->isUIThreadSafe()) {
++          FML_DCHECK(image->GetImageType() == DlImage::Type::kSkia);
++          auto skia_image = image->asSkiaImage();
++          image = DlImageGPU::Make(
++              {skia_image ? skia_image->skia_image() : nullptr,
++               std::move(unref_queue)});
++        }
++        on_ui_thread(std::move(image));
++      });
++
++  fml::TaskRunner::RunNowOrPostTask(
++      context.raster_task_runner,
++      fml::MakeCopyable(
++          [context, display_list = std::move(display_list),
++           layer_tree = std::move(layer_tree), width, height,
++           ui_task = std::move(ui_task)]() mutable {
++            auto picture_bounds = DlISize(width, height);
++            sk_sp<DisplayList> snapshot_display_list = display_list;
++            if (layer_tree) {
++              FML_DCHECK(picture_bounds == layer_tree->frame_size());
++              auto aiks_context = context.impeller_enabled
++                                      ? context.snapshot_delegate->GetAiksContext()
++                                      : nullptr;
++              snapshot_display_list = layer_tree->Flatten(
++                  DlRect::MakeWH(width, height),
++                  context.snapshot_delegate->GetTextureRegistry(),
++                  context.impeller_enabled
++                      ? nullptr
++                      : context.snapshot_delegate->GetGrContext(),
++                  aiks_context.get());
++            }
++            if (context.impeller_enabled) {
++#if IMPELLER_SUPPORTS_RENDERING
++              context.snapshot_delegate->MakeImpellerSnapshot(
++                  snapshot_display_list, picture_bounds,
++                  [ui_task_runner = context.ui_task_runner,
++                   ui_task](const std::shared_ptr<impeller::Texture>& texture) {
++                    fml::TaskRunner::RunNowOrPostTask(
++                        ui_task_runner, [ui_task, texture]() {
++                          ui_task(MakeImpellerImage(texture));
++                        });
++                  },
++                  SnapshotPixelFormat::kDontCare);
++#endif  // IMPELLER_SUPPORTS_RENDERING
++            } else {
++              context.snapshot_delegate->MakeSkiaSnapshot(
++                  snapshot_display_list, picture_bounds,
++                  [ui_task_runner = context.ui_task_runner,
++                   ui_task](const sk_sp<SkImage>& sk_image) {
++                    fml::TaskRunner::RunNowOrPostTask(
++                        ui_task_runner, [ui_task, sk_image]() {
++                          sk_sp<DlImage> image;
++                          if (sk_image) {
++                            image = DlImageSkia::Make(sk_image);
++                          }
++                          ui_task(std::move(image));
++                        });
++                  },
++                  SnapshotPixelFormat::kDontCare);
++            }
++          }));
++}
++
++sk_sp<DlImage> CreateDeferredImage(const ImageSnapshotContext& context,
++                                   sk_sp<DisplayList> display_list,
++                                   uint32_t width,
++                                   uint32_t height,
++                                   SnapshotPixelFormat format) {
++#if IMPELLER_SUPPORTS_RENDERING
++  if (context.impeller_enabled) {
++    return DlDeferredImageGPUImpeller::Make(
++        std::move(display_list), DlISize(width, height), format,
++        context.snapshot_delegate, context.raster_task_runner);
++  }
++#endif  // IMPELLER_SUPPORTS_RENDERING
++
++#if SLIMPELLER
++  FML_LOG(FATAL) << "Impeller opt-out unavailable.";
++  return nullptr;
++#else   // SLIMPELLER
++  const SkImageInfo image_info = SkImageInfo::Make(
++      width, height, kRGBA_8888_SkColorType, kPremul_SkAlphaType);
++  return DlDeferredImageGPUSkia::Make(
++      image_info, std::move(display_list), context.snapshot_delegate,
++      context.raster_task_runner, context.unref_queue);
++#endif  // !SLIMPELLER
++}
++
++sk_sp<DlImage> CreateDeferredImage(const ImageSnapshotContext& context,
++                                   std::unique_ptr<LayerTree> layer_tree) {
++#if IMPELLER_SUPPORTS_RENDERING
++  if (context.impeller_enabled) {
++    return DlDeferredImageGPUImpeller::Make(
++        std::move(layer_tree), context.snapshot_delegate,
++        context.raster_task_runner);
++  }
++#endif  // IMPELLER_SUPPORTS_RENDERING
++
++#if SLIMPELLER
++  FML_LOG(FATAL) << "Impeller opt-out unavailable.";
++  return nullptr;
++#else   // SLIMPELLER
++  const auto& frame_size = layer_tree->frame_size();
++  const SkImageInfo image_info =
++      SkImageInfo::Make(frame_size.width, frame_size.height,
++                        kRGBA_8888_SkColorType, kPremul_SkAlphaType);
++  return DlDeferredImageGPUSkia::MakeFromLayerTree(
++      image_info, std::move(layer_tree), context.snapshot_delegate,
++      context.raster_task_runner, context.unref_queue);
++#endif  // !SLIMPELLER
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/image_snapshot.h b/engine/src/flutter/lib/ui/painting/image_snapshot.h
+new file mode 100644
+index 00000000000..735309fb317
+--- /dev/null
++++ b/engine/src/flutter/lib/ui/painting/image_snapshot.h
+@@ -0,0 +1,48 @@
++// Copyright 2013 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_LIB_UI_PAINTING_IMAGE_SNAPSHOT_H_
++#define FLUTTER_LIB_UI_PAINTING_IMAGE_SNAPSHOT_H_
++
++#include <cstdint>
++#include <functional>
++#include <memory>
++
++#include "flutter/display_list/display_list.h"
++#include "flutter/flow/layers/layer_tree.h"
++#include "flutter/flow/skia_gpu_object.h"
++#include "flutter/fml/task_runner.h"
++#include "flutter/lib/ui/snapshot_delegate.h"
++#include "flutter/shell/common/snapshot_pixel_format.h"
++
++namespace flutter {
++
++struct ImageSnapshotContext {
++  fml::RefPtr<fml::TaskRunner> ui_task_runner;
++  fml::RefPtr<fml::TaskRunner> raster_task_runner;
++  fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate;
++  fml::RefPtr<SkiaUnrefQueue> unref_queue;
++  bool impeller_enabled;
++};
++
++void RasterizeToImageAsync(
++    const ImageSnapshotContext& context,
++    sk_sp<DisplayList> display_list,
++    std::unique_ptr<LayerTree> layer_tree,
++    uint32_t width,
++    uint32_t height,
++    std::function<void(sk_sp<DlImage>)> on_ui_thread);
++
++sk_sp<DlImage> CreateDeferredImage(const ImageSnapshotContext& context,
++                                   sk_sp<DisplayList> display_list,
++                                   uint32_t width,
++                                   uint32_t height,
++                                   SnapshotPixelFormat format);
++
++sk_sp<DlImage> CreateDeferredImage(const ImageSnapshotContext& context,
++                                   std::unique_ptr<LayerTree> layer_tree);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_LIB_UI_PAINTING_IMAGE_SNAPSHOT_H_
+diff --git a/engine/src/flutter/lib/ui/painting/picture.cc b/engine/src/flutter/lib/ui/painting/picture.cc
+index 4afb2dca2d9..37d0e739e0e 100644
+--- a/engine/src/flutter/lib/ui/painting/picture.cc
++++ b/engine/src/flutter/lib/ui/painting/picture.cc
+@@ -9,13 +9,8 @@
+ 
+ #include "flutter/fml/make_copyable.h"
+ #include "flutter/lib/ui/painting/canvas.h"
+-#include "flutter/lib/ui/painting/display_list_deferred_image_gpu_skia.h"
++#include "flutter/lib/ui/painting/image_snapshot.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+-#if IMPELLER_SUPPORTS_RENDERING
+-#include "flutter/impeller/display_list/dl_image_impeller.h"  // nogncheck
+-#include "flutter/lib/ui/painting/display_list_deferred_image_gpu_impeller.h"  // nogncheck
+-#endif  // IMPELLER_SUPPORTS_RENDERING
+-#include "flutter/lib/ui/painting/display_list_image_gpu.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+@@ -75,35 +70,6 @@ void Picture::toImageSync(uint32_t width,
+                        raw_image_handle);
+ }
+ 
+-static sk_sp<DlImage> CreateDeferredImage(
+-    bool impeller,
+-    sk_sp<DisplayList> display_list,
+-    uint32_t width,
+-    uint32_t height,
+-    SnapshotPixelFormat target_format,
+-    fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
+-    fml::RefPtr<fml::TaskRunner> raster_task_runner,
+-    const fml::RefPtr<SkiaUnrefQueue>& unref_queue) {
+-#if IMPELLER_SUPPORTS_RENDERING
+-  if (impeller) {
+-    return DlDeferredImageGPUImpeller::Make(
+-        std::move(display_list), DlISize(width, height), target_format,
+-        std::move(snapshot_delegate), std::move(raster_task_runner));
+-  }
+-#endif  // IMPELLER_SUPPORTS_RENDERING
+-
+-#if SLIMPELLER
+-  FML_LOG(FATAL) << "Impeller opt-out unavailable.";
+-  return nullptr;
+-#else   // SLIMPELLER
+-  const SkImageInfo image_info = SkImageInfo::Make(
+-      width, height, kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+-  return DlDeferredImageGPUSkia::Make(image_info, std::move(display_list),
+-                                      std::move(snapshot_delegate),
+-                                      raster_task_runner, unref_queue);
+-#endif  //  !SLIMPELLER
+-}
+-
+ // static
+ void Picture::RasterizeToImageSync(sk_sp<DisplayList> display_list,
+                                    uint32_t width,
+@@ -117,12 +83,17 @@ void Picture::RasterizeToImageSync(sk_sp<DisplayList> display_list,
+   auto unref_queue = dart_state->GetSkiaUnrefQueue();
+   auto snapshot_delegate = dart_state->GetSnapshotDelegate();
+   auto raster_task_runner = dart_state->GetTaskRunners().GetRasterTaskRunner();
++  ImageSnapshotContext context{
++      dart_state->GetTaskRunners().GetUITaskRunner(),
++      raster_task_runner,
++      snapshot_delegate,
++      unref_queue,
++      dart_state->IsImpellerEnabled(),
++  };
+ 
+   auto image = CanvasImage::Create();
+-  auto dl_image = CreateDeferredImage(
+-      dart_state->IsImpellerEnabled(), std::move(display_list), width, height,
+-      target_format, std::move(snapshot_delegate),
+-      std::move(raster_task_runner), unref_queue);
++  auto dl_image = CreateDeferredImage(context, std::move(display_list), width,
++                                      height, target_format);
+   image->set_image(dl_image);
+   image->AssociateWithDartWrapper(raw_image_handle);
+ }
+@@ -140,17 +111,6 @@ size_t Picture::GetAllocationSize() const {
+   }
+ }
+ 
+-#if IMPELLER_SUPPORTS_RENDERING
+-static sk_sp<DlImage> MakeImpellerImage(
+-    const std::shared_ptr<impeller::Texture>& texture) {
+-  if (texture) {
+-    return impeller::DlImageImpeller::Make(texture,
+-                                           DlImage::OwningContext::kRaster);
+-  }
+-  return nullptr;
+-}
+-#endif  // IMPELLER_SUPPORTS_RENDERING
+-
+ Dart_Handle Picture::RasterizeToImage(const sk_sp<DisplayList>& display_list,
+                                       uint32_t width,
+                                       uint32_t height,
+@@ -191,22 +151,19 @@ Dart_Handle Picture::DoRasterizeToImage(const sk_sp<DisplayList>& display_list,
+   auto ui_task_runner = dart_state->GetTaskRunners().GetUITaskRunner();
+   auto raster_task_runner = dart_state->GetTaskRunners().GetRasterTaskRunner();
+   auto snapshot_delegate = dart_state->GetSnapshotDelegate();
+-#if IMPELLER_SUPPORTS_RENDERING
+-  auto is_impeller_enabled = dart_state->IsImpellerEnabled();
+-#else
+-  auto is_impeller_enabled = false;
+-#endif  // IMPELLER_SUPPORTS_RENDERING
+-
+-  // We can't create an image on this task runner because we don't have a
+-  // graphics context. Even if we did, it would be slow anyway. Also, this
+-  // thread owns the sole reference to the layer tree. So we do it in the
+-  // raster thread.
++  ImageSnapshotContext context{
++      ui_task_runner,
++      raster_task_runner,
++      snapshot_delegate,
++      unref_queue,
++      dart_state->IsImpellerEnabled(),
++  };
+ 
+-  auto ui_task =
++  auto on_ui_thread =
+       // The static leak checker gets confused by the use of fml::MakeCopyable.
+       // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
+-      fml::MakeCopyable([image_callback = std::move(image_callback),
+-                         unref_queue](sk_sp<DlImage> image) mutable {
++      fml::MakeCopyable([image_callback = std::move(image_callback)](
++                            sk_sp<DlImage> image) mutable {
+         auto dart_state = image_callback->dart_state().lock();
+         if (!dart_state) {
+           // The root isolate could have died in the meantime.
+@@ -219,15 +176,6 @@ Dart_Handle Picture::DoRasterizeToImage(const sk_sp<DisplayList>& display_list,
+           return;
+         }
+ 
+-        if (!image->isUIThreadSafe()) {
+-          // All images with impeller textures should already be safe.
+-          FML_DCHECK(image->GetImageType() == DlImage::Type::kSkia);
+-          auto skia_image = image->asSkiaImage();
+-          image =
+-              DlImageGPU::Make({skia_image ? skia_image->skia_image() : nullptr,
+-                                std::move(unref_queue)});
+-        }
+-
+         auto dart_image = CanvasImage::Create();
+         dart_image->set_image(image);
+         auto* raw_dart_image = tonic::ToDart(dart_image);
+@@ -241,54 +189,8 @@ Dart_Handle Picture::DoRasterizeToImage(const sk_sp<DisplayList>& display_list,
+         // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
+       });
+ 
+-  // Kick things off on the raster rask runner.
+-  fml::TaskRunner::RunNowOrPostTask(
+-      raster_task_runner,
+-      fml::MakeCopyable([ui_task_runner, snapshot_delegate, display_list, width,
+-                         height, ui_task, is_impeller_enabled,
+-                         layer_tree = std::move(layer_tree)]() mutable {
+-        auto picture_bounds = DlISize(width, height);
+-        sk_sp<DisplayList> snapshot_display_list = display_list;
+-        if (layer_tree) {
+-          FML_DCHECK(picture_bounds == layer_tree->frame_size());
+-          auto aiks_context = is_impeller_enabled
+-                                  ? snapshot_delegate->GetAiksContext()
+-                                  : nullptr;
+-          snapshot_display_list = layer_tree->Flatten(
+-              DlRect::MakeWH(width, height),
+-              snapshot_delegate->GetTextureRegistry(),
+-              is_impeller_enabled ? nullptr : snapshot_delegate->GetGrContext(),
+-              aiks_context.get());
+-        }
+-        if (is_impeller_enabled) {
+-#if IMPELLER_SUPPORTS_RENDERING
+-          snapshot_delegate->MakeImpellerSnapshot(
+-              snapshot_display_list, picture_bounds,
+-              [ui_task_runner,
+-               ui_task](const std::shared_ptr<impeller::Texture>& texture) {
+-                fml::TaskRunner::RunNowOrPostTask(
+-                    ui_task_runner, [ui_task, texture]() {
+-                      ui_task(MakeImpellerImage(texture));
+-                    });
+-              },
+-              SnapshotPixelFormat::kDontCare);
+-#endif  // IMPELLER_SUPPORTS_RENDERING
+-        } else {
+-          snapshot_delegate->MakeSkiaSnapshot(
+-              snapshot_display_list, picture_bounds,
+-              [ui_task_runner, ui_task](const sk_sp<SkImage>& sk_image) {
+-                fml::TaskRunner::RunNowOrPostTask(
+-                    ui_task_runner, [ui_task, sk_image]() {
+-                      sk_sp<DlImage> image;
+-                      if (sk_image) {
+-                        image = DlImageSkia::Make(sk_image);
+-                      }
+-                      ui_task(std::move(image));
+-                    });
+-              },
+-              SnapshotPixelFormat::kDontCare);
+-        }
+-      }));
++  RasterizeToImageAsync(context, display_list, std::move(layer_tree), width,
++                        height, std::move(on_ui_thread));
+ 
+   return Dart_Null();
+   // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
+diff --git a/engine/src/flutter/runtime_spi/tools/check_no_dart_deps.py b/engine/src/flutter/runtime_spi/tools/check_no_dart_deps.py
+index b102a00c170..dc81b3ccee6 100755
+--- a/engine/src/flutter/runtime_spi/tools/check_no_dart_deps.py
++++ b/engine/src/flutter/runtime_spi/tools/check_no_dart_deps.py
+@@ -25,6 +25,7 @@ FORBIDDEN_LABEL = "//flutter/lib/ui:ui"
+ ALLOWED_DART_FREE_TARGETS = (
+     "//flutter/lib/ui:ui_core_types",
+     "//flutter/lib/ui:ui_image_decoding",
++    "//flutter/lib/ui:ui_image_output",
+     "//flutter/runtime:platform_data",
+     "//flutter/runtime:runtime_delegate",
+     "//flutter/shell/common:display",
