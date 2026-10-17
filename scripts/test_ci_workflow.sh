@@ -29,6 +29,19 @@ assert_contains "$repository_root/scripts/build-engine-windows.ps1" "'--no-rbe'"
 raise_standalone_rbe macOS "$macos_build_script"
 raise_standalone_rbe Windows "$windows_build_script"
 
+assert_sdk_variants() {
+  local expected=$1 target=$2 mode=$3 actual
+  actual=$($ci_script linux-sdk-variants "$target" "$mode")
+  [[ "$actual" == "$expected" ]] || {
+    printf 'unexpected SDK variants for %s-%s: %s\n' "$target" "$mode" "$actual" >&2
+    exit 1
+  }
+}
+
+assert_sdk_variants 'sdk-desktop-debug sdk-host-debug' x64 debug
+assert_sdk_variants 'sdk-desktop-arm64-debug sdk-host-arm64-debug' arm64 debug
+assert_sdk_variants 'sdk-desktop-riscv64-musl-release' riscv64-musl release
+
 ruby - "$workflow" <<'RUBY'
 require 'yaml'
 
@@ -37,14 +50,13 @@ raise 'self-hosted runner is forbidden' if File.read(ARGV.fetch(0)).include?('se
 raise 'workflow must define global read permission' unless workflow['permissions'] == {'contents' => 'read'}
 jobs = workflow.fetch('jobs')
 build = jobs.fetch('build')
-linux_sdk = jobs.fetch('linux_sdk')
 linux_platform = jobs.fetch('linux_platform')
 macos = jobs.fetch('macos')
 windows = jobs.fetch('windows')
 release = jobs.fetch('release')
-expected_jobs = %w[build linux_sdk linux_platform macos windows release]
+expected_jobs = %w[build linux_platform macos windows release]
 raise "unexpected jobs: #{jobs.keys.inspect}" unless jobs.keys.sort == expected_jobs.sort
-%w[build linux_sdk linux_platform macos windows].each do |job_name|
+%w[build linux_platform macos windows].each do |job_name|
   build_job = jobs.fetch(job_name)
   log_upload = build_job.fetch('steps').find do |step|
     step['uses'] == 'actions/upload-artifact@v4' &&
@@ -54,7 +66,6 @@ raise "unexpected jobs: #{jobs.keys.inspect}" unless jobs.keys.sort == expected_
   raise "#{job_name} build logs must upload on every outcome" unless log_upload['if'] == 'always()'
 end
 raise 'build must use the hosted runner' unless build['runs-on'] == 'ubuntu-24.04'
-raise 'linux SDK job must use the hosted runner' unless linux_sdk['runs-on'] == 'ubuntu-24.04'
 raise 'Linux platform job must use the hosted runner' unless linux_platform['runs-on'] == 'ubuntu-24.04'
 raise 'macOS job must use the hosted runner' unless macos['runs-on'] == 'macos-15'
 raise 'Windows job must use the hosted runner' unless windows['runs-on'] == 'windows-2025'
@@ -100,15 +111,19 @@ runs = steps.filter_map { |step| step['run'] }.join("\n")
 %w[deps build probe package].each do |stage|
   raise "missing ci stage #{stage}" unless runs.include?("scripts/ci.sh #{stage}")
 end
+sdk_step = steps.find { |step| step['run']&.include?('linux-sdk-variants') }
+raise 'Linux SDK build step is missing' unless sdk_step
+raise 'Linux SDK build must use the progress wrapper' unless sdk_step.fetch('run').include?('scripts/ci.sh with-progress')
+raise 'Linux SDK build must use the matrix builder' unless sdk_step.fetch('run').include?('scripts/build-matrix.sh --parallel 1 --zip')
+sdk_upload = steps.find { |step| step['uses'] == 'actions/upload-artifact@v4' && step.dig('with', 'name') == 'flutter-build-${{ matrix.target }}-${{ matrix.mode }}' }
+raise 'Linux engine and SDK upload is missing' unless sdk_upload
+raise 'Linux engine and SDK upload must include both archive roots' unless sdk_upload.dig('with', 'path').to_s.include?('/mnt/titan/bundles/dist/*.zip') && sdk_upload.dig('with', 'path').to_s.include?('/mnt/titan/work/flutter/engine/src/out/*/zip_archives/**')
 sysroot_step = steps.find { |step| step['run']&.include?('scripts/ci.sh sysroot') }
 raise 'sysroot step is missing' unless sysroot_step
 raise 'sysroot step must be conditional' unless sysroot_step['if'] == "matrix.defconfig != ''"
-raise 'Linux SDK job must include the host and GTK variants' unless linux_sdk.fetch('env').fetch('TITAN_VARIANTS').include?('sdk-host-arm64-debug') && linux_sdk.fetch('env').fetch('TITAN_VARIANTS').include?('sdk-desktop-arm64-release')
 raise 'Linux platform job must include Android and web' unless %w[android-debug-arm web-release].all? { |variant| linux_platform.fetch('env').fetch('TITAN_VARIANTS').include?(variant) }
 # Fuchsia is kept out of the CI matrix on purpose (user decision, 2026-10-17).
 raise 'Linux platform job must not build Fuchsia' if linux_platform.fetch('env').fetch('TITAN_VARIANTS').include?('fuchsia')
-linux_sdk_build = linux_sdk.fetch('steps').find { |step| step['run']&.include?('build-matrix.sh') }
-raise 'Linux SDK build must use the progress wrapper' unless linux_sdk_build&.fetch('run').to_s.include?('scripts/ci.sh with-progress')
 linux_platform_build = linux_platform.fetch('steps').find { |step| step['run']&.include?('build-matrix.sh') }
 raise 'Linux platform build must use the progress wrapper' unless linux_platform_build&.fetch('run').to_s.include?('scripts/ci.sh with-progress')
 
@@ -132,8 +147,10 @@ raise 'download-artifact must merge matrix artifacts' unless release['steps'].an
   step['uses'] == 'actions/download-artifact@v4' && step.dig('with', 'merge-multiple') == true
 end
 raise 'release must run only for tags' unless release['if'].include?('refs/tags/v')
-raise 'release must depend on every host job' unless release['needs'].sort == %w[build linux_platform linux_sdk macos windows].sort
+raise 'release must depend on every host job' unless release['needs'].sort == %w[build linux_platform macos windows].sort
 raise 'release must assemble the full SDK' unless release['steps'].any? { |step| step['run']&.include?('scripts/ci.sh assemble') }
+download = release['steps'].find { |step| step['uses'] == 'actions/download-artifact@v4' }
+raise 'release must download the combined Linux build artifacts' unless download&.dig('with', 'pattern') == 'flutter-build-*' && download.dig('with', 'path') == '/mnt/titan'
 RUBY
 
 if "$ci_script" free-disk > /tmp/titan-ci-free-disk.out 2>&1; then

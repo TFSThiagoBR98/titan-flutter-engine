@@ -25,6 +25,47 @@ scripts_root="$repository_root/scripts"
 linux_debug_variants='x64-debug x64-musl-debug arm64-debug arm64-musl-debug arm-hard-debug arm-hard-musl-debug arm-softfp-debug arm-softfp-musl-debug riscv64-glibc-debug riscv64-musl-debug'
 linux_all_variants='x64-debug x64-musl-debug arm64-debug arm64-musl-debug arm-hard-debug arm-hard-musl-debug arm-softfp-debug arm-softfp-musl-debug riscv64-glibc-debug riscv64-musl-debug x64-profile x64-musl-profile arm64-profile arm64-musl-profile arm-hard-profile arm-hard-musl-profile arm-softfp-profile arm-softfp-musl-profile riscv64-glibc-profile riscv64-musl-profile x64-release x64-musl-release arm64-release arm64-musl-release arm-hard-release arm-hard-musl-release arm-softfp-release arm-softfp-musl-release riscv64-glibc-release riscv64-musl-release'
 
+linux_sdk_variants_for_cell() {
+  (($# == 2)) || return 2
+  local target=$1 mode=$2
+  local gtk_variant
+  local -a variants
+
+  case "$target" in
+    x64)
+      gtk_variant="sdk-desktop-$mode"
+      ;;
+    x64-musl|arm64|arm64-musl|arm-hard|arm-hard-musl|arm-softfp|arm-softfp-musl|riscv64-glibc|riscv64-musl)
+      gtk_variant="sdk-desktop-$target-$mode"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  case "$mode" in
+    debug|profile|release)
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  variants=("$gtk_variant")
+  case "$target-$mode" in
+    x64-debug)
+      variants+=(sdk-host-debug)
+      ;;
+    x64-release)
+      variants+=(sdk-host-release)
+      ;;
+    arm64-debug)
+      variants+=(sdk-host-arm64-debug)
+      ;;
+  esac
+  printf '%s\n' "${variants[*]}"
+}
+
 run_deps() {
   local -a root_prefix=()
   if [[ "$(id -u)" -ne 0 ]]; then
@@ -282,6 +323,10 @@ case "$stage" in
   build)
     (($# == 1)) || die "build does not accept additional arguments"
     run_build
+    ;;
+  linux-sdk-variants)
+    (($# == 3)) || die "linux-sdk-variants requires a target and mode"
+    linux_sdk_variants_for_cell "$2" "$3" || die "unknown Linux SDK cell: $2-$3"
     ;;
   probe)
     (($# == 1)) || die "probe does not accept additional arguments"

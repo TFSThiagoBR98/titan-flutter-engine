@@ -90,6 +90,11 @@ jobs:
         run: scripts/ci.sh probe
       - name: Package engine bundle
         run: scripts/ci.sh package
+      - name: Build SDK variants
+        run: |
+          sdk_variants=$(scripts/ci.sh linux-sdk-variants "${{ matrix.target }}" "${{ matrix.mode }}")
+          read -r -a sdk_variants_array <<<"$sdk_variants"
+          scripts/ci.sh with-progress "${sdk_variants_array[@]}" -- scripts/build-matrix.sh --parallel 1 --zip "${sdk_variants_array[@]}"
       - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -97,56 +102,13 @@ jobs:
           name: build-logs-${{ matrix.target }}-${{ matrix.mode }}
           path: /mnt/titan/work/matrix/
           if-no-files-found: ignore
-      - name: Upload engine bundle
+      - name: Upload engine and SDK artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: flutter-engine-${{ matrix.target }}-${{ matrix.mode }}
-          path: /mnt/titan/bundles/dist/*.zip
-          if-no-files-found: error
-
-  linux_sdk:
-    name: Build Linux SDK and GTK variants
-    runs-on: ubuntu-24.04
-    timeout-minutes: 360
-    env:
-      TITAN_WORK_DIR: /mnt/titan/work
-      TITAN_BUNDLE_DIR: /mnt/titan/bundles
-      TITAN_VARIANTS: >-
-        sdk-host-debug sdk-host-release sdk-host-arm64-debug
-        sdk-desktop-debug sdk-desktop-profile sdk-desktop-release
-        sdk-desktop-x64-musl-debug sdk-desktop-x64-musl-profile sdk-desktop-x64-musl-release
-        sdk-desktop-arm64-debug sdk-desktop-arm64-profile sdk-desktop-arm64-release
-        sdk-desktop-arm64-musl-debug sdk-desktop-arm64-musl-profile sdk-desktop-arm64-musl-release
-        sdk-desktop-arm-hard-debug sdk-desktop-arm-hard-profile sdk-desktop-arm-hard-release
-        sdk-desktop-arm-hard-musl-debug sdk-desktop-arm-hard-musl-profile sdk-desktop-arm-hard-musl-release
-        sdk-desktop-arm-softfp-debug sdk-desktop-arm-softfp-profile sdk-desktop-arm-softfp-release
-        sdk-desktop-arm-softfp-musl-debug sdk-desktop-arm-softfp-musl-profile sdk-desktop-arm-softfp-musl-release
-        sdk-desktop-riscv64-glibc-debug sdk-desktop-riscv64-glibc-profile sdk-desktop-riscv64-glibc-release
-        sdk-desktop-riscv64-musl-debug sdk-desktop-riscv64-musl-profile sdk-desktop-riscv64-musl-release
-    steps:
-      - uses: actions/checkout@v4
-      - name: Prepare workspace
-        run: |
-          sudo mkdir -p /mnt/titan
-          sudo chown "$USER" /mnt/titan
-      - name: Install dependencies
-        run: scripts/ci.sh deps
-      - name: Build sysroots
-        run: scripts/ci.sh sysroots
-      - name: Build SDK and GTK variants
-        run: scripts/ci.sh with-progress $TITAN_VARIANTS -- scripts/build-matrix.sh --parallel 1 --zip $TITAN_VARIANTS
-      - name: Upload Linux SDK build logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs-linux-sdk
-          path: /mnt/titan/work/matrix/
-          if-no-files-found: ignore
-      - name: Upload Linux SDK archives
-        uses: actions/upload-artifact@v4
-        with:
-          name: flutter-sdk-linux
-          path: /mnt/titan/work/flutter/engine/src/out/*/zip_archives/**
+          name: flutter-build-${{ matrix.target }}-${{ matrix.mode }}
+          path: |
+            /mnt/titan/bundles/dist/*.zip
+            /mnt/titan/work/flutter/engine/src/out/*/zip_archives/**
           if-no-files-found: error
 
   linux_platform:
@@ -417,7 +379,7 @@ jobs:
   release:
     name: Publish GitHub release
     if: ${{ startsWith(github.ref, 'refs/tags/v') }}
-    needs: [build, linux_sdk, linux_platform, macos, windows]
+    needs: [build, linux_platform, macos, windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -432,17 +394,11 @@ jobs:
         run: |
           sudo mkdir -p /mnt/titan
           sudo chown "$USER" /mnt/titan
-      - name: Download engine bundles
+      - name: Download Linux engine and SDK artifacts
         uses: actions/download-artifact@v4
         with:
-          path: /mnt/titan/bundles/dist
-          pattern: flutter-engine-*
-          merge-multiple: true
-      - name: Download SDK archives
-        uses: actions/download-artifact@v4
-        with:
-          path: /mnt/titan/work/flutter/engine/src/out
-          pattern: flutter-sdk-*
+          path: /mnt/titan
+          pattern: flutter-build-*
           merge-multiple: true
       - name: Checkout pinned Flutter revision
         run: |
