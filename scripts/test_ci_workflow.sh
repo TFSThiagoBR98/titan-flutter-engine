@@ -133,13 +133,19 @@ platform_upload = linux_platform.fetch('steps').find { |step| step['uses'] == 'a
 raise 'Linux platform archive upload is missing' unless platform_upload
 raise 'Linux platform archive upload must be named per cell' unless platform_upload.dig('with', 'name') == "flutter-sdk-${{ matrix.variant || format('android-{0}-{1}', matrix.mode, matrix.android_cpu) }}"
 
+macos_modes = macos.fetch('strategy').fetch('matrix').fetch('mode')
+raise 'macOS matrix must have three profiles' unless macos_modes == %w[debug profile release]
 macos_builds = macos.fetch('steps').select { |step| step['run']&.include?('build-engine-macos.sh') }
-raise 'macOS build steps are incomplete' unless macos_builds.length == 2
-raise 'macOS build must use the progress wrapper' unless macos_builds.all? do |step|
-  run = step.fetch('run')
-  run.include?('scripts/ci.sh with-progress') && run.include?('$TITAN_WORK_DIR/matrix')
-end
-raise 'macOS job must build Darwin and iOS' unless macos_builds.any? { |step| step['run'].include?('--kind ios') } && macos_builds.any? { |step| step['run'].include?('--kind framework') }
+raise 'macOS build must use one per-profile step' unless macos_builds.length == 1
+macos_build = macos_builds.fetch(0).fetch('run')
+raise 'macOS build must use the progress wrapper' unless macos_build.include?('scripts/ci.sh with-progress') && macos_build.include?('$TITAN_WORK_DIR/matrix')
+raise 'macOS build must be arm64-only' unless macos_build.include?('--cpu arm64') && !macos_build.include?('--cpu x64')
+raise 'macOS build must include framework and gen_snapshot' unless macos_build.include?('--kind framework') && macos_build.include?('--kind gen-snapshot')
+raise 'macOS build must include iOS device and arm64 simulator' unless macos_build.include?('--kind ios --mode "$mode" --cpu arm64') && macos_build.include?('--simulator --simulator-cpu arm64')
+raise 'macOS profile/release Android snapshots are missing' unless macos_build.include?('macos-arm64-$mode-android-$android_cpu') && macos_build.include?('--kind android')
+raise 'macOS archive upload must be named per profile' unless macos.fetch('steps').any? { |step| step.dig('with', 'name') == 'flutter-sdk-macos-arm64-${{ matrix.mode }}' }
+raise 'macOS workflow must not build a macOS x64 CPU' if macos_build.match?(/--cpu x64(?:\s|['"]|$)/)
+raise 'macOS official artifact exclusions are undocumented' unless File.read(ARGV.fetch(0).sub(%r{/.github/workflows/build.yml$}, '/sdk/official-artifacts.txt')).include?('# arm64 only (user, 2026-10-17)')
 
 windows_matrix = windows.fetch('strategy').fetch('matrix')
 raise 'Windows matrix CPUs are incomplete' unless windows_matrix['cpu'] == %w[x64 arm64]

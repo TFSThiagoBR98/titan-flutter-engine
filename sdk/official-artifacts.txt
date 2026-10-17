@@ -63,11 +63,11 @@ macos	android-arm64-release/darwin-x64.zip
 macos	android-x64-profile/darwin-x64.zip
 macos	android-x64-release/darwin-x64.zip
 macos	dart-sdk-darwin-x64.zip
-macos	darwin-arm64-profile/artifacts.zip
-macos	darwin-arm64-release/artifacts.zip
-macos	darwin-arm64/artifacts.zip
-macos	darwin-arm64/font-subset.zip
-macos	darwin-arm64/impeller_sdk.zip
+# arm64 only (user, 2026-10-17): darwin-arm64-profile/artifacts.zip
+# arm64 only (user, 2026-10-17): darwin-arm64-release/artifacts.zip
+# arm64 only (user, 2026-10-17): darwin-arm64/artifacts.zip
+# arm64 only (user, 2026-10-17): darwin-arm64/font-subset.zip
+# arm64 only (user, 2026-10-17): darwin-arm64/impeller_sdk.zip
 macos	darwin-x64-profile/FlutterMacOS.framework.zip
 macos	darwin-x64-profile/artifacts.zip
 macos	darwin-x64-profile/framework.zip

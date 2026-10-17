@@ -153,9 +153,16 @@ jobs:
           if-no-files-found: error
 
   macos:
-    name: Build macOS and iOS artifacts
+    name: Build macOS and iOS artifacts (${{ matrix.mode }})
     runs-on: macos-15
     timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [debug, profile, release]
+    env:
+      TITAN_MODE: ${{ matrix.mode }}
+      TITAN_VARIANT: macos-arm64-${{ matrix.mode }}
     steps:
       - uses: actions/checkout@v4
       # The runner context is not available at job level, so the work
@@ -171,40 +178,21 @@ jobs:
         run: |
           brew install flock bash coreutils
           bash -c '((BASH_VERSINFO[0] >= 4))' || { echo "bash 4+ is not first on PATH" >&2; exit 1; }
-      - name: Build macOS host, frameworks and snapshots
+      - name: Build macOS and iOS artifacts
         run: |
-          progress_variants=()
-          for mode in debug profile release; do
-            progress_variants+=("macos-host-$mode-x64" "macos-host-$mode-arm64")
-            progress_variants+=("macos-framework-$mode-x64" "macos-gen-snapshot-$mode-x64")
-          done
-          scripts/ci.sh with-progress "${progress_variants[@]}" -- bash -c '
-            run_logged_build() {
-              local variant=$1
-              shift
-              local log="$TITAN_WORK_DIR/matrix/$variant.log"
-              mkdir -p "$(dirname "$log")"
-              "$@" >"$log" 2>&1
-            }
-
-            for mode in debug profile release; do
-              run_logged_build "macos-host-$mode-x64" scripts/build-engine-macos.sh --kind host --mode "$mode" --cpu x64 --jobs 2
-              run_logged_build "macos-host-$mode-arm64" scripts/build-engine-macos.sh --kind host --mode "$mode" --cpu arm64 --jobs 2
-              run_logged_build "macos-framework-$mode-x64" scripts/build-engine-macos.sh --kind framework --mode "$mode" --cpu x64 --jobs 2
-              run_logged_build "macos-gen-snapshot-$mode-x64" scripts/build-engine-macos.sh --kind gen-snapshot --mode "$mode" --cpu x64 --jobs 2
-            done
-          '
-      - name: Build iOS and Android snapshots
-        run: |
-          progress_variants=()
-          for mode in debug profile release; do
-            progress_variants+=("macos-ios-$mode")
-          done
-          for mode in profile release; do
+          mode="$TITAN_MODE"
+          progress_variants=(
+            "macos-arm64-$mode-host"
+            "macos-arm64-$mode-framework"
+            "macos-arm64-$mode-gen-snapshot"
+            "macos-arm64-$mode-ios-device"
+            "macos-arm64-$mode-ios-simulator"
+          )
+          if [[ "$mode" == profile || "$mode" == release ]]; then
             for android_cpu in arm arm64 x64; do
-              progress_variants+=("macos-android-$mode-$android_cpu")
+              progress_variants+=("macos-arm64-$mode-android-$android_cpu")
             done
-          done
+          fi
           scripts/ci.sh with-progress "${progress_variants[@]}" -- bash -c '
             run_logged_build() {
               local variant=$1
@@ -214,26 +202,29 @@ jobs:
               "$@" >"$log" 2>&1
             }
 
-            for mode in debug profile release; do
-              run_logged_build "macos-ios-$mode" scripts/build-engine-macos.sh --kind ios --mode "$mode" --jobs 2
-            done
-            for mode in profile release; do
+            mode=$1
+            run_logged_build "macos-arm64-$mode-host" scripts/build-engine-macos.sh --kind host --mode "$mode" --cpu arm64 --out-name "host_$mode" --jobs 2
+            run_logged_build "macos-arm64-$mode-framework" scripts/build-engine-macos.sh --kind framework --mode "$mode" --cpu arm64 --out-name "host_${mode}_framework" --jobs 2
+            run_logged_build "macos-arm64-$mode-gen-snapshot" scripts/build-engine-macos.sh --kind gen-snapshot --mode "$mode" --cpu arm64 --out-name "host_${mode}_gen_snapshot" --jobs 2
+            run_logged_build "macos-arm64-$mode-ios-device" scripts/build-engine-macos.sh --kind ios --mode "$mode" --cpu arm64 --out-name "ios_$mode" --jobs 2
+            run_logged_build "macos-arm64-$mode-ios-simulator" scripts/build-engine-macos.sh --kind ios --mode "$mode" --cpu arm64 --simulator --simulator-cpu arm64 --out-name "ios_${mode}_simulator_arm64" --jobs 2
+            if [[ "$mode" == profile || "$mode" == release ]]; then
               for android_cpu in arm arm64 x64; do
-                run_logged_build "macos-android-$mode-$android_cpu" scripts/build-engine-macos.sh --kind android --mode "$mode" --android-cpu "$android_cpu" --jobs 2
+                run_logged_build "macos-arm64-$mode-android-$android_cpu" scripts/build-engine-macos.sh --kind android --mode "$mode" --android-cpu "$android_cpu" --out-name "android_${mode}_$android_cpu" --jobs 2
               done
-            done
-          '
+            fi
+          ' bash "$mode"
       - name: Upload macOS build logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs-macos
+          name: build-logs-${{ matrix.mode }}
           path: ${{ runner.temp }}/titan/work/matrix/
           if-no-files-found: ignore
       - name: Upload macOS archives
         uses: actions/upload-artifact@v4
         with:
-          name: flutter-sdk-macos
+          name: flutter-sdk-macos-arm64-${{ matrix.mode }}
           path: ${{ runner.temp }}/titan/work/flutter/engine/src/out/*/zip_archives/**
           if-no-files-found: error
 

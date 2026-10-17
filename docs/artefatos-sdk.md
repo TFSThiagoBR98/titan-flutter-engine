@@ -4,8 +4,9 @@ O `flutter` tool não usa o `libflutter_engine.so` do TitanDM: para compilar um 
 storage do Google, pelo hash do engine. Este repositório gera esses mesmos zips a partir do engine **com os nossos
 patches**, no mesmo layout, e os instala no SDK pelo próprio `flutter precache`.
 
-Estado (2026-10-15): host Linux x64. Os alvos cruzados (armv7, arm64, riscv, musl) entram na fase da matriz de
-plataformas, com um patch no `flutter_tools` (veja [plataformas.md](plataformas.md)).
+Estado (2026-10-17): o CI constrói cada combinação de sistema, arquitetura e perfil em uma célula própria. O macOS
+usa somente arm64; os caminhos oficiais `darwin-x64*` continuam sendo usados para que o `flutter` tool os encontre
+em qualquer Mac, mas os binários publicados são arm64.
 
 ## O que é gerado
 
