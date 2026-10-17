@@ -1,0 +1,1569 @@
+# Why: Route the Dart engine path through the versioned SPI runtime table and
+# factory.
+diff --git a/engine/src/flutter/runtime/BUILD.gn b/engine/src/flutter/runtime/BUILD.gn
+index 0f52825a19e..b29fd388efa 100644
+--- a/engine/src/flutter/runtime/BUILD.gn
++++ b/engine/src/flutter/runtime/BUILD.gn
+@@ -140,7 +140,6 @@ source_set("runtime") {
+     ":runtime_delegate",
+     "//flutter/lib/gpu",
+     "//flutter/lib/ui",
+-    "//flutter/runtime_spi:dart_runtime_extensions",
+     "//flutter/runtime_spi:runtime_spi",
+     "//flutter/runtime_spi:runtime_spi_c_api",
+     "//flutter/third_party/rapidjson",
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index dc255d469ea..291eb922efa 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -23,7 +23,6 @@ source_set("runtime_spi") {
+     "//flutter/lib/ui:ui",
+   ]
+ }
+-
+ source_set("spi_backend") {
+   public = [
+     "spi_runtime_backend.h",
+@@ -48,6 +47,12 @@ source_set("spi_backend") {
+     ":scene",
+     "//flutter/flow",
+   ]
++  deps = [
++    ":effects",
++    ":image",
++    ":semantics",
++    ":text",
++  ]
+ }
+ 
+ source_set("runtime_spi_c_api") {
+@@ -288,11 +293,3 @@ if (enable_unittests) {
+     ]
+   }
+ }
+-
+-source_set("dart_runtime_extensions") {
+-  public = [ "dart_runtime_extensions.h" ]
+-  public_deps = [
+-    "//flutter/fml",
+-    "//flutter/third_party/tonic",
+-  ]
+-}
+diff --git a/engine/src/flutter/runtime_spi/dart_runtime_extensions.h b/engine/src/flutter/runtime_spi/dart_runtime_extensions.h
+deleted file mode 100644
+index 969b775c125..00000000000
+--- a/engine/src/flutter/runtime_spi/dart_runtime_extensions.h
++++ /dev/null
+@@ -1,89 +0,0 @@
+-// Copyright 2026 The Flutter Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style license that can be
+-// found in the LICENSE file.
+-
+-#ifndef FLUTTER_RUNTIME_SPI_DART_RUNTIME_EXTENSIONS_H_
+-#define FLUTTER_RUNTIME_SPI_DART_RUNTIME_EXTENSIONS_H_
+-
+-#include <cstdint>
+-#include <functional>
+-#include <memory>
+-#include <optional>
+-#include <string>
+-#include <vector>
+-
+-#include "flutter/fml/closure.h"
+-#include "flutter/fml/mapping.h"
+-#include "flutter/fml/memory/weak_ptr.h"
+-#include "third_party/tonic/logging/dart_error.h"
+-
+-namespace flutter {
+-
+-class DartVM;
+-class DartSnapshot;
+-class ImageDecoder;
+-class ImageGeneratorRegistry;
+-class IsolateConfiguration;
+-class NativeAssetsManager;
+-class RuntimeBackend;
+-class RuntimeDelegate;
+-class IOManager;
+-class SnapshotDelegate;
+-struct Settings;
+-
+-class DartRuntimeExtensions {
+- public:
+-  virtual ~DartRuntimeExtensions() = default;
+-
+-  virtual std::unique_ptr<RuntimeBackend> Spawn(
+-      RuntimeDelegate& p_client,
+-      const std::string& advisory_script_uri,
+-      const std::string& advisory_script_entrypoint,
+-      const std::function<void(int64_t)>& idle_notification_callback,
+-      const fml::closure& isolate_create_callback,
+-      const fml::closure& isolate_shutdown_callback,
+-      const std::shared_ptr<const fml::Mapping>& persistent_isolate_data,
+-      fml::WeakPtr<IOManager> io_manager,
+-      fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
+-      fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
+-          image_generator_registry,
+-      fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate) const =
+-      0;
+-
+-  virtual tonic::DartErrorHandleType GetLastError() = 0;
+-
+-  virtual DartVM* GetDartVM() const = 0;
+-  virtual int64_t GetMainPort() = 0;
+-  virtual std::string GetIsolateName() = 0;
+-  virtual std::optional<std::string> GetRootIsolateServiceID() const = 0;
+-  virtual std::optional<uint32_t> GetRootIsolateReturnCode() = 0;
+-  virtual bool HasLivePorts() = 0;
+-  virtual bool HasPendingMicrotasks() = 0;
+-  virtual void FlushMicrotaskQueue() = 0;
+-
+-  virtual bool LaunchRootIsolate(
+-      const Settings& settings,
+-      const fml::closure& root_isolate_create_callback,
+-      std::optional<std::string> dart_entrypoint,
+-      std::optional<std::string> dart_entrypoint_library,
+-      const std::vector<std::string>& dart_entrypoint_args,
+-      std::unique_ptr<IsolateConfiguration> isolate_configuration,
+-      std::shared_ptr<NativeAssetsManager> native_assets_manager,
+-      std::optional<int64_t> engine_id) = 0;
+-
+-  virtual void LoadDartDeferredLibrary(
+-      intptr_t loading_unit_id,
+-      std::unique_ptr<const fml::Mapping> snapshot_data,
+-      std::unique_ptr<const fml::Mapping> snapshot_instructions) = 0;
+-
+-  virtual void LoadDartDeferredLibraryError(intptr_t loading_unit_id,
+-                                            const std::string error_message,
+-                                            bool transient) = 0;
+-
+-  virtual void ShutdownPlatformIsolates() = 0;
+-  virtual void SetRootIsolateOwnerToCurrentThread() = 0;
+-};
+-
+-}  // namespace flutter
+-
+-#endif  // FLUTTER_RUNTIME_SPI_DART_RUNTIME_EXTENSIONS_H_
+diff --git a/engine/src/flutter/runtime_spi/runtime_backend.h b/engine/src/flutter/runtime_spi/runtime_backend.h
+index f75aeab2a54..60896dcdca9 100644
+--- a/engine/src/flutter/runtime_spi/runtime_backend.h
++++ b/engine/src/flutter/runtime_spi/runtime_backend.h
+@@ -27,7 +27,6 @@
+ #include "flutter/runtime_spi/include/flutter_runtime_extensions.h"
+ namespace flutter {
+ 
+-class DartRuntimeExtensions;
+ class LayerTree;
+ class RunConfiguration;
+ struct ViewportMetrics;
+@@ -74,7 +73,6 @@ class RuntimeBackend {
+   virtual HitTestResponse HitTest(int64_t view_id, PointData offset) = 0;
+   virtual bool IsRunning() const = 0;
+ 
+-  virtual DartRuntimeExtensions* AsDart() { return nullptr; }
+   virtual const FlutterSpiRuntimeExtensions* GetExtensions() const {
+     return nullptr;
+   }
+diff --git a/engine/src/flutter/runtime_spi/runtime_backend_factory.h b/engine/src/flutter/runtime_spi/runtime_backend_factory.h
+index 4e597584bee..fcb21dde9f0 100644
+--- a/engine/src/flutter/runtime_spi/runtime_backend_factory.h
++++ b/engine/src/flutter/runtime_spi/runtime_backend_factory.h
+@@ -5,10 +5,13 @@
+ #ifndef FLUTTER_RUNTIME_SPI_RUNTIME_BACKEND_FACTORY_H_
+ #define FLUTTER_RUNTIME_SPI_RUNTIME_BACKEND_FACTORY_H_
+ 
++#include <functional>
+ #include <future>
+ #include <memory>
++#include <string>
+ 
+ #include "flutter/common/task_runners.h"
++#include "flutter/fml/closure.h"
+ #include "flutter/fml/memory/ref_ptr.h"
+ #include "flutter/fml/memory/weak_ptr.h"
+ #include "flutter/flow/skia_gpu_object.h"
+@@ -26,6 +29,7 @@ class DartVM;
+ class ImageDecoder;
+ class ImageGeneratorRegistry;
+ class IOManager;
++class RuntimeController;
+ class RuntimeDelegate;
+ struct Settings;
+ struct PlatformData;
+@@ -46,9 +50,30 @@ class RuntimeBackendFactory {
+       fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
+       fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
+           image_generator_registry,
++      const fml::closure& root_isolate_create_callback,
+       const std::shared_future<impeller::RuntimeStageBackend>&
+           runtime_stage_backend) = 0;
+ 
++  virtual std::unique_ptr<RuntimeBackend> Spawn(
++      const RuntimeController& runtime_controller,
++      RuntimeDelegate& runtime_delegate,
++      const TaskRunners& task_runners,
++      const Settings& settings,
++      const fml::closure& root_isolate_create_callback,
++      const std::string& advisory_script_uri,
++      const std::string& advisory_script_entrypoint,
++      const std::function<void(int64_t)>& idle_notification_callback,
++      const fml::closure& isolate_create_callback,
++      const fml::closure& isolate_shutdown_callback,
++      const std::shared_ptr<const fml::Mapping>& persistent_isolate_data,
++      fml::WeakPtr<IOManager> io_manager,
++      fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
++      fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
++          image_generator_registry,
++      fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate) const {
++    return nullptr;
++  }
++
+   virtual std::shared_ptr<fml::ConcurrentTaskRunner>
+   GetConcurrentWorkerTaskRunner() const = 0;
+ 
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+index f946726185e..1c3404bf6c8 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+@@ -419,10 +419,6 @@ const FlutterSpiRuntimeExtensions* SpiRuntimeBackend::GetExtensions() const {
+   return table_.extensions;
+ }
+ 
+-DartRuntimeExtensions* SpiRuntimeBackend::AsDart() {
+-  return nullptr;
+-}
+-
+ bool SpiRuntimeBackend::HasUiThread() const {
+   return static_cast<bool>(task_runners_.GetUITaskRunner()) &&
+          task_runners_.GetUITaskRunner()->RunsTasksOnCurrentThread();
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.h b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+index a9eedadbbbe..ccf0056b42b 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.h
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+@@ -94,7 +94,6 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+   bool ReportTimings(std::vector<int64_t> timings) override;
+   HitTestResponse HitTest(int64_t view_id, PointData offset) override;
+   bool IsRunning() const override;
+-  DartRuntimeExtensions* AsDart() override;
+   const FlutterSpiRuntimeExtensions* GetExtensions() const override;
+ 
+   FlutterSpiResult RequestFrame();
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc
+index 3ab839fe811..02cf1397e6a 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc
+@@ -41,10 +41,12 @@ std::unique_ptr<RuntimeBackend> SpiRuntimeBackendFactory::Create(
+     fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
+     fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
+         image_generator_registry,
++    const fml::closure& root_isolate_create_callback,
+     const std::shared_future<impeller::RuntimeStageBackend>&
+         runtime_stage_backend) {
+   (void)platform_data;
+   (void)settings;
++  (void)root_isolate_create_callback;
+   if (!valid_) {
+     return nullptr;
+   }
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.h b/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.h
+index deb79dcd862..2dc454f20a4 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.h
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.h
+@@ -27,6 +27,7 @@ class SpiRuntimeBackendFactory final : public RuntimeBackendFactory {
+       fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
+       fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
+           image_generator_registry,
++      const fml::closure& root_isolate_create_callback,
+       const std::shared_future<impeller::RuntimeStageBackend>&
+           runtime_stage_backend) override;
+ 
+diff --git a/engine/src/flutter/shell/common/BUILD.gn b/engine/src/flutter/shell/common/BUILD.gn
+index 4dc518e3841..7bf544d76bb 100644
+--- a/engine/src/flutter/shell/common/BUILD.gn
++++ b/engine/src/flutter/shell/common/BUILD.gn
+@@ -90,8 +90,6 @@ source_set("common") {
+     "animator.h",
+     "context_options.cc",
+     "context_options.h",
+-    "dart_runtime_backend.cc",
+-    "dart_runtime_backend.h",
+     "dart_runtime_backend_factory.cc",
+     "dart_runtime_backend_factory.h",
+     "dart_runtime/dart_runtime_delegate_bridge.cc",
+@@ -148,7 +146,6 @@ source_set("common") {
+     ":platform_message_handler",
+     ":snapshot_pixel_format",
+     "//flutter/lib/ui:ui_core_types",
+-    "//flutter/runtime_spi:dart_runtime_extensions",
+     "//flutter/runtime_spi:runtime_spi",
+     "//flutter/runtime_spi:runtime_spi_c_api",
+     "//flutter/runtime_spi:spi_backend",
+diff --git a/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc b/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc
+index 6f58e02be6f..9754382ce42 100644
+--- a/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc
++++ b/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc
+@@ -237,8 +237,10 @@ void FlutterDartRuntime::AddViewThunk(
+     const FlutterSpiViewMetrics* metrics) {
+   if (metrics != nullptr) {
+     auto* runtime = FromUserData(user_data);
++    // The SPI backend answers the engine's callback; RuntimeController still
++    // invokes this one when it flushes views into the isolate.
+     runtime->controller_->AddView(metrics->view_id, ConvertMetrics(*metrics),
+-                                  nullptr);
++                                  [](bool) {});
+   }
+ }
+ 
+@@ -697,7 +699,7 @@ bool FlutterDartRuntime::LaunchRootIsolateThunk(void* user_data,
+       configuration->GetEntrypoint(), configuration->GetEntrypointLibrary(),
+       configuration->GetEntrypointArgs(),
+       configuration->TakeIsolateConfiguration(),
+-      std::move(native_assets_manager), runtime->engine_id_);
++      std::move(native_assets_manager), configuration->GetEngineId());
+ }
+ 
+ void FlutterDartRuntime::RegisterServiceHandlerThunk(
+diff --git a/engine/src/flutter/shell/common/dart_runtime_backend.cc b/engine/src/flutter/shell/common/dart_runtime_backend.cc
+deleted file mode 100644
+index 02ac3be9345..00000000000
+--- a/engine/src/flutter/shell/common/dart_runtime_backend.cc
++++ /dev/null
+@@ -1,533 +0,0 @@
+-// Copyright 2026 The Flutter Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style license that can be
+-// found in the LICENSE file.
+-
+-#include "flutter/shell/common/dart_runtime_backend.h"
+-
+-#include <cstdlib>
+-#include <cstring>
+-#include <string_view>
+-#include <utility>
+-#include <vector>
+-
+-#include "assets/native_assets.h"
+-#include "flutter/runtime/dart_vm.h"
+-#include "flutter/runtime/runtime_controller.h"
+-#include "flutter/runtime/service_protocol.h"
+-#include "flutter/shell/common/run_configuration.h"
+-#include "rapidjson/document.h"
+-
+-namespace flutter {
+-namespace {
+-
+-DartRuntimeBackend* BackendFromUserData(void* user_data) {
+-  return static_cast<DartRuntimeBackend*>(user_data);
+-}
+-
+-char* CopyString(const std::string& value) {
+-  const size_t size = value.size() + 1;
+-  auto* result = static_cast<char*>(std::malloc(size));
+-  if (result == nullptr) {
+-    return nullptr;
+-  }
+-  std::memcpy(result, value.c_str(), size);
+-  return result;
+-}
+-
+-void FreeString(void*, char* string) {
+-  std::free(string);
+-}
+-
+-int64_t GetMainPortExtension(void* user_data) {
+-  return BackendFromUserData(user_data)->GetMainPort();
+-}
+-
+-bool GetRootIsolateServiceIdExtension(void* user_data, char** out_utf8) {
+-  if (out_utf8 == nullptr) {
+-    return false;
+-  }
+-  auto service_id =
+-      BackendFromUserData(user_data)->GetRootIsolateServiceID();
+-  if (!service_id.has_value()) {
+-    *out_utf8 = nullptr;
+-    return false;
+-  }
+-  *out_utf8 = CopyString(*service_id);
+-  return *out_utf8 != nullptr;
+-}
+-
+-bool GetRootIsolateReturnCodeExtension(void* user_data, uint32_t* out_code) {
+-  if (out_code == nullptr) {
+-    return false;
+-  }
+-  auto return_code =
+-      BackendFromUserData(user_data)->GetRootIsolateReturnCode();
+-  if (!return_code.has_value()) {
+-    return false;
+-  }
+-  *out_code = *return_code;
+-  return true;
+-}
+-
+-char* GetIsolateNameExtension(void* user_data) {
+-  return CopyString(BackendFromUserData(user_data)->GetIsolateName());
+-}
+-
+-int32_t GetLastErrorExtension(void* user_data) {
+-  return static_cast<int32_t>(BackendFromUserData(user_data)->GetLastError());
+-}
+-
+-bool HasLivePortsExtension(void* user_data) {
+-  return BackendFromUserData(user_data)->HasLivePorts();
+-}
+-
+-bool HasPendingMicrotasksExtension(void* user_data) {
+-  return BackendFromUserData(user_data)->HasPendingMicrotasks();
+-}
+-
+-void FlushMicrotaskQueueExtension(void* user_data) {
+-  BackendFromUserData(user_data)->FlushMicrotaskQueue();
+-}
+-
+-std::unique_ptr<const fml::Mapping> MakeMapping(FlutterSpiMapping mapping) {
+-  return std::make_unique<fml::NonOwnedMapping>(
+-      mapping.data, mapping.size,
+-      [release = mapping.release,
+-       release_user_data = mapping.release_user_data](const uint8_t*, size_t) {
+-        if (release != nullptr) {
+-          release(release_user_data);
+-        }
+-      });
+-}
+-
+-void LoadDeferredLibraryExtension(void* user_data,
+-                                  int64_t loading_unit_id,
+-                                  FlutterSpiMapping snapshot_data,
+-                                  FlutterSpiMapping snapshot_instructions) {
+-  BackendFromUserData(user_data)->LoadDartDeferredLibrary(
+-      static_cast<intptr_t>(loading_unit_id), MakeMapping(snapshot_data),
+-      MakeMapping(snapshot_instructions));
+-}
+-
+-void LoadDeferredLibraryErrorExtension(void* user_data,
+-                                       int64_t loading_unit_id,
+-                                       const char* error_message,
+-                                       bool transient) {
+-  BackendFromUserData(user_data)->LoadDartDeferredLibraryError(
+-      static_cast<intptr_t>(loading_unit_id),
+-      error_message == nullptr ? std::string() : error_message, transient);
+-}
+-
+-void ShutdownPlatformIsolatesExtension(void* user_data) {
+-  BackendFromUserData(user_data)->ShutdownPlatformIsolates();
+-}
+-
+-void SetRootIsolateOwnerToCurrentThreadExtension(void* user_data) {
+-  BackendFromUserData(user_data)->SetRootIsolateOwnerToCurrentThread();
+-}
+-
+-}  // namespace
+-
+-class DartRuntimeBackend::ServiceProtocolHandler final
+-    : public ServiceProtocol::Handler {
+- public:
+-  ServiceProtocolHandler(const FlutterSpiServiceHandler* handler,
+-                         Description description)
+-      : handler_(handler), description_(std::move(description)) {}
+-
+-  fml::RefPtr<fml::TaskRunner> GetServiceProtocolHandlerTaskRunner(
+-      std::string_view) const override {
+-    return nullptr;
+-  }
+-
+-  Description GetServiceProtocolDescription() const override {
+-    return description_;
+-  }
+-
+-  bool HandleServiceProtocolMessage(
+-      std::string_view method,
+-      const ServiceProtocolMap& params,
+-      rapidjson::Document* response) override {
+-    if (handler_ == nullptr || handler_->handle == nullptr ||
+-        response == nullptr) {
+-      return false;
+-    }
+-
+-    std::string method_string(method);
+-    std::vector<const char*> keys;
+-    std::vector<const char*> values;
+-    keys.reserve(params.size());
+-    values.reserve(params.size());
+-    for (const auto& [key, value] : params) {
+-      keys.push_back(key.data());
+-      values.push_back(value.data());
+-    }
+-
+-    char* json = nullptr;
+-    const bool handled = handler_->handle(
+-        handler_->user_data, method_string.c_str(), keys.data(), values.data(),
+-        params.size(), &json);
+-    if (!handled || json == nullptr) {
+-      return false;
+-    }
+-
+-    response->Parse(json);
+-    const bool valid_response = !response->HasParseError() &&
+-                                response->IsObject();
+-    if (handler_->free_json != nullptr) {
+-      handler_->free_json(handler_->user_data, json);
+-    }
+-    return valid_response;
+-  }
+-
+-  void SetDescription(Description description) {
+-    description_ = std::move(description);
+-  }
+-
+- private:
+-  const FlutterSpiServiceHandler* handler_;
+-  Description description_;
+-};
+-
+-FlutterSpiRuntimeExtensions DartRuntimeBackend::MakeExtensions(
+-    DartRuntimeBackend* backend) {
+-  return {
+-      .struct_size = sizeof(FlutterSpiRuntimeExtensions),
+-      .user_data = backend,
+-      .free_string = FreeString,
+-      .get_main_port = GetMainPortExtension,
+-      .get_root_isolate_service_id = GetRootIsolateServiceIdExtension,
+-      .get_root_isolate_return_code = GetRootIsolateReturnCodeExtension,
+-      .get_isolate_name = GetIsolateNameExtension,
+-      .get_last_error = GetLastErrorExtension,
+-      .has_live_ports = HasLivePortsExtension,
+-      .has_pending_microtasks = HasPendingMicrotasksExtension,
+-      .flush_microtask_queue = FlushMicrotaskQueueExtension,
+-      .load_deferred_library = LoadDeferredLibraryExtension,
+-      .load_deferred_library_error = LoadDeferredLibraryErrorExtension,
+-      .shutdown_platform_isolates = ShutdownPlatformIsolatesExtension,
+-      .set_root_isolate_owner_to_current_thread =
+-          SetRootIsolateOwnerToCurrentThreadExtension,
+-      .register_service_handler = RegisterServiceHandlerThunk,
+-      .unregister_service_handler = UnregisterServiceHandlerThunk,
+-      .refresh_service_handler_description =
+-          RefreshServiceHandlerDescriptionThunk,
+-      .notify_low_memory = NotifyLowMemoryThunk,
+-      .is_running_runtime_code = IsRunningRuntimeCodeThunk,
+-  };
+-}
+-
+-DartRuntimeBackend::DartRuntimeBackend(
+-    std::unique_ptr<RuntimeController> controller)
+-    : controller_(std::move(controller)), extensions_(MakeExtensions(this)) {}
+-
+-DartRuntimeBackend::~DartRuntimeBackend() = default;
+-
+-std::unique_ptr<RuntimeBackend> DartRuntimeBackend::Clone() const {
+-  return std::make_unique<DartRuntimeBackend>(controller_->Clone());
+-}
+-
+-bool DartRuntimeBackend::Launch(
+-    RunConfiguration&& configuration,
+-    const Settings& settings,
+-    const fml::closure& root_isolate_create_callback,
+-    std::optional<int64_t> engine_id) {
+-  std::shared_ptr<NativeAssetsManager> native_assets_manager;
+-  if (auto asset_manager = configuration.GetAssetManager()) {
+-    native_assets_manager = std::make_shared<NativeAssetsManager>();
+-    native_assets_manager->RegisterNativeAssets(asset_manager);
+-  }
+-
+-  return LaunchRootIsolate(
+-      settings, root_isolate_create_callback, configuration.GetEntrypoint(),
+-      configuration.GetEntrypointLibrary(), configuration.GetEntrypointArgs(),
+-      configuration.TakeIsolateConfiguration(),
+-      std::move(native_assets_manager), engine_id);
+-}
+-
+-void DartRuntimeBackend::AddView(int64_t view_id,
+-                                 const ViewportMetrics& view_metrics,
+-                                 AddViewCallback callback) {
+-  controller_->AddView(view_id, view_metrics, std::move(callback));
+-}
+-
+-bool DartRuntimeBackend::RemoveView(int64_t view_id) {
+-  return controller_->RemoveView(view_id);
+-}
+-
+-bool DartRuntimeBackend::SetViewportMetrics(int64_t view_id,
+-                                            const ViewportMetrics& metrics) {
+-  return controller_->SetViewportMetrics(view_id, metrics);
+-}
+-
+-bool DartRuntimeBackend::SetDisplays(const std::vector<DisplayData>& displays) {
+-  return controller_->SetDisplays(displays);
+-}
+-
+-bool DartRuntimeBackend::BeginFrame(fml::TimePoint frame_time,
+-                                    uint64_t frame_number) {
+-  return controller_->BeginFrame(frame_time, frame_number);
+-}
+-
+-bool DartRuntimeBackend::DispatchPlatformMessage(
+-    std::unique_ptr<PlatformMessage> message) {
+-  return controller_->DispatchPlatformMessage(std::move(message));
+-}
+-
+-bool DartRuntimeBackend::DispatchPointerDataPacket(
+-    const PointerDataPacket& packet) {
+-  return controller_->DispatchPointerDataPacket(packet);
+-}
+-
+-bool DartRuntimeBackend::DispatchSemanticsAction(int64_t view_id,
+-                                                 int32_t node_id,
+-                                                 SemanticsAction action,
+-                                                 fml::MallocMapping args) {
+-  return controller_->DispatchSemanticsAction(view_id, node_id, action,
+-                                              std::move(args));
+-}
+-
+-bool DartRuntimeBackend::SetSemanticsEnabled(bool enabled) {
+-  return controller_->SetSemanticsEnabled(enabled);
+-}
+-
+-bool DartRuntimeBackend::SetAccessibilityFeatures(int32_t flags) {
+-  return controller_->SetAccessibilityFeatures(flags);
+-}
+-
+-bool DartRuntimeBackend::SetLocales(
+-    const std::vector<std::string>& locale_data) {
+-  return controller_->SetLocales(locale_data);
+-}
+-
+-bool DartRuntimeBackend::SetUserSettingsData(const std::string& data) {
+-  return controller_->SetUserSettingsData(data);
+-}
+-
+-bool DartRuntimeBackend::SetInitialLifecycleState(const std::string& data) {
+-  return controller_->SetInitialLifecycleState(data);
+-}
+-
+-bool DartRuntimeBackend::SendViewFocusEvent(const ViewFocusEvent& event) {
+-  return controller_->SendViewFocusEvent(event);
+-}
+-
+-bool DartRuntimeBackend::NotifyIdle(fml::TimeDelta deadline) {
+-  return controller_->NotifyIdle(deadline);
+-}
+-
+-bool DartRuntimeBackend::ReportTimings(std::vector<int64_t> timings) {
+-  return controller_->ReportTimings(std::move(timings));
+-}
+-
+-HitTestResponse DartRuntimeBackend::HitTest(int64_t view_id, PointData offset) {
+-  return controller_->HitTest(view_id, offset);
+-}
+-
+-bool DartRuntimeBackend::IsRunning() const {
+-  return controller_->IsRootIsolateRunning();
+-}
+-
+-void DartRuntimeBackend::RegisterServiceHandlerThunk(
+-    void* user_data,
+-    const FlutterSpiServiceHandler* handler) {
+-  BackendFromUserData(user_data)->RegisterServiceHandler(handler);
+-}
+-
+-void DartRuntimeBackend::UnregisterServiceHandlerThunk(
+-    void* user_data,
+-    const FlutterSpiServiceHandler* handler) {
+-  BackendFromUserData(user_data)->UnregisterServiceHandler(handler);
+-}
+-
+-void DartRuntimeBackend::RefreshServiceHandlerDescriptionThunk(
+-    void* user_data,
+-    const FlutterSpiServiceHandler* handler) {
+-  BackendFromUserData(user_data)->RefreshServiceHandlerDescription(handler);
+-}
+-
+-void DartRuntimeBackend::NotifyLowMemoryThunk(void* user_data) {
+-  BackendFromUserData(user_data)->NotifyLowMemory();
+-}
+-
+-bool DartRuntimeBackend::IsRunningRuntimeCodeThunk(void* user_data) {
+-  return BackendFromUserData(user_data)->IsRunningRuntimeCode();
+-}
+-
+-void DartRuntimeBackend::RegisterServiceHandler(
+-    const FlutterSpiServiceHandler* handler) {
+-  if (handler == nullptr || service_protocol_handlers_.contains(handler)) {
+-    return;
+-  }
+-
+-  DartVM* vm = controller_->GetDartVM();
+-  if (vm == nullptr) {
+-    return;
+-  }
+-  auto service_protocol = vm->GetServiceProtocol();
+-  if (service_protocol == nullptr) {
+-    return;
+-  }
+-
+-  ServiceProtocol::Handler::Description description(
+-      GetMainPort(), GetIsolateName());
+-  auto service_handler =
+-      std::make_unique<ServiceProtocolHandler>(handler, description);
+-  auto* service_handler_ptr = service_handler.get();
+-  service_protocol->AddHandler(service_handler_ptr, description);
+-  service_protocol_handlers_.emplace(handler, std::move(service_handler));
+-}
+-
+-void DartRuntimeBackend::UnregisterServiceHandler(
+-    const FlutterSpiServiceHandler* handler) {
+-  auto found = service_protocol_handlers_.find(handler);
+-  if (found == service_protocol_handlers_.end()) {
+-    return;
+-  }
+-
+-  if (DartVM* vm = controller_->GetDartVM(); vm != nullptr) {
+-    if (auto service_protocol = vm->GetServiceProtocol();
+-        service_protocol != nullptr) {
+-      service_protocol->RemoveHandler(found->second.get());
+-    }
+-  }
+-  service_protocol_handlers_.erase(found);
+-}
+-
+-void DartRuntimeBackend::RefreshServiceHandlerDescription(
+-    const FlutterSpiServiceHandler* handler) {
+-  auto found = service_protocol_handlers_.find(handler);
+-  if (found == service_protocol_handlers_.end()) {
+-    return;
+-  }
+-
+-  ServiceProtocol::Handler::Description description(
+-      GetMainPort(), GetIsolateName());
+-  found->second->SetDescription(description);
+-  if (DartVM* vm = controller_->GetDartVM(); vm != nullptr) {
+-    if (auto service_protocol = vm->GetServiceProtocol();
+-        service_protocol != nullptr) {
+-      service_protocol->SetHandlerDescription(found->second.get(), description);
+-    }
+-  }
+-}
+-
+-void DartRuntimeBackend::NotifyLowMemory() {
+-  ::Dart_NotifyLowMemory();
+-}
+-
+-bool DartRuntimeBackend::IsRunningRuntimeCode() const {
+-  return Dart_CurrentIsolate() != nullptr;
+-}
+-
+-const FlutterSpiRuntimeExtensions* DartRuntimeBackend::GetExtensions() const {
+-  return &extensions_;
+-}
+-
+-std::unique_ptr<RuntimeBackend> DartRuntimeBackend::Spawn(
+-    RuntimeDelegate& p_client,
+-    const std::string& advisory_script_uri,
+-    const std::string& advisory_script_entrypoint,
+-    const std::function<void(int64_t)>& idle_notification_callback,
+-    const fml::closure& isolate_create_callback,
+-    const fml::closure& isolate_shutdown_callback,
+-    const std::shared_ptr<const fml::Mapping>& persistent_isolate_data,
+-    fml::WeakPtr<IOManager> io_manager,
+-    fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
+-    fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
+-        image_generator_registry,
+-    fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate) const {
+-  return std::make_unique<DartRuntimeBackend>(controller_->Spawn(
+-      p_client, advisory_script_uri, advisory_script_entrypoint,
+-      idle_notification_callback, isolate_create_callback,
+-      isolate_shutdown_callback, persistent_isolate_data, std::move(io_manager),
+-      std::move(image_decoder), std::move(image_generator_registry),
+-      std::move(snapshot_delegate)));
+-}
+-
+-tonic::DartErrorHandleType DartRuntimeBackend::GetLastError() {
+-  return controller_->GetLastError();
+-}
+-
+-DartVM* DartRuntimeBackend::GetDartVM() const {
+-  return controller_->GetDartVM();
+-}
+-
+-int64_t DartRuntimeBackend::GetMainPort() {
+-  return controller_->GetMainPort();
+-}
+-
+-std::string DartRuntimeBackend::GetIsolateName() {
+-  return controller_->GetIsolateName();
+-}
+-
+-std::optional<std::string> DartRuntimeBackend::GetRootIsolateServiceID() const {
+-  return controller_->GetRootIsolateServiceID();
+-}
+-
+-std::optional<uint32_t> DartRuntimeBackend::GetRootIsolateReturnCode() {
+-  return controller_->GetRootIsolateReturnCode();
+-}
+-
+-bool DartRuntimeBackend::HasLivePorts() {
+-  return controller_->HasLivePorts();
+-}
+-
+-bool DartRuntimeBackend::HasPendingMicrotasks() {
+-  return controller_->HasPendingMicrotasks();
+-}
+-
+-void DartRuntimeBackend::FlushMicrotaskQueue() {
+-  controller_->FlushMicrotaskQueue();
+-}
+-
+-bool DartRuntimeBackend::LaunchRootIsolate(
+-    const Settings& settings,
+-    const fml::closure& root_isolate_create_callback,
+-    std::optional<std::string> dart_entrypoint,
+-    std::optional<std::string> dart_entrypoint_library,
+-    const std::vector<std::string>& dart_entrypoint_args,
+-    std::unique_ptr<IsolateConfiguration> isolate_configuration,
+-    std::shared_ptr<NativeAssetsManager> native_assets_manager,
+-    std::optional<int64_t> engine_id) {
+-  return controller_->LaunchRootIsolate(
+-      settings, root_isolate_create_callback, std::move(dart_entrypoint),
+-      std::move(dart_entrypoint_library), dart_entrypoint_args,
+-      std::move(isolate_configuration), std::move(native_assets_manager),
+-      engine_id);
+-}
+-
+-void DartRuntimeBackend::LoadDartDeferredLibrary(
+-    intptr_t loading_unit_id,
+-    std::unique_ptr<const fml::Mapping> snapshot_data,
+-    std::unique_ptr<const fml::Mapping> snapshot_instructions) {
+-  controller_->LoadDartDeferredLibrary(loading_unit_id,
+-                                       std::move(snapshot_data),
+-                                       std::move(snapshot_instructions));
+-}
+-
+-void DartRuntimeBackend::LoadDartDeferredLibraryError(
+-    intptr_t loading_unit_id,
+-    const std::string error_message,
+-    bool transient) {
+-  controller_->LoadDartDeferredLibraryError(loading_unit_id, error_message,
+-                                            transient);
+-}
+-
+-void DartRuntimeBackend::ShutdownPlatformIsolates() {
+-  controller_->ShutdownPlatformIsolates();
+-}
+-
+-void DartRuntimeBackend::SetRootIsolateOwnerToCurrentThread() {
+-  controller_->SetRootIsolateOwnerToCurrentThread();
+-}
+-
+-RuntimeController& DartRuntimeBackend::controller() {
+-  return *controller_;
+-}
+-
+-const RuntimeController& DartRuntimeBackend::controller() const {
+-  return *controller_;
+-}
+-
+-}  // namespace flutter
+diff --git a/engine/src/flutter/shell/common/dart_runtime_backend.h b/engine/src/flutter/shell/common/dart_runtime_backend.h
+deleted file mode 100644
+index d7114db6e04..00000000000
+--- a/engine/src/flutter/shell/common/dart_runtime_backend.h
++++ /dev/null
+@@ -1,139 +0,0 @@
+-// Copyright 2026 The Flutter Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style license that can be
+-// found in the LICENSE file.
+-
+-#ifndef FLUTTER_SHELL_COMMON_DART_RUNTIME_BACKEND_H_
+-#define FLUTTER_SHELL_COMMON_DART_RUNTIME_BACKEND_H_
+-
+-#include <memory>
+-#include <unordered_map>
+-
+-#include "flutter/runtime_spi/dart_runtime_extensions.h"
+-#include "flutter/runtime_spi/runtime_backend.h"
+-
+-namespace flutter {
+-
+-class RuntimeController;
+-
+-class DartRuntimeBackend final : public RuntimeBackend,
+-                                 public DartRuntimeExtensions {
+- public:
+-  explicit DartRuntimeBackend(std::unique_ptr<RuntimeController> controller);
+-  ~DartRuntimeBackend() override;
+-
+-  std::unique_ptr<RuntimeBackend> Clone() const override;
+-
+-  bool Launch(RunConfiguration&& configuration,
+-              const Settings& settings,
+-              const fml::closure& root_isolate_create_callback,
+-              std::optional<int64_t> engine_id) override;
+-
+-  void AddView(int64_t view_id,
+-               const ViewportMetrics& view_metrics,
+-               AddViewCallback callback) override;
+-  bool RemoveView(int64_t view_id) override;
+-  bool SetViewportMetrics(int64_t view_id,
+-                          const ViewportMetrics& metrics) override;
+-  bool SetDisplays(const std::vector<DisplayData>& displays) override;
+-  bool BeginFrame(fml::TimePoint frame_time, uint64_t frame_number) override;
+-  bool DispatchPlatformMessage(
+-      std::unique_ptr<PlatformMessage> message) override;
+-  bool DispatchPointerDataPacket(const PointerDataPacket& packet) override;
+-  bool DispatchSemanticsAction(int64_t view_id,
+-                               int32_t node_id,
+-                               SemanticsAction action,
+-                               fml::MallocMapping args) override;
+-  bool SetSemanticsEnabled(bool enabled) override;
+-  bool SetAccessibilityFeatures(int32_t flags) override;
+-  bool SetLocales(const std::vector<std::string>& locale_data) override;
+-  bool SetUserSettingsData(const std::string& data) override;
+-  bool SetInitialLifecycleState(const std::string& data) override;
+-  bool SendViewFocusEvent(const ViewFocusEvent& event) override;
+-  bool NotifyIdle(fml::TimeDelta deadline) override;
+-  bool ReportTimings(std::vector<int64_t> timings) override;
+-  HitTestResponse HitTest(int64_t view_id, PointData offset) override;
+-  bool IsRunning() const override;
+-
+-  DartRuntimeExtensions* AsDart() override { return this; }
+-  const FlutterSpiRuntimeExtensions* GetExtensions() const override;
+-
+-  std::unique_ptr<RuntimeBackend> Spawn(
+-      RuntimeDelegate& p_client,
+-      const std::string& advisory_script_uri,
+-      const std::string& advisory_script_entrypoint,
+-      const std::function<void(int64_t)>& idle_notification_callback,
+-      const fml::closure& isolate_create_callback,
+-      const fml::closure& isolate_shutdown_callback,
+-      const std::shared_ptr<const fml::Mapping>& persistent_isolate_data,
+-      fml::WeakPtr<IOManager> io_manager,
+-      fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
+-      fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
+-          image_generator_registry,
+-      fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate)
+-      const override;
+-
+-  tonic::DartErrorHandleType GetLastError() override;
+-  DartVM* GetDartVM() const override;
+-  int64_t GetMainPort() override;
+-  std::string GetIsolateName() override;
+-  std::optional<std::string> GetRootIsolateServiceID() const override;
+-  std::optional<uint32_t> GetRootIsolateReturnCode() override;
+-  bool HasLivePorts() override;
+-  bool HasPendingMicrotasks() override;
+-  void FlushMicrotaskQueue() override;
+-  bool LaunchRootIsolate(
+-      const Settings& settings,
+-      const fml::closure& root_isolate_create_callback,
+-      std::optional<std::string> dart_entrypoint,
+-      std::optional<std::string> dart_entrypoint_library,
+-      const std::vector<std::string>& dart_entrypoint_args,
+-      std::unique_ptr<IsolateConfiguration> isolate_configuration,
+-      std::shared_ptr<NativeAssetsManager> native_assets_manager,
+-      std::optional<int64_t> engine_id) override;
+-  void LoadDartDeferredLibrary(
+-      intptr_t loading_unit_id,
+-      std::unique_ptr<const fml::Mapping> snapshot_data,
+-      std::unique_ptr<const fml::Mapping> snapshot_instructions) override;
+-  void LoadDartDeferredLibraryError(intptr_t loading_unit_id,
+-                                    const std::string error_message,
+-                                    bool transient) override;
+-  void ShutdownPlatformIsolates() override;
+-  void SetRootIsolateOwnerToCurrentThread() override;
+-
+-  RuntimeController& controller();
+-  const RuntimeController& controller() const;
+-
+- private:
+-  class ServiceProtocolHandler;
+-
+-  static void RegisterServiceHandlerThunk(
+-      void* user_data,
+-      const FlutterSpiServiceHandler* handler);
+-  static void UnregisterServiceHandlerThunk(
+-      void* user_data,
+-      const FlutterSpiServiceHandler* handler);
+-  static void RefreshServiceHandlerDescriptionThunk(
+-      void* user_data,
+-      const FlutterSpiServiceHandler* handler);
+-  static void NotifyLowMemoryThunk(void* user_data);
+-  static bool IsRunningRuntimeCodeThunk(void* user_data);
+-  static FlutterSpiRuntimeExtensions MakeExtensions(
+-      DartRuntimeBackend* backend);
+-
+-  void RegisterServiceHandler(const FlutterSpiServiceHandler* handler);
+-  void UnregisterServiceHandler(const FlutterSpiServiceHandler* handler);
+-  void RefreshServiceHandlerDescription(
+-      const FlutterSpiServiceHandler* handler);
+-  void NotifyLowMemory();
+-  bool IsRunningRuntimeCode() const;
+-
+-  std::unique_ptr<RuntimeController> controller_;
+-  std::unordered_map<const FlutterSpiServiceHandler*,
+-                     std::unique_ptr<ServiceProtocolHandler>>
+-      service_protocol_handlers_;
+-  FlutterSpiRuntimeExtensions extensions_ = {};
+-};
+-
+-}  // namespace flutter
+-
+-#endif  // FLUTTER_SHELL_COMMON_DART_RUNTIME_BACKEND_H_
+diff --git a/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc b/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
+index 23fd4c5afdc..7fa5325f083 100644
+--- a/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
++++ b/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
+@@ -12,7 +12,9 @@
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/runtime/runtime_controller.h"
+ #include "flutter/runtime/runtime_delegate.h"
+-#include "flutter/shell/common/dart_runtime_backend.h"
++#include "flutter/runtime_spi/spi_runtime_backend.h"
++#include "flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.h"
++#include "flutter/shell/common/dart_runtime/flutter_dart_runtime.h"
+ #include "flutter/shell/common/shell_io_manager.h"
+ 
+ namespace flutter {
+@@ -35,42 +37,100 @@ std::unique_ptr<RuntimeBackend> DartRuntimeBackendFactory::Create(
+     fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
+     fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
+         image_generator_registry,
++    const fml::closure& root_isolate_create_callback,
+     const std::shared_future<impeller::RuntimeStageBackend>&
+         runtime_stage_backend) {
+-  return std::make_unique<DartRuntimeBackend>(
+-      std::make_unique<RuntimeController>(
+-          runtime_delegate,                     // runtime delegate
+-          vm_.get(),                            // VM
+-          isolate_snapshot_,                    // isolate snapshot
+-          settings.idle_notification_callback,  // idle callback
+-          platform_data,                        // platform data
+-          settings.isolate_create_callback,     // isolate callback
+-          settings.isolate_shutdown_callback,   // shutdown callback
+-          settings.persistent_isolate_data,     // persistent data
+-          UIDartState::Context{
+-              task_runners,                         // task runners
+-              std::move(snapshot_delegate),         // snapshot delegate
+-              std::move(io_manager),                // IO manager
+-              std::move(unref_queue),               // Skia unref queue
+-              std::move(image_decoder),             // image decoder
+-              std::move(image_generator_registry),  // image generators
+-              settings.advisory_script_uri,         // script URI
+-              settings.advisory_script_entrypoint,  // entrypoint
+-              settings.skia_deterministic_rendering_on_cpu,  // deterministic
+-              vm_->GetConcurrentWorkerTaskRunner(),          // worker runner
+-              runtime_stage_backend,                         // runtime stage
+-              settings.enable_impeller,                      // Impeller
+-              settings.enable_flutter_gpu                    // Flutter GPU
+-          }));
++  if (!vm_) {
++    return nullptr;
++  }
++  auto backend_image_decoder = image_decoder;
++  auto backend_image_generator_registry = image_generator_registry;
++  auto backend_snapshot_delegate = snapshot_delegate;
++  auto backend_unref_queue = unref_queue;
++  auto delegate_bridge = std::make_unique<DartRuntimeDelegateBridge>();
++  auto controller = std::make_unique<RuntimeController>(
++      *delegate_bridge,                     // runtime delegate
++      vm_->get(),                           // VM
++      isolate_snapshot_,                    // isolate snapshot
++      settings.idle_notification_callback,  // idle callback
++      platform_data,                        // platform data
++      settings.isolate_create_callback,     // isolate callback
++      settings.isolate_shutdown_callback,   // shutdown callback
++      settings.persistent_isolate_data,     // persistent data
++      UIDartState::Context{
++          task_runners,                                  // task runners
++          std::move(snapshot_delegate),                  // snapshot delegate
++          std::move(io_manager),                         // IO manager
++          std::move(unref_queue),                        // Skia unref queue
++          std::move(image_decoder),                      // image decoder
++          std::move(image_generator_registry),           // image generators
++          settings.advisory_script_uri,                  // script URI
++          settings.advisory_script_entrypoint,           // entrypoint
++          settings.skia_deterministic_rendering_on_cpu,  // deterministic
++          (*vm_)->GetConcurrentWorkerTaskRunner(),       // worker runner
++          runtime_stage_backend,                         // runtime stage
++          settings.enable_impeller,                      // Impeller
++          settings.enable_flutter_gpu                    // Flutter GPU
++      });
++  auto runtime = std::make_unique<FlutterDartRuntime>(
++      std::move(controller), std::move(delegate_bridge), settings,
++      root_isolate_create_callback);
++  auto backend = std::make_unique<SpiRuntimeBackend>(
++      runtime_delegate, task_runners, runtime->table(),
++      std::move(backend_image_decoder),
++      std::move(backend_image_generator_registry),
++      std::move(backend_snapshot_delegate), std::move(backend_unref_queue),
++      settings.enable_impeller, runtime_stage_backend);
++  runtime.release();
++  return backend;
++}
++
++std::unique_ptr<RuntimeBackend> DartRuntimeBackendFactory::Spawn(
++    const RuntimeController& runtime_controller,
++    RuntimeDelegate& runtime_delegate,
++    const TaskRunners& task_runners,
++    const Settings& settings,
++    const fml::closure& root_isolate_create_callback,
++    const std::string& advisory_script_uri,
++    const std::string& advisory_script_entrypoint,
++    const std::function<void(int64_t)>& idle_notification_callback,
++    const fml::closure& isolate_create_callback,
++    const fml::closure& isolate_shutdown_callback,
++    const std::shared_ptr<const fml::Mapping>& persistent_isolate_data,
++    fml::WeakPtr<IOManager> io_manager,
++    fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
++    fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
++        image_generator_registry,
++    fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate) const {
++  auto delegate_bridge = std::make_unique<DartRuntimeDelegateBridge>();
++  auto backend_image_decoder = image_decoder;
++  auto backend_image_generator_registry = image_generator_registry;
++  auto backend_snapshot_delegate = snapshot_delegate;
++  auto controller = runtime_controller.Spawn(
++      *delegate_bridge, advisory_script_uri, advisory_script_entrypoint,
++      idle_notification_callback, isolate_create_callback,
++      isolate_shutdown_callback, persistent_isolate_data, std::move(io_manager),
++      std::move(image_decoder), std::move(image_generator_registry),
++      std::move(snapshot_delegate));
++  auto runtime = std::make_unique<FlutterDartRuntime>(
++      std::move(controller), std::move(delegate_bridge), settings,
++      root_isolate_create_callback);
++  auto backend = std::make_unique<SpiRuntimeBackend>(
++      runtime_delegate, task_runners, runtime->table(),
++      std::move(backend_image_decoder),
++      std::move(backend_image_generator_registry),
++      std::move(backend_snapshot_delegate), nullptr, settings.enable_impeller);
++  runtime.release();
++  return backend;
+ }
+ 
+ DartVM* DartRuntimeBackendFactory::GetDartVM() const {
+-  return const_cast<DartVM*>(vm_.get());
++  return vm_ ? const_cast<DartVM*>(vm_->get()) : nullptr;
+ }
+ 
+ std::shared_ptr<fml::ConcurrentTaskRunner>
+ DartRuntimeBackendFactory::GetConcurrentWorkerTaskRunner() const {
+-  return vm_->GetConcurrentWorkerTaskRunner();
++  return vm_ ? (*vm_)->GetConcurrentWorkerTaskRunner() : nullptr;
+ }
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/shell/common/dart_runtime_backend_factory.h b/engine/src/flutter/shell/common/dart_runtime_backend_factory.h
+index 5fe68e645f6..d25fc00dfdf 100644
+--- a/engine/src/flutter/shell/common/dart_runtime_backend_factory.h
++++ b/engine/src/flutter/shell/common/dart_runtime_backend_factory.h
+@@ -5,6 +5,10 @@
+ #ifndef FLUTTER_SHELL_COMMON_DART_RUNTIME_BACKEND_FACTORY_H_
+ #define FLUTTER_SHELL_COMMON_DART_RUNTIME_BACKEND_FACTORY_H_
+ 
++#include <functional>
++#include <optional>
++#include <string>
++
+ #include "flutter/runtime/dart_vm_lifecycle.h"
+ #include "flutter/runtime_spi/runtime_backend_factory.h"
+ 
+@@ -12,6 +16,7 @@ namespace flutter {
+ 
+ class DartRuntimeBackendFactory final : public RuntimeBackendFactory {
+  public:
++  DartRuntimeBackendFactory() = default;
+   DartRuntimeBackendFactory(DartVMRef vm,
+                             fml::RefPtr<const DartSnapshot> isolate_snapshot);
+   ~DartRuntimeBackendFactory() override;
+@@ -27,16 +32,36 @@ class DartRuntimeBackendFactory final : public RuntimeBackendFactory {
+       fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
+       fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
+           image_generator_registry,
++      const fml::closure& root_isolate_create_callback,
+       const std::shared_future<impeller::RuntimeStageBackend>&
+           runtime_stage_backend) override;
+ 
++  std::unique_ptr<RuntimeBackend> Spawn(
++      const RuntimeController& runtime_controller,
++      RuntimeDelegate& runtime_delegate,
++      const TaskRunners& task_runners,
++      const Settings& settings,
++      const fml::closure& root_isolate_create_callback,
++      const std::string& advisory_script_uri,
++      const std::string& advisory_script_entrypoint,
++      const std::function<void(int64_t)>& idle_notification_callback,
++      const fml::closure& isolate_create_callback,
++      const fml::closure& isolate_shutdown_callback,
++      const std::shared_ptr<const fml::Mapping>& persistent_isolate_data,
++      fml::WeakPtr<IOManager> io_manager,
++      fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
++      fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
++          image_generator_registry,
++      fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate)
++      const override;
++
+   DartVM* GetDartVM() const override;
+ 
+   std::shared_ptr<fml::ConcurrentTaskRunner>
+   GetConcurrentWorkerTaskRunner() const override;
+ 
+  private:
+-  DartVMRef vm_;
++  std::optional<DartVMRef> vm_;
+   fml::RefPtr<const DartSnapshot> isolate_snapshot_;
+ };
+ 
+diff --git a/engine/src/flutter/shell/common/engine.cc b/engine/src/flutter/shell/common/engine.cc
+index 89ea3721d8c..b9ff4fb46b0 100644
+--- a/engine/src/flutter/shell/common/engine.cc
++++ b/engine/src/flutter/shell/common/engine.cc
+@@ -17,8 +17,12 @@
+ #include "flutter/lib/ui/text/font_collection.h"
+ #include "flutter/runtime/runtime_controller.h"
+ #include "flutter/runtime_spi/runtime_backend_factory.h"
++#include "flutter/runtime_spi/spi_runtime_backend.h"
+ #include "flutter/shell/common/animator.h"
+-#include "flutter/shell/common/dart_runtime_backend.h"
++#include "flutter/shell/common/dart_runtime_backend_factory.h"
++#include "flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.h"
++#include "flutter/shell/common/dart_runtime/flutter_dart_runtime.h"
++#include "flutter/shell/common/shell_dart.h"
+ #include "rapidjson/document.h"
+ 
+ namespace flutter {
+@@ -52,6 +56,26 @@ FlutterSpiMapping MakeSpiMapping(std::unique_ptr<const fml::Mapping> mapping) {
+ }
+ }  // namespace
+ 
++std::unique_ptr<RuntimeBackend> MakeDartRuntimeBackend(
++    RuntimeDelegate& runtime_delegate,
++    const TaskRunners& task_runners,
++    std::unique_ptr<RuntimeController> controller,
++    const Settings& settings,
++    const fml::closure& root_isolate_create_callback,
++    fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
++    fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
++        image_generator_registry) {
++  auto delegate_bridge = std::make_unique<DartRuntimeDelegateBridge>();
++  auto runtime = std::make_unique<FlutterDartRuntime>(
++      std::move(controller), std::move(delegate_bridge), settings,
++      root_isolate_create_callback);
++  auto backend = std::make_unique<SpiRuntimeBackend>(
++      runtime_delegate, task_runners, runtime->table(),
++      std::move(image_decoder), std::move(image_generator_registry));
++  runtime.release();
++  return backend;
++}
++
+ Engine::Engine(
+     Delegate& delegate,
+     const std::shared_ptr<fml::ConcurrentTaskRunner>& image_decoder_task_runner,
+@@ -70,8 +94,18 @@ Engine::Engine(
+           std::move(animator),
+           io_manager,
+           font_collection,
+-          std::make_unique<DartRuntimeBackend>(std::move(runtime_controller)),
+-          gpu_disabled_switch) {}
++          std::unique_ptr<RuntimeBackend>{},
++          gpu_disabled_switch) {
++  if (runtime_controller == nullptr) {
++    return;
++  }
++  SetRootIsolateCreateCallback();
++  runtime_backend_factory_ = std::make_shared<DartRuntimeBackendFactory>();
++  runtime_backend_ = MakeDartRuntimeBackend(
++      *this, task_runners, std::move(runtime_controller), settings,
++      root_isolate_create_callback_, image_decoder_->GetWeakPtr(),
++      image_generator_registry_.GetWeakPtr());
++}
+ 
+ Engine::Engine(
+     Delegate& delegate,
+@@ -118,32 +152,14 @@ Engine::Engine(Delegate& delegate,
+              std::make_shared<FontCollection>(),
+              std::unique_ptr<RuntimeBackend>{},
+              gpu_disabled_switch) {
+-  runtime_backend_ = std::make_unique<
+-      DartRuntimeBackend>(std::make_unique<RuntimeController>(
+-      *this,                                 // runtime delegate
+-      &vm,                                   // VM
+-      std::move(isolate_snapshot),           // isolate snapshot
+-      settings_.idle_notification_callback,  // idle notification callback
+-      platform_data,                         // platform data
+-      settings_.isolate_create_callback,     // isolate create callback
+-      settings_.isolate_shutdown_callback,   // isolate shutdown callback
+-      settings_.persistent_isolate_data,     // persistent isolate data
+-      UIDartState::Context{
+-          task_runners_,                           // task runners
+-          std::move(snapshot_delegate),            // snapshot delegate
+-          std::move(io_manager),                   // io manager
+-          unref_queue,                             // Skia unref queue
+-          image_decoder_->GetWeakPtr(),            // image decoder
+-          image_generator_registry_.GetWeakPtr(),  // image generator registry
+-          settings_.advisory_script_uri,           // advisory script uri
+-          settings_.advisory_script_entrypoint,    // advisory script entrypoint
+-          settings_
+-              .skia_deterministic_rendering_on_cpu,  // deterministic rendering
+-          vm.GetConcurrentWorkerTaskRunner(),        // concurrent task runner
+-          runtime_stage_backend,                     // runtime stage
+-          settings_.enable_impeller,                 // enable impeller
+-          settings_.enable_flutter_gpu               // enable impeller
+-      }));
++  SetRootIsolateCreateCallback();
++  runtime_backend_factory_ = std::make_shared<DartRuntimeBackendFactory>(
++      DartVMRef::Create(settings_), isolate_snapshot);
++  runtime_backend_ = runtime_backend_factory_->Create(
++      *this, task_runners_, platform_data, settings_, std::move(io_manager),
++      unref_queue, std::move(snapshot_delegate), image_decoder_->GetWeakPtr(),
++      image_generator_registry_.GetWeakPtr(), root_isolate_create_callback_,
++      runtime_stage_backend);
+ }
+ 
+ Engine::Engine(Delegate& delegate,
+@@ -167,10 +183,13 @@ Engine::Engine(Delegate& delegate,
+              std::make_shared<FontCollection>(),
+              std::unique_ptr<RuntimeBackend>{},
+              gpu_disabled_switch) {
+-  runtime_backend_ = runtime_backend_factory->Create(
++  SetRootIsolateCreateCallback();
++  runtime_backend_factory_ = std::move(runtime_backend_factory);
++  runtime_backend_ = runtime_backend_factory_->Create(
+       *this, task_runners, platform_data, settings_, std::move(io_manager),
+       unref_queue, std::move(snapshot_delegate), image_decoder_->GetWeakPtr(),
+-      image_generator_registry_.GetWeakPtr(), runtime_stage_backend);
++      image_generator_registry_.GetWeakPtr(), root_isolate_create_callback_,
++      runtime_stage_backend);
+ }
+ 
+ std::unique_ptr<Engine> Engine::Spawn(
+@@ -181,8 +200,7 @@ std::unique_ptr<Engine> Engine::Spawn(
+     const fml::WeakPtr<IOManager>& io_manager,
+     fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
+     const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch) const {
+-  auto* dart = runtime_backend_->AsDart();
+-  if (!dart) {
++  if (!runtime_backend_factory_ || !GetRuntimeController()) {
+     FML_LOG(ERROR) << "Cannot spawn an engine without a Dart runtime backend.";
+     return nullptr;
+   }
+@@ -190,7 +208,7 @@ std::unique_ptr<Engine> Engine::Spawn(
+   auto result = std::make_unique<Engine>(
+       /*delegate=*/delegate,
+       /*image_decoder_task_runner=*/
+-      dart->GetDartVM()->GetConcurrentWorkerTaskRunner(),
++      runtime_backend_factory_->GetConcurrentWorkerTaskRunner(),
+       /*task_runners=*/task_runners_,
+       /*settings=*/settings,
+       /*animator=*/std::move(animator),
+@@ -198,8 +216,15 @@ std::unique_ptr<Engine> Engine::Spawn(
+       /*font_collection=*/font_collection_,
+       /*runtime_backend=*/std::unique_ptr<RuntimeBackend>{},
+       /*gpu_disabled_switch=*/gpu_disabled_switch);
+-  result->runtime_backend_ = dart->Spawn(
+-      /*p_client=*/*result,
++  result->runtime_backend_factory_ = runtime_backend_factory_;
++  result->SetRootIsolateCreateCallback();
++  result->runtime_backend_ = runtime_backend_factory_->Spawn(
++      /*runtime_controller=*/ *GetRuntimeController(),
++      /*runtime_delegate=*/*result,
++      /*task_runners=*/task_runners_,
++      /*settings=*/settings,
++      /*root_isolate_create_callback=*/
++      result->root_isolate_create_callback_,
+       /*advisory_script_uri=*/settings.advisory_script_uri,
+       /*advisory_script_entrypoint=*/settings.advisory_script_entrypoint,
+       /*idle_notification_callback=*/settings.idle_notification_callback,
+@@ -217,12 +242,19 @@ std::unique_ptr<Engine> Engine::Spawn(
+ 
+ Engine::~Engine() = default;
+ 
++void Engine::SetRootIsolateCreateCallback() {
++  root_isolate_create_callback_ = [this]() {
++    if (settings_.prefetched_default_font_manager) {
++      SetupDefaultFontManager();
++    }
++  };
++}
++
+ const RuntimeController* Engine::GetRuntimeController() const {
+-  auto* dart = runtime_backend_->AsDart();
+-  if (!dart) {
++  if (runtime_backend_ == nullptr) {
+     return nullptr;
+   }
+-  return &static_cast<const DartRuntimeBackend*>(dart)->controller();
++  return GetDartRuntimeController(*runtime_backend_);
+ }
+ 
+ fml::TaskRunnerAffineWeakPtr<Engine> Engine::GetWeakPtr() const {
+@@ -313,12 +345,6 @@ Engine::RunStatus Engine::Run(RunConfiguration configuration) {
+   // If the embedding prefetched the default font manager, then set up the
+   // font manager later in the engine launch process.  This makes it less
+   // likely that the setup will need to wait for the prefetch to complete.
+-  auto root_isolate_create_callback = [&]() {
+-    if (settings_.prefetched_default_font_manager) {
+-      SetupDefaultFontManager();
+-    }
+-  };
+-
+   if (settings_.merged_platform_ui_thread ==
+       Settings::MergedPlatformUIThread::kMergeAfterLaunch) {
+     // Queue a task to the UI task runner that sets the owner of the root
+@@ -339,7 +365,7 @@ Engine::RunStatus Engine::Run(RunConfiguration configuration) {
+ 
+   const auto engine_id = configuration.GetEngineId();
+   if (!runtime_backend_->Launch(std::move(configuration), settings_,
+-                                root_isolate_create_callback, engine_id)) {
++                                root_isolate_create_callback_, engine_id)) {
+     return RunStatus::Failure;
+   }
+ 
+diff --git a/engine/src/flutter/shell/common/engine.h b/engine/src/flutter/shell/common/engine.h
+index ea0c5514809..53745806ccb 100644
+--- a/engine/src/flutter/shell/common/engine.h
++++ b/engine/src/flutter/shell/common/engine.h
+@@ -1053,6 +1053,8 @@ class Engine final : public RuntimeDelegate {
+  private:
+   friend class Shell;
+ 
++  void SetRootIsolateCreateCallback();
++
+   // |RuntimeDelegate|
+   std::string DefaultRouteName() override;
+ 
+@@ -1126,6 +1128,8 @@ class Engine final : public RuntimeDelegate {
+   const Settings settings_;
+   std::unique_ptr<Animator> animator_;
+   std::unique_ptr<RuntimeBackend> runtime_backend_;
++  std::shared_ptr<RuntimeBackendFactory> runtime_backend_factory_;
++  fml::closure root_isolate_create_callback_;
+ 
+   std::string last_entry_point_;
+   std::string last_entry_point_library_;
+diff --git a/engine/src/flutter/shell/common/engine_unittests.cc b/engine/src/flutter/shell/common/engine_unittests.cc
+index e70535cd7de..fdebeadab87 100644
+--- a/engine/src/flutter/shell/common/engine_unittests.cc
++++ b/engine/src/flutter/shell/common/engine_unittests.cc
+@@ -9,7 +9,6 @@
+ #include "flutter/flow/layers/container_layer.h"
+ #include "flutter/runtime/dart_vm_lifecycle.h"
+ #include "flutter/runtime_spi/include/flutter_runtime_extensions.h"
+-#include "flutter/shell/common/dart_runtime_backend.h"
+ #include "flutter/shell/common/fake_runtime_backend.h"
+ #include "flutter/shell/common/thread_host.h"
+ #include "flutter/shell/common/vsync_waiters_test.h"
+@@ -369,31 +368,6 @@ TEST_F(SpiRuntimeExtensions, EngineWorksWithoutExtensions) {
+   });
+ }
+ 
+-TEST_F(SpiRuntimeExtensions, DartBackendFillsEveryField) {
+-  PostUITaskSync([this] {
+-    MockRuntimeDelegate client;
+-    auto controller =
+-        std::make_unique<MockRuntimeController>(client, task_runners_);
+-    auto backend = std::make_unique<DartRuntimeBackend>(std::move(controller));
+-
+-    const FlutterSpiRuntimeExtensions* extensions = backend->GetExtensions();
+-    ASSERT_NE(extensions, nullptr);
+-    EXPECT_NE(extensions->free_string, nullptr);
+-    EXPECT_NE(extensions->get_main_port, nullptr);
+-    EXPECT_NE(extensions->get_root_isolate_service_id, nullptr);
+-    EXPECT_NE(extensions->get_root_isolate_return_code, nullptr);
+-    EXPECT_NE(extensions->get_isolate_name, nullptr);
+-    EXPECT_NE(extensions->get_last_error, nullptr);
+-    EXPECT_NE(extensions->has_live_ports, nullptr);
+-    EXPECT_NE(extensions->has_pending_microtasks, nullptr);
+-    EXPECT_NE(extensions->flush_microtask_queue, nullptr);
+-    EXPECT_NE(extensions->load_deferred_library, nullptr);
+-    EXPECT_NE(extensions->load_deferred_library_error, nullptr);
+-    EXPECT_NE(extensions->shutdown_platform_isolates, nullptr);
+-    EXPECT_NE(extensions->set_root_isolate_owner_to_current_thread, nullptr);
+-  });
+-}
+-
+ TEST_F(EngineTest, SpawnWithoutDartBackendReturnsNull) {
+   PostUITaskSync([this] {
+     auto fake_backend = std::make_unique<FakeRuntimeBackend>(task_runners_);
+@@ -409,18 +383,9 @@ TEST_F(EngineTest, SpawnWithoutDartBackendReturnsNull) {
+   });
+ }
+ 
+-TEST_F(EngineTest, DartExtensionsAvailableWithRuntimeController) {
++TEST_F(EngineTest, DartRuntimeControllerAvailableThroughSpi) {
+   PostUITaskSync([this] {
+     MockRuntimeDelegate client;
+-    auto runtime_controller =
+-        std::make_unique<MockRuntimeController>(client, task_runners_);
+-    auto* runtime_controller_pointer = runtime_controller.get();
+-
+-    auto runtime_backend =
+-        std::make_unique<DartRuntimeBackend>(std::move(runtime_controller));
+-    EXPECT_NE(runtime_backend->AsDart(), nullptr);
+-    EXPECT_EQ(&runtime_backend->controller(), runtime_controller_pointer);
+-
+     auto engine_runtime_controller =
+         std::make_unique<MockRuntimeController>(client, task_runners_);
+     auto* engine_runtime_controller_pointer = engine_runtime_controller.get();
+diff --git a/engine/src/flutter/shell/common/shell_dart.cc b/engine/src/flutter/shell/common/shell_dart.cc
+index a1f5af11310..cb67a5cace9 100644
+--- a/engine/src/flutter/shell/common/shell_dart.cc
++++ b/engine/src/flutter/shell/common/shell_dart.cc
+@@ -15,7 +15,9 @@
+ #include "flutter/fml/logging.h"
+ #include "flutter/fml/trace_event.h"
+ #include "flutter/runtime/dart_vm.h"
++#include "flutter/runtime_spi/runtime_backend.h"
+ #include "flutter/shell/common/dart_runtime_backend_factory.h"
++#include "flutter/shell/common/dart_runtime/flutter_dart_runtime.h"
+ #include "flutter/shell/common/shell.h"
+ #include "flutter/shell/common/skia_event_tracer_impl.h"
+ #include "third_party/skia/include/codec/SkBmpDecoder.h"
+@@ -109,6 +111,17 @@ InferDartVmInitDataFromSettings(Settings& settings) {
+   return {std::move(vm), isolate_snapshot};
+ }
+ 
++const RuntimeController* GetDartRuntimeController(
++    const RuntimeBackend& runtime_backend) {
++  const auto* extensions = runtime_backend.GetExtensions();
++  if (extensions == nullptr || extensions->user_data == nullptr) {
++    return nullptr;
++  }
++  const auto* runtime =
++      static_cast<const FlutterDartRuntime*>(extensions->user_data);
++  return &runtime->controller();
++}
++
+ std::unique_ptr<Shell> Shell::Create(
+     const PlatformData& platform_data,
+     const TaskRunners& task_runners,
+diff --git a/engine/src/flutter/shell/common/shell_dart.h b/engine/src/flutter/shell/common/shell_dart.h
+index 50e6d0c2d13..c16784d3d11 100644
+--- a/engine/src/flutter/shell/common/shell_dart.h
++++ b/engine/src/flutter/shell/common/shell_dart.h
+@@ -12,11 +12,16 @@
+ 
+ namespace flutter {
+ 
++class RuntimeBackend;
++class RuntimeController;
+ struct Settings;
+ 
+ std::pair<DartVMRef, fml::RefPtr<const DartSnapshot>>
+ InferDartVmInitDataFromSettings(Settings& settings);
+ 
++const RuntimeController* GetDartRuntimeController(
++    const RuntimeBackend& runtime_backend);
++
+ }  // namespace flutter
+ 
+ #endif  // FLUTTER_SHELL_COMMON_SHELL_DART_H_
+diff --git a/engine/src/flutter/shell/common/shell_unittests.cc b/engine/src/flutter/shell/common/shell_unittests.cc
+index 9a1fbc9b28f..9f9429af315 100644
+--- a/engine/src/flutter/shell/common/shell_unittests.cc
++++ b/engine/src/flutter/shell/common/shell_unittests.cc
+@@ -303,6 +303,7 @@ class FakeRuntimeBackendFactory final : public RuntimeBackendFactory {
+       fml::TaskRunnerAffineWeakPtr<SnapshotDelegate>,
+       fml::TaskRunnerAffineWeakPtr<ImageDecoder>,
+       fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>,
++      const fml::closure&,
+       const std::shared_future<impeller::RuntimeStageBackend>&) override {
+     auto backend = std::make_unique<FakeRuntimeBackend>(task_runners);
+     backend_ = backend.get();
