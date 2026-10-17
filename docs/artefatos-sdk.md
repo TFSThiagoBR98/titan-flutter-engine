@@ -35,6 +35,28 @@ scripts/install-sdk-artifacts.sh <flutter-sdk>    # p. ex. .build_flutter/flutte
 
 Medido no host (16 núcleos): host debug 7 min, os três desktop 13 min em paralelo, com o ccache já quente.
 
+## Células do CI
+
+Cada célula publica seus zips e mantém o log de cada variante no heartbeat do job. O Linux combina o bundle do
+engine com os artefatos do SDK na mesma célula e no mesmo ccache:
+
+| Job e células | Produção |
+|---|---|
+| `build`: 10 alvos × `debug`, `profile`, `release` | Bundle Linux do alvo, GTK do alvo e, em `x64-debug`, `x64-release` e `arm64-debug`, os SDKs host correspondentes |
+| `linux_platform`: `android-<mode>-{arm,arm64,x64}` | Engine Android de cada arquitetura e perfil |
+| `linux_platform`: `web-release` | SDK web de release |
+| `windows`: `windows-{x64,arm64}-<mode>` | Host Windows; as células x64 de profile/release também geram os três `gen_snapshot` Android |
+| `macos`: `macos-arm64-<mode>` | Host, framework e `gen_snapshot` macOS arm64; iOS device e simulador arm64; profile/release também geram os três `gen_snapshot` Android |
+
+O `gen_snapshot` Android construído em macOS ou Windows não é um engine Android adicional: é o executável que roda
+no host para compilar o AOT de um aplicativo Android. O job Android Linux fornece a mesma função para o host Linux,
+por isso os hosts macOS e Windows mantêm esses snapshots dentro de suas próprias células, sem um job Android
+separado.
+
+O macOS compila somente arm64. Seus zips usam os caminhos oficiais `darwin-x64*`, que o `flutter` tool consulta em
+qualquer Mac, mas contêm binários arm64; caminhos que dependem de x64 ficam fora da lista exigida em
+`sdk/official-artifacts.txt`.
+
 ## Layout e hash
 
 `assemble-sdk-artifacts.sh` monta `$TITAN_BUNDLE_DIR/sdk/flutter_infra_release/flutter/<hash>/` com os caminhos da
