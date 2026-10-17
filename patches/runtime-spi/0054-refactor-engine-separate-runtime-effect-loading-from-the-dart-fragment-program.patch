@@ -1,0 +1,399 @@
+# Why: keep runtime effect decoding and backend setup reusable by the runtime
+# SPI without pulling Dart dependencies into the loader.
+diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
+index 41cbc68edbb..36589eaa6c2 100644
+--- a/engine/src/flutter/lib/ui/BUILD.gn
++++ b/engine/src/flutter/lib/ui/BUILD.gn
+@@ -128,6 +128,8 @@ source_set("ui_image_output") {
+     "painting/image_readback.h",
+     "painting/image_snapshot.cc",
+     "painting/image_snapshot.h",
++    "painting/runtime_effect_loader.cc",
++    "painting/runtime_effect_loader.h",
+   ]
+ 
+   public_configs = [ "//flutter:config" ]
+@@ -136,6 +138,7 @@ source_set("ui_image_output") {
+     ":ui_image_decoding",
+     "//flutter/display_list",
+     "//flutter/fml",
++    "//flutter/impeller/runtime_stage",
+     "//flutter/skia",
+   ]
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/fragment_program.cc b/engine/src/flutter/lib/ui/painting/fragment_program.cc
+index a9b8c454f4d..1a2d8d4e887 100644
+--- a/engine/src/flutter/lib/ui/painting/fragment_program.cc
++++ b/engine/src/flutter/lib/ui/painting/fragment_program.cc
+@@ -3,46 +3,21 @@
+ // found in the LICENSE file.
+ 
+ #include <memory>
+-#include <sstream>
+ 
+-#include "display_list/effects/dl_runtime_effect.h"
+-#include "display_list/effects/dl_runtime_effect_skia.h"
+ #include "flutter/lib/ui/painting/fragment_program.h"
+ 
+ #include "flutter/assets/asset_manager.h"
+ #include "flutter/fml/trace_event.h"
+-#if IMPELLER_SUPPORTS_RENDERING
+-#include "flutter/impeller/display_list/dl_runtime_effect_impeller.h"  // nogncheck
+-#endif
+-#include "flutter/impeller/runtime_stage/runtime_stage.h"
++#include "flutter/lib/ui/painting/runtime_effect_loader.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/lib/ui/window/platform_configuration.h"
+ 
+-#include "impeller/core/runtime_types.h"
+-#include "third_party/skia/include/core/SkString.h"
+-#include "third_party/skia/include/effects/SkRuntimeEffect.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ 
+ namespace flutter {
+ 
+ IMPLEMENT_WRAPPERTYPEINFO(ui, FragmentProgram);
+ 
+-static std::string RuntimeStageBackendToString(
+-    impeller::RuntimeStageBackend backend) {
+-  switch (backend) {
+-    case impeller::RuntimeStageBackend::kSkSL:
+-      return "SkSL";
+-    case impeller::RuntimeStageBackend::kMetal:
+-      return "Metal";
+-    case impeller::RuntimeStageBackend::kOpenGLES:
+-      return "OpenGLES";
+-    case impeller::RuntimeStageBackend::kVulkan:
+-      return "Vulkan";
+-    case impeller::RuntimeStageBackend::kOpenGLES3:
+-      return "OpenGLES3";
+-  }
+-}
+-
+ namespace {
+ Dart_Handle ConvertUniformDescriptionToMap(
+     const impeller::RuntimeUniformDescription& uniform_description) {
+@@ -140,50 +115,20 @@ std::string FragmentProgram::initFromAsset(const std::string& asset_name) {
+     return std::string("Asset '") + asset_name + std::string("' not found");
+   }
+ 
+-  auto runtime_stages =
+-      impeller::RuntimeStage::DecodeRuntimeStages(std::move(data));
+-
+-  if (!runtime_stages.ok()) {
+-    return std::string("Asset '") + asset_name +
+-           std::string("' manifest could not be decoded: ") +
+-           runtime_stages.status().ToString();
+-  }
+-
+-  if (runtime_stages->empty()) {
+-    return std::string("Asset '") + asset_name +
+-           std::string("' does not contain any shader data.");
+-  }
+-
+-  impeller::RuntimeStageBackend backend =
+-      ui_dart_state->GetRuntimeStageBackend();
+-  std::shared_ptr<impeller::RuntimeStage> runtime_stage =
+-      (*runtime_stages)[backend];
+-  if (runtime_stage) {
+-    // Anchor the registry namespace to the asset path so hot reload of the
+-    // same asset evicts the previous registration at the same scoped key,
+-    // and so two different FragmentProgram assets cannot collide with each
+-    // other or with engine-internal entrypoint names.
+-    runtime_stage->SetLibraryId(asset_name);
+-  }
+-  if (!runtime_stage) {
+-    std::ostringstream stream;
+-    stream << "Asset '" << asset_name
+-           << "' does not contain appropriate runtime stage data for current "
+-              "backend ("
+-           << RuntimeStageBackendToString(backend) << ")." << std::endl
+-           << "Found stages: ";
+-    for (const auto& kvp : *runtime_stages) {
+-      if (kvp.second) {
+-        stream << RuntimeStageBackendToString(kvp.first) << " ";
+-      }
+-    }
+-    return stream.str();
++  RuntimeEffectLoadContext context{
++      ui_dart_state->GetRuntimeStageBackend(),
++      ui_dart_state->IsImpellerEnabled(),
++      ui_dart_state->GetSnapshotDelegate(),
++      ui_dart_state->GetTaskRunners().GetRasterTaskRunner(),
++  };
++  auto loaded_effect =
++      LoadRuntimeEffect(std::move(data), asset_name, context);
++  if (!loaded_effect.ok()) {
++    return std::string(loaded_effect.status().message());
+   }
+ 
+-  int sampled_image_count = 0;
+-  size_t other_uniforms_bytes = 0;
+-  const std::vector<impeller::RuntimeUniformDescription>& uniforms =
+-      runtime_stage->GetUniforms();
++  runtime_effect_ = std::move(loaded_effect.value().effect);
++  const auto& uniforms = loaded_effect.value().uniforms;
+   Dart_Handle uniform_info = Dart_NewList(uniforms.size());
+   FML_DCHECK(!Dart_IsError(uniform_info));
+   for (size_t i = 0; i < uniforms.size(); ++i) {
+@@ -195,41 +140,6 @@ std::string FragmentProgram::initFromAsset(const std::string& asset_name) {
+         Dart_ListSetAt(uniform_info, i, map);
+     FML_DCHECK(!Dart_IsError(dart_result));
+ 
+-    if (uniform_description.type ==
+-        impeller::RuntimeUniformType::kSampledImage) {
+-      sampled_image_count++;
+-    } else {
+-      other_uniforms_bytes += uniform_description.GetDartSize();
+-    }
+-  }
+-
+-  if (UIDartState::Current()->IsImpellerEnabled()) {
+-    // Spawn (but do not block on) a task that will load the runtime stage and
+-    // populate an initial shader variant.
+-    auto snapshot_controller = UIDartState::Current()->GetSnapshotDelegate();
+-    ui_dart_state->GetTaskRunners().GetRasterTaskRunner()->PostTask(
+-        [runtime_stage, snapshot_controller]() {
+-          if (!snapshot_controller) {
+-            return;
+-          }
+-          snapshot_controller->CacheRuntimeStage(runtime_stage);
+-        });
+-#if IMPELLER_SUPPORTS_RENDERING
+-    runtime_effect_ = DlRuntimeEffectImpeller::Make(std::move(runtime_stage));
+-#endif
+-  } else {
+-    const auto& code_mapping = runtime_stage->GetCodeMapping();
+-    auto code_size = code_mapping->GetSize();
+-    const char* sksl =
+-        reinterpret_cast<const char*>(code_mapping->GetMapping());
+-    // SkString makes a copy.
+-    SkRuntimeEffect::Result result =
+-        SkRuntimeEffect::MakeForShader(SkString(sksl, code_size));
+-    if (result.effect == nullptr) {
+-      return std::string("Invalid SkSL:\n") + sksl +
+-             std::string("\nSkSL Error:\n") + result.errorText.c_str();
+-    }
+-    runtime_effect_ = DlRuntimeEffectSkia::Make(result.effect);
+   }
+ 
+   Dart_Handle ths = Dart_HandleFromWeakPersistent(dart_wrapper());
+@@ -238,14 +148,14 @@ std::string FragmentProgram::initFromAsset(const std::string& asset_name) {
+   }
+ 
+   Dart_Handle result = Dart_SetField(ths, tonic::ToDart("_samplerCount"),
+-                                     Dart_NewInteger(sampled_image_count));
++                                     Dart_NewInteger(
++                                         loaded_effect.value().sampled_image_count));
+   if (Dart_IsError(result)) {
+     return "Failed to set sampler count for fragment program.";
+   }
+ 
+-  size_t rounded_uniform_bytes =
+-      (other_uniforms_bytes + sizeof(float) - 1) & ~(sizeof(float) - 1);
+-  size_t float_count = rounded_uniform_bytes / sizeof(float);
++  size_t float_count =
++      loaded_effect.value().float_uniform_bytes / sizeof(float);
+ 
+   result = Dart_SetField(ths, tonic::ToDart("_uniformFloatCount"),
+                          Dart_NewInteger(float_count));
+diff --git a/engine/src/flutter/lib/ui/painting/runtime_effect_loader.cc b/engine/src/flutter/lib/ui/painting/runtime_effect_loader.cc
+new file mode 100644
+index 00000000000..8eac642d444
+--- /dev/null
++++ b/engine/src/flutter/lib/ui/painting/runtime_effect_loader.cc
+@@ -0,0 +1,143 @@
++// Copyright 2013 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/lib/ui/painting/runtime_effect_loader.h"
++
++#include <sstream>
++#include <utility>
++
++#include "flutter/fml/mapping.h"
++#include "flutter/lib/ui/snapshot_delegate.h"
++#if IMPELLER_SUPPORTS_RENDERING
++#include "flutter/impeller/display_list/dl_runtime_effect_impeller.h"  // nogncheck
++#endif
++#include "flutter/impeller/runtime_stage/runtime_stage.h"
++#include "display_list/effects/dl_runtime_effect_skia.h"
++#include "third_party/skia/include/core/SkString.h"
++#include "third_party/skia/include/effects/SkRuntimeEffect.h"
++
++namespace flutter {
++namespace {
++
++std::string RuntimeStageBackendToString(
++    impeller::RuntimeStageBackend backend) {
++  switch (backend) {
++    case impeller::RuntimeStageBackend::kSkSL:
++      return "SkSL";
++    case impeller::RuntimeStageBackend::kMetal:
++      return "Metal";
++    case impeller::RuntimeStageBackend::kOpenGLES:
++      return "OpenGLES";
++    case impeller::RuntimeStageBackend::kVulkan:
++      return "Vulkan";
++    case impeller::RuntimeStageBackend::kOpenGLES3:
++      return "OpenGLES3";
++  }
++}
++
++std::string LibraryPrefix(const std::string& library_id) {
++  if (library_id.empty()) {
++    return "";
++  }
++  return "Asset '" + library_id + "' ";
++}
++
++fml::Status InvalidArgument(std::string message) {
++  // fml::Status stores a string_view, so keep the diagnostic alive until the
++  // caller has copied it from the returned StatusOr.
++  static thread_local std::string status_message;
++  status_message = std::move(message);
++  return fml::Status(fml::StatusCode::kInvalidArgument, status_message);
++}
++
++}  // namespace
++
++fml::StatusOr<LoadedRuntimeEffect> LoadRuntimeEffect(
++    std::unique_ptr<fml::Mapping> data,
++    const std::string& library_id,
++    const RuntimeEffectLoadContext& context) {
++  std::shared_ptr<fml::Mapping> payload(std::move(data));
++  auto runtime_stages =
++      impeller::RuntimeStage::DecodeRuntimeStages(std::move(payload));
++  if (!runtime_stages.ok()) {
++    return InvalidArgument(LibraryPrefix(library_id) +
++                           "manifest could not be decoded: " +
++                           runtime_stages.status().ToString());
++  }
++
++  if (runtime_stages->empty()) {
++    return InvalidArgument(LibraryPrefix(library_id) +
++                           "does not contain any shader data.");
++  }
++
++  std::shared_ptr<impeller::RuntimeStage> runtime_stage =
++      (*runtime_stages)[context.backend];
++  if (runtime_stage && !library_id.empty()) {
++    // Anchor the registry namespace to the asset path so hot reload of the
++    // same asset evicts the previous registration at the same scoped key,
++    // and so two different FragmentProgram assets cannot collide with each
++    // other or with engine-internal entrypoint names.
++    runtime_stage->SetLibraryId(library_id);
++  }
++  if (!runtime_stage) {
++    std::ostringstream stream;
++    stream << LibraryPrefix(library_id)
++           << "does not contain appropriate runtime stage data for current "
++              "backend ("
++           << RuntimeStageBackendToString(context.backend) << ")." << std::endl
++           << "Found stages: ";
++    for (const auto& kvp : *runtime_stages) {
++      if (kvp.second) {
++        stream << RuntimeStageBackendToString(kvp.first) << " ";
++      }
++    }
++    return InvalidArgument(stream.str());
++  }
++
++  LoadedRuntimeEffect loaded_effect;
++  loaded_effect.uniforms = runtime_stage->GetUniforms();
++  for (const auto& uniform : loaded_effect.uniforms) {
++    if (uniform.type == impeller::RuntimeUniformType::kSampledImage) {
++      loaded_effect.sampled_image_count++;
++    } else {
++      loaded_effect.float_uniform_bytes += uniform.GetDartSize();
++    }
++  }
++  loaded_effect.float_uniform_bytes =
++      (loaded_effect.float_uniform_bytes + sizeof(float) - 1) &
++      ~(sizeof(float) - 1);
++
++  if (context.impeller_enabled) {
++    auto snapshot_delegate = context.snapshot_delegate;
++    context.raster_task_runner->PostTask(
++        [runtime_stage, snapshot_delegate]() {
++          if (!snapshot_delegate) {
++            return;
++          }
++          snapshot_delegate->CacheRuntimeStage(runtime_stage);
++        });
++#if IMPELLER_SUPPORTS_RENDERING
++    loaded_effect.effect =
++        DlRuntimeEffectImpeller::Make(std::move(runtime_stage));
++#endif
++  } else {
++    const auto& code_mapping = runtime_stage->GetCodeMapping();
++    auto code_size = code_mapping->GetSize();
++    const char* sksl =
++        reinterpret_cast<const char*>(code_mapping->GetMapping());
++    // SkString makes a copy.
++    SkRuntimeEffect::Result result =
++        SkRuntimeEffect::MakeForShader(SkString(sksl, code_size));
++    if (result.effect == nullptr) {
++      return InvalidArgument(std::string("Invalid SkSL:\n") + sksl +
++                             std::string("\nSkSL Error:\n") +
++                             result.errorText.c_str());
++    }
++    loaded_effect.effect = DlRuntimeEffectSkia::Make(result.effect);
++  }
++
++  return loaded_effect;
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/runtime_effect_loader.h b/engine/src/flutter/lib/ui/painting/runtime_effect_loader.h
+new file mode 100644
+index 00000000000..2dd585c2f97
+--- /dev/null
++++ b/engine/src/flutter/lib/ui/painting/runtime_effect_loader.h
+@@ -0,0 +1,45 @@
++// Copyright 2013 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_LIB_UI_PAINTING_RUNTIME_EFFECT_LOADER_H_
++#define FLUTTER_LIB_UI_PAINTING_RUNTIME_EFFECT_LOADER_H_
++
++#include <cstddef>
++#include <memory>
++#include <string>
++#include <vector>
++
++#include "flutter/display_list/effects/dl_runtime_effect.h"
++#include "flutter/fml/mapping.h"
++#include "flutter/fml/memory/weak_ptr.h"
++#include "flutter/fml/status_or.h"
++#include "flutter/fml/task_runner.h"
++#include "flutter/impeller/core/runtime_types.h"
++
++namespace flutter {
++
++class SnapshotDelegate;
++
++struct LoadedRuntimeEffect {
++  sk_sp<DlRuntimeEffect> effect;
++  std::vector<impeller::RuntimeUniformDescription> uniforms;
++  int sampled_image_count = 0;
++  size_t float_uniform_bytes = 0;
++};
++
++struct RuntimeEffectLoadContext {
++  impeller::RuntimeStageBackend backend;
++  bool impeller_enabled;
++  fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate;
++  fml::RefPtr<fml::TaskRunner> raster_task_runner;
++};
++
++fml::StatusOr<LoadedRuntimeEffect> LoadRuntimeEffect(
++    std::unique_ptr<fml::Mapping> data,
++    const std::string& library_id,
++    const RuntimeEffectLoadContext& context);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_LIB_UI_PAINTING_RUNTIME_EFFECT_LOADER_H_
