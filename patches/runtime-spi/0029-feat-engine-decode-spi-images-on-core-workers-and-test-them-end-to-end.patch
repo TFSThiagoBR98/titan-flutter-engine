@@ -1,0 +1,743 @@
+# Why: the SPI backend has no Dart VM to provide the concurrent worker pool
+# required by ImageDecoder, so the core must own those workers and the
+# conformance test must exercise the asynchronous image path end to end.
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_decoding.cc b/engine/src/flutter/runtime_spi/image/spi_image_decoding.cc
+index 44e0eba54ad..d7efc90c07a 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_decoding.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_decoding.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "flutter/runtime_spi/image/spi_image_decoding.h"
+ 
++#include <cmath>
+ #include <limits>
+ #include <utility>
+ 
+@@ -39,14 +40,45 @@ bool GetPixelFormatInfo(int32_t value, PixelFormatInfo* info) {
+   }
+ }
+ 
+-ImageDecoder::Options DecodeOptions(
++}  // namespace
++
++SkISize ResolveTargetSize(
++    int32_t source_width,
++    int32_t source_height,
+     const FlutterSpiImageDecodeOptions* options) {
+-  if (options == nullptr) {
+-    return {};
++  int32_t target_width = options == nullptr ? 0 : options->target_width;
++  int32_t target_height = options == nullptr ? 0 : options->target_height;
++  if (target_width <= 0) {
++    target_width = 0;
++  }
++  if (target_height <= 0) {
++    target_height = 0;
++  }
++
++  if (target_width == 0 && target_height == 0) {
++    return SkISize::Make(source_width, source_height);
++  }
++  if (target_width == 0) {
++    target_width = static_cast<int32_t>(std::lround(
++        static_cast<double>(target_height) * source_width / source_height));
++  } else if (target_height == 0) {
++    target_height = static_cast<int32_t>(std::lround(
++        static_cast<double>(target_width) * source_height / source_width));
+   }
++  return SkISize::Make(target_width, target_height);
++}
++
++namespace {
++
++ImageDecoder::Options DecodeOptions(
++    int32_t source_width,
++    int32_t source_height,
++    const FlutterSpiImageDecodeOptions* options) {
++  const SkISize target_size =
++      ResolveTargetSize(source_width, source_height, options);
+   return {
+-      .target_width = static_cast<uint32_t>(options->target_width),
+-      .target_height = static_cast<uint32_t>(options->target_height),
++      .target_width = static_cast<uint32_t>(target_size.width()),
++      .target_height = static_cast<uint32_t>(target_size.height()),
+   };
+ }
+ 
+@@ -112,8 +144,10 @@ FlutterSpiResult SpiImageDecoding::DecodeEncoded(
+     PostResult(callback, user_data, kFlutterSpiInternalError, nullptr);
+     return kFlutterSpiOk;
+   }
++  const ImageDecoder::Options decode_options =
++      DecodeOptions(descriptor->width(), descriptor->height(), options);
+   decoder_->Decode(
+-      std::move(descriptor), DecodeOptions(options),
++      std::move(descriptor), decode_options,
+       [weak_this = weak_factory_.GetWeakPtr(), callback,
+        user_data](sk_sp<DlImage> image, std::string) mutable {
+         if (weak_this) {
+@@ -160,8 +194,10 @@ FlutterSpiResult SpiImageDecoding::DecodePixels(
+   auto descriptor = ImageDescriptorData::MakeRaw(
+       SkData::MakeWithCopy(pixels->pixels, pixels->pixels_size), pixels->width,
+       pixels->height, row_bytes, format_info.format);
++  const ImageDecoder::Options decode_options =
++      DecodeOptions(pixels->width, pixels->height, options);
+   decoder_->Decode(
+-      std::move(descriptor), DecodeOptions(options),
++      std::move(descriptor), decode_options,
+       [weak_this = weak_factory_.GetWeakPtr(), callback,
+        user_data](sk_sp<DlImage> image, std::string) mutable {
+         if (weak_this) {
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_decoding.h b/engine/src/flutter/runtime_spi/image/spi_image_decoding.h
+index 034b51a6787..83bedf977d0 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_decoding.h
++++ b/engine/src/flutter/runtime_spi/image/spi_image_decoding.h
+@@ -12,12 +12,17 @@
+ #include "flutter/fml/task_runner.h"
+ #include "flutter/display_list/image/dl_image.h"
+ #include "flutter/runtime_spi/include/flutter_image.h"
++#include "third_party/skia/include/core/SkSize.h"
+ 
+ namespace flutter {
+ 
+ class ImageDecoder;
+ class ImageGeneratorRegistry;
+ 
++SkISize ResolveTargetSize(int32_t source_width,
++                          int32_t source_height,
++                          const FlutterSpiImageDecodeOptions* options);
++
+ class SpiImageDecoding final {
+  public:
+   SpiImageDecoding(
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_decoding_unittests.cc b/engine/src/flutter/runtime_spi/image/spi_image_decoding_unittests.cc
+index bbf4d49c785..6f30bae7f11 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_decoding_unittests.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_decoding_unittests.cc
+@@ -17,6 +17,7 @@
+ #include "flutter/testing/thread_test.h"
+ #include "third_party/skia/include/core/SkBitmap.h"
+ #include "third_party/skia/include/core/SkImage.h"
++#include "third_party/skia/include/core/SkSize.h"
+ #include "third_party/skia/include/encode/SkPngEncoder.h"
+ 
+ namespace flutter::testing {
+@@ -178,6 +179,32 @@ TEST_F(SpiImageDecodingTest, PassesTargetSize) {
+   });
+ }
+ 
++void ExpectResolvedTargetSize(int32_t expected_width,
++                              int32_t expected_height,
++                              int32_t target_width,
++                              int32_t target_height) {
++  const FlutterSpiImageDecodeOptions options = {
++      .struct_size = sizeof(FlutterSpiImageDecodeOptions),
++      .target_width = target_width,
++      .target_height = target_height,
++  };
++  const SkISize resolved = ResolveTargetSize(3, 2, &options);
++
++  EXPECT_EQ(resolved.width(), expected_width);
++  EXPECT_EQ(resolved.height(), expected_height);
++}
++
++TEST(SpiImageDecoding, ResolvesTargetSizeLikeDartUi) {
++  const SkISize original = ResolveTargetSize(3, 2, nullptr);
++  EXPECT_EQ(original.width(), 3);
++  EXPECT_EQ(original.height(), 2);
++
++  ExpectResolvedTargetSize(6, 4, 6, 0);
++  ExpectResolvedTargetSize(6, 4, 0, 4);
++  ExpectResolvedTargetSize(7, 5, 7, 5);
++  ExpectResolvedTargetSize(3, 2, -1, -2);
++}
++
+ TEST_F(SpiImageDecodingTest, DecoderFailureIsInternalError) {
+   const auto png = MakeTestPng();
+   ASSERT_TRUE(png);
+diff --git a/engine/src/flutter/runtime_spi/runtime_backend_factory.h b/engine/src/flutter/runtime_spi/runtime_backend_factory.h
+index 36e86ae10ab..4e597584bee 100644
+--- a/engine/src/flutter/runtime_spi/runtime_backend_factory.h
++++ b/engine/src/flutter/runtime_spi/runtime_backend_factory.h
+@@ -16,6 +16,10 @@
+ #include "flutter/runtime_spi/runtime_backend.h"
+ #include "impeller/runtime_stage/runtime_stage.h"
+ 
++namespace fml {
++class ConcurrentTaskRunner;
++}
++
+ namespace flutter {
+ 
+ class DartVM;
+@@ -45,6 +49,9 @@ class RuntimeBackendFactory {
+       const std::shared_future<impeller::RuntimeStageBackend>&
+           runtime_stage_backend) = 0;
+ 
++  virtual std::shared_ptr<fml::ConcurrentTaskRunner>
++  GetConcurrentWorkerTaskRunner() const = 0;
++
+   virtual DartVM* GetDartVM() const { return nullptr; }
+ };
+ 
+diff --git a/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+index 59011e1a804..426f8e6d976 100644
+--- a/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+@@ -5,26 +5,33 @@
+ #include "flutter/runtime_spi/spi_runtime_backend_factory.h"
+ 
+ #include <cstdint>
++#include <chrono>
+ #include <cstdlib>
+ #include <cstring>
+ #include <memory>
+ #include <string>
++#include <thread>
+ #include <utility>
+ #include <vector>
+ 
+ #include "flutter/fml/mapping.h"
+ #include "flutter/fml/synchronization/waitable_event.h"
++#include "flutter/fml/time/time_delta.h"
++#include "flutter/fml/time/time_point.h"
+ #include "flutter/lib/ui/window/key_data_packet.h"
+ #include "flutter/lib/ui/window/pointer_data_packet.h"
+ #include "flutter/runtime/dart_vm.h"
++#include "flutter/runtime_spi/scene/spi_scene_trace.h"
+ #include "flutter/runtime_spi/testing/c_test_runtime.h"
+ #include "flutter/runtime_spi/testing/test_icu.h"
+-#include "flutter/runtime_spi/scene/spi_scene_trace.h"
+ #include "flutter/shell/common/platform_message_handler.h"
+ #include "flutter/shell/common/platform_view.h"
+ #include "flutter/shell/common/shell_test.h"
+ #include "flutter/shell/common/shell_test_platform_view.h"
+ #include "flutter/testing/testing.h"
++#include "third_party/skia/include/core/SkBitmap.h"
++#include "third_party/skia/include/core/SkImage.h"
++#include "third_party/skia/include/encode/SkPngEncoder.h"
+ 
+ namespace flutter::testing {
+ namespace {
+@@ -34,6 +41,28 @@ constexpr int64_t kImplicitViewId = 0;
+ constexpr char kPlatformChannel[] = "spi/test";
+ constexpr char kPlatformPayload[] = "payload";
+ 
++sk_sp<SkData> MakeTestPng() {
++  SkBitmap bitmap;
++  if (!bitmap.tryAllocPixels(SkImageInfo::MakeN32Premul(3, 2))) {
++    return nullptr;
++  }
++  bitmap.eraseColor(SK_ColorGREEN);
++  const auto image = SkImages::RasterFromBitmap(bitmap);
++  if (!image) {
++    return nullptr;
++  }
++  return SkPngEncoder::Encode(nullptr, image.get(), {});
++}
++
++void CountImageCallback(void* user_data,
++                        FlutterSpiResult result,
++                        FlutterSpiImage* image) {
++  (void)result;
++  (void)image;
++  auto* callback_count = static_cast<size_t*>(user_data);
++  (*callback_count)++;
++}
++
+ void PostSync(const fml::RefPtr<fml::TaskRunner>& task_runner,
+               const fml::closure& task) {
+   fml::AutoResetWaitableEvent latch;
+@@ -185,6 +214,16 @@ class SpiConformance : public ShellTest {
+     PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [] {});
+   }
+ 
++  bool WaitForImageCallback(fml::TimeDelta timeout) {
++    const fml::TimePoint deadline = fml::TimePoint::Now() + timeout;
++    while (runtime_->image_callback_count != 1u &&
++           fml::TimePoint::Now() < deadline) {
++      FlushUi();
++      std::this_thread::sleep_for(std::chrono::milliseconds(10));
++    }
++    return runtime_->image_callback_count == 1u;
++  }
++
+   CTestRuntime* runtime_ = nullptr;
+   std::unique_ptr<TaskRunners> task_runners_;
+   std::unique_ptr<Shell> shell_;
+@@ -244,15 +283,14 @@ TEST_F(SpiConformance, SceneBuilderFrameRoundTrip) {
+     auto* layer_tree =
+         shell_->GetRasterizer()->GetLastLayerTree(kImplicitViewId);
+     ASSERT_NE(layer_tree, nullptr);
+-    EXPECT_EQ(
+-        SceneTrace(*layer_tree),
+-        "scene 1x1\n"
+-        "container\n"
+-        "  transform [1 0 0 0 0 1 0 0 0 0 1 0 3 4 0 1]\n"
+-        "    opacity 128 5 6\n"
+-        "      picture 1 2\n"
+-        "        drawRect 1 2 3 4\n"
+-        "        drawCircle 5 6 2\n");
++    EXPECT_EQ(SceneTrace(*layer_tree),
++              "scene 1x1\n"
++              "container\n"
++              "  transform [1 0 0 0 0 1 0 0 0 0 1 0 3 4 0 1]\n"
++              "    opacity 128 5 6\n"
++              "      picture 1 2\n"
++              "        drawRect 1 2 3 4\n"
++              "        drawCircle 5 6 2\n");
+   });
+ }
+ 
+@@ -272,6 +310,58 @@ TEST_F(SpiConformance, TextApiAnnouncedByCapability) {
+   EXPECT_NE(runtime_->engine_api->capabilities & kFlutterSpiCapText, 0u);
+ }
+ 
++TEST_F(SpiConformance, ImageApiAnnouncedByCapability) {
++  StartShell();
++
++  ASSERT_NE(runtime_->engine_api, nullptr);
++  ASSERT_NE(runtime_->engine_api->image, nullptr);
++  EXPECT_NE(runtime_->engine_api->capabilities & kFlutterSpiCapImage, 0u);
++}
++
++TEST_F(SpiConformance, ImageFrameRoundTrip) {
++  const auto png = MakeTestPng();
++  ASSERT_TRUE(png);
++  runtime_->draw_image_on_begin_frame = true;
++  runtime_->draw_image_png_data = png->bytes();
++  runtime_->draw_image_png_size = png->size();
++  StartShell();
++
++  PumpOneFrame(shell_.get());
++  ASSERT_TRUE(WaitForImageCallback(fml::TimeDelta::FromSeconds(5)));
++  PumpOneFrame(shell_.get());
++  PostSync(shell_->GetTaskRunners().GetRasterTaskRunner(), [&] {
++    auto* layer_tree =
++        shell_->GetRasterizer()->GetLastLayerTree(kImplicitViewId);
++    ASSERT_NE(layer_tree, nullptr);
++    EXPECT_EQ(SceneTrace(*layer_tree),
++              "scene 1x1\n"
++              "container\n"
++              "  picture 0 0\n"
++              "    op drawImage\n");
++  });
++  EXPECT_EQ(runtime_->image_callback_result, kFlutterSpiOk);
++  EXPECT_EQ(runtime_->image_callback_count, 1u);
++  EXPECT_EQ(runtime_->image_width, 3);
++  EXPECT_EQ(runtime_->image_height, 2);
++}
++
++TEST_F(SpiConformance, ImageDecodeRejectsGarbage) {
++  constexpr uint8_t kGarbage[] = {0x01, 0x02, 0x03, 0x04};
++  size_t callback_count = 0;
++  FlutterSpiResult result = kFlutterSpiInternalError;
++  StartShell();
++
++  PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++    result = runtime_->engine_api->image->image_decode(
++        runtime_->engine, kGarbage, sizeof(kGarbage), nullptr,
++        CountImageCallback, &callback_count);
++  });
++  PumpOneFrame(shell_.get());
++
++  EXPECT_EQ(result, kFlutterSpiInvalidArgument);
++  EXPECT_EQ(callback_count, 0u);
++}
++
+ TEST_F(SpiConformance, TextFrameRoundTrip) {
+   auto font = OpenFixtureAsMapping("Roboto-Regular.ttf");
+   ASSERT_NE(font, nullptr);
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc
+index f4cc7dd97cd..c891686e37f 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc
+@@ -16,12 +16,18 @@ SpiRuntimeBackendFactory::SpiRuntimeBackendFactory(
+                  offsetof(FlutterSpiRuntimeTable, destroy) +
+                      sizeof(void (*)(void*)) &&
+              table.start != nullptr && table.stop != nullptr &&
+-             table.destroy != nullptr) {
++             table.destroy != nullptr),
++      concurrent_message_loop_(fml::ConcurrentMessageLoop::Create()) {
+   if (!valid_) {
+     FML_LOG(ERROR) << "Runtime SPI table is missing required callbacks";
+   }
+ }
+ 
++std::shared_ptr<fml::ConcurrentTaskRunner>
++SpiRuntimeBackendFactory::GetConcurrentWorkerTaskRunner() const {
++  return concurrent_message_loop_->GetTaskRunner();
++}
++
+ SpiRuntimeBackendFactory::~SpiRuntimeBackendFactory() = default;
+ 
+ std::unique_ptr<RuntimeBackend> SpiRuntimeBackendFactory::Create(
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.h b/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.h
+index 7475c028a21..deb79dcd862 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.h
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.h
+@@ -5,6 +5,7 @@
+ #ifndef FLUTTER_RUNTIME_SPI_SPI_RUNTIME_BACKEND_FACTORY_H_
+ #define FLUTTER_RUNTIME_SPI_SPI_RUNTIME_BACKEND_FACTORY_H_
+ 
++#include "flutter/fml/concurrent_message_loop.h"
+ #include "flutter/runtime_spi/include/flutter_runtime_spi.h"
+ #include "flutter/runtime_spi/runtime_backend_factory.h"
+ 
+@@ -29,9 +30,13 @@ class SpiRuntimeBackendFactory final : public RuntimeBackendFactory {
+       const std::shared_future<impeller::RuntimeStageBackend>&
+           runtime_stage_backend) override;
+ 
++  std::shared_ptr<fml::ConcurrentTaskRunner>
++  GetConcurrentWorkerTaskRunner() const override;
++
+  private:
+   FlutterSpiRuntimeTable table_ = {};
+   bool valid_ = false;
++  std::shared_ptr<fml::ConcurrentMessageLoop> concurrent_message_loop_;
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
+index 6a425e2c5dc..ebdbed803c5 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
+@@ -3,12 +3,15 @@
+ // found in the LICENSE file.
+ 
+ #include "flutter/runtime_spi/spi_runtime_backend.h"
++#include "flutter/runtime_spi/spi_runtime_backend_factory.h"
+ 
+ #include <atomic>
+ #include <thread>
+ 
++#include "flutter/fml/concurrent_message_loop.h"
+ #include "flutter/fml/mapping.h"
+ #include "flutter/fml/message_loop.h"
++#include "flutter/fml/synchronization/waitable_event.h"
+ #include "flutter/lib/ui/semantics/semantics_node.h"
+ #include "flutter/lib/ui/text/font_collection.h"
+ #include "flutter/runtime/runtime_delegate.h"
+@@ -239,5 +242,27 @@ TEST_F(SpiRuntimeBackendTest, RespondTwiceIsInvalidHandle) {
+             kFlutterSpiInvalidHandle);
+ }
+ 
++TEST(SpiRuntimeBackendFactory, ProvidesConcurrentWorkers) {
++  auto* runtime = c_test_runtime_create();
++  auto factory = std::make_unique<SpiRuntimeBackendFactory>(
++      c_test_runtime_table(runtime));
++
++  auto runner = factory->GetConcurrentWorkerTaskRunner();
++  ASSERT_NE(runner, nullptr);
++
++  fml::AutoResetWaitableEvent task_latch;
++  const auto test_thread_id = std::this_thread::get_id();
++  std::thread::id worker_thread_id;
++  runner->PostTask([&] {
++    worker_thread_id = std::this_thread::get_id();
++    task_latch.Signal();
++  });
++
++  task_latch.Wait();
++
++  EXPECT_NE(worker_thread_id, test_thread_id);
++  c_test_runtime_free(runtime);
++}
++
+ }  // namespace
+ }  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.c b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+index b26ebb0dcd5..52d35ceb6cb 100644
+--- a/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+@@ -70,6 +70,28 @@ static void test_runtime_submit_drawn_scene(
+ static void test_runtime_submit_text_scene(
+     CTestRuntime* runtime,
+     const FlutterSpiFrameInfo* frame_info);
++static void test_runtime_submit_image_scene(
++    CTestRuntime* runtime,
++    const FlutterSpiFrameInfo* frame_info);
++
++static void test_runtime_image_callback(void* user_data,
++                                        FlutterSpiResult result,
++                                        FlutterSpiImage* image) {
++  CTestRuntime* runtime = (CTestRuntime*)user_data;
++
++  runtime->image_callback_count++;
++  runtime->image_callback_result = result;
++  if (image != NULL && result == kFlutterSpiOk && runtime->engine_api != NULL &&
++      runtime->engine_api->image != NULL &&
++      runtime->engine_api->image->image_get_size(image, &runtime->image_width,
++                                                 &runtime->image_height) ==
++          kFlutterSpiOk) {
++    runtime->image = image;
++  }
++  if (runtime->engine_api != NULL && runtime->engine != NULL) {
++    runtime->engine_api->request_frame(runtime->engine);
++  }
++}
+ 
+ static FlutterSpiResult test_runtime_start(void* user_data,
+                                            const FlutterSpiEngineApi* api,
+@@ -122,12 +144,11 @@ static void test_runtime_begin_frame(void* user_data,
+     runtime->last_frame_info = *frame_info;
+     runtime->has_last_frame_info = true;
+   }
+-  if ((!runtime->submit_on_begin_frame &&
+-       !runtime->draw_scene_on_begin_frame &&
+-       !runtime->draw_text_on_begin_frame) ||
+-      frame_info == NULL ||
+-      !runtime->has_last_view_metrics || runtime->engine_api == NULL ||
+-      runtime->engine == NULL) {
++  if ((!runtime->submit_on_begin_frame && !runtime->draw_scene_on_begin_frame &&
++       !runtime->draw_text_on_begin_frame &&
++       !runtime->draw_image_on_begin_frame) ||
++      frame_info == NULL || !runtime->has_last_view_metrics ||
++      runtime->engine_api == NULL || runtime->engine == NULL) {
+     return;
+   }
+   if (runtime->draw_text_on_begin_frame) {
+@@ -138,11 +159,27 @@ static void test_runtime_begin_frame(void* user_data,
+     test_runtime_submit_drawn_scene(runtime, frame_info);
+     return;
+   }
++  if (runtime->draw_image_on_begin_frame) {
++    if (!runtime->image_decode_requested) {
++      const FlutterSpiImageApi* api = runtime->engine_api->image;
++      runtime->image_decode_requested = true;
++      runtime->image_callback_result =
++          api == NULL
++              ? kFlutterSpiInternalError
++              : api->image_decode(runtime->engine, runtime->draw_image_png_data,
++                                  runtime->draw_image_png_size, NULL,
++                                  test_runtime_image_callback, runtime);
++      return;
++    }
++    if (runtime->image != NULL) {
++      test_runtime_submit_image_scene(runtime, frame_info);
++    }
++    return;
++  }
+   if (runtime->engine_api->scene_create_empty(
+-          runtime->engine,
+-          (int64_t)runtime->last_view_metrics.physical_width,
+-          (int64_t)runtime->last_view_metrics.physical_height, &scene) !=
+-      kFlutterSpiOk) {
++          runtime->engine, (int64_t)runtime->last_view_metrics.physical_width,
++          (int64_t)runtime->last_view_metrics.physical_height,
++          &scene) != kFlutterSpiOk) {
+     return;
+   }
+   runtime->engine_api->submit_frame(
+@@ -276,8 +313,8 @@ static bool test_runtime_load_text_font(CTestRuntime* runtime) {
+ 
+   return api != NULL &&
+          api->font_load(runtime->engine, runtime->draw_text_font_data,
+-                        runtime->draw_text_font_size, "Roboto") ==
+-             kFlutterSpiOk;
++                        runtime->draw_text_font_size,
++                        "Roboto") == kFlutterSpiOk;
+ }
+ 
+ static bool test_runtime_build_text_paragraph(
+@@ -353,7 +390,8 @@ static void test_runtime_submit_text_scene(
+       api->scene_builder_create(runtime->engine, &builder) != kFlutterSpiOk ||
+       api->scene_add_picture(builder, 0.0f, 0.0f, picture, false, false) !=
+           kFlutterSpiOk ||
+-      api->scene_build(builder, (int64_t)runtime->last_view_metrics.physical_width,
++      api->scene_build(builder,
++                       (int64_t)runtime->last_view_metrics.physical_width,
+                        (int64_t)runtime->last_view_metrics.physical_height,
+                        &scene) != kFlutterSpiOk) {
+     if (builder != NULL) {
+@@ -373,16 +411,15 @@ static void test_runtime_submit_text_scene(
+ }
+ 
+ static bool create_scene_picture(const FlutterSpiSceneApi* api,
+-                                FlutterSpiEngine* engine,
+-                                FlutterSpiPicture** out_picture) {
++                                 FlutterSpiEngine* engine,
++                                 FlutterSpiPicture** out_picture) {
+   FlutterSpiPictureRecorder* recorder = NULL;
+   const FlutterSpiRect rect = {
+       .left = 1.0f, .top = 2.0f, .right = 3.0f, .bottom = 4.0f};
+   const FlutterSpiPoint circle_center = {.x = 5.0f, .y = 6.0f};
+ 
+   if (api->recorder_create(engine, NULL, &recorder) != kFlutterSpiOk ||
+-      api->canvas_draw_rect(recorder, &rect, &k_scene_paint) !=
+-          kFlutterSpiOk ||
++      api->canvas_draw_rect(recorder, &rect, &k_scene_paint) != kFlutterSpiOk ||
+       api->canvas_draw_circle(recorder, &circle_center, 2.0f, &k_scene_paint) !=
+           kFlutterSpiOk ||
+       api->recorder_finish(recorder, out_picture) != kFlutterSpiOk) {
+@@ -394,15 +431,15 @@ static bool create_scene_picture(const FlutterSpiSceneApi* api,
+   return true;
+ }
+ 
+-static void test_runtime_submit_drawn_scene(CTestRuntime* runtime,
+-                                            const FlutterSpiFrameInfo* frame_info) {
++static void test_runtime_submit_drawn_scene(
++    CTestRuntime* runtime,
++    const FlutterSpiFrameInfo* frame_info) {
+   const FlutterSpiSceneApi* api = runtime->engine_api->scene;
+   FlutterSpiPicture* picture = NULL;
+   FlutterSpiSceneBuilder* builder = NULL;
+   FlutterSpiScene* scene = NULL;
+ 
+-  if (api == NULL ||
+-      !create_scene_picture(api, runtime->engine, &picture) ||
++  if (api == NULL || !create_scene_picture(api, runtime->engine, &picture) ||
+       api->scene_builder_create(runtime->engine, &builder) != kFlutterSpiOk ||
+       api->scene_push_offset(builder, 3.0f, 4.0f) != kFlutterSpiOk ||
+       api->scene_push_opacity(builder, 128, 5.0f, 6.0f) != kFlutterSpiOk ||
+@@ -428,8 +465,69 @@ static void test_runtime_submit_drawn_scene(CTestRuntime* runtime,
+       runtime->last_view_metrics.device_pixel_ratio);
+ }
+ 
++static bool test_runtime_create_image_picture(CTestRuntime* runtime,
++                                              FlutterSpiPicture** out_picture) {
++  const FlutterSpiSceneApi* scene_api = runtime->engine_api->scene;
++  const FlutterSpiImageApi* image_api = runtime->engine_api->image;
++  FlutterSpiPictureRecorder* recorder = NULL;
++  const FlutterSpiPoint offset = {.x = 0.0f, .y = 0.0f};
++
++  if (scene_api == NULL || image_api == NULL ||
++      scene_api->recorder_create(runtime->engine, NULL, &recorder) !=
++          kFlutterSpiOk ||
++      image_api->canvas_draw_image(recorder, runtime->image, offset,
++                                   kFlutterSpiFilterQualityNone,
++                                   NULL) != kFlutterSpiOk ||
++      scene_api->recorder_finish(recorder, out_picture) != kFlutterSpiOk) {
++    if (recorder != NULL) {
++      scene_api->recorder_release(recorder);
++    }
++    return false;
++  }
++  return true;
++}
++
++static void test_runtime_submit_image_scene(
++    CTestRuntime* runtime,
++    const FlutterSpiFrameInfo* frame_info) {
++  const FlutterSpiSceneApi* scene_api = runtime->engine_api->scene;
++  FlutterSpiPicture* picture = NULL;
++  FlutterSpiSceneBuilder* builder = NULL;
++  FlutterSpiScene* scene = NULL;
++
++  if (!test_runtime_create_image_picture(runtime, &picture) ||
++      scene_api->scene_builder_create(runtime->engine, &builder) !=
++          kFlutterSpiOk ||
++      scene_api->scene_add_picture(builder, 0.0f, 0.0f, picture, false,
++                                   false) != kFlutterSpiOk ||
++      scene_api->scene_build(
++          builder, (int64_t)runtime->last_view_metrics.physical_width,
++          (int64_t)runtime->last_view_metrics.physical_height,
++          &scene) != kFlutterSpiOk) {
++    if (builder != NULL) {
++      scene_api->scene_builder_release(builder);
++    }
++    if (picture != NULL) {
++      scene_api->picture_release(picture);
++    }
++    return;
++  }
++
++  scene_api->picture_release(picture);
++  runtime->engine_api->image->image_release(runtime->image);
++  runtime->image = NULL;
++  runtime->engine_api->submit_frame(
++      runtime->engine, runtime->last_view_metrics.view_id,
++      frame_info->frame_token, scene,
++      runtime->last_view_metrics.device_pixel_ratio);
++}
++
+ CTestRuntime* c_test_runtime_create(void) {
+-  return (CTestRuntime*)calloc(1, sizeof(CTestRuntime));
++  CTestRuntime* runtime = (CTestRuntime*)calloc(1, sizeof(CTestRuntime));
++  if (runtime != NULL) {
++    runtime->image_callback_result = kFlutterSpiInternalError;
++  }
++  return runtime;
+ }
+ 
+ void c_test_runtime_free(CTestRuntime* runtime) {
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.h b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+index 0b0d0b34ea9..6c2b60a4ae4 100644
+--- a/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+@@ -48,6 +48,15 @@ typedef struct CTestRuntime {
+   bool draw_text_on_begin_frame;
+   const uint8_t* draw_text_font_data;
+   size_t draw_text_font_size;
++  bool draw_image_on_begin_frame;
++  const uint8_t* draw_image_png_data;
++  size_t draw_image_png_size;
++  FlutterSpiResult image_callback_result;
++  size_t image_callback_count;
++  int32_t image_width;
++  int32_t image_height;
++  bool image_decode_requested;
++  FlutterSpiImage* image;
+   bool fail_start;
+   bool key_event_handled;
+ } CTestRuntime;
+diff --git a/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc b/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
+index 6a81210bae9..23fd4c5afdc 100644
+--- a/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
++++ b/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
+@@ -68,4 +68,9 @@ DartVM* DartRuntimeBackendFactory::GetDartVM() const {
+   return const_cast<DartVM*>(vm_.get());
+ }
+ 
++std::shared_ptr<fml::ConcurrentTaskRunner>
++DartRuntimeBackendFactory::GetConcurrentWorkerTaskRunner() const {
++  return vm_->GetConcurrentWorkerTaskRunner();
++}
++
+ }  // namespace flutter
+diff --git a/engine/src/flutter/shell/common/dart_runtime_backend_factory.h b/engine/src/flutter/shell/common/dart_runtime_backend_factory.h
+index 1e49d889c2c..5fe68e645f6 100644
+--- a/engine/src/flutter/shell/common/dart_runtime_backend_factory.h
++++ b/engine/src/flutter/shell/common/dart_runtime_backend_factory.h
+@@ -32,6 +32,9 @@ class DartRuntimeBackendFactory final : public RuntimeBackendFactory {
+ 
+   DartVM* GetDartVM() const override;
+ 
++  std::shared_ptr<fml::ConcurrentTaskRunner>
++  GetConcurrentWorkerTaskRunner() const override;
++
+  private:
+   DartVMRef vm_;
+   fml::RefPtr<const DartSnapshot> isolate_snapshot_;
+diff --git a/engine/src/flutter/shell/common/engine.cc b/engine/src/flutter/shell/common/engine.cc
+index 74597dcd6e7..7e9c5c9a5df 100644
+--- a/engine/src/flutter/shell/common/engine.cc
++++ b/engine/src/flutter/shell/common/engine.cc
+@@ -143,10 +143,7 @@ Engine::Engine(Delegate& delegate,
+                const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch,
+                std::shared_ptr<RuntimeBackendFactory> runtime_backend_factory)
+     : Engine(delegate,
+-             runtime_backend_factory->GetDartVM()
+-                 ? runtime_backend_factory->GetDartVM()
+-                       ->GetConcurrentWorkerTaskRunner()
+-                 : nullptr,
++             runtime_backend_factory->GetConcurrentWorkerTaskRunner(),
+              task_runners,
+              settings,
+              std::move(animator),
+diff --git a/engine/src/flutter/shell/common/shell_unittests.cc b/engine/src/flutter/shell/common/shell_unittests.cc
+index 50d23d89726..1749b3d1f27 100644
+--- a/engine/src/flutter/shell/common/shell_unittests.cc
++++ b/engine/src/flutter/shell/common/shell_unittests.cc
+@@ -285,6 +285,11 @@ class MockPlatformMessageResponse : public PlatformMessageResponse {
+ 
+ class FakeRuntimeBackendFactory final : public RuntimeBackendFactory {
+  public:
++  std::shared_ptr<fml::ConcurrentTaskRunner>
++  GetConcurrentWorkerTaskRunner() const override {
++    return nullptr;
++  }
++
+   std::unique_ptr<RuntimeBackend> Create(
+       RuntimeDelegate& runtime_delegate,
+       const TaskRunners& task_runners,
