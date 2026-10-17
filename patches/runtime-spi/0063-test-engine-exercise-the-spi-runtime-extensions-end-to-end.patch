@@ -1,0 +1,258 @@
+# Why: prove through a C runtime that the engine flushes microtasks after
+# pointer events, hands deferred library mappings to the runtime without
+# releasing them, and publishes the root isolate service ID to the platform on
+# run.
+diff --git a/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+index 8fa7cdf8cac..ab077e42f4c 100644
+--- a/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+@@ -128,6 +128,9 @@ class ReplyingPlatformMessageHandler final : public PlatformMessageHandler {
+  public:
+   void HandlePlatformMessage(
+       std::unique_ptr<PlatformMessage> message) override {
++    channel_ = message->channel();
++    payload_.assign(message->data().GetMapping(),
++                    message->data().GetMapping() + message->data().GetSize());
+     if (message->response()) {
+       message->response()->Complete(std::make_unique<fml::MallocMapping>(
+           fml::MallocMapping::Copy("reply", 5)));
+@@ -149,10 +152,14 @@ class ReplyingPlatformMessageHandler final : public PlatformMessageHandler {
+   void Wait() { latch_.Wait(); }
+ 
+   bool handled() const { return handled_; }
++  const std::string& channel() const { return channel_; }
++  const std::vector<uint8_t>& payload() const { return payload_; }
+ 
+  private:
+   fml::AutoResetWaitableEvent latch_;
+   bool handled_ = false;
++  std::string channel_;
++  std::vector<uint8_t> payload_;
+ };
+ 
+ class SemanticsCapture final {
+@@ -650,6 +657,72 @@ TEST_F(SpiConformance, PointerEventsReachRuntime) {
+   EXPECT_EQ(runtime_->pointer_events[0].physical_y, 29.0);
+ }
+ 
++TEST_F(SpiConformance, PointerEventFlushesRuntimeMicrotasks) {
++  StartShell();
++  auto packet = std::make_unique<PointerDataPacket>(1);
++  packet->SetPointerData(0, PointerData{
++                                .change = PointerData::Change::kDown,
++                                .view_id = kImplicitViewId,
++                            });
++
++  DispatchPointerData(shell_.get(), std::move(packet));
++  FlushUi();
++
++  EXPECT_EQ(runtime_->flush_microtask_count, 1u);
++}
++
++TEST_F(SpiConformance, DeferredLibraryReachesRuntime) {
++  constexpr uint8_t kSnapshotData[] = {1, 2, 3};
++  constexpr uint8_t kSnapshotInstructions[] = {4, 5};
++  StartShell();
++
++  auto snapshot_data = std::make_unique<fml::MallocMapping>(
++      fml::MallocMapping::Copy(kSnapshotData, sizeof(kSnapshotData)));
++  auto snapshot_instructions = std::make_unique<fml::MallocMapping>(
++      fml::MallocMapping::Copy(kSnapshotInstructions,
++                               sizeof(kSnapshotInstructions)));
++  PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++    shell_->GetEngine()->LoadDartDeferredLibrary(
++        42, std::move(snapshot_data), std::move(snapshot_instructions));
++  });
++  FlushUi();
++
++  ASSERT_TRUE(runtime_->has_deferred_library);
++  EXPECT_EQ(runtime_->deferred_library_id, 42);
++  ASSERT_EQ(runtime_->deferred_snapshot_data.size, sizeof(kSnapshotData));
++  EXPECT_EQ(std::memcmp(runtime_->deferred_snapshot_data.data, kSnapshotData,
++                        sizeof(kSnapshotData)),
++            0);
++  ASSERT_EQ(runtime_->deferred_snapshot_instructions.size,
++            sizeof(kSnapshotInstructions));
++  EXPECT_EQ(std::memcmp(runtime_->deferred_snapshot_instructions.data,
++                        kSnapshotInstructions,
++                        sizeof(kSnapshotInstructions)),
++            0);
++
++  ASSERT_NE(runtime_->deferred_snapshot_data.release, nullptr);
++  ASSERT_NE(runtime_->deferred_snapshot_instructions.release, nullptr);
++  runtime_->deferred_snapshot_data.release(
++      runtime_->deferred_snapshot_data.release_user_data);
++  runtime_->deferred_snapshot_instructions.release(
++      runtime_->deferred_snapshot_instructions.release_user_data);
++}
++
++TEST_F(SpiConformance, ServiceIdIsPublishedOnRun) {
++  constexpr char kServiceId[] = "test-service-id";
++  runtime_->root_isolate_service_id = kServiceId;
++
++  auto handler = std::make_shared<ReplyingPlatformMessageHandler>();
++  StartShellWithHandler(handler);
++  handler->Wait();
++
++  ASSERT_TRUE(handler->handled());
++  EXPECT_EQ(handler->channel(), "flutter/isolate");
++  EXPECT_EQ(
++      handler->payload(),
++      std::vector<uint8_t>(kServiceId, kServiceId + sizeof(kServiceId) - 1));
++}
++
+ TEST_F(SpiConformance, KeyEventReachesRuntime) {
+   runtime_->key_event_handled = true;
+   StartShell();
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.c b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+index 87fdaf72ebf..d719e416748 100644
+--- a/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+@@ -35,6 +35,114 @@ static uint8_t* copy_payload(const uint8_t* data, size_t size) {
+   return copy;
+ }
+ 
++static void test_runtime_free_string(void* user_data, char* string) {
++  (void)user_data;
++  free(string);
++}
++
++static int64_t test_runtime_get_main_port(void* user_data) {
++  (void)user_data;
++  return 0;
++}
++
++static bool test_runtime_get_root_isolate_service_id(void* user_data,
++                                                     char** out_utf8) {
++  CTestRuntime* runtime = (CTestRuntime*)user_data;
++
++  if (out_utf8 == NULL) {
++    return false;
++  }
++  *out_utf8 = copy_string(runtime->root_isolate_service_id);
++  return *out_utf8 != NULL;
++}
++
++static bool test_runtime_get_root_isolate_return_code(void* user_data,
++                                                      uint32_t* out_code) {
++  (void)user_data;
++  (void)out_code;
++  return false;
++}
++
++static char* test_runtime_get_isolate_name(void* user_data) {
++  (void)user_data;
++  return NULL;
++}
++
++static int32_t test_runtime_get_last_error(void* user_data) {
++  (void)user_data;
++  return kFlutterSpiRuntimeErrorNone;
++}
++
++static bool test_runtime_has_live_ports(void* user_data) {
++  (void)user_data;
++  return false;
++}
++
++static bool test_runtime_has_pending_microtasks(void* user_data) {
++  (void)user_data;
++  return false;
++}
++
++static void test_runtime_flush_microtask_queue(void* user_data) {
++  CTestRuntime* runtime = (CTestRuntime*)user_data;
++
++  runtime->flush_microtask_count++;
++}
++
++static void test_runtime_load_deferred_library(
++    void* user_data,
++    int64_t loading_unit_id,
++    FlutterSpiMapping snapshot_data,
++    FlutterSpiMapping snapshot_instructions) {
++  CTestRuntime* runtime = (CTestRuntime*)user_data;
++
++  runtime->has_deferred_library = true;
++  runtime->deferred_library_id = loading_unit_id;
++  runtime->deferred_snapshot_data = snapshot_data;
++  runtime->deferred_snapshot_instructions = snapshot_instructions;
++}
++
++static void test_runtime_load_deferred_library_error(
++    void* user_data,
++    int64_t loading_unit_id,
++    const char* error_message,
++    bool transient) {
++  (void)user_data;
++  (void)loading_unit_id;
++  (void)error_message;
++  (void)transient;
++}
++
++static void test_runtime_shutdown_platform_isolates(void* user_data) {
++  (void)user_data;
++}
++
++static void test_runtime_set_root_isolate_owner_to_current_thread(
++    void* user_data) {
++  (void)user_data;
++}
++
++static void test_runtime_initialize_extensions(CTestRuntime* runtime) {
++  runtime->extensions = (FlutterSpiRuntimeExtensions){
++      .struct_size = sizeof(FlutterSpiRuntimeExtensions),
++      .user_data = runtime,
++      .free_string = test_runtime_free_string,
++      .get_main_port = test_runtime_get_main_port,
++      .get_root_isolate_service_id = test_runtime_get_root_isolate_service_id,
++      .get_root_isolate_return_code = test_runtime_get_root_isolate_return_code,
++      .get_isolate_name = test_runtime_get_isolate_name,
++      .get_last_error = test_runtime_get_last_error,
++      .has_live_ports = test_runtime_has_live_ports,
++      .has_pending_microtasks = test_runtime_has_pending_microtasks,
++      .flush_microtask_queue = test_runtime_flush_microtask_queue,
++      .load_deferred_library = test_runtime_load_deferred_library,
++      .load_deferred_library_error = test_runtime_load_deferred_library_error,
++      .shutdown_platform_isolates = test_runtime_shutdown_platform_isolates,
++      .set_root_isolate_owner_to_current_thread =
++          test_runtime_set_root_isolate_owner_to_current_thread,
++  };
++}
++
+ static void copy_view_metrics(CTestRuntime* runtime,
+                               const FlutterSpiViewMetrics* metrics) {
+   if (metrics == NULL) {
+@@ -1036,6 +1144,7 @@ CTestRuntime* c_test_runtime_create(void) {
+   if (runtime != NULL) {
+     runtime->image_callback_result = kFlutterSpiInternalError;
+     runtime->semantics_update_result = kFlutterSpiInternalError;
++    test_runtime_initialize_extensions(runtime);
+   }
+   return runtime;
+ }
+@@ -1081,5 +1190,6 @@ FlutterSpiRuntimeTable c_test_runtime_table(CTestRuntime* runtime) {
+   table.set_lifecycle_state = test_runtime_set_lifecycle_state;
+   table.view_focus = test_runtime_view_focus;
+   table.notify_idle = test_runtime_notify_idle;
++  table.extensions = &runtime->extensions;
+   return table;
+ }
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.h b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+index 8b50fcd6b4b..2ecc296955d 100644
+--- a/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+@@ -26,6 +26,13 @@ typedef struct CTestRuntime {
+   size_t set_lifecycle_state_count;
+   size_t view_focus_count;
+   size_t notify_idle_count;
++  size_t flush_microtask_count;
++  bool has_deferred_library;
++  int64_t deferred_library_id;
++  FlutterSpiMapping deferred_snapshot_data;
++  FlutterSpiMapping deferred_snapshot_instructions;
++  const char* root_isolate_service_id;
++  FlutterSpiRuntimeExtensions extensions;
+ 
+   FlutterSpiViewMetrics last_view_metrics;
+   bool has_last_view_metrics;
