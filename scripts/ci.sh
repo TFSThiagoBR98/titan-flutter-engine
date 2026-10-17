@@ -17,6 +17,8 @@ die() {
 
 repository_root=$(cd "$(dirname "$0")/.." && pwd -P)
 scripts_root="$repository_root/scripts"
+linux_debug_variants='x64-debug x64-musl-debug arm64-debug arm64-musl-debug arm-hard-debug arm-hard-musl-debug arm-softfp-debug arm-softfp-musl-debug riscv64-glibc-debug riscv64-musl-debug'
+linux_all_variants='x64-debug x64-musl-debug arm64-debug arm64-musl-debug arm-hard-debug arm-hard-musl-debug arm-softfp-debug arm-softfp-musl-debug riscv64-glibc-debug riscv64-musl-debug x64-profile x64-musl-profile arm64-profile arm64-musl-profile arm-hard-profile arm-hard-musl-profile arm-softfp-profile arm-softfp-musl-profile riscv64-glibc-profile riscv64-musl-profile x64-release x64-musl-release arm64-release arm64-musl-release arm-hard-release arm-hard-musl-release arm-softfp-release arm-softfp-musl-release riscv64-glibc-release riscv64-musl-release'
 
 run_deps() {
   local -a root_prefix=()
@@ -117,7 +119,7 @@ report_build_progress() {
 }
 
 run_build() {
-  local variants_text=${TITAN_VARIANTS:-x64-debug x64-musl-debug arm64-debug arm64-musl-debug arm-hard-debug arm-hard-musl-debug arm-softfp-debug arm-softfp-musl-debug riscv64-glibc-debug riscv64-musl-debug}
+  local variants_text=${TITAN_VARIANTS:-$linux_all_variants}
   local parallel=${TITAN_PARALLEL:-3}
   read -r -a variants <<<"$variants_text"
   local variant status=0
@@ -140,7 +142,7 @@ run_build() {
 
 run_probe() {
   local assets="$TITAN_WORK_DIR/probe-app/flutter_assets"
-  local variants_text=${TITAN_VARIANTS:-x64-debug x64-musl-debug arm64-debug arm64-musl-debug arm-hard-debug arm-hard-musl-debug arm-softfp-debug arm-softfp-musl-debug riscv64-glibc-debug riscv64-musl-debug}
+  local variants_text=${TITAN_VARIANTS:-$linux_debug_variants}
   local expected_hash_file="$repository_root/tests/qemu/expected-frame-hash"
   [[ -f "$expected_hash_file" ]] || die "expected probe hash is missing: $expected_hash_file"
   local expected_hash
@@ -166,20 +168,29 @@ run_probe() {
 archive_name_for_variant() {
   (($# == 2)) || return 2
   local flutter_commit=$1 variant=$2
-  local suffix
-  case "$variant" in
-    x64-debug) suffix= ;;
-    x64-musl-debug) suffix=-debug-x64-musl ;;
-    arm64-debug) suffix=-debug-arm64 ;;
-    arm64-musl-debug) suffix=-debug-arm64-musl ;;
-    arm-hard-debug) suffix=-debug-arm-hard ;;
-    arm-hard-musl-debug) suffix=-debug-arm-hard-musl ;;
-    arm-softfp-debug) suffix=-debug-arm-softfp ;;
-    arm-softfp-musl-debug) suffix=-debug-arm-softfp-musl ;;
-    riscv64-glibc-debug) suffix=-debug-riscv64 ;;
-    riscv64-musl-debug) suffix=-debug-riscv64-musl ;;
+  local mode=${variant##*-}
+  local target=${variant%-$mode}
+  local cpu libc=glibc arm_abi= suffix
+  case "$target" in
+    x64) cpu=x64 ;;
+    x64-musl) cpu=x64; libc=musl ;;
+    arm64) cpu=arm64 ;;
+    arm64-musl) cpu=arm64; libc=musl ;;
+    arm-hard) cpu=arm; arm_abi=hard ;;
+    arm-hard-musl) cpu=arm; arm_abi=hard; libc=musl ;;
+    arm-softfp) cpu=arm; arm_abi=softfp ;;
+    arm-softfp-musl) cpu=arm; arm_abi=softfp; libc=musl ;;
+    riscv64-glibc) cpu=riscv64 ;;
+    riscv64-musl) cpu=riscv64; libc=musl ;;
     *) return 1 ;;
   esac
+  if [[ "$mode" == debug && "$cpu" == x64 && "$libc" == glibc ]]; then
+    suffix=
+  else
+    suffix="-$mode-$cpu"
+    [[ -n "$arm_abi" ]] && suffix+="-$arm_abi"
+  fi
+  [[ "$libc" == musl ]] && suffix+="-musl"
   printf 'flutter-engine-%s%s.zip\n' "$flutter_commit" "$suffix"
 }
 
@@ -188,7 +199,7 @@ run_package() {
   local flutter_commit
   flutter_commit=$(sed -n 's/^flutter_commit=//p' "$repository_root/flutter.lock")
   [[ -n "$flutter_commit" ]] || die "flutter.lock is missing flutter_commit"
-  local variants_text=${TITAN_VARIANTS:-x64-debug x64-musl-debug arm64-debug arm64-musl-debug arm-hard-debug arm-hard-musl-debug arm-softfp-debug arm-softfp-musl-debug riscv64-glibc-debug riscv64-musl-debug}
+  local variants_text=${TITAN_VARIANTS:-$linux_all_variants}
   local variant archive
   local -a variants archives archive_names
   mkdir -p "$dist"

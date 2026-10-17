@@ -447,6 +447,7 @@ print_out_name=0
 cpu=x64
 libc=glibc
 arm_abi=none
+mode=debug
 previous=
 for argument in "$@"; do
   case "$previous" in
@@ -454,9 +455,10 @@ for argument in "$@"; do
     --cpu) cpu=$argument ;;
     --libc) libc=$argument ;;
     --arm-float-abi) arm_abi=$argument ;;
+    --mode) mode=$argument ;;
   esac
   case "$argument" in
-    --out-name|--cpu|--libc|--arm-float-abi) previous=$argument ;;
+    --out-name|--cpu|--libc|--arm-float-abi|--mode) previous=$argument ;;
     --print-out-name) print_out_name=1; previous= ;;
     *) previous= ;;
   esac
@@ -465,7 +467,7 @@ if ((print_out_name)); then
   if [[ -n "$out_name" ]]; then
     printf '%s\n' "$out_name"
   else
-    printf '%s-%s-%s\n' "$cpu" "$arm_abi" "$libc"
+    printf '%s-%s-%s-%s\n' "$mode" "$cpu" "$arm_abi" "$libc"
   fi
   exit 0
 fi
@@ -488,6 +490,78 @@ assert_log_contains "$matrix_log" '--mode release --out-name sdk_host_release --
 assert_log_contains "$matrix_log" '--mode debug --gtk-shell --enable-fontconfig --out-name sdk_desktop_debug'
 assert_log_contains "$matrix_log" '--mode profile --gtk-shell --enable-fontconfig --out-name sdk_desktop_profile'
 assert_log_contains "$matrix_log" '--mode release --gtk-shell --enable-fontconfig --out-name sdk_desktop_release'
+
+matrix_log="$temporary_directory/all-linux-modes.log"
+matrix_variants=(
+  x64-debug x64-musl-debug arm64-debug arm64-musl-debug arm-hard-debug
+  arm-hard-musl-debug arm-softfp-debug arm-softfp-musl-debug
+  riscv64-glibc-debug riscv64-musl-debug
+  x64-profile x64-musl-profile arm64-profile arm64-musl-profile arm-hard-profile
+  arm-hard-musl-profile arm-softfp-profile arm-softfp-musl-profile
+  riscv64-glibc-profile riscv64-musl-profile
+  x64-release x64-musl-release arm64-release arm64-musl-release arm-hard-release
+  arm-hard-musl-release arm-softfp-release arm-softfp-musl-release
+  riscv64-glibc-release riscv64-musl-release
+)
+TITAN_WORK_DIR="$temporary_directory/all-linux-modes-work" \
+TITAN_MATRIX_ARGS_LOG="$matrix_log" \
+TITAN_CPU_SCOPE=0 \
+  bash "$matrix_repository/scripts/build-matrix.sh" --parallel 3 "${matrix_variants[@]}"
+[[ "$(wc -l < "$matrix_log")" -eq 30 ]] || {
+  printf 'expected 30 Linux target variants\n' >&2
+  exit 1
+}
+[[ "$(grep -c -- '--mode debug ' "$matrix_log")" -eq 10 ]] || {
+  printf 'expected 10 Linux debug variants\n' >&2
+  exit 1
+}
+[[ "$(grep -c -- '--mode profile ' "$matrix_log")" -eq 10 ]] || {
+  printf 'expected 10 Linux profile variants\n' >&2
+  exit 1
+}
+[[ "$(grep -c -- '--mode release ' "$matrix_log")" -eq 10 ]] || {
+  printf 'expected 10 Linux release variants\n' >&2
+  exit 1
+}
+assert_log_contains "$matrix_log" '--mode profile --cpu arm --arm-float-abi softfp --libc musl --target-sysroot '
+assert_log_contains "$matrix_log" '--mode release --cpu riscv64 --libc musl --target-sysroot '
+
+matrix_log="$temporary_directory/desktop-matrix.log"
+desktop_variants=(
+  sdk-desktop-debug sdk-desktop-profile sdk-desktop-release
+  sdk-desktop-x64-musl-debug sdk-desktop-x64-musl-profile sdk-desktop-x64-musl-release
+  sdk-desktop-arm64-debug sdk-desktop-arm64-profile sdk-desktop-arm64-release
+  sdk-desktop-arm64-musl-debug sdk-desktop-arm64-musl-profile sdk-desktop-arm64-musl-release
+  sdk-desktop-arm-hard-debug sdk-desktop-arm-hard-profile sdk-desktop-arm-hard-release
+  sdk-desktop-arm-hard-musl-debug sdk-desktop-arm-hard-musl-profile sdk-desktop-arm-hard-musl-release
+  sdk-desktop-arm-softfp-debug sdk-desktop-arm-softfp-profile sdk-desktop-arm-softfp-release
+  sdk-desktop-arm-softfp-musl-debug sdk-desktop-arm-softfp-musl-profile sdk-desktop-arm-softfp-musl-release
+  sdk-desktop-riscv64-glibc-debug sdk-desktop-riscv64-glibc-profile sdk-desktop-riscv64-glibc-release
+  sdk-desktop-riscv64-musl-debug sdk-desktop-riscv64-musl-profile sdk-desktop-riscv64-musl-release
+)
+TITAN_WORK_DIR="$temporary_directory/desktop-matrix-work" \
+TITAN_MATRIX_ARGS_LOG="$matrix_log" \
+TITAN_CPU_SCOPE=0 \
+  bash "$matrix_repository/scripts/build-matrix.sh" --parallel 3 "${desktop_variants[@]}"
+[[ "$(wc -l < "$matrix_log")" -eq 30 ]] || {
+  printf 'expected 30 GTK desktop variants\n' >&2
+  exit 1
+}
+assert_log_contains "$matrix_log" '--mode profile --gtk-shell --enable-fontconfig --cpu arm64 --target-sysroot '
+assert_log_contains "$matrix_log" '--mode release --gtk-shell --enable-fontconfig --cpu riscv64 --libc musl --target-sysroot '
+assert_log_contains "$matrix_log" '--mode debug --gtk-shell --enable-fontconfig --cpu arm64 --target-sysroot '
+assert_log_contains "$matrix_log" '--out-name sdk_desktop_arm64_debug'
+
+matrix_log="$temporary_directory/arm64-host-matrix.log"
+TITAN_WORK_DIR="$temporary_directory/arm64-host-matrix-work" \
+TITAN_MATRIX_ARGS_LOG="$matrix_log" \
+TITAN_CPU_SCOPE=0 \
+  bash "$matrix_repository/scripts/build-matrix.sh" --parallel 1 sdk-host-arm64-debug
+assert_log_contains "$matrix_log" '--mode debug --cpu arm64 --out-name sdk_host_arm64_debug --ninja-target flutter/build/archives:artifacts'
+assert_log_contains "$matrix_log" '--ninja-target flutter/tools/font_subset'
+assert_log_contains "$matrix_log" '--ninja-target flutter/build/archives:embedder'
+assert_log_contains "$matrix_log" '--ninja-target flutter/impeller/toolkit/interop:sdk'
+assert_log_contains "$matrix_log" '--ninja-target flutter/build/archives:dart_sdk_archive'
 
 matrix_log="$temporary_directory/platform-matrix.log"
 matrix_variants=(

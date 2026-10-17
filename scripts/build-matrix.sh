@@ -14,10 +14,8 @@ usage() {
   cat <<'EOF'
 Usage: scripts/build-matrix.sh [--parallel N] [--zip] [variant ...]
 
-Build the selected engine variants concurrently. Without variants, build:
-  x64-debug x64-musl-debug arm64-debug arm64-musl-debug arm-hard-debug
-  arm-hard-musl-debug arm-softfp-debug arm-softfp-musl-debug
-  riscv32-glibc-debug riscv32-musl-debug riscv64-glibc-debug riscv64-musl-debug
+Build the selected engine variants concurrently. Without variants, build the
+10 Linux targets in debug, profile, and release modes.
 
 Options:
   --parallel N  Maximum number of simultaneous builds (default: 3)
@@ -70,39 +68,64 @@ build_engine="$repository_root/scripts/build-engine.sh"
 jobs=$TITAN_JOBS
 load=$TITAN_JOBS
 
-declare -A variant_specs=(
-  [x64-debug]='--mode debug --cpu x64'
-  [x64-musl-debug]="--mode debug --cpu x64 --libc musl --target-sysroot $work_root/sysroots/titan_x64_musl"
-  [arm64-debug]="--mode debug --cpu arm64 --target-sysroot $work_root/sysroots/titan_arm64_glibc"
-  [arm64-musl-debug]="--mode debug --cpu arm64 --libc musl --target-sysroot $work_root/sysroots/titan_arm64_musl"
-  [arm-hard-debug]="--mode debug --cpu arm --arm-float-abi hard --target-sysroot $work_root/sysroots/titan_armv7a_hf"
-  [arm-hard-musl-debug]="--mode debug --cpu arm --arm-float-abi hard --libc musl --target-sysroot $work_root/sysroots/titan_armv7a_hf_musl"
-  [arm-softfp-debug]="--mode debug --cpu arm --arm-float-abi softfp --target-sysroot $work_root/sysroots/titan_armv7a_softfp"
-  [arm-softfp-musl-debug]="--mode debug --cpu arm --arm-float-abi softfp --libc musl --target-sysroot $work_root/sysroots/titan_armv7a_softfp_musl"
-  [riscv32-glibc-debug]="--mode debug --cpu riscv32 --target-sysroot $work_root/sysroots/titan_riscv32_glibc"
-  [riscv32-musl-debug]="--mode debug --cpu riscv32 --libc musl --target-sysroot $work_root/sysroots/titan_riscv32_musl"
-  [riscv64-glibc-debug]="--mode debug --cpu riscv64 --target-sysroot $work_root/sysroots/titan_riscv64_glibc"
-  [riscv64-musl-debug]="--mode debug --cpu riscv64 --libc musl --target-sysroot $work_root/sysroots/titan_riscv64_musl"
-  [sdk-host-debug]='--mode debug --out-name sdk_host_debug --ninja-target flutter/build/archives:artifacts --ninja-target flutter/build/archives:flutter_patched_sdk --ninja-target flutter/build/archives:dart_sdk_archive --ninja-target flutter/build/archives:embedder --ninja-target flutter/tools/font_subset --ninja-target flutter/impeller/toolkit/interop:sdk --ninja-target flutter/sky/dist:zip_old_location --ninja-target flutter/lib/gpu/dist:zip_old_location'
-  [sdk-host-release]='--mode release --out-name sdk_host_release --ninja-target flutter/build/archives:flutter_patched_sdk'
-  [sdk-desktop-debug]='--mode debug --gtk-shell --enable-fontconfig --out-name sdk_desktop_debug --ninja-target flutter/shell/platform/linux:flutter_gtk'
-  [sdk-desktop-profile]='--mode profile --gtk-shell --enable-fontconfig --out-name sdk_desktop_profile --ninja-target flutter/shell/platform/linux:flutter_gtk'
-  [sdk-desktop-release]='--mode release --gtk-shell --enable-fontconfig --out-name sdk_desktop_release --ninja-target flutter/shell/platform/linux:flutter_gtk'
+declare -A target_specs=(
+  [x64]='--cpu x64'
+  [x64-musl]="--cpu x64 --libc musl --target-sysroot $work_root/sysroots/titan_x64_musl"
+  [arm64]="--cpu arm64 --target-sysroot $work_root/sysroots/titan_arm64_glibc"
+  [arm64-musl]="--cpu arm64 --libc musl --target-sysroot $work_root/sysroots/titan_arm64_musl"
+  [arm-hard]="--cpu arm --arm-float-abi hard --target-sysroot $work_root/sysroots/titan_armv7a_hf"
+  [arm-hard-musl]="--cpu arm --arm-float-abi hard --libc musl --target-sysroot $work_root/sysroots/titan_armv7a_hf_musl"
+  [arm-softfp]="--cpu arm --arm-float-abi softfp --target-sysroot $work_root/sysroots/titan_armv7a_softfp"
+  [arm-softfp-musl]="--cpu arm --arm-float-abi softfp --libc musl --target-sysroot $work_root/sysroots/titan_armv7a_softfp_musl"
+  [riscv64-glibc]="--cpu riscv64 --target-sysroot $work_root/sysroots/titan_riscv64_glibc"
+  [riscv64-musl]="--cpu riscv64 --libc musl --target-sysroot $work_root/sysroots/titan_riscv64_musl"
 )
+target_names=(
+  x64
+  x64-musl
+  arm64
+  arm64-musl
+  arm-hard
+  arm-hard-musl
+  arm-softfp
+  arm-softfp-musl
+  riscv64-glibc
+  riscv64-musl
+)
+runtime_modes=(debug profile release)
+
+declare -A variant_specs=()
+for target in "${target_names[@]}"; do
+  for mode in "${runtime_modes[@]}"; do
+    variant_specs["$target-$mode"]="--mode $mode ${target_specs[$target]}"
+  done
+done
+
+for mode in "${runtime_modes[@]}"; do
+  variant_specs["sdk-desktop-$mode"]="--mode $mode --gtk-shell --enable-fontconfig --out-name sdk_desktop_$mode --ninja-target flutter/shell/platform/linux:flutter_gtk"
+done
+for target in "${target_names[@]:1}"; do
+  desktop_target=${target//-/_}
+  for mode in "${runtime_modes[@]}"; do
+    variant_specs["sdk-desktop-$target-$mode"]="--mode $mode --gtk-shell --enable-fontconfig ${target_specs[$target]} --out-name sdk_desktop_${desktop_target}_$mode --ninja-target flutter/shell/platform/linux:flutter_gtk"
+  done
+done
+
+variant_specs[sdk-host-debug]='--mode debug --out-name sdk_host_debug --ninja-target flutter/build/archives:artifacts --ninja-target flutter/build/archives:flutter_patched_sdk --ninja-target flutter/build/archives:dart_sdk_archive --ninja-target flutter/build/archives:embedder --ninja-target flutter/tools/font_subset --ninja-target flutter/impeller/toolkit/interop:sdk --ninja-target flutter/sky/dist:zip_old_location --ninja-target flutter/lib/gpu/dist:zip_old_location'
+variant_specs[sdk-host-release]='--mode release --out-name sdk_host_release --ninja-target flutter/build/archives:flutter_patched_sdk'
+variant_specs[sdk-host-arm64-debug]='--mode debug --cpu arm64 --out-name sdk_host_arm64_debug --ninja-target flutter/build/archives:artifacts --ninja-target flutter/tools/font_subset --ninja-target flutter/build/archives:embedder --ninja-target flutter/impeller/toolkit/interop:sdk --ninja-target flutter/build/archives:dart_sdk_archive'
+
 # riscv32 builds and passes QEMU but is a niche target: request it by name
 # (riscv32-glibc-debug, riscv32-musl-debug).
-default_variants=(
-  x64-debug
-  x64-musl-debug
-  arm64-debug
-  arm64-musl-debug
-  arm-hard-debug
-  arm-hard-musl-debug
-  arm-softfp-debug
-  arm-softfp-musl-debug
-  riscv64-glibc-debug
-  riscv64-musl-debug
-)
+variant_specs[riscv32-glibc-debug]="--mode debug --cpu riscv32 --target-sysroot $work_root/sysroots/titan_riscv32_glibc"
+variant_specs[riscv32-musl-debug]="--mode debug --cpu riscv32 --libc musl --target-sysroot $work_root/sysroots/titan_riscv32_musl"
+
+default_variants=()
+for mode in "${runtime_modes[@]}"; do
+  for target in "${target_names[@]}"; do
+    default_variants+=("$target-$mode")
+  done
+done
 if ((${#variants[@]} == 0)); then
   variants=("${default_variants[@]}")
 fi
