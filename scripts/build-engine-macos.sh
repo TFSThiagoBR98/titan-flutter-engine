@@ -152,7 +152,7 @@ gn_args=(
   --target-dir "$out_name"
   --runtime-mode "$mode"
   --no-lto
-  --rbe
+  --no-rbe
   --no-goma
   --xcode-symlinks
 )

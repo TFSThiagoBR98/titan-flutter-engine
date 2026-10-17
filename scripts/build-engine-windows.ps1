@@ -266,7 +266,7 @@ $gnArguments = @(
     '--runtime-mode', $Mode,
     '--no-lto',
     '--no-goma',
-    '--rbe'
+    '--no-rbe'
 )
 if ($Kind -eq 'host' -and $Cpu -eq 'arm64') {
     $gnArguments += @('--windows-cpu', 'arm64')

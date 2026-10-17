@@ -13,6 +13,22 @@ assert_contains() {
   }
 }
 
+macos_build_script=$(cat "$repository_root/scripts/build-engine-macos.sh")
+windows_build_script=$(cat "$repository_root/scripts/build-engine-windows.ps1")
+standalone_rbe_argument='(?<![A-Za-z0-9_-])[\x27\x22]?--rbe[\x27\x22]?(?![A-Za-z0-9_-])'
+raise_standalone_rbe() {
+  local script_name=$1 script_content=$2
+  if ruby -e 'exit(ARGV.fetch(0).match?(Regexp.new(ARGV.fetch(1))) ? 0 : 1)' "$script_content" "$standalone_rbe_argument"; then
+    printf '%s must not pass --rbe\n' "$script_name" >&2
+    exit 1
+  fi
+}
+
+assert_contains "$repository_root/scripts/build-engine-macos.sh" '--no-rbe'
+assert_contains "$repository_root/scripts/build-engine-windows.ps1" "'--no-rbe'"
+raise_standalone_rbe macOS "$macos_build_script"
+raise_standalone_rbe Windows "$windows_build_script"
+
 ruby - "$workflow" <<'RUBY'
 require 'yaml'
 
