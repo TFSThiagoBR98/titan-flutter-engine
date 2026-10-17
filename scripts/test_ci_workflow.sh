@@ -79,7 +79,9 @@ sysroot_step = steps.find { |step| step['run']&.include?('scripts/ci.sh sysroot'
 raise 'sysroot step is missing' unless sysroot_step
 raise 'sysroot step must be conditional' unless sysroot_step['if'] == "matrix.defconfig != ''"
 raise 'Linux SDK job must include the host and GTK variants' unless linux_sdk.fetch('env').fetch('TITAN_VARIANTS').include?('sdk-host-arm64-debug') && linux_sdk.fetch('env').fetch('TITAN_VARIANTS').include?('sdk-desktop-arm64-release')
-raise 'Linux platform job must include Android, web and Fuchsia' unless %w[android-debug-arm web-release fuchsia-release-x64].all? { |variant| linux_platform.fetch('env').fetch('TITAN_VARIANTS').include?(variant) }
+raise 'Linux platform job must include Android and web' unless %w[android-debug-arm web-release].all? { |variant| linux_platform.fetch('env').fetch('TITAN_VARIANTS').include?(variant) }
+# Fuchsia is kept out of the CI matrix on purpose (user decision, 2026-10-17).
+raise 'Linux platform job must not build Fuchsia' if linux_platform.fetch('env').fetch('TITAN_VARIANTS').include?('fuchsia')
 raise 'macOS job must build Darwin and iOS' unless macos.fetch('steps').any? { |step| step['run']&.include?('--kind ios') } && macos.fetch('steps').any? { |step| step['run']&.include?('--kind framework') }
 raise 'Windows job must build Windows and Android' unless windows.fetch('steps').any? { |step| step['run']&.include?('-Kind host') } && windows.fetch('steps').any? { |step| step['run']&.include?('-Kind android') }
 raise 'sysroot cache must be keyed per defconfig' unless build.fetch('steps').any? { |step| step['uses'] == 'actions/cache@v4' && step.dig('with', 'key').to_s.include?('${{ matrix.defconfig }}') && step.dig('with', 'key').to_s.include?('hashFiles(format(') }

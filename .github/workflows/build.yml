@@ -143,7 +143,7 @@ jobs:
           if-no-files-found: error
 
   linux_platform:
-    name: Build Android, web and Fuchsia artifacts
+    name: Build Android and web artifacts
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
@@ -154,8 +154,6 @@ jobs:
         android-profile-arm android-profile-arm64 android-profile-x64
         android-release-arm android-release-arm64 android-release-x64
         web-release
-        fuchsia-debug-arm64 fuchsia-profile-arm64 fuchsia-release-arm64
-        fuchsia-debug-x64 fuchsia-profile-x64 fuchsia-release-x64
     steps:
       - uses: actions/checkout@v4
       - name: Prepare workspace
