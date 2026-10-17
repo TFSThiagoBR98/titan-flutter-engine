@@ -1,0 +1,940 @@
+# Why: connect the engine-facing runtime callbacks and the runtime-facing
+# backend callbacks to the existing RuntimeDelegate and asset manager.
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index 64531306c3e..1f8a42deea9 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -4,8 +4,15 @@
+ 
+ #include "flutter/runtime_spi/spi_engine_api.h"
+ 
++#include <cstdlib>
++#include <cstring>
++#include <new>
+ #include <utility>
++#include <vector>
+ 
++#include "flutter/assets/asset_manager.h"
++#include "flutter/fml/mapping.h"
++#include "flutter/lib/ui/window/view_focus.h"
+ #include "flutter/lib/ui/text/font_collection.h"
+ #include "flutter/runtime/runtime_delegate.h"
+ #include "flutter/runtime_spi/effects/spi_color_filter.h"
+@@ -34,6 +41,23 @@ void RegisterDynamicFont(void* user_data,
+       std::move(family_name), std::move(typeface));
+ }
+ 
++char* AllocateString(const std::string& value) {
++  char* result = static_cast<char*>(std::malloc(value.size() + 1));
++  if (result == nullptr) {
++    return nullptr;
++  }
++  std::memcpy(result, value.c_str(), value.size() + 1);
++  return result;
++}
++
++struct SpiMappingHolder {
++  std::unique_ptr<fml::Mapping> mapping;
++};
++
++void ReleaseMapping(void* user_data) {
++  delete static_cast<SpiMappingHolder*>(user_data);
++}
++
+ FlutterSpiResult ImageToBytes(FlutterSpiEngine* engine,
+                               FlutterSpiImage* image,
+                               int32_t format,
+@@ -169,24 +193,254 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+       .paint_effects = &kPaintEffectsApi,
+       .fragment = SpiFragment::Api(),
+       .semantics = &kSemanticsApi,
+-      .default_route_name = nullptr,
+-      .free_string = nullptr,
+-      .set_application_locale = nullptr,
+-      .set_semantics_tree_enabled = nullptr,
+-      .on_root_isolate_created = nullptr,
+-      .update_isolate_description = nullptr,
+-      .set_needs_report_timings = nullptr,
+-      .compute_platform_resolved_locale = nullptr,
+-      .free_string_list = nullptr,
+-      .request_deferred_library = nullptr,
+-      .send_channel_update = nullptr,
+-      .get_scaled_font_size = nullptr,
+-      .request_view_focus_change = nullptr,
+-      .reset_internal_state = nullptr,
+-      .asset_get = nullptr,
++      .default_route_name = DefaultRouteName,
++      .free_string = FreeString,
++      .set_application_locale = SetApplicationLocale,
++      .set_semantics_tree_enabled = SetSemanticsTreeEnabled,
++      .on_root_isolate_created = OnRootIsolateCreated,
++      .update_isolate_description = UpdateIsolateDescription,
++      .set_needs_report_timings = SetNeedsReportTimings,
++      .compute_platform_resolved_locale = ComputePlatformResolvedLocale,
++      .free_string_list = FreeStringList,
++      .request_deferred_library = RequestDeferredLibrary,
++      .send_channel_update = SendChannelUpdate,
++      .get_scaled_font_size = GetScaledFontSize,
++      .request_view_focus_change = RequestViewFocusChange,
++      .reset_internal_state = ResetInternalState,
++      .asset_get = AssetGet,
+   };
+ }
+ 
++char* SpiEngineApi::DefaultRouteName(FlutterSpiEngine* engine) {
++  if (engine == nullptr || engine->backend == nullptr ||
++      !engine->backend->HasUiThread()) {
++    return nullptr;
++  }
++  return AllocateString(engine->backend->runtime_delegate_.DefaultRouteName());
++}
++
++void SpiEngineApi::FreeString(FlutterSpiEngine* engine, char* string) {
++  (void)engine;
++  std::free(string);
++}
++
++FlutterSpiResult SpiEngineApi::SetApplicationLocale(FlutterSpiEngine* engine,
++                                                    const char* locale) {
++  if (engine == nullptr || engine->backend == nullptr || locale == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (!engine->backend->HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  engine->backend->runtime_delegate_.SetApplicationLocale(locale);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiEngineApi::SetSemanticsTreeEnabled(
++    FlutterSpiEngine* engine,
++    bool enabled) {
++  if (engine == nullptr || engine->backend == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (!engine->backend->HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  engine->backend->runtime_delegate_.SetSemanticsTreeEnabled(enabled);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiEngineApi::OnRootIsolateCreated(FlutterSpiEngine* engine) {
++  if (engine == nullptr || engine->backend == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (!engine->backend->HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  engine->backend->runtime_delegate_.OnRootIsolateCreated();
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiEngineApi::UpdateIsolateDescription(
++    FlutterSpiEngine* engine,
++    const char* name,
++    int64_t port) {
++  if (engine == nullptr || engine->backend == nullptr || name == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (!engine->backend->HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  engine->backend->runtime_delegate_.UpdateIsolateDescription(name, port);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiEngineApi::SetNeedsReportTimings(FlutterSpiEngine* engine,
++                                                     bool value) {
++  if (engine == nullptr || engine->backend == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (!engine->backend->HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  engine->backend->runtime_delegate_.SetNeedsReportTimings(value);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiEngineApi::ComputePlatformResolvedLocale(
++    FlutterSpiEngine* engine,
++    const char* const* supported,
++    size_t count,
++    char*** out_locale,
++    size_t* out_count) {
++  if (engine == nullptr || engine->backend == nullptr || out_locale == nullptr ||
++      out_count == nullptr || (count != 0 && supported == nullptr)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out_locale = nullptr;
++  *out_count = 0;
++  if (!engine->backend->HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  std::vector<std::string> supported_locales;
++  supported_locales.reserve(count);
++  for (size_t index = 0; index < count; index++) {
++    if (supported[index] == nullptr) {
++      return kFlutterSpiInvalidArgument;
++    }
++    supported_locales.emplace_back(supported[index]);
++  }
++  std::unique_ptr<std::vector<std::string>> resolved_locales =
++      engine->backend->runtime_delegate_.ComputePlatformResolvedLocale(
++          supported_locales);
++  if (resolved_locales == nullptr || resolved_locales->empty()) {
++    return resolved_locales == nullptr ? kFlutterSpiInternalError
++                                       : kFlutterSpiOk;
++  }
++  char** result = static_cast<char**>(
++      std::malloc(sizeof(char*) * resolved_locales->size()));
++  if (result == nullptr) {
++    return kFlutterSpiInternalError;
++  }
++  std::memset(result, 0, sizeof(char*) * resolved_locales->size());
++  for (size_t index = 0; index < resolved_locales->size(); index++) {
++    result[index] = AllocateString((*resolved_locales)[index]);
++    if (result[index] == nullptr) {
++      FreeStringList(engine, result, index);
++      return kFlutterSpiInternalError;
++    }
++  }
++  *out_locale = result;
++  *out_count = resolved_locales->size();
++  return kFlutterSpiOk;
++}
++
++void SpiEngineApi::FreeStringList(FlutterSpiEngine* engine,
++                                  char** list,
++                                  size_t count) {
++  (void)engine;
++  if (list == nullptr) {
++    return;
++  }
++  for (size_t index = 0; index < count; index++) {
++    std::free(list[index]);
++  }
++  std::free(list);
++}
++
++FlutterSpiResult SpiEngineApi::RequestDeferredLibrary(
++    FlutterSpiEngine* engine,
++    int64_t loading_unit_id) {
++  if (engine == nullptr || engine->backend == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (!engine->backend->HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  engine->backend->runtime_delegate_.RequestDartDeferredLibrary(
++      static_cast<intptr_t>(loading_unit_id));
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiEngineApi::SendChannelUpdate(FlutterSpiEngine* engine,
++                                                 const char* name,
++                                                 bool listening) {
++  if (engine == nullptr || engine->backend == nullptr || name == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (!engine->backend->HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  engine->backend->runtime_delegate_.SendChannelUpdate(name, listening);
++  return kFlutterSpiOk;
++}
++
++double SpiEngineApi::GetScaledFontSize(FlutterSpiEngine* engine,
++                                       double unscaled_font_size,
++                                       int32_t configuration_id) {
++  if (engine == nullptr || engine->backend == nullptr ||
++      !engine->backend->HasUiThread()) {
++    return 0.0;
++  }
++  return engine->backend->runtime_delegate_.GetScaledFontSize(
++      unscaled_font_size, configuration_id);
++}
++
++FlutterSpiResult SpiEngineApi::RequestViewFocusChange(
++    FlutterSpiEngine* engine,
++    int64_t view_id,
++    int32_t state,
++    int32_t direction) {
++  if (engine == nullptr || engine->backend == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (!engine->backend->HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  engine->backend->runtime_delegate_.RequestViewFocusChange(
++      ViewFocusChangeRequest(view_id, static_cast<ViewFocusState>(state),
++                             static_cast<ViewFocusDirection>(direction)));
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiEngineApi::ResetInternalState(FlutterSpiEngine* engine) {
++  if (engine == nullptr || engine->backend == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (!engine->backend->HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  engine->backend->runtime_delegate_.ResetInternalState();
++  return kFlutterSpiOk;
++}
++
++bool SpiEngineApi::AssetGet(FlutterSpiEngine* engine,
++                            const char* name,
++                            FlutterSpiMapping* out_mapping) {
++  if (out_mapping == nullptr || name == nullptr) {
++    return false;
++  }
++  *out_mapping = {};
++  if (engine == nullptr || engine->backend == nullptr ||
++      !engine->backend->HasUiThread() ||
++      engine->backend->asset_manager_ == nullptr) {
++    return false;
++  }
++  std::unique_ptr<fml::Mapping> mapping =
++      engine->backend->asset_manager_->GetAsMapping(name);
++  if (mapping == nullptr) {
++    return false;
++  }
++  auto* holder = new (std::nothrow) SpiMappingHolder{std::move(mapping)};
++  if (holder == nullptr) {
++    return false;
++  }
++  out_mapping->data = holder->mapping->GetMapping();
++  out_mapping->size = holder->mapping->GetSize();
++  out_mapping->release_user_data = holder;
++  out_mapping->release = ReleaseMapping;
++  return true;
++}
++
+ FlutterSpiResult SpiEngineApi::SemanticsUpdateBuilderCreate(
+     FlutterSpiEngine* engine,
+     FlutterSpiSemanticsUpdateBuilder** out_builder) {
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.h b/engine/src/flutter/runtime_spi/spi_engine_api.h
+index d6342c68d3b..9fad2b113a9 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.h
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.h
+@@ -109,6 +109,43 @@ class SpiEngineApi final {
+       int64_t view_id);
+   static FlutterSpiResult SemanticsUpdateBuilderRelease(
+       FlutterSpiSemanticsUpdateBuilder* builder);
++  static char* DefaultRouteName(FlutterSpiEngine* engine);
++  static void FreeString(FlutterSpiEngine* engine, char* string);
++  static FlutterSpiResult SetApplicationLocale(FlutterSpiEngine* engine,
++                                                const char* locale);
++  static FlutterSpiResult SetSemanticsTreeEnabled(FlutterSpiEngine* engine,
++                                                  bool enabled);
++  static FlutterSpiResult OnRootIsolateCreated(FlutterSpiEngine* engine);
++  static FlutterSpiResult UpdateIsolateDescription(FlutterSpiEngine* engine,
++                                                   const char* name,
++                                                   int64_t port);
++  static FlutterSpiResult SetNeedsReportTimings(FlutterSpiEngine* engine,
++                                                bool value);
++  static FlutterSpiResult ComputePlatformResolvedLocale(
++      FlutterSpiEngine* engine,
++      const char* const* supported,
++      size_t count,
++      char*** out_locale,
++      size_t* out_count);
++  static void FreeStringList(FlutterSpiEngine* engine,
++                             char** list,
++                             size_t count);
++  static FlutterSpiResult RequestDeferredLibrary(FlutterSpiEngine* engine,
++                                                 int64_t loading_unit_id);
++  static FlutterSpiResult SendChannelUpdate(FlutterSpiEngine* engine,
++                                            const char* name,
++                                            bool listening);
++  static double GetScaledFontSize(FlutterSpiEngine* engine,
++                                  double unscaled_font_size,
++                                  int32_t configuration_id);
++  static FlutterSpiResult RequestViewFocusChange(FlutterSpiEngine* engine,
++                                                 int64_t view_id,
++                                                 int32_t state,
++                                                 int32_t direction);
++  static FlutterSpiResult ResetInternalState(FlutterSpiEngine* engine);
++  static bool AssetGet(FlutterSpiEngine* engine,
++                       const char* name,
++                       FlutterSpiMapping* out_mapping);
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+index eb7d3d2bd49..bd791370fe0 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+@@ -19,6 +19,7 @@
+ #include "flutter/runtime_spi/spi_engine_api.h"
+ #include "flutter/runtime_spi/spi_scene.h"
+ #include "flutter/runtime_spi/semantics/spi_semantics.h"
++#include "flutter/shell/common/display.h"
+ 
+ namespace flutter {
+ namespace {
+@@ -222,7 +223,26 @@ bool SpiRuntimeBackend::SetViewportMetrics(int64_t view_id,
+ 
+ bool SpiRuntimeBackend::SetDisplays(
+     const std::vector<DisplayData>& displays) {
+-  (void)displays;
++  if (stop_requested_ ||
++      !IsCallbackAvailable(offsetof(FlutterSpiRuntimeTable, set_displays),
++                           sizeof(table_.set_displays)) ||
++      table_.set_displays == nullptr) {
++    return true;
++  }
++  std::vector<FlutterSpiDisplay> spi_displays;
++  spi_displays.reserve(displays.size());
++  for (const DisplayData& display : displays) {
++    spi_displays.push_back({
++        .struct_size = sizeof(FlutterSpiDisplay),
++        .id = display.id,
++        .width = display.width,
++        .height = display.height,
++        .pixel_ratio = display.pixel_ratio,
++        .refresh_rate = display.refresh_rate,
++    });
++  }
++  table_.set_displays(table_.user_data, spi_displays.data(),
++                      spi_displays.size());
+   return true;
+ }
+ 
+@@ -354,14 +374,25 @@ bool SpiRuntimeBackend::NotifyIdle(fml::TimeDelta deadline) {
+ }
+ 
+ bool SpiRuntimeBackend::ReportTimings(std::vector<int64_t> timings) {
+-  (void)timings;
++  if (stop_requested_ ||
++      !IsCallbackAvailable(offsetof(FlutterSpiRuntimeTable, report_timings),
++                           sizeof(table_.report_timings)) ||
++      table_.report_timings == nullptr) {
++    return true;
++  }
++  table_.report_timings(table_.user_data, timings.data(), timings.size());
+   return true;
+ }
+ 
+ HitTestResponse SpiRuntimeBackend::HitTest(int64_t view_id, PointData offset) {
+-  (void)view_id;
+-  (void)offset;
+-  return {.has_platform_view = false};
++  if (stop_requested_ || !HasUiThread() ||
++      !IsCallbackAvailable(offsetof(FlutterSpiRuntimeTable, hit_test),
++                           sizeof(table_.hit_test)) ||
++      table_.hit_test == nullptr) {
++    return {.has_platform_view = false};
++  }
++  return {.has_platform_view = table_.hit_test(
++               table_.user_data, view_id, offset.x, offset.y)};
+ }
+ 
+ bool SpiRuntimeBackend::IsRunning() const {
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
+index 0921ca10fa8..67c601649c0 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
+@@ -6,9 +6,17 @@
+ #include "flutter/runtime_spi/spi_runtime_backend_factory.h"
+ 
+ #include <atomic>
++#include <cstring>
++#include <memory>
++#include <string>
+ #include <thread>
++#include <utility>
++#include <vector>
+ 
++#include "flutter/assets/asset_manager.h"
++#include "flutter/assets/directory_asset_bundle.h"
+ #include "flutter/fml/concurrent_message_loop.h"
++#include "flutter/fml/file.h"
+ #include "flutter/fml/mapping.h"
+ #include "flutter/fml/message_loop.h"
+ #include "flutter/fml/synchronization/waitable_event.h"
+@@ -16,6 +24,7 @@
+ #include "flutter/lib/ui/text/font_collection.h"
+ #include "flutter/runtime/runtime_delegate.h"
+ #include "flutter/runtime_spi/testing/c_test_runtime.h"
++#include "flutter/shell/common/display.h"
+ #include "flutter/shell/common/run_configuration.h"
+ #include "flutter/testing/testing.h"
+ 
+@@ -24,7 +33,7 @@ namespace {
+ 
+ class FakeRuntimeDelegate final : public RuntimeDelegate {
+  public:
+-  std::string DefaultRouteName() override { return "/"; }
++  std::string DefaultRouteName() override { return route_name; }
+ 
+   void ScheduleFrame(bool regenerate_layer_trees = true) override {
+     schedule_frame_count++;
+@@ -50,9 +59,13 @@ class FakeRuntimeDelegate final : public RuntimeDelegate {
+     last_semantics_actions = std::move(actions);
+   }
+ 
+-  void SetApplicationLocale(std::string locale) override {}
++  void SetApplicationLocale(std::string locale) override {
++    application_locale = std::move(locale);
++  }
+ 
+-  void SetSemanticsTreeEnabled(bool enabled) override {}
++  void SetSemanticsTreeEnabled(bool enabled) override {
++    semantics_tree_enabled = enabled;
++  }
+ 
+   void HandlePlatformMessage(
+       std::unique_ptr<PlatformMessage> message) override {
+@@ -62,39 +75,75 @@ class FakeRuntimeDelegate final : public RuntimeDelegate {
+ 
+   FontCollection& GetFontCollection() override { return font_collection; }
+ 
+-  std::shared_ptr<AssetManager> GetAssetManager() override { return nullptr; }
++  std::shared_ptr<AssetManager> GetAssetManager() override {
++    return asset_manager;
++  }
+ 
+-  void OnRootIsolateCreated() override {}
++  void OnRootIsolateCreated() override { root_isolate_created = true; }
+ 
+   void UpdateIsolateDescription(const std::string isolate_name,
+-                                int64_t isolate_port) override {}
+-
+-  void SetNeedsReportTimings(bool value) override {}
++                                int64_t isolate_port) override {
++    isolate_description = isolate_name;
++    isolate_port_number = isolate_port;
++  }
+ 
+-  void ResetInternalState() override {}
++  void SetNeedsReportTimings(bool value) override {
++    needs_report_timings = value;
++  }
+ 
+   std::unique_ptr<std::vector<std::string>> ComputePlatformResolvedLocale(
+       const std::vector<std::string>& supported_locale_data) override {
+-    return nullptr;
++    supported_locales = supported_locale_data;
++    return std::make_unique<std::vector<std::string>>(resolved_locales);
+   }
+ 
+-  void RequestDartDeferredLibrary(intptr_t loading_unit_id) override {}
++  void RequestDartDeferredLibrary(intptr_t loading_unit_id) override {
++    deferred_library_id = loading_unit_id;
++  }
+ 
+   void RequestViewFocusChange(
+-      const ViewFocusChangeRequest& request) override {}
++      const ViewFocusChangeRequest& request) override {
++    focus_view_id = request.view_id();
++    focus_state = request.state();
++    focus_direction = request.direction();
++  }
+ 
+   std::weak_ptr<PlatformMessageHandler> GetPlatformMessageHandler()
+       const override {
+     return {};
+   }
+ 
+-  void SendChannelUpdate(std::string name, bool listening) override {}
++  void SendChannelUpdate(std::string name, bool listening) override {
++    channel_name = std::move(name);
++    channel_listening = listening;
++  }
+ 
+   double GetScaledFontSize(double unscaled_font_size,
+                            int configuration_id) const override {
+-    return unscaled_font_size;
++    scaled_font_size = unscaled_font_size + configuration_id;
++    return scaled_font_size;
+   }
+ 
++  void ResetInternalState() override { internal_state_reset = true; }
++
++  std::string route_name = "/";
++  std::string application_locale;
++  bool semantics_tree_enabled = false;
++  bool root_isolate_created = false;
++  std::string isolate_description;
++  int64_t isolate_port_number = 0;
++  bool needs_report_timings = false;
++  std::vector<std::string> supported_locales;
++  std::vector<std::string> resolved_locales;
++  intptr_t deferred_library_id = 0;
++  std::string channel_name;
++  bool channel_listening = false;
++  mutable double scaled_font_size = 0.0;
++  int64_t focus_view_id = 0;
++  ViewFocusState focus_state = ViewFocusState::kUnfocused;
++  ViewFocusDirection focus_direction = ViewFocusDirection::kUndefined;
++  bool internal_state_reset = false;
++  std::shared_ptr<AssetManager> asset_manager;
+   size_t schedule_frame_count = 0;
+   size_t all_views_rendered_count = 0;
+   size_t render_count = 0;
+@@ -112,6 +161,51 @@ class FakeRuntimeDelegate final : public RuntimeDelegate {
+   FontCollection font_collection;
+ };
+ 
++struct RuntimeCallbackCapture {
++  std::vector<FlutterSpiDisplay> displays;
++  std::vector<int64_t> timings;
++  int64_t hit_test_view_id = 0;
++  double hit_test_x = 0.0;
++  double hit_test_y = 0.0;
++  bool hit_test_result = false;
++};
++
++void CaptureDisplays(void* user_data,
++                     const FlutterSpiDisplay* displays,
++                     size_t count) {
++  auto* capture = static_cast<RuntimeCallbackCapture*>(user_data);
++  capture->displays.assign(displays, displays + count);
++}
++
++void CaptureTimings(void* user_data,
++                    const int64_t* timings,
++                    size_t count) {
++  auto* capture = static_cast<RuntimeCallbackCapture*>(user_data);
++  capture->timings.assign(timings, timings + count);
++}
++
++bool CaptureHitTest(void* user_data,
++                    int64_t view_id,
++                    double x,
++                    double y) {
++  auto* capture = static_cast<RuntimeCallbackCapture*>(user_data);
++  capture->hit_test_view_id = view_id;
++  capture->hit_test_x = x;
++  capture->hit_test_y = y;
++  return capture->hit_test_result;
++}
++
++FlutterSpiRuntimeTable MakeRuntimeCallbackTable(
++    RuntimeCallbackCapture* capture) {
++  FlutterSpiRuntimeTable table = {};
++  table.struct_size = sizeof(table);
++  table.user_data = capture;
++  table.set_displays = CaptureDisplays;
++  table.report_timings = CaptureTimings;
++  table.hit_test = CaptureHitTest;
++  return table;
++}
++
+ class TestPlatformMessageResponse final : public PlatformMessageResponse {
+  public:
+   void Complete(std::unique_ptr<fml::Mapping> data) override {
+@@ -215,6 +309,63 @@ TEST_F(SpiRuntimeBackendTest, BeginFrameCarriesIncreasingTokens) {
+   EXPECT_EQ(runtime->last_frame_info.deadline_ns, 200);
+ }
+ 
++TEST_F(SpiRuntimeBackendTest, SetDisplaysReachesRuntime) {
++  RuntimeCallbackCapture capture;
++  auto backend = CreateBackend(MakeRuntimeCallbackTable(&capture));
++  const std::vector<DisplayData> displays = {
++      {.id = 7, .width = 1920, .height = 1080, .pixel_ratio = 2.0,
++       .refresh_rate = 60.0},
++  };
++
++  EXPECT_TRUE(backend->SetDisplays(displays));
++
++  ASSERT_EQ(capture.displays.size(), 1u);
++  EXPECT_EQ(capture.displays[0].struct_size, sizeof(FlutterSpiDisplay));
++  EXPECT_EQ(capture.displays[0].id, 7u);
++  EXPECT_EQ(capture.displays[0].width, 1920.0);
++  EXPECT_EQ(capture.displays[0].height, 1080.0);
++  EXPECT_EQ(capture.displays[0].pixel_ratio, 2.0);
++  EXPECT_EQ(capture.displays[0].refresh_rate, 60.0);
++}
++
++TEST_F(SpiRuntimeBackendTest, ReportTimingsReachesRuntime) {
++  RuntimeCallbackCapture capture;
++  auto backend = CreateBackend(MakeRuntimeCallbackTable(&capture));
++  std::vector<int64_t> timings = {10, 20, 30};
++
++  EXPECT_TRUE(backend->ReportTimings(timings));
++
++  EXPECT_EQ(capture.timings, timings);
++}
++
++TEST_F(SpiRuntimeBackendTest, HitTestAsksRuntime) {
++  RuntimeCallbackCapture capture;
++  capture.hit_test_result = true;
++  auto backend = CreateBackend(MakeRuntimeCallbackTable(&capture));
++
++  EXPECT_TRUE(backend->HitTest(42, {.x = 12.5, .y = 8.25}).has_platform_view);
++
++  EXPECT_EQ(capture.hit_test_view_id, 42);
++  EXPECT_EQ(capture.hit_test_x, 12.5);
++  EXPECT_EQ(capture.hit_test_y, 8.25);
++}
++
++TEST_F(SpiRuntimeBackendTest, OlderTableHasNoDisplaysTimingsOrHitTest) {
++  RuntimeCallbackCapture capture;
++  auto table = MakeRuntimeCallbackTable(&capture);
++  table.struct_size = offsetof(FlutterSpiRuntimeTable, set_displays);
++  auto backend = CreateBackend(table);
++
++  EXPECT_TRUE(backend->SetDisplays({
++      {.id = 7, .width = 1920, .height = 1080, .pixel_ratio = 2.0,
++       .refresh_rate = 60.0},
++  }));
++  EXPECT_TRUE(backend->ReportTimings({10, 20}));
++  EXPECT_FALSE(backend->HitTest(42, {.x = 1.0, .y = 2.0}).has_platform_view);
++  EXPECT_TRUE(capture.displays.empty());
++  EXPECT_TRUE(capture.timings.empty());
++}
++
+ TEST_F(SpiRuntimeBackendTest, SubmitWithStaleTokenIsRejectedAndReleasesScene) {
+   auto backend = CreateBackend(c_test_runtime_table(runtime));
+   LaunchBackend(backend.get());
+@@ -263,6 +414,247 @@ TEST_F(SpiRuntimeBackendTest, SemanticsSubmitReachesDelegate) {
+   EXPECT_EQ(delegate.last_semantics_actions.at(9).label, "Activate");
+ }
+ 
++TEST_F(SpiRuntimeBackendTest, DefaultRouteNameReachesDelegate) {
++  delegate.route_name = "/settings";
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  ASSERT_NE(runtime->engine_api->default_route_name, nullptr);
++  char* route_name = runtime->engine_api->default_route_name(runtime->engine);
++
++  ASSERT_NE(route_name, nullptr);
++  EXPECT_STREQ(route_name, "/settings");
++  runtime->engine_api->free_string(runtime->engine, route_name);
++}
++
++TEST_F(SpiRuntimeBackendTest, ApplicationLocaleReachesDelegate) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  ASSERT_NE(runtime->engine_api->set_application_locale, nullptr);
++  EXPECT_EQ(runtime->engine_api->set_application_locale(runtime->engine,
++                                                        "pt-BR"),
++            kFlutterSpiOk);
++  EXPECT_EQ(delegate.application_locale, "pt-BR");
++}
++
++TEST_F(SpiRuntimeBackendTest, SemanticsTreeEnabledReachesDelegate) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  ASSERT_NE(runtime->engine_api->set_semantics_tree_enabled, nullptr);
++  EXPECT_EQ(runtime->engine_api->set_semantics_tree_enabled(runtime->engine,
++                                                            true),
++            kFlutterSpiOk);
++  EXPECT_TRUE(delegate.semantics_tree_enabled);
++}
++
++TEST_F(SpiRuntimeBackendTest, RootIsolateCreatedReachesDelegate) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  ASSERT_NE(runtime->engine_api->on_root_isolate_created, nullptr);
++  EXPECT_EQ(runtime->engine_api->on_root_isolate_created(runtime->engine),
++            kFlutterSpiOk);
++  EXPECT_TRUE(delegate.root_isolate_created);
++}
++
++TEST_F(SpiRuntimeBackendTest, IsolateDescriptionReachesDelegate) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  ASSERT_NE(runtime->engine_api->update_isolate_description, nullptr);
++  EXPECT_EQ(runtime->engine_api->update_isolate_description(runtime->engine,
++                                                            "shell", 42),
++            kFlutterSpiOk);
++  EXPECT_EQ(delegate.isolate_description, "shell");
++  EXPECT_EQ(delegate.isolate_port_number, 42);
++}
++
++TEST_F(SpiRuntimeBackendTest, NeedsReportTimingsReachesDelegate) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  ASSERT_NE(runtime->engine_api->set_needs_report_timings, nullptr);
++  EXPECT_EQ(runtime->engine_api->set_needs_report_timings(runtime->engine,
++                                                          true),
++            kFlutterSpiOk);
++  EXPECT_TRUE(delegate.needs_report_timings);
++}
++
++TEST_F(SpiRuntimeBackendTest, PlatformResolvedLocaleReachesDelegate) {
++  delegate.resolved_locales = {"pt", "BR"};
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++  const char* supported[] = {"pt", "BR", "en", "US"};
++  char** resolved = nullptr;
++  size_t resolved_count = 0;
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  ASSERT_NE(runtime->engine_api->compute_platform_resolved_locale, nullptr);
++  ASSERT_EQ(runtime->engine_api->compute_platform_resolved_locale(
++                runtime->engine, supported, 4, &resolved, &resolved_count),
++            kFlutterSpiOk);
++
++  ASSERT_EQ(resolved_count, 2u);
++  EXPECT_STREQ(resolved[0], "pt");
++  EXPECT_STREQ(resolved[1], "BR");
++  EXPECT_EQ(delegate.supported_locales,
++            (std::vector<std::string>{"pt", "BR", "en", "US"}));
++  runtime->engine_api->free_string_list(runtime->engine, resolved,
++                                        resolved_count);
++}
++
++TEST_F(SpiRuntimeBackendTest, DeferredLibraryRequestReachesDelegate) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  ASSERT_NE(runtime->engine_api->request_deferred_library, nullptr);
++  EXPECT_EQ(runtime->engine_api->request_deferred_library(runtime->engine, 17),
++            kFlutterSpiOk);
++  EXPECT_EQ(delegate.deferred_library_id, 17);
++}
++
++TEST_F(SpiRuntimeBackendTest, ChannelUpdateReachesDelegate) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  ASSERT_NE(runtime->engine_api->send_channel_update, nullptr);
++  EXPECT_EQ(runtime->engine_api->send_channel_update(runtime->engine,
++                                                     "events", true),
++            kFlutterSpiOk);
++  EXPECT_EQ(delegate.channel_name, "events");
++  EXPECT_TRUE(delegate.channel_listening);
++}
++
++TEST_F(SpiRuntimeBackendTest, ScaledFontSizeReachesDelegate) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  ASSERT_NE(runtime->engine_api->get_scaled_font_size, nullptr);
++  EXPECT_EQ(runtime->engine_api->get_scaled_font_size(runtime->engine, 12.0, 3),
++            15.0);
++  EXPECT_EQ(delegate.scaled_font_size, 15.0);
++}
++
++TEST_F(SpiRuntimeBackendTest, ViewFocusChangeReachesDelegate) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  ASSERT_NE(runtime->engine_api->request_view_focus_change, nullptr);
++  EXPECT_EQ(runtime->engine_api->request_view_focus_change(
++                runtime->engine, 42, static_cast<int32_t>(ViewFocusState::kFocused),
++                static_cast<int32_t>(ViewFocusDirection::kBackward)),
++            kFlutterSpiOk);
++  EXPECT_EQ(delegate.focus_view_id, 42);
++  EXPECT_EQ(delegate.focus_state, ViewFocusState::kFocused);
++  EXPECT_EQ(delegate.focus_direction, ViewFocusDirection::kBackward);
++}
++
++TEST_F(SpiRuntimeBackendTest, ResetInternalStateReachesDelegate) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  ASSERT_NE(runtime->engine_api->reset_internal_state, nullptr);
++  EXPECT_EQ(runtime->engine_api->reset_internal_state(runtime->engine),
++            kFlutterSpiOk);
++  EXPECT_TRUE(delegate.internal_state_reset);
++}
++
++TEST_F(SpiRuntimeBackendTest, StringsAreFreedByTheEngineApi) {
++  delegate.route_name = "/free-me";
++  delegate.resolved_locales = {"pt", "BR"};
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++  const char* supported[] = {"pt", "BR"};
++  char** resolved = nullptr;
++  size_t resolved_count = 0;
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  ASSERT_NE(runtime->engine_api->default_route_name, nullptr);
++  ASSERT_NE(runtime->engine_api->free_string, nullptr);
++  ASSERT_NE(runtime->engine_api->compute_platform_resolved_locale, nullptr);
++  ASSERT_NE(runtime->engine_api->free_string_list, nullptr);
++  char* route_name = runtime->engine_api->default_route_name(runtime->engine);
++  ASSERT_EQ(runtime->engine_api->compute_platform_resolved_locale(
++                runtime->engine, supported, 2, &resolved, &resolved_count),
++            kFlutterSpiOk);
++
++  runtime->engine_api->free_string(runtime->engine, route_name);
++  runtime->engine_api->free_string_list(runtime->engine, resolved,
++                                        resolved_count);
++}
++
++TEST_F(SpiRuntimeBackendTest, AssetGetReadsTheAssetManager) {
++  fml::ScopedTemporaryDirectory directory;
++  ASSERT_TRUE(directory.fd().is_valid());
++  ASSERT_TRUE(fml::WriteAtomically(directory.fd(), "asset.txt",
++                                   fml::DataMapping("asset-data")));
++  delegate.asset_manager = std::make_shared<AssetManager>();
++  ASSERT_TRUE(delegate.asset_manager->PushBack(
++      std::make_unique<DirectoryAssetBundle>(
++          fml::OpenDirectory(directory.path().c_str(), false,
++                             fml::FilePermission::kRead),
++          false)));
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++  FlutterSpiMapping mapping = {};
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  ASSERT_NE(runtime->engine_api->asset_get, nullptr);
++  ASSERT_TRUE(runtime->engine_api->asset_get(runtime->engine, "asset.txt",
++                                              &mapping));
++  ASSERT_NE(mapping.data, nullptr);
++  EXPECT_EQ(std::string(reinterpret_cast<const char*>(mapping.data),
++                        mapping.size),
++            "asset-data");
++  ASSERT_NE(mapping.release, nullptr);
++  mapping.release(mapping.release_user_data);
++}
++
++TEST_F(SpiRuntimeBackendTest, MissingAssetIsFalse) {
++  delegate.asset_manager = std::make_shared<AssetManager>();
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++  FlutterSpiMapping mapping = {};
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  ASSERT_NE(runtime->engine_api->asset_get, nullptr);
++  EXPECT_FALSE(runtime->engine_api->asset_get(runtime->engine, "missing.txt",
++                                               &mapping));
++  EXPECT_EQ(mapping.data, nullptr);
++  EXPECT_EQ(mapping.size, 0u);
++  EXPECT_EQ(mapping.release, nullptr);
++}
++
++TEST_F(SpiRuntimeBackendTest, OffUiThreadIsRejected) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++  std::atomic<FlutterSpiResult> result{kFlutterSpiInternalError};
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  ASSERT_NE(runtime->engine_api->set_application_locale, nullptr);
++  std::thread worker([&] {
++    result = runtime->engine_api->set_application_locale(runtime->engine,
++                                                         "pt-BR");
++  });
++  worker.join();
++
++  EXPECT_EQ(result.load(), kFlutterSpiWrongThread);
++  EXPECT_TRUE(delegate.application_locale.empty());
++}
++
+ TEST_F(SpiRuntimeBackendTest, SemanticsSubmitOffUiThreadIsRejected) {
+   auto backend = CreateBackend(c_test_runtime_table(runtime));
+   LaunchBackend(backend.get());
