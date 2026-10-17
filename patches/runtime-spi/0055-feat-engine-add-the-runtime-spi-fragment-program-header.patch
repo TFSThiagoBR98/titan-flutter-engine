@@ -1,0 +1,287 @@
+# Why: extend the runtime SPI to ABI 0.8 while reserving the fragment program
+# capability and preserving the existing engine API prefix.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index d481130f844..aec8babf228 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -50,6 +50,7 @@ source_set("spi_backend") {
+ source_set("runtime_spi_c_api") {
+   public = [
+     "include/flutter_runtime_spi.h",
++    "include/flutter_fragment.h",
+     "include/flutter_scene.h",
+     "include/flutter_text.h",
+     "include/flutter_image.h",
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 555fd0db5ab..6d66b96cd45 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -4,10 +4,11 @@
+ 
+ #include <stddef.h>
+ 
++#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
+ #include "flutter/runtime_spi/include/flutter_image.h"
++#include "flutter/runtime_spi/include/flutter_fragment.h"
+ #include "flutter/runtime_spi/include/flutter_paint_effects.h"
+ #include "flutter/runtime_spi/include/flutter_text.h"
+-#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
+ 
+ _Static_assert(sizeof(FlutterSpiResult) == 4, "FlutterSpiResult must be 4 bytes");
+ 
+@@ -247,7 +248,7 @@ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, report_error,
+                   sizeof(void*) == 8 ? 104 : 64);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, scene,
+                   sizeof(void*) == 8 ? 112 : 68);
+-SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 144 : 88);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 152 : 88);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, color, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, offset, 20);
+@@ -402,7 +403,43 @@ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, image,
+                   sizeof(void*) == 8 ? 128 : 76);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, paint_effects,
+                   sizeof(void*) == 8 ? 136 : 80);
+-SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 144 : 88);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, fragment,
++                  sizeof(void*) == 8 ? 144 : 84);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 152 : 88);
++
++SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, name,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, type,
++                  sizeof(void*) == 8 ? 16 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, size_bytes,
++                  sizeof(void*) == 8 ? 24 : 12);
++SPI_EXPECT_SIZE(FlutterSpiUniformInfo, sizeof(void*) == 8 ? 32 : 16);
++
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, program_from_asset,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, program_from_bytes,
++                  sizeof(void*) == 8 ? 16 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, program_get_counts,
++                  sizeof(void*) == 8 ? 24 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, program_get_uniform,
++                  sizeof(void*) == 8 ? 32 : 16);
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, program_release,
++                  sizeof(void*) == 8 ? 40 : 20);
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, shader_create,
++                  sizeof(void*) == 8 ? 48 : 24);
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, shader_set_float,
++                  sizeof(void*) == 8 ? 56 : 28);
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, shader_set_image_sampler,
++                  sizeof(void*) == 8 ? 64 : 32);
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, shader_to_shader,
++                  sizeof(void*) == 8 ? 72 : 36);
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, shader_to_image_filter,
++                  sizeof(void*) == 8 ? 80 : 40);
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, shader_release,
++                  sizeof(void*) == 8 ? 88 : 44);
++SPI_EXPECT_SIZE(FlutterSpiFragmentApi, sizeof(void*) == 8 ? 96 : 48);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, shader_linear_gradient,
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_fragment.h b/engine/src/flutter/runtime_spi/include/flutter_fragment.h
+new file mode 100644
+index 00000000000..70ec78aea6d
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/include/flutter_fragment.h
+@@ -0,0 +1,73 @@
++#ifndef FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_FRAGMENT_H_
++#define FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_FRAGMENT_H_
++
++#include <stddef.h>
++#include <stdint.h>
++
++#include "flutter_image.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef struct FlutterSpiFragmentProgram FlutterSpiFragmentProgram;
++typedef struct FlutterSpiFragmentShader FlutterSpiFragmentShader;
++
++typedef enum {
++  kFlutterSpiUniformTypeFloat = 0,
++  kFlutterSpiUniformTypeSampledImage = 1,
++  kFlutterSpiUniformTypeStruct = 2,
++} FlutterSpiUniformType;
++
++typedef struct {
++  size_t struct_size;
++  const char* name;
++  int32_t type;
++  size_t size_bytes;
++} FlutterSpiUniformInfo;
++
++typedef struct FlutterSpiFragmentApi {
++  size_t struct_size;
++  FlutterSpiResult (*program_from_asset)(
++      FlutterSpiEngine* engine,
++      const char* asset_name,
++      FlutterSpiFragmentProgram** out_program,
++      char** out_error);
++  FlutterSpiResult (*program_from_bytes)(
++      FlutterSpiEngine* engine,
++      const uint8_t* data,
++      size_t size,
++      const char* library_id,
++      FlutterSpiFragmentProgram** out_program,
++      char** out_error);
++  FlutterSpiResult (*program_get_counts)(FlutterSpiFragmentProgram* program,
++                                         size_t* out_uniform_count,
++                                         size_t* out_float_count,
++                                         size_t* out_sampler_count);
++  FlutterSpiResult (*program_get_uniform)(FlutterSpiFragmentProgram* program,
++                                          size_t index,
++                                          FlutterSpiUniformInfo* out_info);
++  FlutterSpiResult (*program_release)(FlutterSpiFragmentProgram* program);
++  FlutterSpiResult (*shader_create)(FlutterSpiFragmentProgram* program,
++                                    FlutterSpiFragmentShader** out_shader);
++  FlutterSpiResult (*shader_set_float)(FlutterSpiFragmentShader* shader,
++                                       size_t index,
++                                       float value);
++  FlutterSpiResult (*shader_set_image_sampler)(FlutterSpiFragmentShader* shader,
++                                               size_t index,
++                                               FlutterSpiImage* image,
++                                               int32_t filter_quality);
++  FlutterSpiResult (*shader_to_shader)(FlutterSpiFragmentShader* shader,
++                                       int32_t filter_quality,
++                                       FlutterSpiShader** out_shader);
++  FlutterSpiResult (*shader_to_image_filter)(FlutterSpiFragmentShader* shader,
++                                             int32_t filter_quality,
++                                             FlutterSpiImageFilter** out_filter);
++  FlutterSpiResult (*shader_release)(FlutterSpiFragmentShader* shader);
++} FlutterSpiFragmentApi;
++
++#ifdef __cplusplus
++}  // extern "C"
++#endif
++
++#endif  // FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_FRAGMENT_H_
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index dfc65e76c25..48af7fdb653 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 7
++#define FLUTTER_SPI_VERSION_MINOR 8
+ 
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+@@ -28,6 +28,7 @@ enum {
+   kFlutterSpiCapImageOutput = 1ULL << 10,
+   kFlutterSpiCapPaintEffects = 1ULL << 11,
+   kFlutterSpiCapSceneLayers = 1ULL << 12,
++  kFlutterSpiCapFragmentPrograms = 1ULL << 13,
+ };
+ 
+ typedef struct FlutterSpiEngine FlutterSpiEngine;
+@@ -39,6 +40,7 @@ typedef struct FlutterSpiEngineApi FlutterSpiEngineApi;
+ #include "flutter_text.h"
+ #include "flutter_image.h"
+ #include "flutter_paint_effects.h"
++#include "flutter_fragment.h"
+ 
+ typedef struct {
+   size_t struct_size;
+@@ -218,6 +220,7 @@ struct FlutterSpiEngineApi {
+   const FlutterSpiTextApi* text;
+   const FlutterSpiImageApi* image;
+   const FlutterSpiPaintEffectsApi* paint_effects;
++  const FlutterSpiFragmentApi* fragment;
+ };
+ 
+ /*
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index aa864a704ca..e5ff1bd7f9c 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -6,10 +6,11 @@
+ 
+ #include "flutter/display_list/dl_color.h"
+ #include "flutter/display_list/dl_paint.h"
++#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
+ #include "flutter/runtime_spi/include/flutter_image.h"
++#include "flutter/runtime_spi/include/flutter_fragment.h"
+ #include "flutter/runtime_spi/include/flutter_paint_effects.h"
+ #include "flutter/runtime_spi/include/flutter_text.h"
+-#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
+ #include "flutter/txt/src/txt/font_style.h"
+ #include "flutter/txt/src/txt/paragraph_style.h"
+ #include "flutter/txt/src/txt/text_baseline.h"
+@@ -49,6 +50,7 @@ TEST(SpiAbi, CapabilityValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiCapImageOutput, 1ULL << 10);
+   EXPECT_EQ(kFlutterSpiCapPaintEffects, 1ULL << 11);
+   EXPECT_EQ(kFlutterSpiCapSceneLayers, 1ULL << 12);
++  EXPECT_EQ(kFlutterSpiCapFragmentPrograms, 1ULL << 13);
+ }
+ 
+ TEST(SpiAbi, ImageEnumValuesAreFrozen) {
+@@ -65,7 +67,13 @@ TEST(SpiAbi, ImageEnumValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawUnmodified, 2);
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawExtendedRGBA128, 3);
+   EXPECT_EQ(kFlutterSpiImageByteFormatPNG, 4);
+-  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 7);
++  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 8);
++}
++
++TEST(SpiAbi, FragmentUniformEnumValuesAreFrozen) {
++  EXPECT_EQ(kFlutterSpiUniformTypeFloat, 0);
++  EXPECT_EQ(kFlutterSpiUniformTypeSampledImage, 1);
++  EXPECT_EQ(kFlutterSpiUniformTypeStruct, 2);
+ }
+ 
+ TEST(SpiAbi, PaintEffectsEnumValuesAreFrozen) {
+@@ -345,7 +353,32 @@ TEST(SpiAbi, EngineApiLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, text, 120, 72);
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, image, 128, 76);
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, paint_effects, 136, 80);
+-  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 144u : 88u);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, fragment, 144, 84);
++  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 152u : 88u);
++}
++
++TEST(SpiAbi, FragmentUniformInfoLayoutIsFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiUniformInfo, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiUniformInfo, name, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiUniformInfo, type, 16, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiUniformInfo, size_bytes, 24, 12);
++  EXPECT_EQ(sizeof(FlutterSpiUniformInfo), sizeof(void*) == 8 ? 32u : 16u);
++}
++
++TEST(SpiAbi, FragmentApiLayoutIsFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiFragmentApi, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiFragmentApi, program_from_asset, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiFragmentApi, program_from_bytes, 16, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiFragmentApi, program_get_counts, 24, 12);
++  EXPECT_SPI_OFFSET(FlutterSpiFragmentApi, program_get_uniform, 32, 16);
++  EXPECT_SPI_OFFSET(FlutterSpiFragmentApi, program_release, 40, 20);
++  EXPECT_SPI_OFFSET(FlutterSpiFragmentApi, shader_create, 48, 24);
++  EXPECT_SPI_OFFSET(FlutterSpiFragmentApi, shader_set_float, 56, 28);
++  EXPECT_SPI_OFFSET(FlutterSpiFragmentApi, shader_set_image_sampler, 64, 32);
++  EXPECT_SPI_OFFSET(FlutterSpiFragmentApi, shader_to_shader, 72, 36);
++  EXPECT_SPI_OFFSET(FlutterSpiFragmentApi, shader_to_image_filter, 80, 40);
++  EXPECT_SPI_OFFSET(FlutterSpiFragmentApi, shader_release, 88, 44);
++  EXPECT_EQ(sizeof(FlutterSpiFragmentApi), sizeof(void*) == 8 ? 96u : 48u);
+ }
+ 
+ TEST(SpiAbi, PaintEffectsApiLayoutIsFrozen) {
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index 49057496927..27f58f5f372 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -154,6 +154,7 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+       .text = &kTextApi,
+       .image = &image_api,
+       .paint_effects = &kPaintEffectsApi,
++      .fragment = nullptr,
+   };
+ }
+ 
