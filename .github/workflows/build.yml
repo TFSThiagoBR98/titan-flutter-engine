@@ -195,6 +195,10 @@ jobs:
       # directory under RUNNER_TEMP is exported from the first step.
       - name: Set work directory
         run: echo "TITAN_WORK_DIR=$RUNNER_TEMP/titan/work" >> "$GITHUB_ENV"
+      # The checkout scripts serialize patch application with flock(1), which
+      # macOS does not ship; Homebrew's flock has the util-linux semantics.
+      - name: Install flock
+        run: brew install flock
       - name: Build macOS host, frameworks and snapshots
         run: |
           for mode in debug profile release; do
