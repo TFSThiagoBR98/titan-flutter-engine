@@ -1,0 +1,360 @@
+# Why: cover the complete runtime SPI contract with a pure C runtime,
+# including display updates, hit testing, navigation-provided initial routes,
+# and asset reads. Query engine data on the first frame because RunEngine
+# installs the route and asset manager after the runtime starts; query the
+# current asset manager from RuntimeDelegate instead of caching it during
+# backend construction.
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_fragment.cc b/engine/src/flutter/runtime_spi/effects/spi_fragment.cc
+index 9aa3a1e301e..2503604767c 100644
+--- a/engine/src/flutter/runtime_spi/effects/spi_fragment.cc
++++ b/engine/src/flutter/runtime_spi/effects/spi_fragment.cc
+@@ -21,6 +21,7 @@
+ #include "flutter/fml/status.h"
+ #include "flutter/impeller/core/runtime_types.h"
+ #include "flutter/lib/ui/painting/runtime_effect_loader.h"
++#include "flutter/runtime/runtime_delegate.h"
+ #include "flutter/runtime_spi/effects/spi_image_filter.h"
+ #include "flutter/runtime_spi/effects/spi_shader.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
+@@ -208,12 +209,14 @@ FlutterSpiResult SpiFragment::ProgramFromAsset(
+   if (check != kFlutterSpiOk || asset_name == nullptr || out_program == nullptr) {
+     return check != kFlutterSpiOk ? check : kFlutterSpiInvalidArgument;
+   }
+-  if (backend->asset_manager_ == nullptr) {
++  const std::shared_ptr<AssetManager> asset_manager =
++      backend->runtime_delegate_.GetAssetManager();
++  if (asset_manager == nullptr) {
+     SetError(out_error, "Asset manager is unavailable.");
+     return kFlutterSpiInternalError;
+   }
+   std::unique_ptr<fml::Mapping> data =
+-      backend->asset_manager_->GetAsMapping(asset_name);
++      asset_manager->GetAsMapping(asset_name);
+   if (data == nullptr) {
+     SetError(out_error, std::string("Asset '") + asset_name + "' not found");
+     return kFlutterSpiInvalidArgument;
+diff --git a/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+index 3f8757eacba..5ae0d717766 100644
+--- a/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+@@ -27,6 +27,7 @@
+ #include "flutter/runtime_spi/scene/spi_scene_trace.h"
+ #include "flutter/runtime_spi/testing/c_test_runtime.h"
+ #include "flutter/runtime_spi/testing/test_icu.h"
++#include "flutter/shell/common/display.h"
+ #include "flutter/shell/common/platform_message_handler.h"
+ #include "flutter/shell/common/platform_view.h"
+ #include "flutter/shell/common/shell_test.h"
+@@ -231,7 +232,7 @@ class SpiConformance : public ShellTest {
+     c_test_runtime_free(runtime_);
+   }
+ 
+-  void StartShell() {
++  void StartShell(const char* initial_route = nullptr) {
+     auto settings = CreateSettingsForFixture();
+     settings.icu_data_path = IcuDataPathForTesting();
+     auto factory = std::make_shared<SpiRuntimeBackendFactory>(
+@@ -245,6 +246,18 @@ class SpiConformance : public ShellTest {
+     ASSERT_TRUE(shell_->IsSetup());
+     ASSERT_EQ(shell_->GetDartVM(), nullptr);
+     PlatformViewNotifyCreated(shell_.get());
++    if (initial_route != nullptr) {
++      const std::string payload =
++          std::string("{\"method\":\"setInitialRoute\",\"args\":\"") +
++          initial_route + "\"}";
++      PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++        shell_->GetEngine()->DispatchPlatformMessage(
++            std::make_unique<PlatformMessage>(
++                "flutter/navigation",
++                fml::MallocMapping::Copy(payload.data(), payload.size()),
++                nullptr));
++      });
++    }
+     RunEngine(shell_.get(), RunConfiguration::InferFromSettings(settings));
+   }
+ 
+@@ -317,6 +330,56 @@ TEST_F(SpiConformance, HandshakeStartsRuntimeWithoutDartVM) {
+   EXPECT_FALSE(DartVMRef::IsInstanceRunning());
+ }
+ 
++TEST_F(SpiConformance, DisplaysReachRuntime) {
++  StartShell();
++  PostSync(shell_->GetTaskRunners().GetPlatformTaskRunner(), [&] {
++    std::vector<std::unique_ptr<Display>> displays;
++    displays.push_back(std::make_unique<Display>(7, 60.0, 800.0, 600.0, 2.0));
++    shell_->OnDisplayUpdates(std::move(displays));
++  });
++  FlushUi();
++
++  ASSERT_EQ(runtime_->display_count, 1u);
++  EXPECT_EQ(runtime_->displays[0].id, 7u);
++  EXPECT_EQ(runtime_->displays[0].width, 800.0);
++  EXPECT_EQ(runtime_->displays[0].height, 600.0);
++  EXPECT_EQ(runtime_->displays[0].pixel_ratio, 2.0);
++  EXPECT_EQ(runtime_->displays[0].refresh_rate, 60.0);
++}
++
++TEST_F(SpiConformance, HitTestIsAnsweredByRuntime) {
++  runtime_->hit_test_answer = true;
++  StartShell();
++  HitTestResponse response;
++  PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++    response = shell_->GetEngine()->HitTest(kImplicitViewId, {12.0, 34.0});
++  });
++
++  EXPECT_TRUE(response.has_platform_view);
++  EXPECT_EQ(runtime_->hit_test_count, 1u);
++  EXPECT_EQ(runtime_->last_hit_test_view_id, kImplicitViewId);
++  EXPECT_EQ(runtime_->last_hit_test_x, 12.0);
++  EXPECT_EQ(runtime_->last_hit_test_y, 34.0);
++}
++
++TEST_F(SpiConformance, DefaultRouteComesFromNavigationMessage) {
++  runtime_->query_default_route_name_on_start = true;
++  StartShell("/navigation-route");
++  PumpOneFrame(shell_.get());
++
++  ASSERT_NE(runtime_->start_default_route_name, nullptr);
++  EXPECT_STREQ(runtime_->start_default_route_name, "/navigation-route");
++}
++
++TEST_F(SpiConformance, AssetIsReadThroughTheSpi) {
++  runtime_->query_asset_on_start = true;
++  StartShell();
++  PumpOneFrame(shell_.get());
++
++  ASSERT_NE(runtime_->start_asset_data, nullptr);
++  EXPECT_GT(runtime_->start_asset_size, 0u);
++}
++
+ TEST_F(SpiConformance, ViewMetricsReachRuntime) {
+   StartShell();
+   ViewportMetrics metrics;
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index 1f8a42deea9..5237decdb49 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -421,12 +421,16 @@ bool SpiEngineApi::AssetGet(FlutterSpiEngine* engine,
+   }
+   *out_mapping = {};
+   if (engine == nullptr || engine->backend == nullptr ||
+-      !engine->backend->HasUiThread() ||
+-      engine->backend->asset_manager_ == nullptr) {
++      !engine->backend->HasUiThread()) {
++    return false;
++  }
++  const std::shared_ptr<AssetManager> asset_manager =
++      engine->backend->runtime_delegate_.GetAssetManager();
++  if (asset_manager == nullptr) {
+     return false;
+   }
+   std::unique_ptr<fml::Mapping> mapping =
+-      engine->backend->asset_manager_->GetAsMapping(name);
++      asset_manager->GetAsMapping(name);
+   if (mapping == nullptr) {
+     return false;
+   }
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+index bd791370fe0..459b093b818 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+@@ -112,7 +112,6 @@ SpiRuntimeBackend::SpiRuntimeBackend(
+       table_(table),
+       engine_api_(SpiEngineApi::Create()),
+       engine_handle_(new FlutterSpiEngine{this}),
+-      asset_manager_(runtime_delegate.GetAssetManager()),
+       snapshot_delegate_(snapshot_delegate),
+       runtime_stage_backend_(std::move(runtime_stage_backend)),
+       impeller_enabled_(impeller_enabled),
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.h b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+index e7538bd15e2..fb192d0b472 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.h
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+@@ -185,7 +185,6 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+   bool started_ = false;
+   bool stop_requested_ = false;
+   bool stop_called_ = false;
+-  std::shared_ptr<AssetManager> asset_manager_;
+   fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate_;
+   std::shared_future<impeller::RuntimeStageBackend> runtime_stage_backend_;
+   bool impeller_enabled_ = false;
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.c b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+index a31a295e7cf..6c9819aa95c 100644
+--- a/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+@@ -35,6 +35,46 @@ static uint8_t* copy_payload(const uint8_t* data, size_t size) {
+   return copy;
+ }
+ 
++static void copy_displays(CTestRuntime* runtime,
++                          const FlutterSpiDisplay* displays,
++                          size_t count) {
++  FlutterSpiDisplay* copy;
++
++  free(runtime->displays);
++  runtime->displays = NULL;
++  runtime->display_count = 0;
++  if (displays == NULL || count == 0) {
++    return;
++  }
++  copy = (FlutterSpiDisplay*)malloc(count * sizeof(*copy));
++  if (copy == NULL) {
++    return;
++  }
++  memcpy(copy, displays, count * sizeof(*copy));
++  runtime->displays = copy;
++  runtime->display_count = count;
++}
++
++static void copy_timings(CTestRuntime* runtime,
++                         const int64_t* timings,
++                         size_t count) {
++  int64_t* copy;
++
++  free(runtime->timings);
++  runtime->timings = NULL;
++  runtime->timing_count = 0;
++  if (timings == NULL || count == 0) {
++    return;
++  }
++  copy = (int64_t*)malloc(count * sizeof(*copy));
++  if (copy == NULL) {
++    return;
++  }
++  memcpy(copy, timings, count * sizeof(*copy));
++  runtime->timings = copy;
++  runtime->timing_count = count;
++}
++
+ static void test_runtime_free_string(void* user_data, char* string) {
+   (void)user_data;
+   free(string);
+@@ -63,6 +103,31 @@ static bool test_runtime_get_root_isolate_return_code(void* user_data,
+   return false;
+ }
+ 
++static void test_runtime_set_displays(void* user_data,
++                                      const FlutterSpiDisplay* displays,
++                                      size_t count) {
++  copy_displays((CTestRuntime*)user_data, displays, count);
++}
++
++static void test_runtime_report_timings(void* user_data,
++                                        const int64_t* timings,
++                                        size_t count) {
++  copy_timings((CTestRuntime*)user_data, timings, count);
++}
++
++static bool test_runtime_hit_test(void* user_data,
++                                  int64_t view_id,
++                                  double x,
++                                  double y) {
++  CTestRuntime* runtime = (CTestRuntime*)user_data;
++
++  runtime->hit_test_count++;
++  runtime->last_hit_test_view_id = view_id;
++  runtime->last_hit_test_x = x;
++  runtime->last_hit_test_y = y;
++  return runtime->hit_test_answer;
++}
++
+ static char* test_runtime_get_isolate_name(void* user_data) {
+   (void)user_data;
+   return NULL;
+@@ -227,6 +292,32 @@ static void test_runtime_image_callback(void* user_data,
+   }
+ }
+ 
++static void test_runtime_query_engine_on_first_frame(CTestRuntime* runtime) {
++  FlutterSpiMapping mapping = {0};
++  char* route_name;
++
++  if (runtime->begin_frame_count != 1 || runtime->engine_api == NULL ||
++      runtime->engine == NULL) {
++    return;
++  }
++  if (runtime->query_default_route_name_on_start &&
++      runtime->engine_api->default_route_name != NULL &&
++      runtime->engine_api->free_string != NULL) {
++    route_name = runtime->engine_api->default_route_name(runtime->engine);
++    runtime->start_default_route_name = copy_string(route_name);
++    runtime->engine_api->free_string(runtime->engine, route_name);
++  }
++  if (runtime->query_asset_on_start && runtime->engine_api->asset_get != NULL &&
++      runtime->engine_api->asset_get(runtime->engine, "shelltest_screenshot.png",
++                                     &mapping)) {
++    runtime->start_asset_data = copy_payload(mapping.data, mapping.size);
++    runtime->start_asset_size = mapping.size;
++    if (mapping.release != NULL) {
++      mapping.release(mapping.release_user_data);
++    }
++  }
++}
++
+ static FlutterSpiResult test_runtime_start(void* user_data,
+                                            const FlutterSpiEngineApi* api,
+                                            FlutterSpiEngine* engine) {
+@@ -278,6 +369,7 @@ static void test_runtime_begin_frame(void* user_data,
+     runtime->last_frame_info = *frame_info;
+     runtime->has_last_frame_info = true;
+   }
++  test_runtime_query_engine_on_first_frame(runtime);
+   if ((!runtime->submit_on_begin_frame && !runtime->semantics_on_begin_frame &&
+        !runtime->draw_scene_on_begin_frame &&
+        !runtime->draw_effects_on_begin_frame &&
+@@ -1164,9 +1256,13 @@ void c_test_runtime_free(CTestRuntime* runtime) {
+     runtime->engine_api->scene->engine_layer_release(runtime->retained_layer);
+   }
+   free(runtime->pointer_events);
++  free(runtime->displays);
++  free(runtime->timings);
+   free(runtime->last_key_character);
+   free(runtime->last_channel);
+   free(runtime->last_payload);
++  free(runtime->start_default_route_name);
++  free(runtime->start_asset_data);
+   free(runtime);
+ }
+ 
+@@ -1196,6 +1292,9 @@ FlutterSpiRuntimeTable c_test_runtime_table(CTestRuntime* runtime) {
+   table.set_lifecycle_state = test_runtime_set_lifecycle_state;
+   table.view_focus = test_runtime_view_focus;
+   table.notify_idle = test_runtime_notify_idle;
++  table.set_displays = test_runtime_set_displays;
++  table.report_timings = test_runtime_report_timings;
++  table.hit_test = test_runtime_hit_test;
+   table.extensions = &runtime->extensions;
+   return table;
+ }
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.h b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+index c51db641775..6a993c7a513 100644
+--- a/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+@@ -26,6 +26,15 @@ typedef struct CTestRuntime {
+   size_t set_lifecycle_state_count;
+   size_t view_focus_count;
+   size_t notify_idle_count;
++  FlutterSpiDisplay* displays;
++  size_t display_count;
++  int64_t* timings;
++  size_t timing_count;
++  bool hit_test_answer;
++  size_t hit_test_count;
++  int64_t last_hit_test_view_id;
++  double last_hit_test_x;
++  double last_hit_test_y;
+   size_t flush_microtask_count;
+   bool has_deferred_library;
+   int64_t deferred_library_id;
+@@ -85,6 +94,11 @@ typedef struct CTestRuntime {
+   bool fail_start;
+   bool key_event_handled;
+   bool runtime_code_running;
++  bool query_default_route_name_on_start;
++  char* start_default_route_name;
++  bool query_asset_on_start;
++  uint8_t* start_asset_data;
++  size_t start_asset_size;
+ } CTestRuntime;
+ 
+ #ifdef __cplusplus
