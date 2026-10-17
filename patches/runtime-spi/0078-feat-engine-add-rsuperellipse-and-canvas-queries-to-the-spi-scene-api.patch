@@ -1,0 +1,437 @@
+# Why: Expose the ABI 0.15 canvas operations and queries needed to preserve
+# dart:ui canvas parity.
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 92e72751fd2..5f53d2d416c 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -776,7 +776,17 @@ SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_add_retained,
+                   sizeof(void*) == 8 ? 544 : 272);
+ SPI_EXPECT_OFFSET(FlutterSpiSceneApi, engine_layer_release,
+                   sizeof(void*) == 8 ? 552 : 276);
+-SPI_EXPECT_SIZE(FlutterSpiSceneApi, sizeof(void*) == 8 ? 560 : 280);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, canvas_draw_rsuperellipse,
++                  sizeof(void*) == 8 ? 560 : 280);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, canvas_clip_rsuperellipse,
++                  sizeof(void*) == 8 ? 568 : 284);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, canvas_get_transform,
++                  sizeof(void*) == 8 ? 576 : 288);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, canvas_get_local_clip_bounds,
++                  sizeof(void*) == 8 ? 584 : 292);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, canvas_get_destination_clip_bounds,
++                  sizeof(void*) == 8 ? 592 : 296);
++SPI_EXPECT_SIZE(FlutterSpiSceneApi, sizeof(void*) == 8 ? 600 : 300);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiPixels, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiPixels, pixels,
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index 20a751f9005..12826df1018 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 14
++#define FLUTTER_SPI_VERSION_MINOR 15
+ 
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_scene.h b/engine/src/flutter/runtime_spi/include/flutter_scene.h
+index 300be421184..0951798e17b 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_scene.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_scene.h
+@@ -384,6 +384,24 @@ struct FlutterSpiSceneApi {
+   FlutterSpiResult (*scene_add_retained)(FlutterSpiSceneBuilder* builder,
+                                          FlutterSpiEngineLayer* layer);
+   FlutterSpiResult (*engine_layer_release)(FlutterSpiEngineLayer* layer);
++  FlutterSpiResult (*canvas_draw_rsuperellipse)(
++      FlutterSpiPictureRecorder* recorder,
++      const FlutterSpiRRect* rsuperellipse,
++      const FlutterSpiPaint* paint);
++  FlutterSpiResult (*canvas_clip_rsuperellipse)(
++      FlutterSpiPictureRecorder* recorder,
++      const FlutterSpiRRect* rsuperellipse,
++      int32_t clip_op,
++      bool anti_alias);
++  FlutterSpiResult (*canvas_get_transform)(
++      FlutterSpiPictureRecorder* recorder,
++      double out_matrix4[16]);
++  FlutterSpiResult (*canvas_get_local_clip_bounds)(
++      FlutterSpiPictureRecorder* recorder,
++      FlutterSpiRect* out);
++  FlutterSpiResult (*canvas_get_destination_clip_bounds)(
++      FlutterSpiPictureRecorder* recorder,
++      FlutterSpiRect* out);
+ };
+ 
+ #ifdef __cplusplus
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+index c6e4ef4887f..b94d4a185a3 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+@@ -54,6 +54,31 @@ DlPointMode ToDlPointMode(int32_t point_mode) {
+   return static_cast<DlPointMode>(point_mode);
+ }
+ 
++bool IsFinite(const FlutterSpiRRect& rrect) {
++  if (!std::isfinite(rrect.rect.left) || !std::isfinite(rrect.rect.top) ||
++      !std::isfinite(rrect.rect.right) ||
++      !std::isfinite(rrect.rect.bottom)) {
++    return false;
++  }
++  for (const FlutterSpiPoint& radius : rrect.radii) {
++    if (!std::isfinite(radius.x) || !std::isfinite(radius.y)) {
++      return false;
++    }
++  }
++  return true;
++}
++
++DlRoundSuperellipse ToDlRoundSuperellipse(const FlutterSpiRRect& rrect) {
++  return DlRoundSuperellipse::MakeRectRadii(
++      DlRect::MakeLTRB(rrect.rect.left, rrect.rect.top, rrect.rect.right,
++                       rrect.rect.bottom)
++          .GetPositive(),
++      {.top_left = {rrect.radii[0].x, rrect.radii[0].y},
++       .top_right = {rrect.radii[1].x, rrect.radii[1].y},
++       .bottom_left = {rrect.radii[3].x, rrect.radii[3].y},
++       .bottom_right = {rrect.radii[2].x, rrect.radii[2].y}});
++}
++
+ class SpiPictureRecorder final {
+  public:
+   explicit SpiPictureRecorder(const DlRect& cull_rect)
+@@ -382,6 +407,57 @@ FlutterSpiResult CanvasGetSaveCount(FlutterSpiPictureRecorder* recorder,
+   return kFlutterSpiOk;
+ }
+ 
++FlutterSpiResult CanvasGetTransform(FlutterSpiPictureRecorder* recorder,
++                                    double out_matrix4[16]) {
++  const auto recorder_value = FindRecorder(recorder);
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (out_matrix4 == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const DlMatrix matrix = recorder_value->builder()->GetMatrix();
++  for (size_t index = 0; index < 16; ++index) {
++    out_matrix4[index] = matrix.m[index];
++  }
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasGetLocalClipBounds(FlutterSpiPictureRecorder* recorder,
++                                          FlutterSpiRect* out) {
++  const auto recorder_value = FindRecorder(recorder);
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (out == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const DlRect bounds = recorder_value->builder()->GetLocalClipCoverage();
++  out->left = bounds.GetLeft();
++  out->top = bounds.GetTop();
++  out->right = bounds.GetRight();
++  out->bottom = bounds.GetBottom();
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CanvasGetDestinationClipBounds(
++    FlutterSpiPictureRecorder* recorder,
++    FlutterSpiRect* out) {
++  const auto recorder_value = FindRecorder(recorder);
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (out == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const DlRect bounds = recorder_value->builder()->GetDestinationClipCoverage();
++  out->left = bounds.GetLeft();
++  out->top = bounds.GetTop();
++  out->right = bounds.GetRight();
++  out->bottom = bounds.GetBottom();
++  return kFlutterSpiOk;
++}
++
+ FlutterSpiResult CanvasTranslate(FlutterSpiPictureRecorder* recorder,
+                                  float dx,
+                                  float dy) {
+@@ -486,6 +562,23 @@ FlutterSpiResult CanvasClipRRect(FlutterSpiPictureRecorder* recorder,
+   return kFlutterSpiOk;
+ }
+ 
++FlutterSpiResult CanvasClipRSuperellipse(FlutterSpiPictureRecorder* recorder,
++                                         const FlutterSpiRRect* rsuperellipse,
++                                         int32_t clip_op,
++                                         bool anti_alias) {
++  const auto recorder_value = FindRecorder(recorder);
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (rsuperellipse == nullptr || !IsFinite(*rsuperellipse) ||
++      !IsValidClipOp(clip_op)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  recorder_value->builder()->ClipRoundSuperellipse(
++      ToDlRoundSuperellipse(*rsuperellipse), ToDlClipOp(clip_op), anti_alias);
++  return kFlutterSpiOk;
++}
++
+ FlutterSpiResult CanvasClipPath(FlutterSpiPictureRecorder* recorder,
+                                 FlutterSpiPath* path,
+                                 int32_t clip_op,
+@@ -605,6 +698,29 @@ FlutterSpiResult CanvasDrawRRect(FlutterSpiPictureRecorder* recorder,
+   return kFlutterSpiOk;
+ }
+ 
++FlutterSpiResult CanvasDrawRSuperellipse(
++    FlutterSpiPictureRecorder* recorder,
++    const FlutterSpiRRect* rsuperellipse,
++    const FlutterSpiPaint* paint) {
++  const auto recorder_value = FindRecorder(recorder);
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (rsuperellipse == nullptr || paint == nullptr ||
++      !IsFinite(*rsuperellipse)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  DlPaint dl_paint;
++  const FlutterSpiResult paint_result =
++      ConvertPaint(paint, DlTileMode::kDecal, &dl_paint);
++  if (paint_result != kFlutterSpiOk) {
++    return paint_result;
++  }
++  recorder_value->builder()->DrawRoundSuperellipse(
++      ToDlRoundSuperellipse(*rsuperellipse), dl_paint);
++  return kFlutterSpiOk;
++}
++
+ FlutterSpiResult CanvasDrawDiffRRect(FlutterSpiPictureRecorder* recorder,
+                                      const FlutterSpiRRect* outer,
+                                      const FlutterSpiRRect* inner,
+@@ -893,6 +1009,11 @@ const FlutterSpiSceneApi kSceneApi = {
+     .scene_assign_old_layer = SpiSceneAssignOldLayer,
+     .scene_add_retained = SpiSceneAddRetained,
+     .engine_layer_release = SpiEngineLayerRelease,
++    .canvas_draw_rsuperellipse = CanvasDrawRSuperellipse,
++    .canvas_clip_rsuperellipse = CanvasClipRSuperellipse,
++    .canvas_get_transform = CanvasGetTransform,
++    .canvas_get_local_clip_bounds = CanvasGetLocalClipBounds,
++    .canvas_get_destination_clip_bounds = CanvasGetDestinationClipBounds,
+ };
+ 
+ }  // namespace
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas_parity_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_canvas_parity_unittests.cc
+index 9487f2350b6..d91587cf5df 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas_parity_unittests.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas_parity_unittests.cc
+@@ -42,6 +42,13 @@ constexpr FlutterSpiPaint kPaint = {
+     .invert_colors = false,
+ };
+ 
++constexpr FlutterSpiRRect kRSuperellipse = {
++    .rect = {.left = 1.0f, .top = 2.0f, .right = 30.0f, .bottom = 40.0f},
++    .radii = {{.x = 4.0f, .y = 5.0f},
++              {.x = 6.0f, .y = 7.0f},
++              {.x = 8.0f, .y = 9.0f},
++              {.x = 10.0f, .y = 11.0f}}};
++
+ class SpiCanvasTest : public ::testing::Test {
+  protected:
+   void SetUp() override { engine_ = std::make_unique<FlutterSpiEngine>(); }
+@@ -79,6 +86,42 @@ class PaintOpProbe final : public IgnoreAttributeDispatchHelper,
+   std::shared_ptr<DlImageFilter> image_filter;
+ };
+ 
++class RSuperellipseOpProbe final : public IgnoreAttributeDispatchHelper,
++                                   public IgnoreClipDispatchHelper,
++                                   public IgnoreTransformDispatchHelper,
++                                   public IgnoreDrawDispatchHelper {
++ public:
++  void clipRoundSuperellipse(const DlRoundSuperellipse& rse,
++                             DlClipOp clip_op,
++                             bool is_aa) override {
++    clip_count++;
++  }
++
++  void drawRoundSuperellipse(const DlRoundSuperellipse& rse) override {
++    draw_count++;
++  }
++
++  int clip_count = 0;
++  int draw_count = 0;
++};
++
++DlRoundSuperellipse ToDlRSuperellipse(const FlutterSpiRRect& shape) {
++  return DlRoundSuperellipse::MakeRectRadii(
++      DlRect::MakeLTRB(shape.rect.left, shape.rect.top, shape.rect.right,
++                       shape.rect.bottom),
++      {.top_left = {shape.radii[0].x, shape.radii[0].y},
++       .top_right = {shape.radii[1].x, shape.radii[1].y},
++       .bottom_left = {shape.radii[3].x, shape.radii[3].y},
++       .bottom_right = {shape.radii[2].x, shape.radii[2].y}});
++}
++
++void ExpectRectEquals(const FlutterSpiRect& actual, const DlRect& expected) {
++  EXPECT_FLOAT_EQ(actual.left, expected.GetLeft());
++  EXPECT_FLOAT_EQ(actual.top, expected.GetTop());
++  EXPECT_FLOAT_EQ(actual.right, expected.GetRight());
++  EXPECT_FLOAT_EQ(actual.bottom, expected.GetBottom());
++}
++
+ sk_sp<DisplayList> FinishPicture(const FlutterSpiSceneApi* api,
+                                  FlutterSpiPictureRecorder* recorder) {
+   FlutterSpiPicture* picture = nullptr;
+@@ -124,6 +167,117 @@ TEST_F(SpiCanvasTest, AbiSequenceMatchesDisplayListBuilder) {
+   ASSERT_EQ(api()->recorder_release(recorder), kFlutterSpiInvalidHandle);
+ }
+ 
++TEST_F(SpiCanvasTest, DrawRSuperellipseMatchesDisplayListBuilder) {
++  ASSERT_NE(api()->canvas_draw_rsuperellipse, nullptr);
++  FlutterSpiPictureRecorder* recorder = nullptr;
++  ASSERT_EQ(api()->recorder_create(engine(), &kRect, &recorder), kFlutterSpiOk);
++  ASSERT_EQ(api()->canvas_draw_rsuperellipse(recorder, &kRSuperellipse, &kPaint),
++            kFlutterSpiOk);
++
++  const auto actual = FinishPicture(api(), recorder);
++  DisplayListBuilder expected_builder(DlRect::MakeLTRB(1, 2, 30, 40));
++  expected_builder.DrawRoundSuperellipse(ToDlRSuperellipse(kRSuperellipse),
++                                         ToDlPaint(kPaint));
++  const auto expected = expected_builder.Build();
++
++  ASSERT_NE(actual, nullptr);
++  EXPECT_TRUE(actual->Equals(expected));
++  RSuperellipseOpProbe probe;
++  actual->Dispatch(probe);
++  EXPECT_EQ(probe.draw_count, 1);
++}
++
++TEST_F(SpiCanvasTest, ClipRSuperellipseMatchesDisplayListBuilder) {
++  ASSERT_NE(api()->canvas_clip_rsuperellipse, nullptr);
++  FlutterSpiPictureRecorder* recorder = nullptr;
++  ASSERT_EQ(api()->recorder_create(engine(), &kRect, &recorder), kFlutterSpiOk);
++  ASSERT_EQ(api()->canvas_clip_rsuperellipse(
++                recorder, &kRSuperellipse, kFlutterSpiClipOpIntersect, true),
++            kFlutterSpiOk);
++  ASSERT_EQ(api()->canvas_draw_rect(recorder, &kRect, &kPaint), kFlutterSpiOk);
++
++  const auto actual = FinishPicture(api(), recorder);
++  DisplayListBuilder expected_builder(DlRect::MakeLTRB(1, 2, 30, 40));
++  expected_builder.ClipRoundSuperellipse(ToDlRSuperellipse(kRSuperellipse),
++                                         DlClipOp::kIntersect, true);
++  expected_builder.DrawRect(DlRect::MakeLTRB(1, 2, 30, 40), ToDlPaint(kPaint));
++  const auto expected = expected_builder.Build();
++
++  ASSERT_NE(actual, nullptr);
++  EXPECT_TRUE(actual->Equals(expected));
++  RSuperellipseOpProbe probe;
++  actual->Dispatch(probe);
++  EXPECT_EQ(probe.clip_count, 1);
++}
++
++TEST_F(SpiCanvasTest, GetTransformAfterNestedSavesMatchesDisplayListBuilder) {
++  ASSERT_NE(api()->canvas_get_transform, nullptr);
++  FlutterSpiPictureRecorder* recorder = nullptr;
++  ASSERT_EQ(api()->recorder_create(engine(), &kRect, &recorder), kFlutterSpiOk);
++  ASSERT_EQ(api()->canvas_translate(recorder, 3.0f, 4.0f), kFlutterSpiOk);
++  ASSERT_EQ(api()->canvas_scale(recorder, 2.0f, 3.0f), kFlutterSpiOk);
++  ASSERT_EQ(api()->canvas_rotate(recorder, 0.5f), kFlutterSpiOk);
++  ASSERT_EQ(api()->canvas_save(recorder), kFlutterSpiOk);
++  ASSERT_EQ(api()->canvas_translate(recorder, -1.0f, 5.0f), kFlutterSpiOk);
++
++  double actual_matrix[16] = {};
++  ASSERT_EQ(api()->canvas_get_transform(recorder, actual_matrix), kFlutterSpiOk);
++
++  DisplayListBuilder expected_builder(DlRect::MakeLTRB(1, 2, 30, 40));
++  expected_builder.Translate(3.0f, 4.0f);
++  expected_builder.Scale(2.0f, 3.0f);
++  expected_builder.Rotate(0.5f * 180.0f / 3.14159265358979323846f);
++  expected_builder.Save();
++  expected_builder.Translate(-1.0f, 5.0f);
++  const DlMatrix expected_matrix = expected_builder.GetMatrix();
++  for (size_t index = 0; index < 16; ++index) {
++    EXPECT_FLOAT_EQ(actual_matrix[index], expected_matrix.m[index]);
++  }
++
++  ASSERT_EQ(api()->canvas_restore(recorder), kFlutterSpiOk);
++  double restored_matrix[16] = {};
++  ASSERT_EQ(api()->canvas_get_transform(recorder, restored_matrix),
++            kFlutterSpiOk);
++  expected_builder.Restore();
++  const DlMatrix expected_restored_matrix = expected_builder.GetMatrix();
++  for (size_t index = 0; index < 16; ++index) {
++    EXPECT_FLOAT_EQ(restored_matrix[index], expected_restored_matrix.m[index]);
++  }
++  EXPECT_EQ(api()->recorder_release(recorder), kFlutterSpiOk);
++}
++
++TEST_F(SpiCanvasTest, LocalAndDestinationClipBoundsMatchDisplayListBuilder) {
++  ASSERT_NE(api()->canvas_get_local_clip_bounds, nullptr);
++  ASSERT_NE(api()->canvas_get_destination_clip_bounds, nullptr);
++  FlutterSpiPictureRecorder* recorder = nullptr;
++  ASSERT_EQ(api()->recorder_create(engine(), &kRect, &recorder), kFlutterSpiOk);
++  ASSERT_EQ(api()->canvas_save(recorder), kFlutterSpiOk);
++  ASSERT_EQ(api()->canvas_clip_rect(recorder, &kRect,
++                                    kFlutterSpiClipOpIntersect, true),
++            kFlutterSpiOk);
++  ASSERT_EQ(api()->canvas_translate(recorder, 10.0f, 20.0f), kFlutterSpiOk);
++
++  FlutterSpiRect actual_local = {};
++  FlutterSpiRect actual_destination = {};
++  ASSERT_EQ(api()->canvas_get_local_clip_bounds(recorder, &actual_local),
++            kFlutterSpiOk);
++  ASSERT_EQ(api()->canvas_get_destination_clip_bounds(recorder,
++                                                      &actual_destination),
++            kFlutterSpiOk);
++
++  DisplayListBuilder expected_builder(DlRect::MakeLTRB(1, 2, 30, 40));
++  expected_builder.Save();
++  expected_builder.ClipRect(DlRect::MakeLTRB(1, 2, 30, 40),
++                            DlClipOp::kIntersect, true);
++  expected_builder.Translate(10.0f, 20.0f);
++  ExpectRectEquals(actual_local, expected_builder.GetLocalClipCoverage());
++  ExpectRectEquals(actual_destination,
++                   expected_builder.GetDestinationClipCoverage());
++
++  ASSERT_EQ(api()->canvas_restore(recorder), kFlutterSpiOk);
++  EXPECT_EQ(api()->recorder_release(recorder), kFlutterSpiOk);
++}
++
+ TEST_F(SpiCanvasTest, DynamicBlurFollowsDrawOperation) {
+   FlutterSpiImageFilter* filter = nullptr;
+   ASSERT_EQ(SpiImageFilterBlur(engine(), 2.0f, 3.0f, -1, &filter),
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index 67223c33740..3fc6278c37e 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -93,7 +93,7 @@ TEST(SpiAbi, ImageEnumValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawUnmodified, 2);
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawExtendedRGBA128, 3);
+   EXPECT_EQ(kFlutterSpiImageByteFormatPNG, 4);
+-  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 14);
++  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 15);
+ }
+ 
+ TEST(SpiAbi, SemanticsLayoutIsFrozen) {
+@@ -674,7 +674,16 @@ TEST(SpiAbi, SceneApiLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiSceneApi, scene_assign_old_layer, 536, 268);
+   EXPECT_SPI_OFFSET(FlutterSpiSceneApi, scene_add_retained, 544, 272);
+   EXPECT_SPI_OFFSET(FlutterSpiSceneApi, engine_layer_release, 552, 276);
+-  EXPECT_EQ(sizeof(FlutterSpiSceneApi), sizeof(void*) == 8 ? 560u : 280u);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, canvas_draw_rsuperellipse,
++                    560, 280);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, canvas_clip_rsuperellipse,
++                    568, 284);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, canvas_get_transform, 576, 288);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, canvas_get_local_clip_bounds,
++                    584, 292);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, canvas_get_destination_clip_bounds,
++                    592, 296);
++  EXPECT_EQ(sizeof(FlutterSpiSceneApi), sizeof(void*) == 8 ? 600u : 300u);
+ }
+ 
+ TEST(SpiAbi, ImageLayoutIsFrozen) {
