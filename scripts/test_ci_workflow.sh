@@ -28,6 +28,15 @@ windows = jobs.fetch('windows')
 release = jobs.fetch('release')
 expected_jobs = %w[build linux_sdk linux_platform macos windows release]
 raise "unexpected jobs: #{jobs.keys.inspect}" unless jobs.keys.sort == expected_jobs.sort
+%w[build linux_sdk linux_platform macos windows].each do |job_name|
+  build_job = jobs.fetch(job_name)
+  log_upload = build_job.fetch('steps').find do |step|
+    step['uses'] == 'actions/upload-artifact@v4' &&
+      step.dig('with', 'name').to_s.start_with?('build-logs-')
+  end
+  raise "#{job_name} must upload build logs" unless log_upload
+  raise "#{job_name} build logs must upload on every outcome" unless log_upload['if'] == 'always()'
+end
 raise 'build must use the hosted runner' unless build['runs-on'] == 'ubuntu-24.04'
 raise 'linux SDK job must use the hosted runner' unless linux_sdk['runs-on'] == 'ubuntu-24.04'
 raise 'Linux platform job must use the hosted runner' unless linux_platform['runs-on'] == 'ubuntu-24.04'

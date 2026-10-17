@@ -91,7 +91,7 @@ jobs:
       - name: Package engine bundle
         run: scripts/ci.sh package
       - name: Upload build logs
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-logs-${{ matrix.target }}-${{ matrix.mode }}
@@ -135,6 +135,13 @@ jobs:
         run: scripts/ci.sh sysroots
       - name: Build SDK and GTK variants
         run: scripts/build-matrix.sh --parallel 1 --zip $TITAN_VARIANTS
+      - name: Upload Linux SDK build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-linux-sdk
+          path: /mnt/titan/work/matrix/
+          if-no-files-found: ignore
       - name: Upload Linux SDK archives
         uses: actions/upload-artifact@v4
         with:
@@ -164,6 +171,13 @@ jobs:
         run: scripts/ci.sh deps
       - name: Build platform artifacts
         run: scripts/build-matrix.sh --parallel 1 --zip $TITAN_VARIANTS
+      - name: Upload Linux platform build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-linux-platform
+          path: /mnt/titan/work/matrix/
+          if-no-files-found: ignore
       - name: Upload Linux platform archives
         uses: actions/upload-artifact@v4
         with:
@@ -199,6 +213,13 @@ jobs:
               scripts/build-engine-macos.sh --kind android --mode "$mode" --android-cpu "$android_cpu" --jobs 2
             done
           done
+      - name: Upload macOS build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-macos
+          path: ${{ runner.temp }}/titan/work/matrix/
+          if-no-files-found: ignore
       - name: Upload macOS archives
         uses: actions/upload-artifact@v4
         with:
@@ -229,6 +250,13 @@ jobs:
               pwsh -NoProfile -File scripts/build-engine-windows.ps1 -Kind android -Mode $mode -AndroidCpu $androidCpu -Jobs 2
             }
           }
+      - name: Upload Windows build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-windows
+          path: C:\titan\work\matrix\
+          if-no-files-found: ignore
       - name: Upload Windows archives
         uses: actions/upload-artifact@v4
         with:
