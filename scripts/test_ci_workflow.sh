@@ -21,38 +21,35 @@ raise 'self-hosted runner is forbidden' if File.read(ARGV.fetch(0)).include?('se
 raise 'workflow must define global read permission' unless workflow['permissions'] == {'contents' => 'read'}
 jobs = workflow.fetch('jobs')
 build = jobs.fetch('build')
+linux_sdk = jobs.fetch('linux_sdk')
+linux_platform = jobs.fetch('linux_platform')
+macos = jobs.fetch('macos')
+windows = jobs.fetch('windows')
 release = jobs.fetch('release')
+expected_jobs = %w[build linux_sdk linux_platform macos windows release]
+raise "unexpected jobs: #{jobs.keys.inspect}" unless jobs.keys.sort == expected_jobs.sort
 raise 'build must use the hosted runner' unless build['runs-on'] == 'ubuntu-24.04'
+raise 'linux SDK job must use the hosted runner' unless linux_sdk['runs-on'] == 'ubuntu-24.04'
+raise 'Linux platform job must use the hosted runner' unless linux_platform['runs-on'] == 'ubuntu-24.04'
+raise 'macOS job must use the hosted runner' unless macos['runs-on'] == 'macos-15'
+raise 'Windows job must use the hosted runner' unless windows['runs-on'] == 'windows-2025'
 raise 'release must use the hosted runner' unless release['runs-on'] == 'ubuntu-24.04'
 raise 'build must have a six-hour timeout' unless build['timeout-minutes'] == 360
-raise 'build must publish sysroots' unless build.dig('permissions', 'contents') == 'write'
 raise 'release must publish contents' unless release.dig('permissions', 'contents') == 'write'
-raise 'build must not depend on sysroots job' if build.key?('needs')
 raise 'build must not use a container' if build.key?('container')
 raise 'build matrix must not fail fast' unless build.dig('strategy', 'fail-fast') == false
 
-expected = {
-  'x64-debug' => '',
-  'x64-musl-debug' => 'titan_x64_musl_defconfig',
-  'arm64-debug' => 'titan_arm64_glibc_defconfig',
-  'arm64-musl-debug' => 'titan_arm64_musl_defconfig',
-  'arm-hard-debug' => 'titan_armv7a_hf_glibc_defconfig',
-  'arm-hard-musl-debug' => 'titan_armv7a_hf_musl_defconfig',
-  'arm-softfp-debug' => 'titan_armv7a_softfp_glibc_defconfig',
-  'arm-softfp-musl-debug' => 'titan_armv7a_softfp_musl_defconfig',
-  'riscv64-glibc-debug' => 'titan_riscv64_glibc_defconfig',
-  'riscv64-musl-debug' => 'titan_riscv64_musl_defconfig',
-}
-actual = build.dig('strategy', 'matrix', 'include').to_h do |entry|
-  [entry.fetch('variant'), entry.fetch('defconfig')]
-end
-raise "unexpected matrix: #{actual.inspect}" unless actual == expected
-raise 'riscv32 must not be in the hosted matrix' if actual.keys.any? { |variant| variant.include?('riscv32') }
+targets = %w[x64 x64-musl arm64 arm64-musl arm-hard arm-hard-musl arm-softfp arm-softfp-musl riscv64-glibc riscv64-musl]
+modes = %w[debug profile release]
+raise 'Linux engine matrix must have ten targets' unless build.dig('strategy', 'matrix', 'target') == targets
+raise 'Linux engine matrix must have three modes' unless build.dig('strategy', 'matrix', 'mode') == modes
+raise 'Linux engine matrix must produce thirty bundles' unless targets.length * modes.length == 30
+raise 'riscv32 must not be in the hosted matrix' if build.to_s.include?('riscv32')
 
 env = build.fetch('env')
 raise 'unexpected work directory' unless env['TITAN_WORK_DIR'] == '/mnt/titan/work'
 raise 'unexpected bundle directory' unless env['TITAN_BUNDLE_DIR'] == '/mnt/titan/bundles'
-raise 'matrix variant is not exported' unless env['TITAN_VARIANTS'] == '${{ matrix.variant }}'
+raise 'matrix variant is not exported' unless env['TITAN_VARIANTS'] == '${{ matrix.target }}-${{ matrix.mode }}'
 raise 'parallelism must be one' unless env['TITAN_PARALLEL'] == 1
 raise 'GitHub token is not exported' unless env['GH_TOKEN'] == '${{ github.token }}'
 raise 'ccache size is not capped at 900M' unless env['CCACHE_MAXSIZE'] == '900M'
@@ -66,13 +63,13 @@ save = steps.find { |step| step['uses'] == 'actions/cache/save@v4' }
 raise 'ccache must be saved even when the job fails' unless save['if'].to_s.include?('always()')
 raise 'ccache must not be saved when the build was cancelled' unless save['if'].to_s.include?("steps.build.outcome == 'failure'") && !save['if'].to_s.include?('cancelled')
 raise 'artifact upload is missing' unless uses.include?('actions/upload-artifact@v4')
-raise 'checkout cache must not be configured' unless uses.count { |use| use.start_with?('actions/cache') } == 2
+raise 'checkout cache must not be configured' unless uses.count { |use| use.start_with?('actions/cache') } == 3
 cache = steps.find { |step| step['uses'] == 'actions/cache/restore@v4' }.fetch('with')
 raise 'wrong ccache path' unless cache['path'] == '/mnt/titan/work/ccache'
-raise 'cache key must include the variant' unless cache['key'].include?('${{ matrix.variant }}')
+raise 'cache key must include the target and mode' unless cache['key'].include?('${{ matrix.target }}') && cache['key'].include?('${{ matrix.mode }}')
 raise 'cache key must include the run id' unless cache['key'].include?('${{ github.run_id }}')
 raise 'cache key must include the Flutter lock' unless cache['key'].include?("hashFiles('flutter.lock', 'patches/**')")
-raise 'cache restore keys are incomplete' unless cache['restore-keys'].include?('ccache-${{ matrix.variant }}-')
+raise 'cache restore keys are incomplete' unless cache['restore-keys'].include?('ccache-${{ matrix.target }}-${{ matrix.mode }}-')
 
 runs = steps.filter_map { |step| step['run'] }.join("\n")
 %w[deps build probe package].each do |stage|
@@ -81,11 +78,17 @@ end
 sysroot_step = steps.find { |step| step['run']&.include?('scripts/ci.sh sysroot') }
 raise 'sysroot step is missing' unless sysroot_step
 raise 'sysroot step must be conditional' unless sysroot_step['if'] == "matrix.defconfig != ''"
+raise 'Linux SDK job must include the host and GTK variants' unless linux_sdk.fetch('env').fetch('TITAN_VARIANTS').include?('sdk-host-arm64-debug') && linux_sdk.fetch('env').fetch('TITAN_VARIANTS').include?('sdk-desktop-arm64-release')
+raise 'Linux platform job must include Android, web and Fuchsia' unless %w[android-debug-arm web-release fuchsia-release-x64].all? { |variant| linux_platform.fetch('env').fetch('TITAN_VARIANTS').include?(variant) }
+raise 'macOS job must build Darwin and iOS' unless macos.fetch('steps').any? { |step| step['run']&.include?('--kind ios') } && macos.fetch('steps').any? { |step| step['run']&.include?('--kind framework') }
+raise 'Windows job must build Windows and Android' unless windows.fetch('steps').any? { |step| step['run']&.include?('-Kind host') } && windows.fetch('steps').any? { |step| step['run']&.include?('-Kind android') }
+raise 'sysroot cache must be keyed per defconfig' unless build.fetch('steps').any? { |step| step['uses'] == 'actions/cache@v4' && step.dig('with', 'key').to_s.include?('${{ matrix.defconfig }}') && step.dig('with', 'key').to_s.include?('hashFiles(format(') }
 raise 'download-artifact must merge matrix artifacts' unless release['steps'].any? do |step|
   step['uses'] == 'actions/download-artifact@v4' && step.dig('with', 'merge-multiple') == true
 end
 raise 'release must run only for tags' unless release['if'].include?('refs/tags/v')
-raise 'release must depend on build' unless release['needs'] == 'build'
+raise 'release must depend on every host job' unless release['needs'].sort == %w[build linux_platform linux_sdk macos windows].sort
+raise 'release must assemble the full SDK' unless release['steps'].any? { |step| step['run']&.include?('scripts/ci.sh assemble') }
 RUBY
 
 if "$ci_script" free-disk > /tmp/titan-ci-free-disk.out 2>&1; then

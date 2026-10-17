@@ -15,138 +15,270 @@ concurrency:
 
 jobs:
   build:
-    name: Build Flutter Engine (${{ matrix.variant }})
+    name: Build Linux engine (${{ matrix.target }}-${{ matrix.mode }})
     runs-on: ubuntu-24.04
     timeout-minutes: 360
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
+        target: [x64, x64-musl, arm64, arm64-musl, arm-hard, arm-hard-musl, arm-softfp, arm-softfp-musl, riscv64-glibc, riscv64-musl]
+        mode: [debug, profile, release]
         include:
-          - variant: x64-debug
+          - target: x64
             defconfig: ''
-          - variant: x64-musl-debug
+          - target: x64-musl
             defconfig: titan_x64_musl_defconfig
-          - variant: arm64-debug
+          - target: arm64
             defconfig: titan_arm64_glibc_defconfig
-          - variant: arm64-musl-debug
+          - target: arm64-musl
             defconfig: titan_arm64_musl_defconfig
-          - variant: arm-hard-debug
+          - target: arm-hard
             defconfig: titan_armv7a_hf_glibc_defconfig
-          - variant: arm-hard-musl-debug
+          - target: arm-hard-musl
             defconfig: titan_armv7a_hf_musl_defconfig
-          - variant: arm-softfp-debug
+          - target: arm-softfp
             defconfig: titan_armv7a_softfp_glibc_defconfig
-          - variant: arm-softfp-musl-debug
+          - target: arm-softfp-musl
             defconfig: titan_armv7a_softfp_musl_defconfig
-          - variant: riscv64-glibc-debug
+          - target: riscv64-glibc
             defconfig: titan_riscv64_glibc_defconfig
-          - variant: riscv64-musl-debug
+          - target: riscv64-musl
             defconfig: titan_riscv64_musl_defconfig
     env:
       TITAN_WORK_DIR: /mnt/titan/work
       TITAN_BUNDLE_DIR: /mnt/titan/bundles
-      TITAN_VARIANTS: ${{ matrix.variant }}
+      TITAN_VARIANTS: ${{ matrix.target }}-${{ matrix.mode }}
       TITAN_PARALLEL: 1
       GH_TOKEN: ${{ github.token }}
       CCACHE_MAXSIZE: 900M
     steps:
       - uses: actions/checkout@v4
-
       - name: Prepare workspace
         run: |
           sudo mkdir -p /mnt/titan
           sudo chown "$USER" /mnt/titan
-
-      # The public repository's runner has ~86 GB free on / (/mnt is the same disk),
-      # far more than the ~15 GB a variant needs, so `scripts/ci.sh free-disk` is
-      # not run here; it stays for smaller runners.
       - name: Install dependencies
         run: scripts/ci.sh deps
-
       - name: Restore ccache
         uses: actions/cache/restore@v4
         with:
           path: /mnt/titan/work/ccache
-          key: ccache-${{ matrix.variant }}-${{ hashFiles('flutter.lock', 'patches/**') }}-${{ github.run_id }}
+          key: ccache-${{ matrix.target }}-${{ matrix.mode }}-${{ hashFiles('flutter.lock', 'patches/**') }}-${{ github.run_id }}
           restore-keys: |
-            ccache-${{ matrix.variant }}-${{ hashFiles('flutter.lock', 'patches/**') }}-
-            ccache-${{ matrix.variant }}-
-
+            ccache-${{ matrix.target }}-${{ matrix.mode }}-
+            ccache-${{ matrix.target }}-
+      - name: Restore sysroot
+        if: matrix.defconfig != ''
+        uses: actions/cache@v4
+        with:
+          path: /mnt/titan/work/sysroots
+          key: sysroot-${{ matrix.defconfig }}-${{ hashFiles(format('buildroot/configs/{0}', matrix.defconfig)) }}
       - name: Build sysroot
         if: matrix.defconfig != ''
-        run: scripts/ci.sh sysroot ${{ matrix.defconfig }}
-
+        run: scripts/ci.sh sysroot "${{ matrix.defconfig }}"
       - name: Build engine
         id: build
         run: scripts/ci.sh build
-
-      # Saved right after the build, even when it or a later step fails: the
-      # compiled objects are still valid, and actions/cache would only save them
-      # when the whole job succeeds.
       - name: Save ccache
-        # Only when the build really ran (passed or failed): a cancelled or skipped
-        # build would save an empty ccache that later runs restore.
         if: always() && (steps.build.outcome == 'success' || steps.build.outcome == 'failure')
         uses: actions/cache/save@v4
         with:
           path: /mnt/titan/work/ccache
-          key: ccache-${{ matrix.variant }}-${{ hashFiles('flutter.lock', 'patches/**') }}-${{ github.run_id }}
-
-      - name: Probe engine bundles
+          key: ccache-${{ matrix.target }}-${{ matrix.mode }}-${{ hashFiles('flutter.lock', 'patches/**') }}-${{ github.run_id }}
+      - name: Probe debug bundle
+        if: matrix.mode == 'debug'
         run: scripts/ci.sh probe
-
-      - name: Package engine bundles
+      - name: Package engine bundle
         run: scripts/ci.sh package
-
       - name: Upload build logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs-${{ matrix.variant }}
+          name: build-logs-${{ matrix.target }}-${{ matrix.mode }}
           path: /mnt/titan/work/matrix/
           if-no-files-found: ignore
-
       - name: Upload engine bundle
         uses: actions/upload-artifact@v4
         with:
-          name: flutter-engine-${{ matrix.variant }}
-          path: /mnt/titan/bundles/dist/
+          name: flutter-engine-${{ matrix.target }}-${{ matrix.mode }}
+          path: /mnt/titan/bundles/dist/*.zip
+          if-no-files-found: error
+
+  linux_sdk:
+    name: Build Linux SDK and GTK variants
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      TITAN_WORK_DIR: /mnt/titan/work
+      TITAN_BUNDLE_DIR: /mnt/titan/bundles
+      TITAN_VARIANTS: >-
+        sdk-host-debug sdk-host-release sdk-host-arm64-debug
+        sdk-desktop-debug sdk-desktop-profile sdk-desktop-release
+        sdk-desktop-x64-musl-debug sdk-desktop-x64-musl-profile sdk-desktop-x64-musl-release
+        sdk-desktop-arm64-debug sdk-desktop-arm64-profile sdk-desktop-arm64-release
+        sdk-desktop-arm64-musl-debug sdk-desktop-arm64-musl-profile sdk-desktop-arm64-musl-release
+        sdk-desktop-arm-hard-debug sdk-desktop-arm-hard-profile sdk-desktop-arm-hard-release
+        sdk-desktop-arm-hard-musl-debug sdk-desktop-arm-hard-musl-profile sdk-desktop-arm-hard-musl-release
+        sdk-desktop-arm-softfp-debug sdk-desktop-arm-softfp-profile sdk-desktop-arm-softfp-release
+        sdk-desktop-arm-softfp-musl-debug sdk-desktop-arm-softfp-musl-profile sdk-desktop-arm-softfp-musl-release
+        sdk-desktop-riscv64-glibc-debug sdk-desktop-riscv64-glibc-profile sdk-desktop-riscv64-glibc-release
+        sdk-desktop-riscv64-musl-debug sdk-desktop-riscv64-musl-profile sdk-desktop-riscv64-musl-release
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare workspace
+        run: |
+          sudo mkdir -p /mnt/titan
+          sudo chown "$USER" /mnt/titan
+      - name: Install dependencies
+        run: scripts/ci.sh deps
+      - name: Build sysroots
+        run: scripts/ci.sh sysroots
+      - name: Build SDK and GTK variants
+        run: scripts/build-matrix.sh --parallel 1 --zip $TITAN_VARIANTS
+      - name: Upload Linux SDK archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter-sdk-linux
+          path: /mnt/titan/work/flutter/engine/src/out/*/zip_archives/**
+          if-no-files-found: error
+
+  linux_platform:
+    name: Build Android, web and Fuchsia artifacts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      TITAN_WORK_DIR: /mnt/titan/work
+      TITAN_BUNDLE_DIR: /mnt/titan/bundles
+      TITAN_VARIANTS: >-
+        android-debug-arm android-debug-arm64 android-debug-x64
+        android-profile-arm android-profile-arm64 android-profile-x64
+        android-release-arm android-release-arm64 android-release-x64
+        web-release
+        fuchsia-debug-arm64 fuchsia-profile-arm64 fuchsia-release-arm64
+        fuchsia-debug-x64 fuchsia-profile-x64 fuchsia-release-x64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare workspace
+        run: |
+          sudo mkdir -p /mnt/titan
+          sudo chown "$USER" /mnt/titan
+      - name: Install dependencies
+        run: scripts/ci.sh deps
+      - name: Build platform artifacts
+        run: scripts/build-matrix.sh --parallel 1 --zip $TITAN_VARIANTS
+      - name: Upload Linux platform archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter-sdk-linux-platform
+          path: /mnt/titan/work/flutter/engine/src/out/*/zip_archives/**
+          if-no-files-found: error
+
+  macos:
+    name: Build macOS and iOS artifacts
+    runs-on: macos-15
+    timeout-minutes: 360
+    env:
+      TITAN_WORK_DIR: ${{ runner.temp }}/titan/work
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build macOS host, frameworks and snapshots
+        run: |
+          for mode in debug profile release; do
+            scripts/build-engine-macos.sh --kind host --mode "$mode" --cpu x64 --jobs 2
+            scripts/build-engine-macos.sh --kind host --mode "$mode" --cpu arm64 --jobs 2
+            scripts/build-engine-macos.sh --kind framework --mode "$mode" --cpu x64 --jobs 2
+            scripts/build-engine-macos.sh --kind gen-snapshot --mode "$mode" --cpu x64 --jobs 2
+          done
+      - name: Build iOS and Android snapshots
+        run: |
+          for mode in debug profile release; do
+            scripts/build-engine-macos.sh --kind ios --mode "$mode" --jobs 2
+          done
+          for mode in profile release; do
+            for android_cpu in arm arm64 x64; do
+              scripts/build-engine-macos.sh --kind android --mode "$mode" --android-cpu "$android_cpu" --jobs 2
+            done
+          done
+      - name: Upload macOS archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter-sdk-macos
+          path: ${{ runner.temp }}/titan/work/flutter/engine/src/out/*/zip_archives/**
+          if-no-files-found: error
+
+  windows:
+    name: Build Windows and Android artifacts
+    runs-on: windows-2025
+    timeout-minutes: 360
+    env:
+      TITAN_WORK_DIR: C:\titan\work
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Windows host artifacts
+        shell: pwsh
+        run: |
+          foreach ($mode in @('debug', 'profile', 'release')) {
+            pwsh -NoProfile -File scripts/build-engine-windows.ps1 -Kind host -Mode $mode -Cpu x64 -Jobs 2
+            pwsh -NoProfile -File scripts/build-engine-windows.ps1 -Kind host -Mode $mode -Cpu arm64 -Jobs 2
+          }
+      - name: Build Android snapshots
+        shell: pwsh
+        run: |
+          foreach ($mode in @('profile', 'release')) {
+            foreach ($androidCpu in @('arm', 'arm64', 'x64')) {
+              pwsh -NoProfile -File scripts/build-engine-windows.ps1 -Kind android -Mode $mode -AndroidCpu $androidCpu -Jobs 2
+            }
+          }
+      - name: Upload Windows archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter-sdk-windows
+          path: C:\titan\work\flutter\engine\src\out\*\zip_archives\**
           if-no-files-found: error
 
   release:
     name: Publish GitHub release
     if: ${{ startsWith(github.ref, 'refs/tags/v') }}
-    needs: build
+    needs: [build, linux_sdk, linux_platform, macos, windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: write
     env:
+      TITAN_WORK_DIR: /mnt/titan/work
       TITAN_BUNDLE_DIR: /mnt/titan/bundles
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
-
       - name: Prepare workspace
         run: |
           sudo mkdir -p /mnt/titan
           sudo chown "$USER" /mnt/titan
-
       - name: Download engine bundles
         uses: actions/download-artifact@v4
         with:
           path: /mnt/titan/bundles/dist
+          pattern: flutter-engine-*
           merge-multiple: true
-
-      # Each build job uploads its own one-line SHA256SUMS, and merge-multiple keeps
-      # only one of them; rebuild it over every zip, with relative names.
+      - name: Download SDK archives
+        uses: actions/download-artifact@v4
+        with:
+          path: /mnt/titan/work/flutter/engine/src/out
+          pattern: flutter-sdk-*
+          merge-multiple: true
+      - name: Checkout pinned Flutter revision
+        run: |
+          flutter_commit=$(sed -n 's/^flutter_commit=//p' flutter.lock)
+          git clone --filter=blob:none https://github.com/flutter/flutter.git /mnt/titan/work/flutter
+          git -C /mnt/titan/work/flutter fetch --depth 1 origin "$flutter_commit"
+          git -C /mnt/titan/work/flutter checkout --detach "$flutter_commit"
+      - name: Assemble complete SDK layout
+        run: scripts/ci.sh assemble
+      - name: Package complete SDK
+        working-directory: /mnt/titan/bundles/sdk
+        run: zip -qr "/mnt/titan/bundles/dist/flutter-engine-sdk-${GITHUB_REF_NAME}.zip" flutter_infra_release MANIFEST
       - name: Create release checksums
         working-directory: /mnt/titan/bundles/dist
-        run: |
-          rm -f SHA256SUMS
-          sha256sum *.zip > SHA256SUMS
-
+        run: find . -maxdepth 1 -type f -name '*.zip' -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
       - name: Publish GitHub release
         run: scripts/ci.sh release

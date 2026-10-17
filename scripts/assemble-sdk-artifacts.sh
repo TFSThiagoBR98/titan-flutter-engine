@@ -68,7 +68,7 @@ archive_root="$TITAN_WORK_DIR/flutter/engine/src/out"
 layout_root="$output_root/flutter_infra_release/flutter/$content_hash"
 manifest="$output_root/MANIFEST"
 shopt -s nullglob
-archive_directories=("$archive_root"/sdk_*/zip_archives)
+archive_directories=("$archive_root"/*/zip_archives)
 shopt -u nullglob
 ((${#archive_directories[@]} > 0)) || die "no SDK zip_archives found under $archive_root"
 
@@ -106,23 +106,15 @@ for archive_directory in "${archive_directories[@]}"; do
     [[ ! -e "$destination_path" ]] || die "duplicate SDK artifact path: $relative_path"
     mkdir -p "$(dirname "$destination_path")"
     cp -a "$archive_directory/$relative_path" "$destination_path"
-  done < <(cd "$archive_directory" && find . -type f -name '*.zip' -print0 | LC_ALL=C sort -z)
+  done < <(cd "$archive_directory" && find . -type f -print0 | LC_ALL=C sort -z)
 done
 
-required_paths=(
-  linux-x64/artifacts.zip
-  flutter_patched_sdk.zip
-  flutter_patched_sdk_product.zip
-  dart-sdk-linux-x64.zip
-  linux-x64/font-subset.zip
-  linux-x64/linux-x64-embedder.zip
-  linux-x64/impeller_sdk.zip
-  linux-x64-debug/linux-x64-flutter-gtk.zip
-  linux-x64-profile/linux-x64-flutter-gtk.zip
-  linux-x64-release/linux-x64-flutter-gtk.zip
-  sky_engine.zip
-  flutter_gpu.zip
+inventory_path="$TITAN_REPOSITORY_ROOT/sdk/official-artifacts.txt"
+[[ -f "$inventory_path" ]] || die "official artifact inventory is missing: $inventory_path"
+mapfile -t required_paths < <(
+  awk -F '\t' 'NF >= 2 { print $2 }' "$inventory_path" | LC_ALL=C sort -u
 )
+(( ${#required_paths[@]} > 0 )) || die "official artifact inventory is empty: $inventory_path"
 for required_path in "${required_paths[@]}"; do
   [[ -f "$layout_root/$required_path" ]] || die "required SDK artifact is missing: $required_path"
 done

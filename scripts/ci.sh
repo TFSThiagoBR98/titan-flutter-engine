@@ -216,6 +216,10 @@ run_package() {
   printf 'packages: %s\n' "$dist"
 }
 
+run_assemble() {
+  "$scripts_root/assemble-sdk-artifacts.sh" --out "$TITAN_BUNDLE_DIR/sdk"
+}
+
 run_release() {
   [[ "${GITHUB_REF:-}" == refs/tags/v* ]] || {
     printf 'release skipped: not a v* tag\n'
@@ -266,6 +270,10 @@ case "$stage" in
     (($# == 1)) || die "package does not accept additional arguments"
     run_package
     ;;
+  assemble)
+    (($# == 1)) || die "assemble does not accept additional arguments"
+    run_assemble
+    ;;
   release)
     (($# == 1)) || die "release does not accept additional arguments"
     run_release
@@ -283,6 +291,6 @@ case "$stage" in
     run_sysroot "$2"
     ;;
   *)
-    die "usage: scripts/ci.sh deps|free-disk|sysroot|sysroots|build|probe|package|release|all"
+    die "usage: scripts/ci.sh deps|free-disk|sysroot|sysroots|build|probe|package|assemble|release|all"
     ;;
 esac
