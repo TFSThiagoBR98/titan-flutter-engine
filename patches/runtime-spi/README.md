@@ -61,6 +61,10 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0051-feat-engine-add-spi-texture-platform-view-and-overlay-layers.patch` | Expor camadas de textura, platform view e performance overlay pela API de cena. | |
 | `0052-feat-engine-retain-spi-engine-layers-across-frames.patch` | Reter camadas do engine entre quadros e reutilizá-las no scene builder. | |
 | `0053-test-engine-exercise-spi-scene-layers-end-to-end.patch` | Exercitar as camadas do scene builder pela suíte de conformidade ponta a ponta. | |
+| `0054-refactor-engine-separate-runtime-effect-loading-from-the-dart-fragment-program.patch` | Separar o carregamento de runtime effects do programa de fragmento Dart para permitir a reutilização sem Dart. | |
+| `0055-feat-engine-add-the-runtime-spi-fragment-program-header.patch` | Adicionar a ABI C11 0.8 para fragment programs, uniforms e samplers. | |
+| `0056-feat-engine-load-spi-fragment-programs-and-shaders.patch` | Carregar runtime stages de assets ou bytes e construir shaders e image filters com paridade ao `dart:ui`. | |
+| `0057-test-engine-exercise-spi-fragment-programs-end-to-end.patch` | Exercitar fragment programs, uniforms, samplers, shaders e image filters pela suíte de conformidade ponta a ponta. | |
 
 O fluxo é:
 

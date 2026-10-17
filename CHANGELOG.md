@@ -37,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime SPI S3b-4b: ABI 0.7 para as camadas restantes do scene builder (color filter, image filter, backdrop,
   shader mask, clip de superelipse, textura, platform view e performance overlay), camadas retidas entre quadros e
   blur com tile mode dinâmico e bounds, com conformidade ponta a ponta sem Dart.
+- Runtime SPI S3b-4c: ABI 0.8 para fragment programs (runtime effects do impellerc) carregados de asset ou bytes, com uniforms, samplers e
+  conversão em shader de paint ou image filter, sem Dart.
 
 ### Fixed
 

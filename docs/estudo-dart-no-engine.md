@@ -336,6 +336,16 @@ O blur dinâmico usa `tile_mode = -1`, como o `tile_mode_index < 0` do `ImageFil
 
 O checkpoint confirmou 1204 PASS e 0 FAIL no `check-runtime-spi.sh`, o probe `9afdbcd18abd9b35` em x64 e arm64-musl sob QEMU, a configuração `--gn-only` dos dez alvos, o alvo `runtime_spi_c_api` em arm-hard e `tools/ci.sh engine`. A série limpa contém 68 patches do repositório do Flutter, dos quais 53 pertencem a `runtime-spi`. Os números e a identificação do engine estão em [runtime-spi-s3b4b.md](medidas/runtime-spi-s3b4b.md).
 
+## S3b-4c: fragment programs
+
+A S3b-4c separa o carregamento de runtime effects na costura `runtime_effect_loader`: ela decodifica os runtime stages, escolhe o backend, registra o `library_id`, consulta o cache do raster quando necessário e monta o `DlRuntimeEffect`. Essa costura existe para que o Runtime SPI reutilize o miolo de `FragmentProgram::initFromAsset` sem depender de Dart, enquanto o `dart:ui` continua responsável apenas pelo mapa de uniforms.
+
+A ABI 0.8 expõe programs imutáveis e shaders que guardam floats e samplers. Como no `ReusableFragmentShader`, os uniforms são copiados quando o shader vira `FlutterSpiShader` ou `FlutterSpiImageFilter`, portanto alterações posteriores não afetam o objeto já criado. Erros atravessam a ABI por `FlutterSpiResult`; `out_error`, quando fornecido, recebe as mesmas mensagens do `dart:ui` e é liberado por `trace_free`.
+
+O backend do runtime stage usado pelo SPI vem da fábrica, que já o recebe para construir o backend, e o carregamento de assets usa o `AssetManager` fornecido pelo `RuntimeDelegate`. Assim, programas podem ser carregados de assets ou de bytes mantendo a seleção do backend e as regras de uniforms e samplers do caminho Dart.
+
+O checkpoint confirmou 1221 PASS e 0 FAIL no `check-runtime-spi.sh`, o probe `9afdbcd18abd9b35` em x64 e arm64-musl sob QEMU, a configuração `--gn-only` dos dez alvos, o alvo `runtime_spi_c_api` em arm-hard e `tools/ci.sh engine`. A série limpa contém 72 patches do repositório do Flutter, dos quais 57 pertencem a `runtime-spi`; o `engine.lock` registra `patches_sha256=94269ed8c3d24e9e52bb09ca1ded81a2c166307f57e4f4058a874cd8bbb7fc78`. Os números e a identificação do engine estão em [runtime-spi-s3b4c.md](medidas/runtime-spi-s3b4c.md).
+
 ## Ciclo de vida e falhas
 
 O host cria, inicia, encerra e libera o backend. Uma falha recuperável encerra o runtime ativo e limpa os recursos;
