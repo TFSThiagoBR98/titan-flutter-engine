@@ -28,6 +28,10 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0018-feat-flow-expose-layer-properties-for-scene-tracing.patch` | Expor ao traço as propriedades necessárias das camadas de composição. | |
 | `0019-feat-engine-add-the-spi-scene-builder-and-scene-trace.patch` | Montar cenas com transformações, clips, offsets, opacity e pictures, e gerar o traço canônico. | |
 | `0020-test-engine-exercise-the-spi-scene-api-end-to-end.patch` | Validar a API de cena ponta a ponta e comparar o custo da ABI com o builder direto. | |
+| `0021-feat-engine-add-the-runtime-spi-text-header.patch` | Adicionar a ABI C11 para estilos de texto, fontes, parágrafos, métricas e desenho. | |
+| `0022-feat-engine-add-spi-text-styles-and-font-loading.patch` | Converter estilos para `txt` e carregar fontes dinâmicas pela API do Runtime SPI. | |
+| `0023-feat-engine-add-spi-paragraphs.patch` | Montar, fazer layout e consultar parágrafos com paridade ao `txt` direto. | |
+| `0024-feat-engine-draw-spi-paragraphs-and-exercise-text-end-to-end.patch` | Desenhar parágrafos pela cena e validar texto ponta a ponta pela suíte de conformidade. | |
 
 O fluxo é:
 

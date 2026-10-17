@@ -186,6 +186,42 @@ arm64-musl, a configuração GN nos dez alvos previstos e o layout de 32 bits
 do alvo `runtime_spi_c_api` em arm-hard. A medição de custo da ABI está em
 [runtime-spi-s3a.md](medidas/runtime-spi-s3a.md).
 
+## S3b-1: texto
+
+A S3b-1 acrescenta texto ao Runtime SPI sem expor tipos C++ do engine. A
+`FlutterSpiTextApi` cobre carregamento de fontes, estilos aninhados,
+construção de parágrafos, layout, métricas, retângulos de seleção, posição de
+glifo, limites de palavra, métricas de linha e desenho no recorder da S3a.
+Estilos e parágrafos usam handles opacos por engine e o parágrafo é consumido
+ao ser construído.
+
+Os estilos preservam as propriedades de `txt`, incluindo decoração, peso,
+estilo, baseline, altura, espaçamentos, famílias, sombras, features e
+variações. Um `struct_size` menor mantém os padrões do `txt`, e ponteiros
+nulos representam propriedades ausentes. `font_load` registra bytes de uma
+fonte pela `FontCollection`, opcionalmente sob um alias; bytes inválidos são
+rejeitados sem registrar uma família.
+
+O texto de entrada é UTF-8 validado, enquanto offsets e índices expostos pelas
+consultas são unidades UTF-16, como em `dart:ui`. `paragraph_layout` recebe a
+largura e precisa preceder métricas e consultas. As listas seguem o padrão de
+contagem primeiro: uma capacidade menor preenche o prefixo disponível,
+retorna a contagem total e mantém o resultado `kFlutterSpiOk`.
+
+As operações de texto executam no UI runner e chamadas de outras threads
+retornam `kFlutterSpiWrongThread`. Um parágrafo sem layout retorna
+`kFlutterSpiInvalidArgument`; texto UTF-8 inválido e fontes inválidas também
+retornam resultados explícitos pela ABI. O desenho usa `txt::Paragraph::Paint`
+no `DisplayListBuilder`, e a paridade compara o conteúdo das operações de
+texto, não ponteiros internos de `SkTextBlob`.
+
+Os testes carregam a `Roboto-Regular.ttf` do próprio checkout, inicializam o
+ICU antes de montar parágrafos e comparam as métricas e consultas da ABI com
+um `txt::Paragraph` direto. O checkpoint confirmou **78 testes** do Runtime
+SPI, incluindo os testes de texto, além de repetição isolada e embaralhada.
+Os detalhes e os resultados de build estão em
+[runtime-spi-s3b1.md](medidas/runtime-spi-s3b1.md).
+
 ## Ciclo de vida e falhas
 
 O host cria, inicia, encerra e libera o backend. Uma falha recuperável encerra o runtime ativo e limpa os recursos;

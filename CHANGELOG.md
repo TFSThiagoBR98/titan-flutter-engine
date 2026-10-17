@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime SPI S3a: scene API for paths, paints, picture recording, canvas
   operations, scene layers and canonical scene tracing, with end-to-end
   conformance tests and an ABI-versus-direct-builder benchmark.
+- Runtime SPI S3b-1: text styles, dynamic font loading, paragraph layout and
+  metrics, UTF-16 text queries, paragraph drawing, and end-to-end conformance
+  tests.
 
 ### Fixed
 
