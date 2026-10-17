@@ -1,0 +1,607 @@
+# Why: route Dart-only engine operations through the runtime SPI extensions
+# table before the task is verified.
+diff --git a/engine/src/flutter/runtime_spi/runtime_backend.h b/engine/src/flutter/runtime_spi/runtime_backend.h
+index bcd8bff7688..f75aeab2a54 100644
+--- a/engine/src/flutter/runtime_spi/runtime_backend.h
++++ b/engine/src/flutter/runtime_spi/runtime_backend.h
+@@ -24,6 +24,7 @@
+ #include "flutter/lib/ui/window/platform_message.h"
+ #include "flutter/lib/ui/window/viewport_metrics.h"
+ #include "flutter/lib/ui/window/view_focus.h"
++#include "flutter/runtime_spi/include/flutter_runtime_extensions.h"
+ namespace flutter {
+ 
+ class DartRuntimeExtensions;
+@@ -74,6 +75,9 @@ class RuntimeBackend {
+   virtual bool IsRunning() const = 0;
+ 
+   virtual DartRuntimeExtensions* AsDart() { return nullptr; }
++  virtual const FlutterSpiRuntimeExtensions* GetExtensions() const {
++    return nullptr;
++  }
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+index 0c159495743..eb7d3d2bd49 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+@@ -368,6 +368,14 @@ bool SpiRuntimeBackend::IsRunning() const {
+   return running_;
+ }
+ 
++const FlutterSpiRuntimeExtensions* SpiRuntimeBackend::GetExtensions() const {
++  if (!IsCallbackAvailable(offsetof(FlutterSpiRuntimeTable, extensions),
++                           sizeof(table_.extensions))) {
++    return nullptr;
++  }
++  return table_.extensions;
++}
++
+ DartRuntimeExtensions* SpiRuntimeBackend::AsDart() {
+   return nullptr;
+ }
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.h b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+index 27f87273bb5..e7538bd15e2 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.h
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+@@ -93,6 +93,7 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+   HitTestResponse HitTest(int64_t view_id, PointData offset) override;
+   bool IsRunning() const override;
+   DartRuntimeExtensions* AsDart() override;
++  const FlutterSpiRuntimeExtensions* GetExtensions() const override;
+ 
+   FlutterSpiResult RequestFrame();
+   FlutterSpiResult SubmitFrame(int64_t view_id,
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
+index f3a158c990a..0921ca10fa8 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
+@@ -185,6 +185,14 @@ TEST_F(SpiRuntimeBackendTest, RejectsUnannouncedCapability) {
+   EXPECT_EQ(runtime->start_count, 0u);
+ }
+ 
++TEST_F(SpiRuntimeBackendTest, OlderRuntimeTableHasNoExtensions) {
++  auto table = c_test_runtime_table(runtime);
++  table.struct_size = offsetof(FlutterSpiRuntimeTable, extensions);
++  auto backend = CreateBackend(table);
++
++  EXPECT_EQ(backend->GetExtensions(), nullptr);
++}
++
+ TEST_F(SpiRuntimeBackendTest, StartFailureLeavesBackendStopped) {
+   runtime->fail_start = true;
+   auto backend = CreateBackend(c_test_runtime_table(runtime));
+diff --git a/engine/src/flutter/shell/common/BUILD.gn b/engine/src/flutter/shell/common/BUILD.gn
+index 3ebc2156619..88af77fba5c 100644
+--- a/engine/src/flutter/shell/common/BUILD.gn
++++ b/engine/src/flutter/shell/common/BUILD.gn
+@@ -347,6 +347,12 @@ if (enable_unittests) {
+       "//flutter/assets",
+       "//flutter/common/graphics",
+       "//flutter/display_list/testing:display_list_testing",
++      "//flutter/runtime_spi:effects",
++      "//flutter/runtime_spi:image",
++      "//flutter/runtime_spi:runtime_spi_c_api",
++      "//flutter/runtime_spi:semantics",
++      "//flutter/runtime_spi:spi_backend",
++      "//flutter/runtime_spi:text",
+       "//flutter/shell/common:base64",
+       "//flutter/shell/profiling:profiling_unittests",
+       "//flutter/shell/version",
+diff --git a/engine/src/flutter/shell/common/dart_runtime_backend.cc b/engine/src/flutter/shell/common/dart_runtime_backend.cc
+index 57d47b8d633..a9c442868ad 100644
+--- a/engine/src/flutter/shell/common/dart_runtime_backend.cc
++++ b/engine/src/flutter/shell/common/dart_runtime_backend.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "flutter/shell/common/dart_runtime_backend.h"
+ 
++#include <cstdlib>
++#include <cstring>
+ #include <utility>
+ 
+ #include "assets/native_assets.h"
+@@ -11,10 +13,140 @@
+ #include "flutter/shell/common/run_configuration.h"
+ 
+ namespace flutter {
++namespace {
++
++DartRuntimeBackend* BackendFromUserData(void* user_data) {
++  return static_cast<DartRuntimeBackend*>(user_data);
++}
++
++char* CopyString(const std::string& value) {
++  const size_t size = value.size() + 1;
++  auto* result = static_cast<char*>(std::malloc(size));
++  if (result == nullptr) {
++    return nullptr;
++  }
++  std::memcpy(result, value.c_str(), size);
++  return result;
++}
++
++void FreeString(void*, char* string) {
++  std::free(string);
++}
++
++int64_t GetMainPort(void* user_data) {
++  return BackendFromUserData(user_data)->GetMainPort();
++}
++
++bool GetRootIsolateServiceId(void* user_data, char** out_utf8) {
++  if (out_utf8 == nullptr) {
++    return false;
++  }
++  auto service_id =
++      BackendFromUserData(user_data)->GetRootIsolateServiceID();
++  if (!service_id.has_value()) {
++    *out_utf8 = nullptr;
++    return false;
++  }
++  *out_utf8 = CopyString(*service_id);
++  return *out_utf8 != nullptr;
++}
++
++bool GetRootIsolateReturnCode(void* user_data, uint32_t* out_code) {
++  if (out_code == nullptr) {
++    return false;
++  }
++  auto return_code =
++      BackendFromUserData(user_data)->GetRootIsolateReturnCode();
++  if (!return_code.has_value()) {
++    return false;
++  }
++  *out_code = *return_code;
++  return true;
++}
++
++char* GetIsolateName(void* user_data) {
++  return CopyString(BackendFromUserData(user_data)->GetIsolateName());
++}
++
++int32_t GetLastError(void* user_data) {
++  return static_cast<int32_t>(BackendFromUserData(user_data)->GetLastError());
++}
++
++bool HasLivePorts(void* user_data) {
++  return BackendFromUserData(user_data)->HasLivePorts();
++}
++
++bool HasPendingMicrotasks(void* user_data) {
++  return BackendFromUserData(user_data)->HasPendingMicrotasks();
++}
++
++void FlushMicrotaskQueue(void* user_data) {
++  BackendFromUserData(user_data)->FlushMicrotaskQueue();
++}
++
++std::unique_ptr<const fml::Mapping> MakeMapping(FlutterSpiMapping mapping) {
++  return std::make_unique<fml::NonOwnedMapping>(
++      mapping.data, mapping.size,
++      [release = mapping.release,
++       release_user_data = mapping.release_user_data](const uint8_t*, size_t) {
++        if (release != nullptr) {
++          release(release_user_data);
++        }
++      });
++}
++
++void LoadDeferredLibrary(void* user_data,
++                         int64_t loading_unit_id,
++                         FlutterSpiMapping snapshot_data,
++                         FlutterSpiMapping snapshot_instructions) {
++  BackendFromUserData(user_data)->LoadDartDeferredLibrary(
++      static_cast<intptr_t>(loading_unit_id), MakeMapping(snapshot_data),
++      MakeMapping(snapshot_instructions));
++}
++
++void LoadDeferredLibraryError(void* user_data,
++                              int64_t loading_unit_id,
++                              const char* error_message,
++                              bool transient) {
++  BackendFromUserData(user_data)->LoadDartDeferredLibraryError(
++      static_cast<intptr_t>(loading_unit_id),
++      error_message == nullptr ? std::string() : error_message, transient);
++}
++
++void ShutdownPlatformIsolates(void* user_data) {
++  BackendFromUserData(user_data)->ShutdownPlatformIsolates();
++}
++
++void SetRootIsolateOwnerToCurrentThread(void* user_data) {
++  BackendFromUserData(user_data)->SetRootIsolateOwnerToCurrentThread();
++}
++
++FlutterSpiRuntimeExtensions MakeExtensions(void* user_data) {
++  return {
++      .struct_size = sizeof(FlutterSpiRuntimeExtensions),
++      .user_data = user_data,
++      .free_string = FreeString,
++      .get_main_port = GetMainPort,
++      .get_root_isolate_service_id = GetRootIsolateServiceId,
++      .get_root_isolate_return_code = GetRootIsolateReturnCode,
++      .get_isolate_name = GetIsolateName,
++      .get_last_error = GetLastError,
++      .has_live_ports = HasLivePorts,
++      .has_pending_microtasks = HasPendingMicrotasks,
++      .flush_microtask_queue = FlushMicrotaskQueue,
++      .load_deferred_library = LoadDeferredLibrary,
++      .load_deferred_library_error = LoadDeferredLibraryError,
++      .shutdown_platform_isolates = ShutdownPlatformIsolates,
++      .set_root_isolate_owner_to_current_thread =
++          SetRootIsolateOwnerToCurrentThread,
++  };
++}
++
++}  // namespace
+ 
+ DartRuntimeBackend::DartRuntimeBackend(
+     std::unique_ptr<RuntimeController> controller)
+-    : controller_(std::move(controller)) {}
++    : controller_(std::move(controller)), extensions_(MakeExtensions(this)) {}
+ 
+ DartRuntimeBackend::~DartRuntimeBackend() = default;
+ 
+@@ -123,6 +255,10 @@ bool DartRuntimeBackend::IsRunning() const {
+   return controller_->IsRootIsolateRunning();
+ }
+ 
++const FlutterSpiRuntimeExtensions* DartRuntimeBackend::GetExtensions() const {
++  return &extensions_;
++}
++
+ std::unique_ptr<RuntimeBackend> DartRuntimeBackend::Spawn(
+     RuntimeDelegate& p_client,
+     const std::string& advisory_script_uri,
+diff --git a/engine/src/flutter/shell/common/dart_runtime_backend.h b/engine/src/flutter/shell/common/dart_runtime_backend.h
+index b2d0e0de196..568eabb7645 100644
+--- a/engine/src/flutter/shell/common/dart_runtime_backend.h
++++ b/engine/src/flutter/shell/common/dart_runtime_backend.h
+@@ -54,6 +54,7 @@ class DartRuntimeBackend final : public RuntimeBackend,
+   bool IsRunning() const override;
+ 
+   DartRuntimeExtensions* AsDart() override { return this; }
++  const FlutterSpiRuntimeExtensions* GetExtensions() const override;
+ 
+   std::unique_ptr<RuntimeBackend> Spawn(
+       RuntimeDelegate& p_client,
+@@ -103,6 +104,7 @@ class DartRuntimeBackend final : public RuntimeBackend,
+ 
+  private:
+   std::unique_ptr<RuntimeController> controller_;
++  FlutterSpiRuntimeExtensions extensions_ = {};
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/shell/common/engine.cc b/engine/src/flutter/shell/common/engine.cc
+index 7e9c5c9a5df..e2e2859d11e 100644
+--- a/engine/src/flutter/shell/common/engine.cc
++++ b/engine/src/flutter/shell/common/engine.cc
+@@ -34,6 +34,21 @@ namespace {
+ fml::MallocMapping MakeMapping(const std::string& str) {
+   return fml::MallocMapping::Copy(str.c_str(), str.length());
+ }
++
++FlutterSpiMapping MakeSpiMapping(std::unique_ptr<const fml::Mapping> mapping) {
++  if (mapping == nullptr) {
++    return {};
++  }
++  const fml::Mapping* raw_mapping = mapping.release();
++  return {
++      .data = raw_mapping->GetMapping(),
++      .size = raw_mapping->GetSize(),
++      .release_user_data = const_cast<fml::Mapping*>(raw_mapping),
++      .release = [](void* user_data) {
++        delete static_cast<const fml::Mapping*>(user_data);
++      },
++  };
++}
+ }  // namespace
+ 
+ Engine::Engine(
+@@ -311,8 +326,11 @@ Engine::RunStatus Engine::Run(RunConfiguration configuration) {
+     // queued by LaunchRootIsolate that execute the app's Dart code.
+     task_runners_.GetUITaskRunner()->PostTask([engine = GetWeakPtr()]() {
+       if (engine) {
+-        if (auto* dart = engine->runtime_backend_->AsDart()) {
+-          dart->SetRootIsolateOwnerToCurrentThread();
++        if (const auto* extensions = engine->Extensions();
++            extensions != nullptr &&
++            extensions->set_root_isolate_owner_to_current_thread != nullptr) {
++          extensions->set_root_isolate_owner_to_current_thread(
++              extensions->user_data);
+         }
+       }
+     });
+@@ -324,13 +342,21 @@ Engine::RunStatus Engine::Run(RunConfiguration configuration) {
+     return RunStatus::Failure;
+   }
+ 
+-  auto* dart = runtime_backend_->AsDart();
+-  auto service_id = dart ? dart->GetRootIsolateServiceID() : std::nullopt;
+-  if (service_id.has_value()) {
++  const auto* extensions = Extensions();
++  char* service_id = nullptr;
++  const bool has_service_id =
++      extensions != nullptr &&
++      extensions->get_root_isolate_service_id != nullptr &&
++      extensions->get_root_isolate_service_id(extensions->user_data,
++                                              &service_id);
++  if (has_service_id && service_id != nullptr) {
+     std::unique_ptr<PlatformMessage> service_id_message =
+         std::make_unique<flutter::PlatformMessage>(
+-            kIsolateChannel, MakeMapping(service_id.value()), nullptr);
++            kIsolateChannel, MakeMapping(service_id), nullptr);
+     HandlePlatformMessage(std::move(service_id_message));
++    if (extensions->free_string != nullptr) {
++      extensions->free_string(extensions->user_data, service_id);
++    }
+   }
+ 
+   if (settings_.merged_platform_ui_thread ==
+@@ -361,38 +387,78 @@ void Engine::NotifyIdle(fml::TimeDelta deadline) {
+ }
+ 
+ std::optional<uint32_t> Engine::GetUIIsolateReturnCode() {
+-  auto* dart = runtime_backend_->AsDart();
+-  return dart ? dart->GetRootIsolateReturnCode() : std::nullopt;
++  const auto* extensions = Extensions();
++  uint32_t return_code = 0;
++  if (extensions == nullptr ||
++      extensions->get_root_isolate_return_code == nullptr ||
++      !extensions->get_root_isolate_return_code(extensions->user_data,
++                                                &return_code)) {
++    return std::nullopt;
++  }
++  return return_code;
+ }
+ 
+ Dart_Port Engine::GetUIIsolateMainPort() {
+-  auto* dart = runtime_backend_->AsDart();
+-  return dart ? dart->GetMainPort() : ILLEGAL_PORT;
++  const auto* extensions = Extensions();
++  if (extensions == nullptr || extensions->get_main_port == nullptr) {
++    return ILLEGAL_PORT;
++  }
++  return extensions->get_main_port(extensions->user_data);
+ }
+ 
+ std::string Engine::GetUIIsolateName() {
+-  auto* dart = runtime_backend_->AsDart();
+-  return dart ? dart->GetIsolateName() : std::string();
++  const auto* extensions = Extensions();
++  if (extensions == nullptr || extensions->get_isolate_name == nullptr) {
++    return {};
++  }
++  char* name = extensions->get_isolate_name(extensions->user_data);
++  if (name == nullptr) {
++    return {};
++  }
++  std::string result(name);
++  if (extensions->free_string != nullptr) {
++    extensions->free_string(extensions->user_data, name);
++  }
++  return result;
+ }
+ 
+ std::optional<std::string> Engine::GetUIIsolateServiceID() {
+-  auto* dart = runtime_backend_->AsDart();
+-  return dart ? dart->GetRootIsolateServiceID() : std::nullopt;
++  const auto* extensions = Extensions();
++  char* service_id = nullptr;
++  if (extensions == nullptr ||
++      extensions->get_root_isolate_service_id == nullptr ||
++      !extensions->get_root_isolate_service_id(extensions->user_data,
++                                               &service_id) ||
++      service_id == nullptr) {
++    return std::nullopt;
++  }
++  std::string result(service_id);
++  if (extensions->free_string != nullptr) {
++    extensions->free_string(extensions->user_data, service_id);
++  }
++  return result;
+ }
+ 
+ bool Engine::UIIsolateHasLivePorts() {
+-  auto* dart = runtime_backend_->AsDart();
+-  return dart && dart->HasLivePorts();
++  const auto* extensions = Extensions();
++  return extensions != nullptr && extensions->has_live_ports != nullptr &&
++         extensions->has_live_ports(extensions->user_data);
+ }
+ 
+ bool Engine::UIIsolateHasPendingMicrotasks() {
+-  auto* dart = runtime_backend_->AsDart();
+-  return dart && dart->HasPendingMicrotasks();
++  const auto* extensions = Extensions();
++  return extensions != nullptr &&
++         extensions->has_pending_microtasks != nullptr &&
++         extensions->has_pending_microtasks(extensions->user_data);
+ }
+ 
+ tonic::DartErrorHandleType Engine::GetUIIsolateLastError() {
+-  auto* dart = runtime_backend_->AsDart();
+-  return dart ? dart->GetLastError() : tonic::kNoError;
++  const auto* extensions = Extensions();
++  if (extensions == nullptr || extensions->get_last_error == nullptr) {
++    return tonic::kNoError;
++  }
++  return static_cast<tonic::DartErrorHandleType>(
++      extensions->get_last_error(extensions->user_data));
+ }
+ 
+ void Engine::AddView(int64_t view_id,
+@@ -541,8 +607,9 @@ void Engine::DispatchPointerDataPacket(
+   animator_->EnqueueTraceFlowId(trace_flow_id);
+   if (runtime_backend_) {
+     runtime_backend_->DispatchPointerDataPacket(*packet);
+-    if (auto* dart = runtime_backend_->AsDart()) {
+-      dart->FlushMicrotaskQueue();
++    if (const auto* extensions = Extensions();
++        extensions != nullptr && extensions->flush_microtask_queue != nullptr) {
++      extensions->flush_microtask_queue(extensions->user_data);
+     }
+   }
+   animator_->MaybeCleanTraceFlowIds();
+@@ -716,11 +783,17 @@ void Engine::LoadDartDeferredLibrary(
+     intptr_t loading_unit_id,
+     std::unique_ptr<const fml::Mapping> snapshot_data,
+     std::unique_ptr<const fml::Mapping> snapshot_instructions) {
+-  auto* dart = runtime_backend_->AsDart();
+-  if (dart && runtime_backend_->IsRunning()) {
+-    dart->LoadDartDeferredLibrary(loading_unit_id, std::move(snapshot_data),
+-                                  std::move(snapshot_instructions));
+-  } else {
++  const auto* extensions = Extensions();
++  if (extensions == nullptr ||
++      extensions->load_deferred_library == nullptr) {
++    return;
++  }
++  if (runtime_backend_->IsRunning()) {
++    extensions->load_deferred_library(
++        extensions->user_data, static_cast<int64_t>(loading_unit_id),
++        MakeSpiMapping(std::move(snapshot_data)),
++        MakeSpiMapping(std::move(snapshot_instructions)));
++  } else if (extensions->load_deferred_library_error != nullptr) {
+     LoadDartDeferredLibraryError(loading_unit_id, "No running root isolate.",
+                                  true);
+   }
+@@ -729,10 +802,12 @@ void Engine::LoadDartDeferredLibrary(
+ void Engine::LoadDartDeferredLibraryError(intptr_t loading_unit_id,
+                                           const std::string& error_message,
+                                           bool transient) {
+-  auto* dart = runtime_backend_->AsDart();
+-  if (dart && runtime_backend_->IsRunning()) {
+-    dart->LoadDartDeferredLibraryError(loading_unit_id, error_message,
+-                                       transient);
++  const auto* extensions = Extensions();
++  if (extensions != nullptr && runtime_backend_->IsRunning() &&
++      extensions->load_deferred_library_error != nullptr) {
++    extensions->load_deferred_library_error(
++        extensions->user_data, static_cast<int64_t>(loading_unit_id),
++        error_message.c_str(), transient);
+   }
+ }
+ 
+@@ -746,15 +821,25 @@ void Engine::SetDisplays(const std::vector<DisplayData>& displays) {
+ }
+ 
+ void Engine::ShutdownPlatformIsolates() {
+-  if (auto* dart = runtime_backend_->AsDart()) {
+-    dart->ShutdownPlatformIsolates();
++  if (const auto* extensions = Extensions();
++      extensions != nullptr &&
++      extensions->shutdown_platform_isolates != nullptr) {
++    extensions->shutdown_platform_isolates(extensions->user_data);
+   }
+ }
+ 
+ void Engine::FlushMicrotaskQueue() {
+-  if (auto* dart = runtime_backend_->AsDart()) {
+-    dart->FlushMicrotaskQueue();
++  if (const auto* extensions = Extensions();
++      extensions != nullptr && extensions->flush_microtask_queue != nullptr) {
++    extensions->flush_microtask_queue(extensions->user_data);
++  }
++}
++
++const FlutterSpiRuntimeExtensions* Engine::Extensions() const {
++  if (runtime_backend_ == nullptr) {
++    return nullptr;
+   }
++  return runtime_backend_->GetExtensions();
+ }
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/shell/common/engine.h b/engine/src/flutter/shell/common/engine.h
+index 7066d6f23e7..d1129ba9314 100644
+--- a/engine/src/flutter/shell/common/engine.h
++++ b/engine/src/flutter/shell/common/engine.h
+@@ -1077,6 +1077,8 @@ class Engine final : public RuntimeDelegate {
+   // |RuntimeDelegate|
+   void OnRootIsolateCreated() override;
+ 
++  const FlutterSpiRuntimeExtensions* Extensions() const;
++
+   // |RuntimeDelegate|
+   void UpdateIsolateDescription(const std::string isolate_name,
+                                 int64_t isolate_port) override;
+diff --git a/engine/src/flutter/shell/common/engine_unittests.cc b/engine/src/flutter/shell/common/engine_unittests.cc
+index 9ac91bc1ce4..2bcbe179e30 100644
+--- a/engine/src/flutter/shell/common/engine_unittests.cc
++++ b/engine/src/flutter/shell/common/engine_unittests.cc
+@@ -8,6 +8,7 @@
+ 
+ #include "flutter/flow/layers/container_layer.h"
+ #include "flutter/runtime/dart_vm_lifecycle.h"
++#include "flutter/runtime_spi/include/flutter_runtime_extensions.h"
+ #include "flutter/shell/common/dart_runtime_backend.h"
+ #include "flutter/shell/common/fake_runtime_backend.h"
+ #include "flutter/shell/common/thread_host.h"
+@@ -269,6 +270,8 @@ class EngineTest : public testing::FixtureTest {
+   std::shared_ptr<fml::ConcurrentTaskRunner> image_decoder_task_runner_;
+   fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate_;
+ };
++
++class SpiRuntimeExtensions : public EngineTest {};
+ }  // namespace
+ 
+ TEST_F(EngineTest, Create) {
+@@ -342,7 +345,7 @@ TEST_F(EngineTest, RenderFromFakeBackendReachesAnimator) {
+   PostUITaskSync([&] { engine.reset(); });
+ }
+ 
+-TEST_F(EngineTest, DartOnlyGettersWithoutDartBackend) {
++TEST_F(SpiRuntimeExtensions, EngineWorksWithoutExtensions) {
+   PostUITaskSync([this] {
+     auto fake_backend = std::make_unique<FakeRuntimeBackend>(task_runners_);
+     auto engine = std::make_unique<Engine>(
+@@ -350,9 +353,45 @@ TEST_F(EngineTest, DartOnlyGettersWithoutDartBackend) {
+         nullptr, io_manager_, std::make_shared<FontCollection>(),
+         std::move(fake_backend), std::make_shared<fml::SyncSwitch>());
+ 
++    EXPECT_FALSE(engine->GetUIIsolateReturnCode().has_value());
++    EXPECT_EQ(engine->GetUIIsolateMainPort(), ILLEGAL_PORT);
+     EXPECT_EQ(engine->GetUIIsolateName(), "");
+     EXPECT_FALSE(engine->GetUIIsolateServiceID().has_value());
+     EXPECT_FALSE(engine->UIIsolateHasLivePorts());
++    EXPECT_FALSE(engine->UIIsolateHasPendingMicrotasks());
++    EXPECT_EQ(engine->GetUIIsolateLastError(), tonic::kNoError);
++    engine->FlushMicrotaskQueue();
++    engine->ShutdownPlatformIsolates();
++    engine->LoadDartDeferredLibraryError(7, "error", true);
++    engine->LoadDartDeferredLibrary(
++        7, std::make_unique<const fml::DataMapping>("data"),
++        std::make_unique<const fml::DataMapping>("instructions"));
++  });
++}
++
++TEST_F(SpiRuntimeExtensions, DartBackendFillsEveryField) {
++  PostUITaskSync([this] {
++    MockRuntimeDelegate client;
++    auto controller =
++        std::make_unique<MockRuntimeController>(client, task_runners_);
++    auto backend = std::make_unique<DartRuntimeBackend>(std::move(controller));
++
++    const FlutterSpiRuntimeExtensions* extensions =
++        backend->GetExtensions();
++    ASSERT_NE(extensions, nullptr);
++    EXPECT_NE(extensions->free_string, nullptr);
++    EXPECT_NE(extensions->get_main_port, nullptr);
++    EXPECT_NE(extensions->get_root_isolate_service_id, nullptr);
++    EXPECT_NE(extensions->get_root_isolate_return_code, nullptr);
++    EXPECT_NE(extensions->get_isolate_name, nullptr);
++    EXPECT_NE(extensions->get_last_error, nullptr);
++    EXPECT_NE(extensions->has_live_ports, nullptr);
++    EXPECT_NE(extensions->has_pending_microtasks, nullptr);
++    EXPECT_NE(extensions->flush_microtask_queue, nullptr);
++    EXPECT_NE(extensions->load_deferred_library, nullptr);
++    EXPECT_NE(extensions->load_deferred_library_error, nullptr);
++    EXPECT_NE(extensions->shutdown_platform_isolates, nullptr);
++    EXPECT_NE(extensions->set_root_isolate_owner_to_current_thread, nullptr);
+   });
+ }
+ 
