@@ -1,0 +1,1291 @@
+# Why: Load fragment programs from runtime-stage bytes or assets, expose
+# uniform and sampler operations through the runtime SPI, and convert fragment
+# shaders into paint shaders or image filters.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index aec8babf228..4aa9da6a9f1 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -140,6 +140,8 @@ source_set("effects") {
+     "effects/spi_color_filter.h",
+     "effects/spi_image_filter.cc",
+     "effects/spi_image_filter.h",
++    "effects/spi_fragment.cc",
++    "effects/spi_fragment.h",
+     "effects/spi_shader.cc",
+     "effects/spi_shader.h",
+     "effects/spi_vertices.cc",
+@@ -149,6 +151,7 @@ source_set("effects") {
+     ":image",
+     ":runtime_spi_c_api",
+     ":scene",
++    "//flutter/lib/ui:ui_image_output",
+     "//flutter/display_list",
+   ]
+   assert_no_deps = [
+@@ -204,6 +207,7 @@ if (enable_unittests) {
+       "scene/spi_retained_layers_unittests.cc",
+       "scene/spi_scene_trace_unittests.cc",
+       "effects/spi_effects_parity_unittests.cc",
++      "effects/spi_fragment_unittests.cc",
+       "effects/spi_vertices_unittests.cc",
+       "image/spi_image_canvas_parity_unittests.cc",
+       "image/spi_image_unittests.cc",
+@@ -229,6 +233,8 @@ if (enable_unittests) {
+       "//flutter/common",
+       "//flutter/fml",
+       "//flutter/lib/ui",
++      "//flutter/lib/ui/fixtures/shaders/general_shaders:compile_general_shaders",
++      "//flutter/lib/ui/fixtures/shaders:sampler_order_fixture",
+       "//flutter/runtime",
+       "//flutter/shell/common:shell_test_fixture_sources",
+       "//flutter/shell/common:shell_unittests_fixtures",
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_fragment.cc b/engine/src/flutter/runtime_spi/effects/spi_fragment.cc
+new file mode 100644
+index 00000000000..9aa3a1e301e
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/effects/spi_fragment.cc
+@@ -0,0 +1,399 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/effects/spi_fragment.h"
++
++#include <cstdlib>
++#include <cstring>
++#include <memory>
++#include <new>
++#include <string>
++#include <utility>
++#include <vector>
++
++#include "flutter/assets/asset_manager.h"
++#include "flutter/display_list/dl_sampling_options.h"
++#include "flutter/display_list/dl_tile_mode.h"
++#include "flutter/display_list/effects/dl_color_source.h"
++#include "flutter/display_list/effects/dl_image_filter.h"
++#include "flutter/fml/mapping.h"
++#include "flutter/fml/status.h"
++#include "flutter/impeller/core/runtime_types.h"
++#include "flutter/lib/ui/painting/runtime_effect_loader.h"
++#include "flutter/runtime_spi/effects/spi_image_filter.h"
++#include "flutter/runtime_spi/effects/spi_shader.h"
++#include "flutter/runtime_spi/image/spi_image.h"
++#include "flutter/runtime_spi/spi_runtime_backend.h"
++
++namespace flutter {
++
++struct SpiFragmentProgramData {
++  sk_sp<DlRuntimeEffect> effect;
++  std::vector<impeller::RuntimeUniformDescription> uniforms;
++  size_t float_uniform_bytes = 0;
++  size_t float_count = 0;
++  size_t sampler_count = 0;
++  bool impeller_enabled = false;
++};
++
++struct SpiFragmentShaderData {
++  std::shared_ptr<SpiFragmentProgramData> program;
++  std::shared_ptr<std::vector<uint8_t>> uniform_data;
++  std::vector<std::shared_ptr<DlColorSource>> samplers;
++};
++
++}  // namespace flutter
++
++struct FlutterSpiFragmentProgram {
++  std::shared_ptr<flutter::SpiFragmentProgramData> data;
++};
++
++struct FlutterSpiFragmentShader {
++  std::shared_ptr<flutter::SpiFragmentShaderData> data;
++};
++
++namespace flutter {
++
++FlutterSpiResult SpiFragment::CheckEngine(FlutterSpiEngine* engine,
++                                          SpiRuntimeBackend** out_backend) {
++  if (engine == nullptr || engine->backend == nullptr || out_backend == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out_backend = engine->backend;
++  if (!(*out_backend)->HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  return kFlutterSpiOk;
++}
++
++namespace {
++
++FlutterSpiResult CheckProgram(FlutterSpiFragmentProgram* program,
++                              SpiFragmentProgramData** out_data) {
++  if (program == nullptr || program->data == nullptr || out_data == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out_data = program->data.get();
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CheckShader(FlutterSpiFragmentShader* shader,
++                             SpiFragmentShaderData** out_data) {
++  if (shader == nullptr || shader->data == nullptr || out_data == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out_data = shader->data.get();
++  return kFlutterSpiOk;
++}
++
++void SetError(char** out_error, std::string_view message) {
++  if (out_error == nullptr) {
++    return;
++  }
++  *out_error = nullptr;
++  char* error = static_cast<char*>(std::malloc(message.size() + 1));
++  if (error == nullptr) {
++    return;
++  }
++  std::memcpy(error, message.data(), message.size());
++  error[message.size()] = '\0';
++  *out_error = error;
++}
++
++DlImageSampling SamplingFromIndex(int32_t filter_quality) {
++  if (filter_quality <= kFlutterSpiFilterQualityNone) {
++    return DlImageSampling::kNearestNeighbor;
++  }
++  if (filter_quality == kFlutterSpiFilterQualityLow) {
++    return DlImageSampling::kLinear;
++  }
++  if (filter_quality == kFlutterSpiFilterQualityMedium) {
++    return DlImageSampling::kMipmapLinear;
++  }
++  return DlImageSampling::kCubic;
++}
++
++bool AreSamplersComplete(const SpiFragmentShaderData& shader) {
++  for (const auto& sampler : shader.samplers) {
++    if (sampler == nullptr) {
++      return false;
++    }
++  }
++  return true;
++}
++
++std::shared_ptr<std::vector<uint8_t>> CopyUniformData(
++    const SpiFragmentShaderData& shader) {
++  return std::make_shared<std::vector<uint8_t>>(*shader.uniform_data);
++}
++
++}  // namespace
++
++const FlutterSpiFragmentApi* SpiFragment::Api() {
++  static const FlutterSpiFragmentApi api = {
++      .struct_size = sizeof(FlutterSpiFragmentApi),
++      .program_from_asset = ProgramFromAsset,
++      .program_from_bytes = ProgramFromBytes,
++      .program_get_counts = ProgramGetCounts,
++      .program_get_uniform = ProgramGetUniform,
++      .program_release = ProgramRelease,
++      .shader_create = ShaderCreate,
++      .shader_set_float = ShaderSetFloat,
++      .shader_set_image_sampler = ShaderSetImageSampler,
++      .shader_to_shader = ShaderToShader,
++      .shader_to_image_filter = ShaderToImageFilter,
++      .shader_release = ShaderRelease,
++  };
++  return &api;
++}
++
++FlutterSpiResult SpiFragment::LoadProgram(
++    SpiRuntimeBackend* backend,
++    std::unique_ptr<fml::Mapping> data,
++    const std::string& library_id,
++    FlutterSpiFragmentProgram** out_program,
++    char** out_error) {
++  if (backend == nullptr || data == nullptr || out_program == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out_program = nullptr;
++  if (!backend->runtime_stage_backend_.valid()) {
++    SetError(out_error, "Runtime stage backend is unavailable.");
++    return kFlutterSpiInternalError;
++  }
++
++  RuntimeEffectLoadContext context{
++      backend->runtime_stage_backend_.get(),
++      backend->impeller_enabled_,
++      backend->snapshot_delegate_,
++      backend->task_runners_.GetRasterTaskRunner(),
++  };
++  auto loaded_effect =
++      LoadRuntimeEffect(std::move(data), library_id, context);
++  if (!loaded_effect.ok()) {
++    SetError(out_error, loaded_effect.status().message());
++    return kFlutterSpiInvalidArgument;
++  }
++  if (loaded_effect.value().effect == nullptr) {
++    SetError(out_error, "Runtime effect could not be created.");
++    return kFlutterSpiInternalError;
++  }
++
++  auto program_data = std::make_shared<SpiFragmentProgramData>();
++  program_data->effect = std::move(loaded_effect.value().effect);
++  program_data->uniforms = std::move(loaded_effect.value().uniforms);
++  program_data->float_uniform_bytes = loaded_effect.value().float_uniform_bytes;
++  program_data->float_count = program_data->float_uniform_bytes / sizeof(float);
++  program_data->sampler_count = loaded_effect.value().sampled_image_count;
++  program_data->impeller_enabled = backend->impeller_enabled_;
++
++  auto* program = new (std::nothrow) FlutterSpiFragmentProgram();
++  if (program == nullptr) {
++    SetError(out_error, "Could not allocate fragment program.");
++    return kFlutterSpiInternalError;
++  }
++  program->data = std::move(program_data);
++  *out_program = program;
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiFragment::ProgramFromAsset(
++    FlutterSpiEngine* engine,
++    const char* asset_name,
++    FlutterSpiFragmentProgram** out_program,
++    char** out_error) {
++  SpiRuntimeBackend* backend = nullptr;
++  const FlutterSpiResult check = SpiFragment::CheckEngine(engine, &backend);
++  if (check != kFlutterSpiOk || asset_name == nullptr || out_program == nullptr) {
++    return check != kFlutterSpiOk ? check : kFlutterSpiInvalidArgument;
++  }
++  if (backend->asset_manager_ == nullptr) {
++    SetError(out_error, "Asset manager is unavailable.");
++    return kFlutterSpiInternalError;
++  }
++  std::unique_ptr<fml::Mapping> data =
++      backend->asset_manager_->GetAsMapping(asset_name);
++  if (data == nullptr) {
++    SetError(out_error, std::string("Asset '") + asset_name + "' not found");
++    return kFlutterSpiInvalidArgument;
++  }
++  return LoadProgram(backend, std::move(data), asset_name, out_program, out_error);
++}
++
++FlutterSpiResult SpiFragment::ProgramFromBytes(
++    FlutterSpiEngine* engine,
++    const uint8_t* data,
++    size_t size,
++    const char* library_id,
++    FlutterSpiFragmentProgram** out_program,
++    char** out_error) {
++  SpiRuntimeBackend* backend = nullptr;
++  const FlutterSpiResult check = SpiFragment::CheckEngine(engine, &backend);
++  if (check != kFlutterSpiOk || data == nullptr || size == 0 ||
++      out_program == nullptr) {
++    return check != kFlutterSpiOk ? check : kFlutterSpiInvalidArgument;
++  }
++  auto mapping = std::make_unique<fml::MallocMapping>(
++      fml::MallocMapping::Copy(data, size));
++  return LoadProgram(backend, std::move(mapping),
++                     library_id == nullptr ? "" : library_id, out_program,
++                     out_error);
++}
++
++FlutterSpiResult SpiFragment::ProgramGetCounts(
++    FlutterSpiFragmentProgram* program,
++    size_t* out_uniform_count,
++    size_t* out_float_count,
++    size_t* out_sampler_count) {
++  SpiFragmentProgramData* data = nullptr;
++  if (CheckProgram(program, &data) != kFlutterSpiOk ||
++      out_uniform_count == nullptr || out_float_count == nullptr ||
++      out_sampler_count == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out_uniform_count = data->uniforms.size();
++  *out_float_count = data->float_count;
++  *out_sampler_count = data->sampler_count;
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiFragment::ProgramGetUniform(FlutterSpiFragmentProgram* program,
++                                                size_t index,
++                                                FlutterSpiUniformInfo* out_info) {
++  SpiFragmentProgramData* data = nullptr;
++  if (CheckProgram(program, &data) != kFlutterSpiOk || out_info == nullptr ||
++      index >= data->uniforms.size()) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const auto& uniform = data->uniforms[index];
++  *out_info = {
++      .struct_size = sizeof(FlutterSpiUniformInfo),
++      .name = uniform.name.c_str(),
++      .type = static_cast<int32_t>(uniform.type),
++      .size_bytes = uniform.GetDartSize(),
++  };
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiFragment::ProgramRelease(FlutterSpiFragmentProgram* program) {
++  if (program == nullptr || program->data == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  delete program;
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiFragment::ShaderCreate(FlutterSpiFragmentProgram* program,
++                                            FlutterSpiFragmentShader** out_shader) {
++  SpiFragmentProgramData* data = nullptr;
++  if (CheckProgram(program, &data) != kFlutterSpiOk || out_shader == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  auto shader_data = std::make_shared<SpiFragmentShaderData>();
++  shader_data->program = program->data;
++  shader_data->uniform_data = std::make_shared<std::vector<uint8_t>>(
++      data->float_uniform_bytes + data->sampler_count * 2 * sizeof(float), 0);
++  shader_data->samplers.resize(data->sampler_count);
++  auto* shader = new (std::nothrow) FlutterSpiFragmentShader();
++  if (shader == nullptr) {
++    return kFlutterSpiInternalError;
++  }
++  shader->data = std::move(shader_data);
++  *out_shader = shader;
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiFragment::ShaderSetFloat(FlutterSpiFragmentShader* shader,
++                                             size_t index,
++                                             float value) {
++  SpiFragmentShaderData* data = nullptr;
++  if (CheckShader(shader, &data) != kFlutterSpiOk) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (index >= data->program->float_count) {
++    return kFlutterSpiInvalidArgument;
++  }
++  std::memcpy(data->uniform_data->data() + index * sizeof(float), &value,
++              sizeof(float));
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiFragment::ShaderSetImageSampler(
++    FlutterSpiFragmentShader* shader,
++    size_t index,
++    FlutterSpiImage* image,
++    int32_t filter_quality) {
++  SpiFragmentShaderData* data = nullptr;
++  if (CheckShader(shader, &data) != kFlutterSpiOk || image == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (index >= data->samplers.size()) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const sk_sp<DlImage> dl_image = SpiImageGet(image);
++  if (dl_image == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  int32_t width = 0;
++  int32_t height = 0;
++  if (SpiImageGetSize(image, &width, &height) != kFlutterSpiOk) {
++    return kFlutterSpiInvalidHandle;
++  }
++  data->samplers[index] = DlColorSource::MakeImage(
++      dl_image, DlTileMode::kClamp, DlTileMode::kClamp,
++      SamplingFromIndex(filter_quality), nullptr);
++  const size_t offset =
++      data->program->float_uniform_bytes + 2 * index * sizeof(float);
++  const float dimensions[] = {static_cast<float>(width),
++                              static_cast<float>(height)};
++  std::memcpy(data->uniform_data->data() + offset, dimensions,
++              sizeof(dimensions));
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiFragment::ShaderToShader(FlutterSpiFragmentShader* shader,
++                                             int32_t filter_quality,
++                                             FlutterSpiShader** out_shader) {
++  (void)filter_quality;
++  SpiFragmentShaderData* data = nullptr;
++  if (CheckShader(shader, &data) != kFlutterSpiOk || out_shader == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (!AreSamplersComplete(*data)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return SpiShaderCreate(
++      DlColorSource::MakeRuntimeEffect(data->program->effect, data->samplers,
++                                       CopyUniformData(*data)),
++      out_shader);
++}
++
++FlutterSpiResult SpiFragment::ShaderToImageFilter(
++    FlutterSpiFragmentShader* shader,
++    int32_t filter_quality,
++    FlutterSpiImageFilter** out_filter) {
++  SpiFragmentShaderData* data = nullptr;
++  if (CheckShader(shader, &data) != kFlutterSpiOk || out_filter == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (!data->program || !data->program->impeller_enabled ||
++      data->samplers.empty() || !AreSamplersComplete(*data)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return SpiImageFilterCreate(
++      DlImageFilter::MakeRuntimeEffect(
++          data->program->effect, data->samplers, CopyUniformData(*data),
++          SamplingFromIndex(filter_quality)),
++      out_filter);
++}
++
++FlutterSpiResult SpiFragment::ShaderRelease(FlutterSpiFragmentShader* shader) {
++  if (shader == nullptr || shader->data == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  delete shader;
++  return kFlutterSpiOk;
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_fragment.h b/engine/src/flutter/runtime_spi/effects/spi_fragment.h
+new file mode 100644
+index 00000000000..a737825a9c1
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/effects/spi_fragment.h
+@@ -0,0 +1,75 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_EFFECTS_SPI_FRAGMENT_H_
++#define FLUTTER_RUNTIME_SPI_EFFECTS_SPI_FRAGMENT_H_
++
++#include <memory>
++#include <string>
++
++#include "flutter/fml/mapping.h"
++#include "flutter/runtime_spi/include/flutter_fragment.h"
++
++namespace flutter {
++
++class SpiRuntimeBackend;
++
++class SpiFragment final {
++ public:
++  static const FlutterSpiFragmentApi* Api();
++
++  static FlutterSpiResult ProgramFromAsset(
++      FlutterSpiEngine* engine,
++      const char* asset_name,
++      FlutterSpiFragmentProgram** out_program,
++      char** out_error);
++  static FlutterSpiResult ProgramFromBytes(
++      FlutterSpiEngine* engine,
++      const uint8_t* data,
++      size_t size,
++      const char* library_id,
++      FlutterSpiFragmentProgram** out_program,
++      char** out_error);
++  static FlutterSpiResult ProgramGetCounts(
++      FlutterSpiFragmentProgram* program,
++      size_t* out_uniform_count,
++      size_t* out_float_count,
++      size_t* out_sampler_count);
++  static FlutterSpiResult ProgramGetUniform(FlutterSpiFragmentProgram* program,
++                                            size_t index,
++                                            FlutterSpiUniformInfo* out_info);
++  static FlutterSpiResult ProgramRelease(FlutterSpiFragmentProgram* program);
++  static FlutterSpiResult ShaderCreate(FlutterSpiFragmentProgram* program,
++                                       FlutterSpiFragmentShader** out_shader);
++  static FlutterSpiResult ShaderSetFloat(FlutterSpiFragmentShader* shader,
++                                          size_t index,
++                                          float value);
++  static FlutterSpiResult ShaderSetImageSampler(
++      FlutterSpiFragmentShader* shader,
++      size_t index,
++      FlutterSpiImage* image,
++      int32_t filter_quality);
++  static FlutterSpiResult ShaderToShader(FlutterSpiFragmentShader* shader,
++                                         int32_t filter_quality,
++                                         FlutterSpiShader** out_shader);
++  static FlutterSpiResult ShaderToImageFilter(
++      FlutterSpiFragmentShader* shader,
++      int32_t filter_quality,
++      FlutterSpiImageFilter** out_filter);
++  static FlutterSpiResult ShaderRelease(FlutterSpiFragmentShader* shader);
++
++ private:
++  static FlutterSpiResult CheckEngine(FlutterSpiEngine* engine,
++                                      SpiRuntimeBackend** out_backend);
++  static FlutterSpiResult LoadProgram(
++      SpiRuntimeBackend* backend,
++      std::unique_ptr<fml::Mapping> data,
++      const std::string& library_id,
++      FlutterSpiFragmentProgram** out_program,
++      char** out_error);
++};
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_EFFECTS_SPI_FRAGMENT_H_
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_fragment_unittests.cc b/engine/src/flutter/runtime_spi/effects/spi_fragment_unittests.cc
+new file mode 100644
+index 00000000000..23185c097b3
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/effects/spi_fragment_unittests.cc
+@@ -0,0 +1,565 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/spi_runtime_backend.h"
++
++#include <array>
++#include <cstdlib>
++#include <cstring>
++#include <future>
++#include <memory>
++#include <optional>
++#include <string>
++#include <vector>
++
++#include <unistd.h>
++
++#include "flutter/assets/asset_manager.h"
++#include "flutter/assets/directory_asset_bundle.h"
++#include "flutter/display_list/effects/color_sources/dl_runtime_effect_color_source.h"
++#include "flutter/display_list/effects/image_filters/dl_runtime_effect_image_filter.h"
++#include "flutter/display_list/image/dl_image_skia.h"
++#include "flutter/fml/file.h"
++#include "flutter/fml/mapping.h"
++#include "flutter/impeller/core/runtime_types.h"
++#include "flutter/impeller/runtime_stage/runtime_stage.h"
++#include "flutter/lib/ui/text/font_collection.h"
++#include "flutter/runtime/runtime_delegate.h"
++#include "flutter/runtime_spi/effects/spi_image_filter.h"
++#include "flutter/runtime_spi/effects/spi_shader.h"
++#include "flutter/runtime_spi/image/spi_image.h"
++#include "flutter/runtime_spi/testing/c_test_runtime.h"
++#include "flutter/shell/common/run_configuration.h"
++#include "flutter/testing/testing.h"
++#include "gmock/gmock.h"
++#include "third_party/skia/include/core/SkBitmap.h"
++#include "third_party/skia/include/core/SkImage.h"
++
++namespace flutter::testing {
++namespace {
++
++constexpr char kSimpleFixture[] = "simple.frag.iplr";
++constexpr char kTextureFixture[] = "texture.frag.iplr";
++constexpr char kUniformsFixture[] = "uniforms.frag.iplr";
++constexpr char kMissingBackendFixture[] = "shader_with_samplers.frag.iplr";
++constexpr char kGeneralShaderFixtureDirectory[] = "general_shaders/iplr";
++constexpr char kRemappedShaderFixtureDirectory[] = "iplr-remap";
++
++std::string ExecutableDirectory() {
++  std::array<char, 4096> buffer = {};
++  const ssize_t size = readlink("/proc/self/exe", buffer.data(), buffer.size());
++  if (size <= 0) {
++    return {};
++  }
++  std::string path(buffer.data(), size);
++  const size_t separator = path.find_last_of('/');
++  return separator == std::string::npos ? std::string()
++                                        : path.substr(0, separator);
++}
++
++std::string FixturePath(const char* fixture_name,
++                        const char* fixture_directory =
++                            kGeneralShaderFixtureDirectory) {
++  return ExecutableDirectory() + "/gen/flutter/lib/ui/fixtures/shaders/" +
++         fixture_directory + "/" + fixture_name;
++}
++
++std::shared_ptr<fml::Mapping> LoadFixtureMapping(
++    const char* fixture_name,
++    const char* fixture_directory = kGeneralShaderFixtureDirectory) {
++  auto mapping = fml::FileMapping::CreateReadOnly(
++      FixturePath(fixture_name, fixture_directory));
++  if (mapping == nullptr || !mapping->IsValid()) {
++    return nullptr;
++  }
++  return std::shared_ptr<fml::Mapping>(std::move(mapping));
++}
++
++std::vector<uint8_t> LoadFixtureBytes(
++    const char* fixture_name,
++    const char* fixture_directory = kGeneralShaderFixtureDirectory) {
++  const auto mapping = LoadFixtureMapping(fixture_name, fixture_directory);
++  if (mapping == nullptr) {
++    return {};
++  }
++  return {mapping->GetMapping(), mapping->GetMapping() + mapping->GetSize()};
++}
++
++std::shared_ptr<impeller::RuntimeStage> DecodeFixtureStage(
++    const char* fixture_name,
++    impeller::RuntimeStageBackend backend) {
++  const auto mapping = LoadFixtureMapping(fixture_name);
++  if (mapping == nullptr) {
++    return nullptr;
++  }
++  auto stages = impeller::RuntimeStage::DecodeRuntimeStages(mapping);
++  if (!stages.ok()) {
++    return nullptr;
++  }
++  return stages.value().at(backend);
++}
++
++struct RuntimeStageCounts {
++  size_t float_count = 0;
++  size_t sampler_count = 0;
++};
++
++RuntimeStageCounts CountUniforms(const impeller::RuntimeStage& stage) {
++  RuntimeStageCounts counts;
++  for (const auto& uniform : stage.GetUniforms()) {
++    if (uniform.type == impeller::kSampledImage) {
++      counts.sampler_count++;
++    } else {
++      counts.float_count += uniform.GetDartSize() / sizeof(float);
++    }
++  }
++  return counts;
++}
++
++sk_sp<DlImage> MakeTestImage() {
++  SkBitmap bitmap;
++  if (!bitmap.tryAllocPixels(SkImageInfo::MakeN32Premul(4, 3))) {
++    return nullptr;
++  }
++  bitmap.eraseColor(SK_ColorBLUE);
++  bitmap.setImmutable();
++  return DlImageSkia::Make(SkImages::RasterFromBitmap(bitmap));
++}
++
++class FakeRuntimeDelegate final : public RuntimeDelegate {
++ public:
++  FakeRuntimeDelegate() : asset_manager_(std::make_shared<AssetManager>()) {
++    asset_manager_->PushBack(std::make_unique<DirectoryAssetBundle>(
++        fml::OpenDirectory(
++            (ExecutableDirectory() +
++             "/gen/flutter/lib/ui/fixtures/shaders/general_shaders/iplr")
++                .c_str(),
++            false, fml::FilePermission::kRead),
++        false));
++  }
++
++  std::string DefaultRouteName() override { return "/"; }
++  void ScheduleFrame(bool regenerate_layer_trees = true) override {}
++  void OnAllViewsRendered() override {}
++  void Render(int64_t view_id,
++              std::unique_ptr<flutter::LayerTree> layer_tree,
++              float device_pixel_ratio) override {}
++  void UpdateSemantics(int64_t view_id,
++                       SemanticsNodeUpdates update,
++                       CustomAccessibilityActionUpdates actions) override {}
++  void SetApplicationLocale(std::string locale) override {}
++  void SetSemanticsTreeEnabled(bool enabled) override {}
++  void HandlePlatformMessage(
++      std::unique_ptr<PlatformMessage> message) override {}
++  FontCollection& GetFontCollection() override { return font_collection_; }
++  std::shared_ptr<AssetManager> GetAssetManager() override {
++    return asset_manager_;
++  }
++  void OnRootIsolateCreated() override {}
++  void UpdateIsolateDescription(const std::string isolate_name,
++                                int64_t isolate_port) override {}
++  void SetNeedsReportTimings(bool value) override {}
++  void ResetInternalState() override {}
++  std::unique_ptr<std::vector<std::string>> ComputePlatformResolvedLocale(
++      const std::vector<std::string>& supported_locale_data) override {
++    return nullptr;
++  }
++  void RequestDartDeferredLibrary(intptr_t loading_unit_id) override {}
++  void RequestViewFocusChange(const ViewFocusChangeRequest& request) override {}
++  std::weak_ptr<PlatformMessageHandler> GetPlatformMessageHandler()
++      const override {
++    return {};
++  }
++  void SendChannelUpdate(std::string name, bool listening) override {}
++  double GetScaledFontSize(double unscaled_font_size,
++                           int configuration_id) const override {
++    return unscaled_font_size;
++  }
++
++ private:
++  FontCollection font_collection_;
++  std::shared_ptr<AssetManager> asset_manager_;
++};
++
++class SpiFragmentTest : public ::testing::Test {
++ protected:
++  void SetUp() override {
++    fml::MessageLoop::EnsureInitializedForCurrentThread();
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wdeprecated-declarations"
++    auto task_runner = fml::MessageLoop::GetCurrent().GetTaskRunner();
++#pragma clang diagnostic pop
++    task_runners_ =
++        std::make_unique<TaskRunners>("spi-fragment-test", task_runner,
++                                      task_runner, task_runner, task_runner);
++    runtime_ = c_test_runtime_create();
++  }
++
++  void TearDown() override { c_test_runtime_free(runtime_); }
++
++  std::unique_ptr<SpiRuntimeBackend> CreateBackend(
++      impeller::RuntimeStageBackend backend =
++          impeller::RuntimeStageBackend::kVulkan) {
++    std::promise<impeller::RuntimeStageBackend> backend_promise;
++    backend_promise.set_value(backend);
++    return std::make_unique<SpiRuntimeBackend>(
++        delegate_, *task_runners_, c_test_runtime_table(runtime_),
++        fml::TaskRunnerAffineWeakPtr<ImageDecoder>{},
++        fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>{},
++        fml::TaskRunnerAffineWeakPtr<SnapshotDelegate>{}, nullptr, true,
++        backend_promise.get_future().share());
++  }
++
++  void LaunchBackend(SpiRuntimeBackend* backend) {
++    Settings settings;
++    ASSERT_TRUE(backend->Launch(RunConfiguration(nullptr), settings, {}, 1));
++  }
++
++  FakeRuntimeDelegate delegate_;
++  std::unique_ptr<TaskRunners> task_runners_;
++  CTestRuntime* runtime_ = nullptr;
++};
++
++TEST_F(SpiFragmentTest, FragmentProgramsAreExposedByCapability) {
++  auto backend = CreateBackend();
++  LaunchBackend(backend.get());
++
++  ASSERT_NE(runtime_->engine_api->fragment, nullptr);
++  EXPECT_NE(runtime_->engine_api->capabilities & kFlutterSpiCapFragmentPrograms,
++            0u);
++}
++
++TEST_F(SpiFragmentTest, LoadsProgramFromBytes) {
++  auto backend = CreateBackend();
++  LaunchBackend(backend.get());
++  const FlutterSpiFragmentApi* api = runtime_->engine_api->fragment;
++  ASSERT_NE(api, nullptr);
++
++  const auto bytes = LoadFixtureBytes(kUniformsFixture);
++  ASSERT_FALSE(bytes.empty());
++  FlutterSpiFragmentProgram* program = nullptr;
++  ASSERT_EQ(
++      api->program_from_bytes(runtime_->engine, bytes.data(), bytes.size(),
++                              "uniforms", &program, nullptr),
++      kFlutterSpiOk);
++
++  const auto stage = DecodeFixtureStage(kUniformsFixture,
++                                        impeller::RuntimeStageBackend::kVulkan);
++  ASSERT_NE(stage, nullptr);
++  const RuntimeStageCounts expected = CountUniforms(*stage);
++  size_t uniform_count = 0;
++  size_t float_count = 0;
++  size_t sampler_count = 0;
++  ASSERT_EQ(api->program_get_counts(program, &uniform_count, &float_count,
++                                    &sampler_count),
++            kFlutterSpiOk);
++  EXPECT_EQ(uniform_count, stage->GetUniforms().size());
++  EXPECT_EQ(float_count, expected.float_count);
++  EXPECT_EQ(sampler_count, expected.sampler_count);
++  EXPECT_EQ(api->program_release(program), kFlutterSpiOk);
++}
++
++TEST_F(SpiFragmentTest, UniformInfoMatchesRuntimeStage) {
++  auto backend = CreateBackend();
++  LaunchBackend(backend.get());
++  const FlutterSpiFragmentApi* api = runtime_->engine_api->fragment;
++  ASSERT_NE(api, nullptr);
++
++  const auto bytes = LoadFixtureBytes(kUniformsFixture);
++  FlutterSpiFragmentProgram* program = nullptr;
++  ASSERT_EQ(
++      api->program_from_bytes(runtime_->engine, bytes.data(), bytes.size(),
++                              "uniforms", &program, nullptr),
++      kFlutterSpiOk);
++  const auto stage = DecodeFixtureStage(kUniformsFixture,
++                                        impeller::RuntimeStageBackend::kVulkan);
++  ASSERT_NE(stage, nullptr);
++  for (size_t index = 0; index < stage->GetUniforms().size(); index++) {
++    FlutterSpiUniformInfo info = {};
++    ASSERT_EQ(api->program_get_uniform(program, index, &info), kFlutterSpiOk);
++    const auto& expected = stage->GetUniforms()[index];
++    EXPECT_STREQ(info.name, expected.name.c_str());
++    EXPECT_EQ(info.type, static_cast<int32_t>(expected.type));
++    EXPECT_EQ(info.size_bytes, expected.GetDartSize());
++  }
++  EXPECT_EQ(api->program_release(program), kFlutterSpiOk);
++}
++
++TEST_F(SpiFragmentTest, ShaderMatchesDartUi) {
++  auto backend = CreateBackend();
++  LaunchBackend(backend.get());
++  const FlutterSpiFragmentApi* api = runtime_->engine_api->fragment;
++  ASSERT_NE(api, nullptr);
++
++  const auto bytes = LoadFixtureBytes(kSimpleFixture);
++  FlutterSpiFragmentProgram* program = nullptr;
++  ASSERT_EQ(api->program_from_bytes(runtime_->engine, bytes.data(),
++                                    bytes.size(), "simple", &program, nullptr),
++            kFlutterSpiOk);
++  FlutterSpiFragmentShader* fragment_shader = nullptr;
++  ASSERT_EQ(api->shader_create(program, &fragment_shader), kFlutterSpiOk);
++  ASSERT_EQ(api->shader_set_float(fragment_shader, 0, 1.5f), kFlutterSpiOk);
++  FlutterSpiShader* shader = nullptr;
++  ASSERT_EQ(api->shader_to_shader(fragment_shader, kFlutterSpiFilterQualityLow,
++                                  &shader),
++            kFlutterSpiOk);
++
++  const auto actual = SpiShaderGet(shader);
++  ASSERT_NE(actual, nullptr);
++  const auto* actual_runtime = actual->asRuntimeEffect();
++  ASSERT_NE(actual_runtime, nullptr);
++  const auto stage = DecodeFixtureStage(kSimpleFixture,
++                                        impeller::RuntimeStageBackend::kVulkan);
++  ASSERT_NE(stage, nullptr);
++  EXPECT_EQ(actual_runtime->runtime_effect()->runtime_stage()->GetLibraryId(),
++            "simple");
++  EXPECT_EQ(
++      actual_runtime->runtime_effect()->runtime_stage()->GetUniforms().size(),
++      stage->GetUniforms().size());
++  ASSERT_EQ(actual_runtime->uniform_data()->size(), sizeof(float));
++  float value = 0.0f;
++  std::memcpy(&value, actual_runtime->uniform_data()->data(), sizeof(value));
++  EXPECT_EQ(value, 1.5f);
++  auto expected = DlColorSource::MakeRuntimeEffect(
++      actual_runtime->runtime_effect(), {}, actual_runtime->uniform_data());
++  EXPECT_TRUE(*actual == *expected);
++
++  ASSERT_NE(runtime_->engine_api->paint_effects, nullptr);
++  EXPECT_EQ(runtime_->engine_api->paint_effects->shader_release(shader),
++            kFlutterSpiOk);
++  EXPECT_EQ(api->shader_release(fragment_shader), kFlutterSpiOk);
++  EXPECT_EQ(api->program_release(program), kFlutterSpiOk);
++}
++
++TEST_F(SpiFragmentTest, ImageFilterMatchesDartUi) {
++  auto backend = CreateBackend();
++  LaunchBackend(backend.get());
++  const FlutterSpiFragmentApi* api = runtime_->engine_api->fragment;
++  ASSERT_NE(api, nullptr);
++
++  const auto bytes = LoadFixtureBytes(kTextureFixture);
++  FlutterSpiFragmentProgram* program = nullptr;
++  ASSERT_EQ(api->program_from_bytes(runtime_->engine, bytes.data(),
++                                    bytes.size(), "texture", &program, nullptr),
++            kFlutterSpiOk);
++  FlutterSpiFragmentShader* fragment_shader = nullptr;
++  ASSERT_EQ(api->shader_create(program, &fragment_shader), kFlutterSpiOk);
++  FlutterSpiImage* image = nullptr;
++  ASSERT_EQ(SpiImageWrap(MakeTestImage(), &image), kFlutterSpiOk);
++  ASSERT_EQ(api->shader_set_image_sampler(fragment_shader, 0, image,
++                                          kFlutterSpiFilterQualityMedium),
++            kFlutterSpiOk);
++  FlutterSpiImageFilter* image_filter = nullptr;
++  ASSERT_EQ(api->shader_to_image_filter(
++                fragment_shader, kFlutterSpiFilterQualityMedium, &image_filter),
++            kFlutterSpiOk);
++
++  const auto actual = SpiImageFilterGet(image_filter);
++  ASSERT_NE(actual, nullptr);
++  const auto* actual_runtime = actual->asRuntimeEffectFilter();
++  ASSERT_NE(actual_runtime, nullptr);
++  const auto stage = DecodeFixtureStage(kTextureFixture,
++                                        impeller::RuntimeStageBackend::kVulkan);
++  ASSERT_NE(stage, nullptr);
++  EXPECT_EQ(
++      actual_runtime->runtime_effect()->runtime_stage()->GetUniforms().size(),
++      stage->GetUniforms().size());
++  EXPECT_EQ(actual_runtime->input_sampling(), DlImageSampling::kMipmapLinear);
++  auto expected = DlImageFilter::MakeRuntimeEffect(
++      actual_runtime->runtime_effect(), actual_runtime->samplers(),
++      actual_runtime->uniform_data(), actual_runtime->input_sampling());
++  EXPECT_TRUE(*actual == *expected);
++
++  EXPECT_EQ(api->shader_release(fragment_shader), kFlutterSpiOk);
++  EXPECT_EQ(api->program_release(program), kFlutterSpiOk);
++  EXPECT_EQ(SpiImageRelease(image), kFlutterSpiOk);
++  EXPECT_EQ(SpiImageFilterRelease(image_filter), kFlutterSpiOk);
++}
++
++TEST_F(SpiFragmentTest, UniformsAreCopiedAtConversion) {
++  auto backend = CreateBackend();
++  LaunchBackend(backend.get());
++  const FlutterSpiFragmentApi* api = runtime_->engine_api->fragment;
++  ASSERT_NE(api, nullptr);
++
++  const auto bytes = LoadFixtureBytes(kSimpleFixture);
++  FlutterSpiFragmentProgram* program = nullptr;
++  ASSERT_EQ(api->program_from_bytes(runtime_->engine, bytes.data(),
++                                    bytes.size(), "simple", &program, nullptr),
++            kFlutterSpiOk);
++  FlutterSpiFragmentShader* fragment_shader = nullptr;
++  ASSERT_EQ(api->shader_create(program, &fragment_shader), kFlutterSpiOk);
++  ASSERT_EQ(api->shader_set_float(fragment_shader, 0, 1.0f), kFlutterSpiOk);
++  FlutterSpiShader* shader = nullptr;
++  ASSERT_EQ(api->shader_to_shader(fragment_shader, kFlutterSpiFilterQualityNone,
++                                  &shader),
++            kFlutterSpiOk);
++  ASSERT_EQ(api->shader_set_float(fragment_shader, 0, 2.0f), kFlutterSpiOk);
++
++  const auto actual = SpiShaderGet(shader);
++  ASSERT_NE(actual, nullptr);
++  float value = 0.0f;
++  std::memcpy(&value, actual->asRuntimeEffect()->uniform_data()->data(),
++              sizeof(value));
++  EXPECT_EQ(value, 1.0f);
++
++  ASSERT_NE(runtime_->engine_api->paint_effects, nullptr);
++  EXPECT_EQ(runtime_->engine_api->paint_effects->shader_release(shader),
++            kFlutterSpiOk);
++  EXPECT_EQ(api->shader_release(fragment_shader), kFlutterSpiOk);
++  EXPECT_EQ(api->program_release(program), kFlutterSpiOk);
++}
++
++TEST_F(SpiFragmentTest, RejectsGarbageWithDartUiMessage) {
++  auto backend = CreateBackend();
++  LaunchBackend(backend.get());
++  const FlutterSpiFragmentApi* api = runtime_->engine_api->fragment;
++  ASSERT_NE(api, nullptr);
++
++  const std::array<uint8_t, 4> garbage = {1, 2, 3, 4};
++  FlutterSpiFragmentProgram* program = nullptr;
++  char* error = nullptr;
++  EXPECT_EQ(
++      api->program_from_bytes(runtime_->engine, garbage.data(), garbage.size(),
++                              "garbage", &program, &error),
++      kFlutterSpiInvalidArgument);
++  EXPECT_EQ(program, nullptr);
++  ASSERT_NE(error, nullptr);
++  EXPECT_THAT(
++      std::string(error),
++      ::testing::HasSubstr("Asset 'garbage' manifest could not be decoded"));
++  std::free(error);
++}
++
++TEST_F(SpiFragmentTest, MissingBackendStageMessage) {
++  const auto mapping =
++      LoadFixtureMapping(kMissingBackendFixture, kRemappedShaderFixtureDirectory);
++  ASSERT_NE(mapping, nullptr);
++  auto stages = impeller::RuntimeStage::DecodeRuntimeStages(mapping);
++  ASSERT_TRUE(stages.ok());
++  const std::array<impeller::RuntimeStageBackend, 5> backends = {
++      impeller::RuntimeStageBackend::kSkSL,
++      impeller::RuntimeStageBackend::kMetal,
++      impeller::RuntimeStageBackend::kOpenGLES,
++      impeller::RuntimeStageBackend::kOpenGLES3,
++      impeller::RuntimeStageBackend::kVulkan};
++  std::optional<impeller::RuntimeStageBackend> missing_backend;
++  for (const auto backend : backends) {
++    if (stages.value().at(backend) == nullptr) {
++      missing_backend = backend;
++      break;
++    }
++  }
++  ASSERT_TRUE(missing_backend.has_value());
++
++  auto backend = CreateBackend(*missing_backend);
++  LaunchBackend(backend.get());
++  const FlutterSpiFragmentApi* api = runtime_->engine_api->fragment;
++  ASSERT_NE(api, nullptr);
++  const auto bytes =
++      LoadFixtureBytes(kMissingBackendFixture, kRemappedShaderFixtureDirectory);
++  FlutterSpiFragmentProgram* program = nullptr;
++  char* error = nullptr;
++  EXPECT_EQ(api->program_from_bytes(runtime_->engine, bytes.data(),
++                                    bytes.size(), "simple", &program, &error),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(program, nullptr);
++  ASSERT_NE(error, nullptr);
++  EXPECT_THAT(
++      std::string(error),
++      ::testing::HasSubstr("does not contain appropriate runtime stage data"));
++  std::free(error);
++}
++
++TEST_F(SpiFragmentTest, RejectsOutOfRangeUniform) {
++  auto backend = CreateBackend();
++  LaunchBackend(backend.get());
++  const FlutterSpiFragmentApi* api = runtime_->engine_api->fragment;
++  ASSERT_NE(api, nullptr);
++
++  const auto bytes = LoadFixtureBytes(kTextureFixture);
++  FlutterSpiFragmentProgram* program = nullptr;
++  ASSERT_EQ(api->program_from_bytes(runtime_->engine, bytes.data(),
++                                    bytes.size(), "texture", &program, nullptr),
++            kFlutterSpiOk);
++  FlutterSpiFragmentShader* fragment_shader = nullptr;
++  ASSERT_EQ(api->shader_create(program, &fragment_shader), kFlutterSpiOk);
++  EXPECT_EQ(api->shader_set_float(fragment_shader, 2, 1.0f),
++            kFlutterSpiInvalidArgument);
++  FlutterSpiImage* image_handle = nullptr;
++  ASSERT_EQ(SpiImageWrap(MakeTestImage(), &image_handle), kFlutterSpiOk);
++  EXPECT_EQ(api->shader_set_image_sampler(fragment_shader, 1, image_handle,
++                                          kFlutterSpiFilterQualityNone),
++            kFlutterSpiInvalidArgument);
++
++  EXPECT_EQ(api->shader_release(fragment_shader), kFlutterSpiOk);
++  EXPECT_EQ(api->program_release(program), kFlutterSpiOk);
++  EXPECT_EQ(SpiImageRelease(image_handle), kFlutterSpiOk);
++}
++
++TEST_F(SpiFragmentTest, RequiresAllSamplers) {
++  auto backend = CreateBackend();
++  LaunchBackend(backend.get());
++  const FlutterSpiFragmentApi* api = runtime_->engine_api->fragment;
++  ASSERT_NE(api, nullptr);
++
++  const auto bytes = LoadFixtureBytes(kTextureFixture);
++  FlutterSpiFragmentProgram* program = nullptr;
++  ASSERT_EQ(api->program_from_bytes(runtime_->engine, bytes.data(),
++                                    bytes.size(), "texture", &program, nullptr),
++            kFlutterSpiOk);
++  FlutterSpiFragmentShader* fragment_shader = nullptr;
++  ASSERT_EQ(api->shader_create(program, &fragment_shader), kFlutterSpiOk);
++  FlutterSpiShader* shader = nullptr;
++  FlutterSpiImageFilter* image_filter = nullptr;
++  EXPECT_EQ(api->shader_to_shader(fragment_shader, kFlutterSpiFilterQualityNone,
++                                  &shader),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(api->shader_to_image_filter(
++                fragment_shader, kFlutterSpiFilterQualityNone, &image_filter),
++            kFlutterSpiInvalidArgument);
++
++  EXPECT_EQ(api->shader_release(fragment_shader), kFlutterSpiOk);
++  EXPECT_EQ(api->program_release(program), kFlutterSpiOk);
++}
++
++TEST_F(SpiFragmentTest, ErrorStringIsOptional) {
++  auto backend = CreateBackend();
++  LaunchBackend(backend.get());
++  const FlutterSpiFragmentApi* api = runtime_->engine_api->fragment;
++  ASSERT_NE(api, nullptr);
++
++  const std::array<uint8_t, 4> garbage = {1, 2, 3, 4};
++  FlutterSpiFragmentProgram* program = nullptr;
++  EXPECT_EQ(
++      api->program_from_bytes(runtime_->engine, garbage.data(), garbage.size(),
++                              "garbage", &program, nullptr),
++      kFlutterSpiInvalidArgument);
++  EXPECT_EQ(program, nullptr);
++}
++
++TEST_F(SpiFragmentTest, LoadsProgramFromAsset) {
++  auto backend = CreateBackend();
++  LaunchBackend(backend.get());
++  const FlutterSpiFragmentApi* api = runtime_->engine_api->fragment;
++  ASSERT_NE(api, nullptr);
++
++  FlutterSpiFragmentProgram* program = nullptr;
++  ASSERT_EQ(api->program_from_asset(runtime_->engine, kSimpleFixture, &program,
++                                    nullptr),
++            kFlutterSpiOk);
++  size_t uniform_count = 0;
++  size_t float_count = 0;
++  size_t sampler_count = 0;
++  ASSERT_EQ(api->program_get_counts(program, &uniform_count, &float_count,
++                                    &sampler_count),
++            kFlutterSpiOk);
++  EXPECT_EQ(uniform_count, 1u);
++  EXPECT_EQ(float_count, 1u);
++  EXPECT_EQ(sampler_count, 0u);
++  EXPECT_EQ(api->program_release(program), kFlutterSpiOk);
++}
++
++}  // namespace
++}  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_image_filter.cc b/engine/src/flutter/runtime_spi/effects/spi_image_filter.cc
+index 1abec7e9c47..22c21c63245 100644
+--- a/engine/src/flutter/runtime_spi/effects/spi_image_filter.cc
++++ b/engine/src/flutter/runtime_spi/effects/spi_image_filter.cc
+@@ -203,6 +203,14 @@ FlutterSpiResult SpiImageFilterRelease(FlutterSpiImageFilter* filter) {
+                                                      : kFlutterSpiInvalidHandle;
+ }
+ 
++FlutterSpiResult SpiImageFilterCreate(std::shared_ptr<DlImageFilter> filter,
++                                      FlutterSpiImageFilter** out_filter) {
++  if (out_filter == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return StoreImageFilter(std::move(filter), false, out_filter);
++}
++
+ std::shared_ptr<DlImageFilter> SpiImageFilterGet(
+     FlutterSpiImageFilter* filter) {
+   const auto filter_value = FindImageFilter(filter);
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_image_filter.h b/engine/src/flutter/runtime_spi/effects/spi_image_filter.h
+index 2acd0dfc97e..0b4ddc31165 100644
+--- a/engine/src/flutter/runtime_spi/effects/spi_image_filter.h
++++ b/engine/src/flutter/runtime_spi/effects/spi_image_filter.h
+@@ -46,6 +46,8 @@ FlutterSpiResult SpiImageFilterCompose(FlutterSpiEngine* engine,
+                                        FlutterSpiImageFilter* inner,
+                                        FlutterSpiImageFilter** out_filter);
+ FlutterSpiResult SpiImageFilterRelease(FlutterSpiImageFilter* filter);
++FlutterSpiResult SpiImageFilterCreate(std::shared_ptr<DlImageFilter> filter,
++                                      FlutterSpiImageFilter** out_filter);
+ std::shared_ptr<DlImageFilter> SpiImageFilterGet(FlutterSpiImageFilter* filter);
+ std::shared_ptr<DlImageFilter> SpiImageFilterResolve(
+     FlutterSpiImageFilter* filter,
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_shader.cc b/engine/src/flutter/runtime_spi/effects/spi_shader.cc
+index 84bfabb81a0..e8b37c8b2b2 100644
+--- a/engine/src/flutter/runtime_spi/effects/spi_shader.cc
++++ b/engine/src/flutter/runtime_spi/effects/spi_shader.cc
+@@ -283,6 +283,14 @@ FlutterSpiResult SpiShaderRelease(FlutterSpiShader* shader) {
+                                                  : kFlutterSpiInvalidHandle;
+ }
+ 
++FlutterSpiResult SpiShaderCreate(std::shared_ptr<DlColorSource> shader,
++                                 FlutterSpiShader** out_shader) {
++  if (out_shader == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return StoreShader(std::move(shader), out_shader);
++}
++
+ std::shared_ptr<DlColorSource> SpiShaderGet(FlutterSpiShader* shader) {
+   const auto shader_value = FindShader(shader);
+   return shader_value == nullptr ? nullptr : shader_value->shader();
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_shader.h b/engine/src/flutter/runtime_spi/effects/spi_shader.h
+index 8325ead10b0..aea41c86155 100644
+--- a/engine/src/flutter/runtime_spi/effects/spi_shader.h
++++ b/engine/src/flutter/runtime_spi/effects/spi_shader.h
+@@ -64,6 +64,8 @@ FlutterSpiResult SpiShaderImage(FlutterSpiEngine* engine,
+                                 const FlutterSpiMatrix* matrix,
+                                 FlutterSpiShader** out_shader);
+ FlutterSpiResult SpiShaderRelease(FlutterSpiShader* shader);
++FlutterSpiResult SpiShaderCreate(std::shared_ptr<DlColorSource> shader,
++                                 FlutterSpiShader** out_shader);
+ std::shared_ptr<DlColorSource> SpiShaderGet(FlutterSpiShader* shader);
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index 27f58f5f372..f994e80ff98 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -10,6 +10,7 @@
+ #include "flutter/runtime/runtime_delegate.h"
+ #include "flutter/runtime_spi/effects/spi_color_filter.h"
+ #include "flutter/runtime_spi/effects/spi_image_filter.h"
++#include "flutter/runtime_spi/effects/spi_fragment.h"
+ #include "flutter/runtime_spi/effects/spi_shader.h"
+ #include "flutter/runtime_spi/effects/spi_vertices.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
+@@ -138,7 +139,8 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+                       kFlutterSpiCapEmptyScene | kFlutterSpiCapScene |
+                       kFlutterSpiCapText | kFlutterSpiCapImage |
+                       kFlutterSpiCapImageOutput | kFlutterSpiCapPaintEffects |
+-                      kFlutterSpiCapSceneLayers,
++                      kFlutterSpiCapSceneLayers |
++                      kFlutterSpiCapFragmentPrograms,
+       .request_frame = RequestFrame,
+       .scene_create_empty = SceneCreateEmpty,
+       .scene_release = SceneRelease,
+@@ -154,7 +156,7 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+       .text = &kTextApi,
+       .image = &image_api,
+       .paint_effects = &kPaintEffectsApi,
+-      .fragment = nullptr,
++      .fragment = SpiFragment::Api(),
+   };
+ }
+ 
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+index 2c1b26b09be..b6aeb2c0f64 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+@@ -99,12 +99,17 @@ SpiRuntimeBackend::SpiRuntimeBackend(
+         image_generator_registry,
+     fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
+     fml::RefPtr<SkiaUnrefQueue> unref_queue,
+-    bool impeller_enabled)
++    bool impeller_enabled,
++    std::shared_future<impeller::RuntimeStageBackend> runtime_stage_backend)
+     : runtime_delegate_(runtime_delegate),
+       task_runners_(task_runners),
+       table_(table),
+       engine_api_(SpiEngineApi::Create()),
+       engine_handle_(new FlutterSpiEngine{this}),
++      asset_manager_(runtime_delegate.GetAssetManager()),
++      snapshot_delegate_(snapshot_delegate),
++      runtime_stage_backend_(std::move(runtime_stage_backend)),
++      impeller_enabled_(impeller_enabled),
+       image_snapshot_(std::make_unique<SpiImageSnapshot>(ImageSnapshotContext{
+           task_runners.GetUITaskRunner(), task_runners.GetRasterTaskRunner(),
+           std::move(snapshot_delegate), std::move(unref_queue),
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.h b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+index 6a9de9aad1c..f988ab94fc1 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.h
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+@@ -6,6 +6,7 @@
+ #define FLUTTER_RUNTIME_SPI_SPI_RUNTIME_BACKEND_H_
+ 
+ #include <cstdint>
++#include <future>
+ #include <memory>
+ #include <unordered_map>
+ #include <unordered_set>
+@@ -21,8 +22,10 @@
+ 
+ namespace flutter {
+ 
++class AssetManager;
+ class RuntimeDelegate;
+ class SpiRuntimeBackend;
++class SpiFragment;
+ class ImageDecoder;
+ class ImageGeneratorRegistry;
+ 
+@@ -51,7 +54,9 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+                     fml::TaskRunnerAffineWeakPtr<SnapshotDelegate>
+                         snapshot_delegate = {},
+                     fml::RefPtr<SkiaUnrefQueue> unref_queue = nullptr,
+-                    bool impeller_enabled = false);
++                    bool impeller_enabled = false,
++                    std::shared_future<impeller::RuntimeStageBackend>
++                        runtime_stage_backend = {});
+   ~SpiRuntimeBackend() override;
+ 
+   std::unique_ptr<RuntimeBackend> Clone() const override;
+@@ -143,6 +148,7 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+ 
+  private:
+   friend class SpiEngineApi;
++  friend class SpiFragment;
+ 
+   bool HasUiThread() const;
+   bool HasCapability(FlutterSpiCapabilities capability) const;
+@@ -170,6 +176,10 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+   bool started_ = false;
+   bool stop_requested_ = false;
+   bool stop_called_ = false;
++  std::shared_ptr<AssetManager> asset_manager_;
++  fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate_;
++  std::shared_future<impeller::RuntimeStageBackend> runtime_stage_backend_;
++  bool impeller_enabled_ = false;
+   std::unique_ptr<SpiImageSnapshot> image_snapshot_;
+   std::unique_ptr<SpiImageDecoding> image_decoding_;
+ 
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc
+index 4740f7af1df..3ab839fe811 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc
+@@ -45,7 +45,6 @@ std::unique_ptr<RuntimeBackend> SpiRuntimeBackendFactory::Create(
+         runtime_stage_backend) {
+   (void)platform_data;
+   (void)settings;
+-  (void)runtime_stage_backend;
+   if (!valid_) {
+     return nullptr;
+   }
+@@ -54,7 +53,8 @@ std::unique_ptr<RuntimeBackend> SpiRuntimeBackendFactory::Create(
+                                              std::move(image_generator_registry),
+                                              std::move(snapshot_delegate),
+                                              std::move(unref_queue),
+-                                             settings.enable_impeller);
++                                             settings.enable_impeller,
++                                             runtime_stage_backend);
+ }
+ 
+ }  // namespace flutter
