@@ -1,0 +1,394 @@
+# Why: The core Shell now exposes service protocol handlers through the
+# versioned C SPI. The Dart runtime must adapt those handlers to the VM
+# service, preserve the existing runner-based path, and provide the runtime
+# callbacks required by the Shell.
+diff --git a/engine/src/flutter/runtime/service_protocol.cc b/engine/src/flutter/runtime/service_protocol.cc
+index 8ff85863c6c..58025b8ad52 100644
+--- a/engine/src/flutter/runtime/service_protocol.cc
++++ b/engine/src/flutter/runtime/service_protocol.cc
+@@ -143,10 +143,16 @@ bool ServiceProtocol::HandleMessage(std::string_view method,
+     const ServiceProtocol::Handler::ServiceProtocolMap& params,
+     rapidjson::Document* document) {
+   FML_DCHECK(handler);
++  auto handler_task_runner =
++      handler->GetServiceProtocolHandlerTaskRunner(method);
++  if (!handler_task_runner) {
++    return handler->HandleServiceProtocolMessage(method, params, document);
++  }
++
+   fml::AutoResetWaitableEvent latch;
+   bool result = false;
+   fml::TaskRunner::RunNowOrPostTask(
+-      handler->GetServiceProtocolHandlerTaskRunner(method),
++      handler_task_runner,
+       [&latch,    //
+        &result,   //
+        &handler,  //
+diff --git a/engine/src/flutter/shell/common/dart_runtime_backend.cc b/engine/src/flutter/shell/common/dart_runtime_backend.cc
+index a9c442868ad..02ac3be9345 100644
+--- a/engine/src/flutter/shell/common/dart_runtime_backend.cc
++++ b/engine/src/flutter/shell/common/dart_runtime_backend.cc
+@@ -6,11 +6,16 @@
+ 
+ #include <cstdlib>
+ #include <cstring>
++#include <string_view>
+ #include <utility>
++#include <vector>
+ 
+ #include "assets/native_assets.h"
++#include "flutter/runtime/dart_vm.h"
+ #include "flutter/runtime/runtime_controller.h"
++#include "flutter/runtime/service_protocol.h"
+ #include "flutter/shell/common/run_configuration.h"
++#include "rapidjson/document.h"
+ 
+ namespace flutter {
+ namespace {
+@@ -33,11 +38,11 @@ void FreeString(void*, char* string) {
+   std::free(string);
+ }
+ 
+-int64_t GetMainPort(void* user_data) {
++int64_t GetMainPortExtension(void* user_data) {
+   return BackendFromUserData(user_data)->GetMainPort();
+ }
+ 
+-bool GetRootIsolateServiceId(void* user_data, char** out_utf8) {
++bool GetRootIsolateServiceIdExtension(void* user_data, char** out_utf8) {
+   if (out_utf8 == nullptr) {
+     return false;
+   }
+@@ -51,7 +56,7 @@ bool GetRootIsolateServiceId(void* user_data, char** out_utf8) {
+   return *out_utf8 != nullptr;
+ }
+ 
+-bool GetRootIsolateReturnCode(void* user_data, uint32_t* out_code) {
++bool GetRootIsolateReturnCodeExtension(void* user_data, uint32_t* out_code) {
+   if (out_code == nullptr) {
+     return false;
+   }
+@@ -64,23 +69,23 @@ bool GetRootIsolateReturnCode(void* user_data, uint32_t* out_code) {
+   return true;
+ }
+ 
+-char* GetIsolateName(void* user_data) {
++char* GetIsolateNameExtension(void* user_data) {
+   return CopyString(BackendFromUserData(user_data)->GetIsolateName());
+ }
+ 
+-int32_t GetLastError(void* user_data) {
++int32_t GetLastErrorExtension(void* user_data) {
+   return static_cast<int32_t>(BackendFromUserData(user_data)->GetLastError());
+ }
+ 
+-bool HasLivePorts(void* user_data) {
++bool HasLivePortsExtension(void* user_data) {
+   return BackendFromUserData(user_data)->HasLivePorts();
+ }
+ 
+-bool HasPendingMicrotasks(void* user_data) {
++bool HasPendingMicrotasksExtension(void* user_data) {
+   return BackendFromUserData(user_data)->HasPendingMicrotasks();
+ }
+ 
+-void FlushMicrotaskQueue(void* user_data) {
++void FlushMicrotaskQueueExtension(void* user_data) {
+   BackendFromUserData(user_data)->FlushMicrotaskQueue();
+ }
+ 
+@@ -95,55 +100,123 @@ std::unique_ptr<const fml::Mapping> MakeMapping(FlutterSpiMapping mapping) {
+       });
+ }
+ 
+-void LoadDeferredLibrary(void* user_data,
+-                         int64_t loading_unit_id,
+-                         FlutterSpiMapping snapshot_data,
+-                         FlutterSpiMapping snapshot_instructions) {
++void LoadDeferredLibraryExtension(void* user_data,
++                                  int64_t loading_unit_id,
++                                  FlutterSpiMapping snapshot_data,
++                                  FlutterSpiMapping snapshot_instructions) {
+   BackendFromUserData(user_data)->LoadDartDeferredLibrary(
+       static_cast<intptr_t>(loading_unit_id), MakeMapping(snapshot_data),
+       MakeMapping(snapshot_instructions));
+ }
+ 
+-void LoadDeferredLibraryError(void* user_data,
+-                              int64_t loading_unit_id,
+-                              const char* error_message,
+-                              bool transient) {
++void LoadDeferredLibraryErrorExtension(void* user_data,
++                                       int64_t loading_unit_id,
++                                       const char* error_message,
++                                       bool transient) {
+   BackendFromUserData(user_data)->LoadDartDeferredLibraryError(
+       static_cast<intptr_t>(loading_unit_id),
+       error_message == nullptr ? std::string() : error_message, transient);
+ }
+ 
+-void ShutdownPlatformIsolates(void* user_data) {
++void ShutdownPlatformIsolatesExtension(void* user_data) {
+   BackendFromUserData(user_data)->ShutdownPlatformIsolates();
+ }
+ 
+-void SetRootIsolateOwnerToCurrentThread(void* user_data) {
++void SetRootIsolateOwnerToCurrentThreadExtension(void* user_data) {
+   BackendFromUserData(user_data)->SetRootIsolateOwnerToCurrentThread();
+ }
+ 
+-FlutterSpiRuntimeExtensions MakeExtensions(void* user_data) {
++}  // namespace
++
++class DartRuntimeBackend::ServiceProtocolHandler final
++    : public ServiceProtocol::Handler {
++ public:
++  ServiceProtocolHandler(const FlutterSpiServiceHandler* handler,
++                         Description description)
++      : handler_(handler), description_(std::move(description)) {}
++
++  fml::RefPtr<fml::TaskRunner> GetServiceProtocolHandlerTaskRunner(
++      std::string_view) const override {
++    return nullptr;
++  }
++
++  Description GetServiceProtocolDescription() const override {
++    return description_;
++  }
++
++  bool HandleServiceProtocolMessage(
++      std::string_view method,
++      const ServiceProtocolMap& params,
++      rapidjson::Document* response) override {
++    if (handler_ == nullptr || handler_->handle == nullptr ||
++        response == nullptr) {
++      return false;
++    }
++
++    std::string method_string(method);
++    std::vector<const char*> keys;
++    std::vector<const char*> values;
++    keys.reserve(params.size());
++    values.reserve(params.size());
++    for (const auto& [key, value] : params) {
++      keys.push_back(key.data());
++      values.push_back(value.data());
++    }
++
++    char* json = nullptr;
++    const bool handled = handler_->handle(
++        handler_->user_data, method_string.c_str(), keys.data(), values.data(),
++        params.size(), &json);
++    if (!handled || json == nullptr) {
++      return false;
++    }
++
++    response->Parse(json);
++    const bool valid_response = !response->HasParseError() &&
++                                response->IsObject();
++    if (handler_->free_json != nullptr) {
++      handler_->free_json(handler_->user_data, json);
++    }
++    return valid_response;
++  }
++
++  void SetDescription(Description description) {
++    description_ = std::move(description);
++  }
++
++ private:
++  const FlutterSpiServiceHandler* handler_;
++  Description description_;
++};
++
++FlutterSpiRuntimeExtensions DartRuntimeBackend::MakeExtensions(
++    DartRuntimeBackend* backend) {
+   return {
+       .struct_size = sizeof(FlutterSpiRuntimeExtensions),
+-      .user_data = user_data,
++      .user_data = backend,
+       .free_string = FreeString,
+-      .get_main_port = GetMainPort,
+-      .get_root_isolate_service_id = GetRootIsolateServiceId,
+-      .get_root_isolate_return_code = GetRootIsolateReturnCode,
+-      .get_isolate_name = GetIsolateName,
+-      .get_last_error = GetLastError,
+-      .has_live_ports = HasLivePorts,
+-      .has_pending_microtasks = HasPendingMicrotasks,
+-      .flush_microtask_queue = FlushMicrotaskQueue,
+-      .load_deferred_library = LoadDeferredLibrary,
+-      .load_deferred_library_error = LoadDeferredLibraryError,
+-      .shutdown_platform_isolates = ShutdownPlatformIsolates,
++      .get_main_port = GetMainPortExtension,
++      .get_root_isolate_service_id = GetRootIsolateServiceIdExtension,
++      .get_root_isolate_return_code = GetRootIsolateReturnCodeExtension,
++      .get_isolate_name = GetIsolateNameExtension,
++      .get_last_error = GetLastErrorExtension,
++      .has_live_ports = HasLivePortsExtension,
++      .has_pending_microtasks = HasPendingMicrotasksExtension,
++      .flush_microtask_queue = FlushMicrotaskQueueExtension,
++      .load_deferred_library = LoadDeferredLibraryExtension,
++      .load_deferred_library_error = LoadDeferredLibraryErrorExtension,
++      .shutdown_platform_isolates = ShutdownPlatformIsolatesExtension,
+       .set_root_isolate_owner_to_current_thread =
+-          SetRootIsolateOwnerToCurrentThread,
++          SetRootIsolateOwnerToCurrentThreadExtension,
++      .register_service_handler = RegisterServiceHandlerThunk,
++      .unregister_service_handler = UnregisterServiceHandlerThunk,
++      .refresh_service_handler_description =
++          RefreshServiceHandlerDescriptionThunk,
++      .notify_low_memory = NotifyLowMemoryThunk,
++      .is_running_runtime_code = IsRunningRuntimeCodeThunk,
+   };
+ }
+ 
+-}  // namespace
+-
+ DartRuntimeBackend::DartRuntimeBackend(
+     std::unique_ptr<RuntimeController> controller)
+     : controller_(std::move(controller)), extensions_(MakeExtensions(this)) {}
+@@ -255,6 +328,98 @@ bool DartRuntimeBackend::IsRunning() const {
+   return controller_->IsRootIsolateRunning();
+ }
+ 
++void DartRuntimeBackend::RegisterServiceHandlerThunk(
++    void* user_data,
++    const FlutterSpiServiceHandler* handler) {
++  BackendFromUserData(user_data)->RegisterServiceHandler(handler);
++}
++
++void DartRuntimeBackend::UnregisterServiceHandlerThunk(
++    void* user_data,
++    const FlutterSpiServiceHandler* handler) {
++  BackendFromUserData(user_data)->UnregisterServiceHandler(handler);
++}
++
++void DartRuntimeBackend::RefreshServiceHandlerDescriptionThunk(
++    void* user_data,
++    const FlutterSpiServiceHandler* handler) {
++  BackendFromUserData(user_data)->RefreshServiceHandlerDescription(handler);
++}
++
++void DartRuntimeBackend::NotifyLowMemoryThunk(void* user_data) {
++  BackendFromUserData(user_data)->NotifyLowMemory();
++}
++
++bool DartRuntimeBackend::IsRunningRuntimeCodeThunk(void* user_data) {
++  return BackendFromUserData(user_data)->IsRunningRuntimeCode();
++}
++
++void DartRuntimeBackend::RegisterServiceHandler(
++    const FlutterSpiServiceHandler* handler) {
++  if (handler == nullptr || service_protocol_handlers_.contains(handler)) {
++    return;
++  }
++
++  DartVM* vm = controller_->GetDartVM();
++  if (vm == nullptr) {
++    return;
++  }
++  auto service_protocol = vm->GetServiceProtocol();
++  if (service_protocol == nullptr) {
++    return;
++  }
++
++  ServiceProtocol::Handler::Description description(
++      GetMainPort(), GetIsolateName());
++  auto service_handler =
++      std::make_unique<ServiceProtocolHandler>(handler, description);
++  auto* service_handler_ptr = service_handler.get();
++  service_protocol->AddHandler(service_handler_ptr, description);
++  service_protocol_handlers_.emplace(handler, std::move(service_handler));
++}
++
++void DartRuntimeBackend::UnregisterServiceHandler(
++    const FlutterSpiServiceHandler* handler) {
++  auto found = service_protocol_handlers_.find(handler);
++  if (found == service_protocol_handlers_.end()) {
++    return;
++  }
++
++  if (DartVM* vm = controller_->GetDartVM(); vm != nullptr) {
++    if (auto service_protocol = vm->GetServiceProtocol();
++        service_protocol != nullptr) {
++      service_protocol->RemoveHandler(found->second.get());
++    }
++  }
++  service_protocol_handlers_.erase(found);
++}
++
++void DartRuntimeBackend::RefreshServiceHandlerDescription(
++    const FlutterSpiServiceHandler* handler) {
++  auto found = service_protocol_handlers_.find(handler);
++  if (found == service_protocol_handlers_.end()) {
++    return;
++  }
++
++  ServiceProtocol::Handler::Description description(
++      GetMainPort(), GetIsolateName());
++  found->second->SetDescription(description);
++  if (DartVM* vm = controller_->GetDartVM(); vm != nullptr) {
++    if (auto service_protocol = vm->GetServiceProtocol();
++        service_protocol != nullptr) {
++      service_protocol->SetHandlerDescription(found->second.get(), description);
++    }
++  }
++}
++
++void DartRuntimeBackend::NotifyLowMemory() {
++  ::Dart_NotifyLowMemory();
++}
++
++bool DartRuntimeBackend::IsRunningRuntimeCode() const {
++  return Dart_CurrentIsolate() != nullptr;
++}
++
+ const FlutterSpiRuntimeExtensions* DartRuntimeBackend::GetExtensions() const {
+   return &extensions_;
+ }
+diff --git a/engine/src/flutter/shell/common/dart_runtime_backend.h b/engine/src/flutter/shell/common/dart_runtime_backend.h
+index 568eabb7645..d7114db6e04 100644
+--- a/engine/src/flutter/shell/common/dart_runtime_backend.h
++++ b/engine/src/flutter/shell/common/dart_runtime_backend.h
+@@ -6,6 +6,7 @@
+ #define FLUTTER_SHELL_COMMON_DART_RUNTIME_BACKEND_H_
+ 
+ #include <memory>
++#include <unordered_map>
+ 
+ #include "flutter/runtime_spi/dart_runtime_extensions.h"
+ #include "flutter/runtime_spi/runtime_backend.h"
+@@ -103,7 +104,33 @@ class DartRuntimeBackend final : public RuntimeBackend,
+   const RuntimeController& controller() const;
+ 
+  private:
++  class ServiceProtocolHandler;
++
++  static void RegisterServiceHandlerThunk(
++      void* user_data,
++      const FlutterSpiServiceHandler* handler);
++  static void UnregisterServiceHandlerThunk(
++      void* user_data,
++      const FlutterSpiServiceHandler* handler);
++  static void RefreshServiceHandlerDescriptionThunk(
++      void* user_data,
++      const FlutterSpiServiceHandler* handler);
++  static void NotifyLowMemoryThunk(void* user_data);
++  static bool IsRunningRuntimeCodeThunk(void* user_data);
++  static FlutterSpiRuntimeExtensions MakeExtensions(
++      DartRuntimeBackend* backend);
++
++  void RegisterServiceHandler(const FlutterSpiServiceHandler* handler);
++  void UnregisterServiceHandler(const FlutterSpiServiceHandler* handler);
++  void RefreshServiceHandlerDescription(
++      const FlutterSpiServiceHandler* handler);
++  void NotifyLowMemory();
++  bool IsRunningRuntimeCode() const;
++
+   std::unique_ptr<RuntimeController> controller_;
++  std::unordered_map<const FlutterSpiServiceHandler*,
++                     std::unique_ptr<ServiceProtocolHandler>>
++      service_protocol_handlers_;
+   FlutterSpiRuntimeExtensions extensions_ = {};
+ };
+ 
