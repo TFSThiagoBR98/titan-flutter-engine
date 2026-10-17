@@ -1,0 +1,1003 @@
+# Why: Publish the ABI-backed semantics node and custom action conversions
+# with the same update semantics as dart:ui, including validated strings,
+# defaults, and builder consumption.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 5d4834a9843..00db0e70cf9 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -193,6 +193,26 @@ source_set("text") {
+   ]
+ }
+ 
++source_set("semantics") {
++  public = [ "semantics/spi_semantics.h" ]
++  sources = [
++    "semantics/spi_semantics.cc",
++    "semantics/spi_semantics.h",
++  ]
++  public_deps = [
++    ":runtime_spi_c_api",
++    "//flutter/lib/ui:ui_core_types",
++    "//flutter/third_party/icu:icuuc",
++  ]
++  assert_no_deps = [
++    "//flutter/third_party/dart/*",
++    "//flutter/third_party/tonic/*",
++    "//flutter/runtime:runtime",
++    "//flutter/runtime:libdart",
++    "//flutter/lib/ui:ui",
++  ]
++}
++
+ if (enable_unittests) {
+   executable("runtime_spi_unittests") {
+     testonly = true
+@@ -210,6 +230,7 @@ if (enable_unittests) {
+       "effects/spi_effects_parity_unittests.cc",
+       "effects/spi_fragment_unittests.cc",
+       "effects/spi_vertices_unittests.cc",
++      "semantics/spi_semantics_unittests.cc",
+       "image/spi_image_canvas_parity_unittests.cc",
+       "image/spi_image_unittests.cc",
+       "image/spi_image_decoding_unittests.cc",
+@@ -227,6 +248,7 @@ if (enable_unittests) {
+       ":c_test_runtime",
+       ":effects",
+       ":runtime_spi_c_api",
++      ":semantics",
+       ":scene",
+       ":image",
+       ":spi_backend",
+diff --git a/engine/src/flutter/runtime_spi/semantics/spi_semantics.cc b/engine/src/flutter/runtime_spi/semantics/spi_semantics.cc
+new file mode 100644
+index 00000000000..3d69592c451
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/semantics/spi_semantics.cc
+@@ -0,0 +1,496 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/semantics/spi_semantics.h"
++
++#include <climits>
++#include <cstddef>
++#include <memory>
++#include <new>
++#include <string>
++#include <utility>
++
++#include "third_party/icu/source/common/unicode/ustring.h"
++
++namespace flutter {
++namespace {
++
++bool HasField(size_t struct_size, size_t offset, size_t field_size) {
++  return struct_size >= offset && struct_size - offset >= field_size;
++}
++
++bool IsValidUtf8(const char* value) {
++  if (value == nullptr) {
++    return true;
++  }
++  UErrorCode error = U_ZERO_ERROR;
++  int32_t utf16_length = 0;
++  u_strFromUTF8(nullptr, 0, &utf16_length, value, -1, &error);
++  return U_SUCCESS(error) || error == U_BUFFER_OVERFLOW_ERROR;
++}
++
++FlutterSpiResult AssignString(const char* value, std::string* output) {
++  if (!IsValidUtf8(value)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *output = value == nullptr ? std::string() : value;
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CopyAttributes(const FlutterSpiAttributedString& input,
++                                std::string* text,
++                                StringAttributes* attributes) {
++  FlutterSpiResult result = AssignString(input.text, text);
++  if (result != kFlutterSpiOk) {
++    return result;
++  }
++  if (input.attribute_count != 0 && input.attributes == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  attributes->clear();
++  attributes->reserve(input.attribute_count);
++  for (size_t index = 0; index < input.attribute_count; index++) {
++    const FlutterSpiStringAttribute& input_attribute = input.attributes[index];
++    StringAttributePtr attribute;
++    if (input_attribute.type == kFlutterSpiStringAttributeSpellOut) {
++      attribute = std::make_shared<SpellOutStringAttribute>();
++    } else if (input_attribute.type == kFlutterSpiStringAttributeLocale) {
++      auto locale_attribute = std::make_shared<LocaleStringAttribute>();
++      result = AssignString(input_attribute.locale, &locale_attribute->locale);
++      if (result != kFlutterSpiOk) {
++        return result;
++      }
++      attribute = std::move(locale_attribute);
++    } else {
++      return kFlutterSpiInvalidArgument;
++    }
++    attribute->start = input_attribute.start;
++    attribute->end = input_attribute.end;
++    attribute->type = static_cast<StringAttributeType>(input_attribute.type);
++    attributes->push_back(std::move(attribute));
++  }
++  return kFlutterSpiOk;
++}
++
++void CopyFlags(const FlutterSpiSemanticsFlags& input, SemanticsFlags* output) {
++  const size_t size = input.struct_size;
++  if (HasField(size, offsetof(FlutterSpiSemanticsFlags, is_checked),
++               sizeof(input.is_checked))) {
++    output->isChecked = static_cast<SemanticsCheckState>(input.is_checked);
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsFlags, is_selected),
++               sizeof(input.is_selected))) {
++    output->isSelected = static_cast<SemanticsTristate>(input.is_selected);
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsFlags, is_enabled),
++               sizeof(input.is_enabled))) {
++    output->isEnabled = static_cast<SemanticsTristate>(input.is_enabled);
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsFlags, is_toggled),
++               sizeof(input.is_toggled))) {
++    output->isToggled = static_cast<SemanticsTristate>(input.is_toggled);
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsFlags, is_expanded),
++               sizeof(input.is_expanded))) {
++    output->isExpanded = static_cast<SemanticsTristate>(input.is_expanded);
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsFlags, is_required),
++               sizeof(input.is_required))) {
++    output->isRequired = static_cast<SemanticsTristate>(input.is_required);
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsFlags, is_focused),
++               sizeof(input.is_focused))) {
++    output->isFocused = static_cast<SemanticsTristate>(input.is_focused);
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsFlags, is_button),
++               sizeof(input.is_button))) {
++    output->isButton = input.is_button;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsFlags, is_text_field),
++               sizeof(input.is_text_field))) {
++    output->isTextField = input.is_text_field;
++  }
++  if (HasField(size,
++               offsetof(FlutterSpiSemanticsFlags, is_in_mutually_exclusive_group),
++               sizeof(input.is_in_mutually_exclusive_group))) {
++    output->isInMutuallyExclusiveGroup = input.is_in_mutually_exclusive_group;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsFlags, is_header),
++               sizeof(input.is_header))) {
++    output->isHeader = input.is_header;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsFlags, is_obscured),
++               sizeof(input.is_obscured))) {
++    output->isObscured = input.is_obscured;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsFlags, scopes_route),
++               sizeof(input.scopes_route))) {
++    output->scopesRoute = input.scopes_route;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsFlags, names_route),
++               sizeof(input.names_route))) {
++    output->namesRoute = input.names_route;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsFlags, is_hidden),
++               sizeof(input.is_hidden))) {
++    output->isHidden = input.is_hidden;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsFlags, is_image),
++               sizeof(input.is_image))) {
++    output->isImage = input.is_image;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsFlags, is_live_region),
++               sizeof(input.is_live_region))) {
++    output->isLiveRegion = input.is_live_region;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsFlags, has_implicit_scrolling),
++               sizeof(input.has_implicit_scrolling))) {
++    output->hasImplicitScrolling = input.has_implicit_scrolling;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsFlags, is_multiline),
++               sizeof(input.is_multiline))) {
++    output->isMultiline = input.is_multiline;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsFlags, is_read_only),
++               sizeof(input.is_read_only))) {
++    output->isReadOnly = input.is_read_only;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsFlags, is_link),
++               sizeof(input.is_link))) {
++    output->isLink = input.is_link;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsFlags, is_slider),
++               sizeof(input.is_slider))) {
++    output->isSlider = input.is_slider;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsFlags, is_keyboard_key),
++               sizeof(input.is_keyboard_key))) {
++    output->isKeyboardKey = input.is_keyboard_key;
++  }
++  if (HasField(size,
++               offsetof(FlutterSpiSemanticsFlags, is_accessibility_focus_blocked),
++               sizeof(input.is_accessibility_focus_blocked))) {
++    output->isAccessibilityFocusBlocked = input.is_accessibility_focus_blocked;
++  }
++}
++
++template <typename T>
++void CopyVector(const T* input, size_t count, std::vector<T>* output) {
++  output->clear();
++  if (count == 0) {
++    return;
++  }
++  output->assign(input, input + count);
++}
++
++FlutterSpiResult UpdateNode(FlutterSpiSemanticsUpdateBuilder* builder,
++                            const FlutterSpiSemanticsNode* input) {
++  if (builder == nullptr || builder->consumed) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (input == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  SemanticsNode node;
++  FlutterSpiResult result = SpiSemanticsToNode(*input, &node);
++  if (result != kFlutterSpiOk) {
++    return result;
++  }
++  builder->nodes[node.id] = std::move(node);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult UpdateCustomAction(
++    FlutterSpiSemanticsUpdateBuilder* builder,
++    const FlutterSpiSemanticsCustomAction* input) {
++  if (builder == nullptr || builder->consumed) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (input == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  CustomAccessibilityAction action;
++  FlutterSpiResult result = SpiSemanticsToAction(*input, &action);
++  if (result != kFlutterSpiOk) {
++    return result;
++  }
++  builder->actions[action.id] = std::move(action);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CreateBuilder(FlutterSpiEngine* engine,
++                               FlutterSpiSemanticsUpdateBuilder** output) {
++  if (engine == nullptr || output == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *output = new (std::nothrow) FlutterSpiSemanticsUpdateBuilder();
++  return *output == nullptr ? kFlutterSpiInternalError : kFlutterSpiOk;
++}
++
++FlutterSpiResult SubmitBuilder(FlutterSpiSemanticsUpdateBuilder* builder,
++                               int64_t view_id) {
++  (void)view_id;
++  if (builder == nullptr || builder->consumed) {
++    return kFlutterSpiInvalidHandle;
++  }
++  builder->consumed = true;
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult ReleaseBuilder(FlutterSpiSemanticsUpdateBuilder* builder) {
++  if (builder == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  delete builder;
++  return kFlutterSpiOk;
++}
++
++}  // namespace
++
++FlutterSpiResult SpiSemanticsToNode(const FlutterSpiSemanticsNode& input,
++                                    SemanticsNode* output) {
++  if (output == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *output = SemanticsNode();
++  const size_t size = input.struct_size;
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, id), sizeof(input.id))) {
++    output->id = input.id;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, flags),
++               sizeof(input.flags))) {
++    CopyFlags(input.flags, &output->flags);
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, actions),
++               sizeof(input.actions))) {
++    output->actions = input.actions;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, max_value_length),
++               sizeof(input.max_value_length))) {
++    output->maxValueLength = input.max_value_length;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, current_value_length),
++               sizeof(input.current_value_length))) {
++    output->currentValueLength = input.current_value_length;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, text_selection_base),
++               sizeof(input.text_selection_base))) {
++    output->textSelectionBase = input.text_selection_base;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, text_selection_extent),
++               sizeof(input.text_selection_extent))) {
++    output->textSelectionExtent = input.text_selection_extent;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, platform_view_id),
++               sizeof(input.platform_view_id))) {
++    output->platformViewId = input.platform_view_id;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, scroll_children),
++               sizeof(input.scroll_children))) {
++    output->scrollChildren = input.scroll_children;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, scroll_index),
++               sizeof(input.scroll_index))) {
++    output->scrollIndex = input.scroll_index;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, traversal_parent),
++               sizeof(input.traversal_parent))) {
++    output->traversalParent = input.traversal_parent;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, scroll_position),
++               sizeof(input.scroll_position))) {
++    output->scrollPosition = input.scroll_position;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, scroll_extent_max),
++               sizeof(input.scroll_extent_max))) {
++    output->scrollExtentMax = input.scroll_extent_max;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, scroll_extent_min),
++               sizeof(input.scroll_extent_min))) {
++    output->scrollExtentMin = input.scroll_extent_min;
++  }
++  if (input.scroll_children > 0 &&
++      (!HasField(size, offsetof(FlutterSpiSemanticsNode,
++                               children_in_hit_test_order),
++                 sizeof(input.children_in_hit_test_order)) ||
++       input.children_in_hit_test_order == nullptr)) {
++    return kFlutterSpiInvalidArgument;
++  }
++
++  FlutterSpiResult result = kFlutterSpiOk;
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, identifier),
++               sizeof(input.identifier))) {
++    result = AssignString(input.identifier, &output->identifier);
++  }
++  if (result == kFlutterSpiOk &&
++      HasField(size, offsetof(FlutterSpiSemanticsNode, label),
++               sizeof(input.label))) {
++    result = CopyAttributes(input.label, &output->label, &output->labelAttributes);
++  }
++  if (result == kFlutterSpiOk &&
++      HasField(size, offsetof(FlutterSpiSemanticsNode, value),
++               sizeof(input.value))) {
++    result = CopyAttributes(input.value, &output->value, &output->valueAttributes);
++  }
++  if (result == kFlutterSpiOk &&
++      HasField(size, offsetof(FlutterSpiSemanticsNode, increased_value),
++               sizeof(input.increased_value))) {
++    result = CopyAttributes(input.increased_value, &output->increasedValue,
++                             &output->increasedValueAttributes);
++  }
++  if (result == kFlutterSpiOk &&
++      HasField(size, offsetof(FlutterSpiSemanticsNode, decreased_value),
++               sizeof(input.decreased_value))) {
++    result = CopyAttributes(input.decreased_value, &output->decreasedValue,
++                             &output->decreasedValueAttributes);
++  }
++  if (result == kFlutterSpiOk &&
++      HasField(size, offsetof(FlutterSpiSemanticsNode, hint),
++               sizeof(input.hint))) {
++    result = CopyAttributes(input.hint, &output->hint, &output->hintAttributes);
++  }
++  if (result != kFlutterSpiOk) {
++    return result;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, tooltip),
++               sizeof(input.tooltip))) {
++    result = AssignString(input.tooltip, &output->tooltip);
++  }
++  if (result != kFlutterSpiOk) {
++    return result;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, text_direction),
++               sizeof(input.text_direction))) {
++    output->textDirection = input.text_direction;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, rect), sizeof(input.rect))) {
++    output->rect = SkRect::MakeLTRB(input.rect.left, input.rect.top,
++                                    input.rect.right, input.rect.bottom);
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, transform),
++               sizeof(input.transform))) {
++    SkScalar transform[16];
++    for (size_t index = 0; index < 16; index++) {
++      transform[index] = input.transform.m[index];
++    }
++    output->transform = SkM44::ColMajor(transform);
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, hit_test_transform),
++               sizeof(input.hit_test_transform))) {
++    SkScalar transform[16];
++    for (size_t index = 0; index < 16; index++) {
++      transform[index] = input.hit_test_transform.m[index];
++    }
++    output->hitTestTransform = SkM44::ColMajor(transform);
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, children_in_traversal_order),
++               sizeof(input.children_in_traversal_order))) {
++    if (input.children_in_traversal_order_count != 0 &&
++        input.children_in_traversal_order == nullptr) {
++      return kFlutterSpiInvalidArgument;
++    }
++    CopyVector(input.children_in_traversal_order,
++               input.children_in_traversal_order_count,
++               &output->childrenInTraversalOrder);
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, children_in_hit_test_order),
++               sizeof(input.children_in_hit_test_order))) {
++    if (input.children_in_hit_test_order_count != 0 &&
++        input.children_in_hit_test_order == nullptr) {
++      return kFlutterSpiInvalidArgument;
++    }
++    CopyVector(input.children_in_hit_test_order,
++               input.children_in_hit_test_order_count,
++               &output->childrenInHitTestOrder);
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, custom_actions),
++               sizeof(input.custom_actions))) {
++    if (input.custom_action_count != 0 && input.custom_actions == nullptr) {
++      return kFlutterSpiInvalidArgument;
++    }
++    CopyVector(input.custom_actions, input.custom_action_count,
++               &output->customAccessibilityActions);
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, heading_level),
++               sizeof(input.heading_level))) {
++    output->headingLevel = input.heading_level;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, link_url),
++               sizeof(input.link_url))) {
++    result = AssignString(input.link_url, &output->linkUrl);
++  }
++  if (result != kFlutterSpiOk) {
++    return result;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, role), sizeof(input.role))) {
++    output->role = static_cast<SemanticsRole>(input.role);
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, validation_result),
++               sizeof(input.validation_result))) {
++    output->validationResult =
++        static_cast<SemanticsValidationResult>(input.validation_result);
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, locale),
++               sizeof(input.locale))) {
++    result = AssignString(input.locale, &output->locale);
++  }
++  if (result != kFlutterSpiOk) {
++    return result;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, min_value),
++               sizeof(input.min_value))) {
++    result = AssignString(input.min_value, &output->minValue);
++  }
++  if (result != kFlutterSpiOk) {
++    return result;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsNode, max_value),
++               sizeof(input.max_value))) {
++    result = AssignString(input.max_value, &output->maxValue);
++  }
++  return result;
++}
++
++FlutterSpiResult SpiSemanticsToAction(
++    const FlutterSpiSemanticsCustomAction& input,
++    CustomAccessibilityAction* output) {
++  if (output == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *output = CustomAccessibilityAction();
++  const size_t size = input.struct_size;
++  if (HasField(size, offsetof(FlutterSpiSemanticsCustomAction, id),
++               sizeof(input.id))) {
++    output->id = input.id;
++  }
++  if (HasField(size, offsetof(FlutterSpiSemanticsCustomAction, override_id),
++               sizeof(input.override_id))) {
++    output->overrideId = input.override_id;
++  }
++  FlutterSpiResult result = kFlutterSpiOk;
++  if (HasField(size, offsetof(FlutterSpiSemanticsCustomAction, label),
++               sizeof(input.label))) {
++    result = AssignString(input.label, &output->label);
++  }
++  if (result == kFlutterSpiOk &&
++      HasField(size, offsetof(FlutterSpiSemanticsCustomAction, hint),
++               sizeof(input.hint))) {
++    result = AssignString(input.hint, &output->hint);
++  }
++  return result;
++}
++
++const FlutterSpiSemanticsApi* SpiSemantics::Api() {
++  static const FlutterSpiSemanticsApi api = {
++      .struct_size = sizeof(FlutterSpiSemanticsApi),
++      .update_builder_create = CreateBuilder,
++      .update_node = UpdateNode,
++      .update_custom_action = UpdateCustomAction,
++      .update_submit = SubmitBuilder,
++      .update_builder_release = ReleaseBuilder,
++  };
++  return &api;
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/semantics/spi_semantics.h b/engine/src/flutter/runtime_spi/semantics/spi_semantics.h
+new file mode 100644
+index 00000000000..b575146f0fb
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/semantics/spi_semantics.h
+@@ -0,0 +1,34 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_SEMANTICS_SPI_SEMANTICS_H_
++#define FLUTTER_RUNTIME_SPI_SEMANTICS_SPI_SEMANTICS_H_
++
++#include "flutter/lib/ui/semantics/custom_accessibility_action.h"
++#include "flutter/lib/ui/semantics/semantics_node.h"
++#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
++
++namespace flutter {
++
++FlutterSpiResult SpiSemanticsToNode(const FlutterSpiSemanticsNode& input,
++                                    SemanticsNode* output);
++
++FlutterSpiResult SpiSemanticsToAction(
++    const FlutterSpiSemanticsCustomAction& input,
++    CustomAccessibilityAction* output);
++
++class SpiSemantics final {
++ public:
++  static const FlutterSpiSemanticsApi* Api();
++};
++
++}  // namespace flutter
++
++struct FlutterSpiSemanticsUpdateBuilder {
++  flutter::SemanticsNodeUpdates nodes;
++  flutter::CustomAccessibilityActionUpdates actions;
++  bool consumed = false;
++};
++
++#endif  // FLUTTER_RUNTIME_SPI_SEMANTICS_SPI_SEMANTICS_H_
+diff --git a/engine/src/flutter/runtime_spi/semantics/spi_semantics_unittests.cc b/engine/src/flutter/runtime_spi/semantics/spi_semantics_unittests.cc
+new file mode 100644
+index 00000000000..29c1700b1eb
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/semantics/spi_semantics_unittests.cc
+@@ -0,0 +1,405 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/semantics/spi_semantics.h"
++
++#include <array>
++#include <cstddef>
++#include <cstdint>
++
++#include "flutter/lib/ui/semantics/custom_accessibility_action.h"
++#include "flutter/lib/ui/semantics/semantics_node.h"
++#include "flutter/lib/ui/semantics/string_attribute_types.h"
++#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
++#include "flutter/runtime_spi/spi_runtime_backend.h"
++#include "flutter/testing/testing.h"
++
++namespace flutter::testing {
++namespace {
++
++FlutterSpiSemanticsNode EmptyNode() {
++  FlutterSpiSemanticsNode node = {};
++  node.struct_size = sizeof(FlutterSpiSemanticsNode);
++  node.flags.struct_size = sizeof(FlutterSpiSemanticsFlags);
++  return node;
++}
++
++FlutterSpiSemanticsFlags AllFlags() {
++  FlutterSpiSemanticsFlags flags = {};
++  flags.struct_size = sizeof(FlutterSpiSemanticsFlags);
++  flags.is_checked = kFlutterSpiCheckStateMixed;
++  flags.is_selected = kFlutterSpiTristateTrue;
++  flags.is_enabled = kFlutterSpiTristateFalse;
++  flags.is_toggled = kFlutterSpiTristateTrue;
++  flags.is_expanded = kFlutterSpiTristateFalse;
++  flags.is_required = kFlutterSpiTristateTrue;
++  flags.is_focused = kFlutterSpiTristateFalse;
++  flags.is_button = true;
++  flags.is_text_field = true;
++  flags.is_in_mutually_exclusive_group = true;
++  flags.is_header = true;
++  flags.is_obscured = true;
++  flags.scopes_route = true;
++  flags.names_route = true;
++  flags.is_hidden = true;
++  flags.is_image = true;
++  flags.is_live_region = true;
++  flags.has_implicit_scrolling = true;
++  flags.is_multiline = true;
++  flags.is_read_only = true;
++  flags.is_link = true;
++  flags.is_slider = true;
++  flags.is_keyboard_key = true;
++  flags.is_accessibility_focus_blocked = true;
++  return flags;
++}
++
++void ExpectSameAttributes(const StringAttributes& expected,
++                          const StringAttributes& actual) {
++  ASSERT_EQ(actual.size(), expected.size());
++  for (size_t index = 0; index < expected.size(); index++) {
++    ASSERT_EQ(actual[index]->start, expected[index]->start);
++    ASSERT_EQ(actual[index]->end, expected[index]->end);
++    ASSERT_EQ(actual[index]->type, expected[index]->type);
++    if (expected[index]->type == StringAttributeType::kLocale) {
++      const auto expected_locale =
++          std::static_pointer_cast<LocaleStringAttribute>(expected[index]);
++      const auto actual_locale =
++          std::static_pointer_cast<LocaleStringAttribute>(actual[index]);
++      ASSERT_EQ(actual_locale->locale, expected_locale->locale);
++    }
++  }
++}
++
++void ExpectSameNode(const SemanticsNode& expected, const SemanticsNode& actual) {
++  EXPECT_EQ(actual.id, expected.id);
++  EXPECT_EQ(actual.flags.isChecked, expected.flags.isChecked);
++  EXPECT_EQ(actual.flags.isSelected, expected.flags.isSelected);
++  EXPECT_EQ(actual.flags.isEnabled, expected.flags.isEnabled);
++  EXPECT_EQ(actual.flags.isToggled, expected.flags.isToggled);
++  EXPECT_EQ(actual.flags.isExpanded, expected.flags.isExpanded);
++  EXPECT_EQ(actual.flags.isRequired, expected.flags.isRequired);
++  EXPECT_EQ(actual.flags.isFocused, expected.flags.isFocused);
++  EXPECT_EQ(actual.flags.isButton, expected.flags.isButton);
++  EXPECT_EQ(actual.flags.isTextField, expected.flags.isTextField);
++  EXPECT_EQ(actual.flags.isInMutuallyExclusiveGroup,
++            expected.flags.isInMutuallyExclusiveGroup);
++  EXPECT_EQ(actual.flags.isHeader, expected.flags.isHeader);
++  EXPECT_EQ(actual.flags.isObscured, expected.flags.isObscured);
++  EXPECT_EQ(actual.flags.scopesRoute, expected.flags.scopesRoute);
++  EXPECT_EQ(actual.flags.namesRoute, expected.flags.namesRoute);
++  EXPECT_EQ(actual.flags.isHidden, expected.flags.isHidden);
++  EXPECT_EQ(actual.flags.isImage, expected.flags.isImage);
++  EXPECT_EQ(actual.flags.isLiveRegion, expected.flags.isLiveRegion);
++  EXPECT_EQ(actual.flags.hasImplicitScrolling,
++            expected.flags.hasImplicitScrolling);
++  EXPECT_EQ(actual.flags.isMultiline, expected.flags.isMultiline);
++  EXPECT_EQ(actual.flags.isReadOnly, expected.flags.isReadOnly);
++  EXPECT_EQ(actual.flags.isLink, expected.flags.isLink);
++  EXPECT_EQ(actual.flags.isSlider, expected.flags.isSlider);
++  EXPECT_EQ(actual.flags.isKeyboardKey, expected.flags.isKeyboardKey);
++  EXPECT_EQ(actual.flags.isAccessibilityFocusBlocked,
++            expected.flags.isAccessibilityFocusBlocked);
++  EXPECT_EQ(actual.actions, expected.actions);
++  EXPECT_EQ(actual.maxValueLength, expected.maxValueLength);
++  EXPECT_EQ(actual.currentValueLength, expected.currentValueLength);
++  EXPECT_EQ(actual.textSelectionBase, expected.textSelectionBase);
++  EXPECT_EQ(actual.textSelectionExtent, expected.textSelectionExtent);
++  EXPECT_EQ(actual.platformViewId, expected.platformViewId);
++  EXPECT_EQ(actual.scrollChildren, expected.scrollChildren);
++  EXPECT_EQ(actual.scrollIndex, expected.scrollIndex);
++  EXPECT_EQ(actual.traversalParent, expected.traversalParent);
++  EXPECT_DOUBLE_EQ(actual.scrollPosition, expected.scrollPosition);
++  EXPECT_DOUBLE_EQ(actual.scrollExtentMax, expected.scrollExtentMax);
++  EXPECT_DOUBLE_EQ(actual.scrollExtentMin, expected.scrollExtentMin);
++  EXPECT_EQ(actual.minValue, expected.minValue);
++  EXPECT_EQ(actual.maxValue, expected.maxValue);
++  EXPECT_EQ(actual.identifier, expected.identifier);
++  EXPECT_EQ(actual.label, expected.label);
++  ExpectSameAttributes(expected.labelAttributes, actual.labelAttributes);
++  EXPECT_EQ(actual.hint, expected.hint);
++  ExpectSameAttributes(expected.hintAttributes, actual.hintAttributes);
++  EXPECT_EQ(actual.value, expected.value);
++  ExpectSameAttributes(expected.valueAttributes, actual.valueAttributes);
++  EXPECT_EQ(actual.increasedValue, expected.increasedValue);
++  ExpectSameAttributes(expected.increasedValueAttributes,
++                       actual.increasedValueAttributes);
++  EXPECT_EQ(actual.decreasedValue, expected.decreasedValue);
++  ExpectSameAttributes(expected.decreasedValueAttributes,
++                       actual.decreasedValueAttributes);
++  EXPECT_EQ(actual.tooltip, expected.tooltip);
++  EXPECT_EQ(actual.textDirection, expected.textDirection);
++  EXPECT_EQ(actual.rect, expected.rect);
++  EXPECT_EQ(actual.transform, expected.transform);
++  EXPECT_EQ(actual.hitTestTransform, expected.hitTestTransform);
++  EXPECT_EQ(actual.childrenInTraversalOrder,
++            expected.childrenInTraversalOrder);
++  EXPECT_EQ(actual.childrenInHitTestOrder, expected.childrenInHitTestOrder);
++  EXPECT_EQ(actual.customAccessibilityActions,
++            expected.customAccessibilityActions);
++  EXPECT_EQ(actual.headingLevel, expected.headingLevel);
++  EXPECT_EQ(actual.linkUrl, expected.linkUrl);
++  EXPECT_EQ(actual.role, expected.role);
++  EXPECT_EQ(actual.validationResult, expected.validationResult);
++  EXPECT_EQ(actual.locale, expected.locale);
++}
++
++TEST(SpiSemantics, NodeMatchesDartUiBuilder) {
++  constexpr int32_t traversal_children[] = {2, 3};
++  constexpr int32_t hit_test_children[] = {3, 2};
++  constexpr int32_t custom_actions[] = {10, 11};
++  const FlutterSpiStringAttribute label_attribute = {
++      .start = 1,
++      .end = 3,
++      .type = kFlutterSpiStringAttributeSpellOut,
++      .locale = nullptr,
++  };
++  const FlutterSpiStringAttribute value_attribute = {
++      .start = 0,
++      .end = 2,
++      .type = kFlutterSpiStringAttributeLocale,
++      .locale = "pt-BR",
++  };
++  FlutterSpiSemanticsNode input = EmptyNode();
++  input.id = 7;
++  input.flags = AllFlags();
++  input.actions = 123;
++  input.max_value_length = 40;
++  input.current_value_length = 12;
++  input.text_selection_base = 2;
++  input.text_selection_extent = 5;
++  input.platform_view_id = 9;
++  input.scroll_children = 2;
++  input.scroll_index = 1;
++  input.traversal_parent = 4;
++  input.scroll_position = 1.5;
++  input.scroll_extent_max = 10.0;
++  input.scroll_extent_min = -2.0;
++  input.rect = {.left = 1.0f, .top = 2.0f, .right = 30.0f, .bottom = 40.0f};
++  input.identifier = "identifier";
++  input.label = {.text = "label", .attributes = &label_attribute, .attribute_count = 1};
++  input.value = {.text = "value", .attributes = &value_attribute, .attribute_count = 1};
++  input.increased_value.text = "increase";
++  input.decreased_value.text = "decrease";
++  input.hint.text = "hint";
++  input.tooltip = "tooltip";
++  input.text_direction = 2;
++  for (size_t index = 0; index < 16; index++) {
++    input.transform.m[index] = static_cast<float>(index + 1);
++    input.hit_test_transform.m[index] = static_cast<float>(index + 17);
++  }
++  input.children_in_traversal_order = traversal_children;
++  input.children_in_traversal_order_count = 2;
++  input.children_in_hit_test_order = hit_test_children;
++  input.children_in_hit_test_order_count = 2;
++  input.custom_actions = custom_actions;
++  input.custom_action_count = 2;
++  input.heading_level = 3;
++  input.link_url = "https://example.test";
++  input.role = 33;
++  input.validation_result = 2;
++  input.locale = "pt-BR";
++  input.min_value = "-2";
++  input.max_value = "10";
++
++  SemanticsNode expected;
++  expected.id = input.id;
++  expected.flags.isChecked = SemanticsCheckState::kMixed;
++  expected.flags.isSelected = SemanticsTristate::kTrue;
++  expected.flags.isEnabled = SemanticsTristate::kFalse;
++  expected.flags.isToggled = SemanticsTristate::kTrue;
++  expected.flags.isExpanded = SemanticsTristate::kFalse;
++  expected.flags.isRequired = SemanticsTristate::kTrue;
++  expected.flags.isFocused = SemanticsTristate::kFalse;
++  expected.flags.isButton = true;
++  expected.flags.isTextField = true;
++  expected.flags.isInMutuallyExclusiveGroup = true;
++  expected.flags.isHeader = true;
++  expected.flags.isObscured = true;
++  expected.flags.scopesRoute = true;
++  expected.flags.namesRoute = true;
++  expected.flags.isHidden = true;
++  expected.flags.isImage = true;
++  expected.flags.isLiveRegion = true;
++  expected.flags.hasImplicitScrolling = true;
++  expected.flags.isMultiline = true;
++  expected.flags.isReadOnly = true;
++  expected.flags.isLink = true;
++  expected.flags.isSlider = true;
++  expected.flags.isKeyboardKey = true;
++  expected.flags.isAccessibilityFocusBlocked = true;
++  expected.actions = input.actions;
++  expected.maxValueLength = input.max_value_length;
++  expected.currentValueLength = input.current_value_length;
++  expected.textSelectionBase = input.text_selection_base;
++  expected.textSelectionExtent = input.text_selection_extent;
++  expected.platformViewId = input.platform_view_id;
++  expected.scrollChildren = input.scroll_children;
++  expected.scrollIndex = input.scroll_index;
++  expected.traversalParent = input.traversal_parent;
++  expected.scrollPosition = input.scroll_position;
++  expected.scrollExtentMax = input.scroll_extent_max;
++  expected.scrollExtentMin = input.scroll_extent_min;
++  expected.rect = SkRect::MakeLTRB(1.0f, 2.0f, 30.0f, 40.0f);
++  expected.identifier = "identifier";
++  expected.label = "label";
++  auto label = std::make_shared<SpellOutStringAttribute>();
++  label->start = 1;
++  label->end = 3;
++  label->type = StringAttributeType::kSpellOut;
++  expected.labelAttributes.push_back(label);
++  expected.value = "value";
++  auto value = std::make_shared<LocaleStringAttribute>();
++  value->start = 0;
++  value->end = 2;
++  value->type = StringAttributeType::kLocale;
++  value->locale = "pt-BR";
++  expected.valueAttributes.push_back(value);
++  expected.increasedValue = "increase";
++  expected.decreasedValue = "decrease";
++  expected.hint = "hint";
++  expected.tooltip = "tooltip";
++  expected.textDirection = 2;
++  SkScalar transform[16];
++  SkScalar hit_test_transform[16];
++  for (size_t index = 0; index < 16; index++) {
++    transform[index] = static_cast<float>(index + 1);
++    hit_test_transform[index] = static_cast<float>(index + 17);
++  }
++  expected.transform = SkM44::ColMajor(transform);
++  expected.hitTestTransform = SkM44::ColMajor(hit_test_transform);
++  expected.childrenInTraversalOrder = {2, 3};
++  expected.childrenInHitTestOrder = {3, 2};
++  expected.customAccessibilityActions = {10, 11};
++  expected.headingLevel = 3;
++  expected.linkUrl = "https://example.test";
++  expected.role = SemanticsRole::kSlider;
++  expected.validationResult = SemanticsValidationResult::kInvalid;
++  expected.locale = "pt-BR";
++  expected.minValue = "-2";
++  expected.maxValue = "10";
++
++  SemanticsNode actual;
++  ASSERT_EQ(SpiSemanticsToNode(input, &actual), kFlutterSpiOk);
++  ExpectSameNode(expected, actual);
++}
++
++TEST(SpiSemantics, AllFlagsRoundTrip) {
++  FlutterSpiSemanticsNode input = EmptyNode();
++  input.flags = AllFlags();
++  SemanticsNode actual;
++
++  ASSERT_EQ(SpiSemanticsToNode(input, &actual), kFlutterSpiOk);
++  EXPECT_EQ(actual.flags.isChecked, SemanticsCheckState::kMixed);
++  EXPECT_EQ(actual.flags.isSelected, SemanticsTristate::kTrue);
++  EXPECT_EQ(actual.flags.isEnabled, SemanticsTristate::kFalse);
++  EXPECT_TRUE(actual.flags.isButton);
++  EXPECT_TRUE(actual.flags.isAccessibilityFocusBlocked);
++}
++
++TEST(SpiSemantics, CustomActionMatchesDartUi) {
++  const FlutterSpiSemanticsCustomAction input = {
++      .struct_size = sizeof(FlutterSpiSemanticsCustomAction),
++      .id = 8,
++      .override_id = 4,
++      .label = "Delete",
++      .hint = "Remove item",
++  };
++  CustomAccessibilityAction actual;
++
++  ASSERT_EQ(SpiSemanticsToAction(input, &actual), kFlutterSpiOk);
++  EXPECT_EQ(actual.id, 8);
++  EXPECT_EQ(actual.overrideId, 4);
++  EXPECT_EQ(actual.label, "Delete");
++  EXPECT_EQ(actual.hint, "Remove item");
++}
++
++TEST(SpiSemantics, SameIdReplacesNode) {
++  FlutterSpiEngine engine = {};
++  FlutterSpiSemanticsUpdateBuilder* builder = nullptr;
++  const FlutterSpiSemanticsApi* api = SpiSemantics::Api();
++  ASSERT_EQ(api->update_builder_create(&engine, &builder), kFlutterSpiOk);
++
++  FlutterSpiSemanticsNode first = EmptyNode();
++  first.id = 3;
++  first.label.text = "first";
++  FlutterSpiSemanticsNode second = EmptyNode();
++  second.id = 3;
++  second.label.text = "second";
++  ASSERT_EQ(api->update_node(builder, &first), kFlutterSpiOk);
++  ASSERT_EQ(api->update_node(builder, &second), kFlutterSpiOk);
++  ASSERT_EQ(builder->nodes.size(), 1u);
++  EXPECT_EQ(builder->nodes.at(3).label, "second");
++  EXPECT_EQ(api->update_builder_release(builder), kFlutterSpiOk);
++}
++
++TEST(SpiSemantics, ScrollChildrenWithoutHitTestOrderIsRejected) {
++  FlutterSpiEngine engine = {};
++  FlutterSpiSemanticsUpdateBuilder* builder = nullptr;
++  const FlutterSpiSemanticsApi* api = SpiSemantics::Api();
++  ASSERT_EQ(api->update_builder_create(&engine, &builder), kFlutterSpiOk);
++
++  FlutterSpiSemanticsNode node = EmptyNode();
++  node.scroll_children = 1;
++  EXPECT_EQ(api->update_node(builder, &node), kFlutterSpiInvalidArgument);
++  EXPECT_TRUE(builder->nodes.empty());
++  EXPECT_EQ(api->update_builder_release(builder), kFlutterSpiOk);
++}
++
++TEST(SpiSemantics, InvalidUtf8IsRejected) {
++  FlutterSpiEngine engine = {};
++  FlutterSpiSemanticsUpdateBuilder* builder = nullptr;
++  const FlutterSpiSemanticsApi* api = SpiSemantics::Api();
++  ASSERT_EQ(api->update_builder_create(&engine, &builder), kFlutterSpiOk);
++
++  const char invalid_utf8[] = {static_cast<char>(0xc3), '(', '\0'};
++  FlutterSpiSemanticsNode node = EmptyNode();
++  node.label.text = invalid_utf8;
++  EXPECT_EQ(api->update_node(builder, &node), kFlutterSpiInvalidArgument);
++  EXPECT_EQ(api->update_builder_release(builder), kFlutterSpiOk);
++}
++
++TEST(SpiSemantics, NullStringsBecomeEmpty) {
++  FlutterSpiSemanticsNode input = EmptyNode();
++  SemanticsNode actual;
++
++  ASSERT_EQ(SpiSemanticsToNode(input, &actual), kFlutterSpiOk);
++  EXPECT_TRUE(actual.identifier.empty());
++  EXPECT_TRUE(actual.label.empty());
++  EXPECT_TRUE(actual.value.empty());
++  EXPECT_TRUE(actual.tooltip.empty());
++  EXPECT_TRUE(actual.locale.empty());
++}
++
++TEST(SpiSemantics, OlderNodeStructUsesDefaults) {
++  FlutterSpiSemanticsNode input = {};
++  input.struct_size = offsetof(FlutterSpiSemanticsNode, actions);
++  input.id = 9;
++  input.flags = AllFlags();
++  SemanticsNode actual;
++
++  ASSERT_EQ(SpiSemanticsToNode(input, &actual), kFlutterSpiOk);
++  EXPECT_EQ(actual.id, 9);
++  EXPECT_EQ(actual.flags.isChecked, SemanticsCheckState::kMixed);
++  EXPECT_EQ(actual.actions, 0);
++  EXPECT_TRUE(actual.label.empty());
++  EXPECT_TRUE(actual.childrenInTraversalOrder.empty());
++}
++
++TEST(SpiSemantics, BuilderIsInvalidAfterSubmit) {
++  FlutterSpiEngine engine = {};
++  FlutterSpiSemanticsUpdateBuilder* builder = nullptr;
++  const FlutterSpiSemanticsApi* api = SpiSemantics::Api();
++  ASSERT_EQ(api->update_builder_create(&engine, &builder), kFlutterSpiOk);
++
++  FlutterSpiSemanticsNode node = EmptyNode();
++  ASSERT_EQ(api->update_node(builder, &node), kFlutterSpiOk);
++  ASSERT_EQ(api->update_submit(builder, 1), kFlutterSpiOk);
++  EXPECT_EQ(api->update_node(builder, &node), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(api->update_custom_action(builder, nullptr), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(api->update_builder_release(builder), kFlutterSpiOk);
++}
++
++}  // namespace
++}  // namespace flutter::testing
