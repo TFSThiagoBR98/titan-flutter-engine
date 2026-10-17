@@ -1,0 +1,1662 @@
+# Why: Make the Dart runtime expose the SPI table and delegate bridge so the
+# engine can drive it through the same runtime contract as other backends.
+diff --git a/engine/src/flutter/shell/common/BUILD.gn b/engine/src/flutter/shell/common/BUILD.gn
+index a613cbad6bd..4dc518e3841 100644
+--- a/engine/src/flutter/shell/common/BUILD.gn
++++ b/engine/src/flutter/shell/common/BUILD.gn
+@@ -94,6 +94,10 @@ source_set("common") {
+     "dart_runtime_backend.h",
+     "dart_runtime_backend_factory.cc",
+     "dart_runtime_backend_factory.h",
++    "dart_runtime/dart_runtime_delegate_bridge.cc",
++    "dart_runtime/dart_runtime_delegate_bridge.h",
++    "dart_runtime/flutter_dart_runtime.cc",
++    "dart_runtime/flutter_dart_runtime.h",
+     "display_manager.cc",
+     "display_manager.h",
+     "dl_op_spy.cc",
+@@ -147,6 +151,7 @@ source_set("common") {
+     "//flutter/runtime_spi:dart_runtime_extensions",
+     "//flutter/runtime_spi:runtime_spi",
+     "//flutter/runtime_spi:runtime_spi_c_api",
++    "//flutter/runtime_spi:spi_backend",
+     "//flutter/shell/version",
+     "//flutter/third_party/rapidjson",
+     "//flutter/third_party/tonic",
+@@ -335,6 +340,7 @@ if (enable_unittests) {
+       "dl_op_spy_unittests.cc",
+       "engine_animator_unittests.cc",
+       "engine_unittests.cc",
++      "dart_runtime/flutter_dart_runtime_unittests.cc",
+       "fake_runtime_backend.cc",
+       "fake_runtime_backend.h",
+       "persistent_cache_unittests.cc",
+diff --git a/engine/src/flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.cc b/engine/src/flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.cc
+new file mode 100644
+index 00000000000..ee36ca5c724
+--- /dev/null
++++ b/engine/src/flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.cc
+@@ -0,0 +1,247 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.h"
++
++#include <atomic>
++#include <utility>
++
++#include "flutter/assets/asset_manager.h"
++#include "flutter/flow/layers/layer_tree.h"
++#include "flutter/fml/mapping.h"
++#include "flutter/lib/ui/text/font_collection.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
++
++namespace flutter {
++namespace {
++
++struct EngineReplyContext {
++  fml::RefPtr<PlatformMessageResponse> response;
++};
++
++void CompleteEngineReply(void* user_data,
++                         const uint8_t* data,
++                         size_t size) {
++  auto context = std::unique_ptr<EngineReplyContext>(
++      static_cast<EngineReplyContext*>(user_data));
++  if (!context->response) {
++    return;
++  }
++  if (data == nullptr || size == 0) {
++    context->response->CompleteEmpty();
++    return;
++  }
++  context->response->Complete(
++      std::make_unique<fml::MallocMapping>(fml::MallocMapping::Copy(data, size)));
++}
++
++}  // namespace
++
++void DartRuntimeDelegateBridge::SetEngineApi(
++    const FlutterSpiEngineApi* engine_api,
++    FlutterSpiEngine* engine) {
++  engine_api_ = engine_api;
++  engine_ = engine;
++}
++
++void DartRuntimeDelegateBridge::SetFrameToken(uint64_t frame_token) {
++  frame_token_ = frame_token;
++}
++
++bool DartRuntimeDelegateBridge::HasEngineApi() const {
++  return engine_api_ != nullptr && engine_ != nullptr;
++}
++
++std::string DartRuntimeDelegateBridge::DefaultRouteName() {
++  if (!HasEngineApi() || engine_api_->default_route_name == nullptr) {
++    return "/";
++  }
++  char* route = engine_api_->default_route_name(engine_);
++  if (route == nullptr) {
++    return "/";
++  }
++  std::string result(route);
++  if (engine_api_->free_string != nullptr) {
++    engine_api_->free_string(engine_, route);
++  }
++  return result;
++}
++
++void DartRuntimeDelegateBridge::ScheduleFrame(bool) {
++  if (HasEngineApi() && engine_api_->request_frame != nullptr) {
++    engine_api_->request_frame(engine_);
++  }
++}
++
++void DartRuntimeDelegateBridge::OnAllViewsRendered() {
++  if (HasEngineApi() && engine_api_->frames_done != nullptr) {
++    engine_api_->frames_done(engine_);
++  }
++  frame_token_ = 0;
++}
++
++void DartRuntimeDelegateBridge::Render(
++    int64_t view_id,
++    std::unique_ptr<LayerTree> layer_tree,
++    float device_pixel_ratio) {
++  if (!HasEngineApi() || engine_api_->submit_frame == nullptr) {
++    return;
++  }
++  FlutterSpiScene* scene = nullptr;
++  if (SpiSceneFromLayerTree(std::move(layer_tree), &scene) != kFlutterSpiOk) {
++    return;
++  }
++  const FlutterSpiResult result = engine_api_->submit_frame(
++      engine_, view_id, frame_token_, scene, device_pixel_ratio);
++  if (result != kFlutterSpiOk && engine_api_->scene_release != nullptr) {
++    engine_api_->scene_release(scene);
++  }
++}
++
++void DartRuntimeDelegateBridge::UpdateSemantics(
++    int64_t view_id,
++    SemanticsNodeUpdates update,
++    CustomAccessibilityActionUpdates actions) {
++  if (HasEngineApi()) {
++    SpiSubmitSemantics(engine_, view_id, std::move(update),
++                       std::move(actions));
++  }
++}
++
++void DartRuntimeDelegateBridge::SetApplicationLocale(std::string locale) {
++  if (HasEngineApi() && engine_api_->set_application_locale != nullptr) {
++    engine_api_->set_application_locale(engine_, locale.c_str());
++  }
++}
++
++void DartRuntimeDelegateBridge::SetSemanticsTreeEnabled(bool enabled) {
++  if (HasEngineApi() && engine_api_->set_semantics_tree_enabled != nullptr) {
++    engine_api_->set_semantics_tree_enabled(engine_, enabled);
++  }
++}
++
++void DartRuntimeDelegateBridge::HandlePlatformMessage(
++    std::unique_ptr<PlatformMessage> message) {
++  if (!HasEngineApi() || engine_api_->send_platform_message == nullptr ||
++      message == nullptr) {
++    return;
++  }
++  auto* context = !message->response()
++                      ? nullptr
++                      : new EngineReplyContext{message->response()};
++  const FlutterSpiResult result = engine_api_->send_platform_message(
++      engine_, message->channel().c_str(), message->data().GetMapping(),
++      message->data().GetSize(), context == nullptr ? nullptr
++                                                    : CompleteEngineReply,
++      context);
++  if (result != kFlutterSpiOk && context != nullptr) {
++    CompleteEngineReply(context, nullptr, 0);
++  }
++}
++
++FontCollection& DartRuntimeDelegateBridge::GetFontCollection() {
++  return SpiEngineFontCollection(engine_);
++}
++
++std::shared_ptr<AssetManager> DartRuntimeDelegateBridge::GetAssetManager() {
++  return SpiEngineAssetManager(engine_);
++}
++
++void DartRuntimeDelegateBridge::OnRootIsolateCreated() {
++  if (HasEngineApi() && engine_api_->on_root_isolate_created != nullptr) {
++    engine_api_->on_root_isolate_created(engine_);
++  }
++}
++
++void DartRuntimeDelegateBridge::UpdateIsolateDescription(
++    const std::string isolate_name,
++    int64_t isolate_port) {
++  if (HasEngineApi() && engine_api_->update_isolate_description != nullptr) {
++    engine_api_->update_isolate_description(engine_, isolate_name.c_str(),
++                                            isolate_port);
++  }
++}
++
++void DartRuntimeDelegateBridge::SetNeedsReportTimings(bool value) {
++  if (HasEngineApi() && engine_api_->set_needs_report_timings != nullptr) {
++    engine_api_->set_needs_report_timings(engine_, value);
++  }
++}
++
++std::unique_ptr<std::vector<std::string>>
++DartRuntimeDelegateBridge::ComputePlatformResolvedLocale(
++    const std::vector<std::string>& supported_locale_data) {
++  if (!HasEngineApi() ||
++      engine_api_->compute_platform_resolved_locale == nullptr) {
++    return nullptr;
++  }
++  std::vector<const char*> supported;
++  supported.reserve(supported_locale_data.size());
++  for (const std::string& locale : supported_locale_data) {
++    supported.push_back(locale.c_str());
++  }
++  char** resolved = nullptr;
++  size_t resolved_count = 0;
++  if (engine_api_->compute_platform_resolved_locale(
++          engine_, supported.data(), supported.size(), &resolved,
++          &resolved_count) != kFlutterSpiOk) {
++    return nullptr;
++  }
++  auto result = std::make_unique<std::vector<std::string>>();
++  result->reserve(resolved_count);
++  for (size_t index = 0; index < resolved_count; index++) {
++    result->emplace_back(resolved[index] == nullptr ? "" : resolved[index]);
++  }
++  if (engine_api_->free_string_list != nullptr) {
++    engine_api_->free_string_list(engine_, resolved, resolved_count);
++  }
++  return result;
++}
++
++void DartRuntimeDelegateBridge::RequestDartDeferredLibrary(
++    intptr_t loading_unit_id) {
++  if (HasEngineApi() && engine_api_->request_deferred_library != nullptr) {
++    engine_api_->request_deferred_library(engine_,
++                                          static_cast<int64_t>(loading_unit_id));
++  }
++}
++
++std::weak_ptr<PlatformMessageHandler>
++DartRuntimeDelegateBridge::GetPlatformMessageHandler() const {
++  return {};
++}
++
++void DartRuntimeDelegateBridge::SendChannelUpdate(std::string name,
++                                                  bool listening) {
++  if (HasEngineApi() && engine_api_->send_channel_update != nullptr) {
++    engine_api_->send_channel_update(engine_, name.c_str(), listening);
++  }
++}
++
++double DartRuntimeDelegateBridge::GetScaledFontSize(
++    double unscaled_font_size,
++    int configuration_id) const {
++  if (!HasEngineApi() || engine_api_->get_scaled_font_size == nullptr) {
++    return 0.0;
++  }
++  return engine_api_->get_scaled_font_size(engine_, unscaled_font_size,
++                                           configuration_id);
++}
++
++void DartRuntimeDelegateBridge::RequestViewFocusChange(
++    const ViewFocusChangeRequest& request) {
++  if (HasEngineApi() && engine_api_->request_view_focus_change != nullptr) {
++    engine_api_->request_view_focus_change(
++        engine_, request.view_id(), static_cast<int32_t>(request.state()),
++        static_cast<int32_t>(request.direction()));
++  }
++}
++
++void DartRuntimeDelegateBridge::ResetInternalState() {
++  if (HasEngineApi() && engine_api_->reset_internal_state != nullptr) {
++    engine_api_->reset_internal_state(engine_);
++  }
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.h b/engine/src/flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.h
+new file mode 100644
+index 00000000000..9578c79a21b
+--- /dev/null
++++ b/engine/src/flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.h
+@@ -0,0 +1,70 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_SHELL_COMMON_DART_RUNTIME_DART_RUNTIME_DELEGATE_BRIDGE_H_
++#define FLUTTER_SHELL_COMMON_DART_RUNTIME_DART_RUNTIME_DELEGATE_BRIDGE_H_
++
++#include <cstdint>
++#include <memory>
++#include <string>
++#include <vector>
++
++#include "flutter/runtime/runtime_delegate.h"
++#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
++
++namespace flutter {
++
++class DartRuntimeDelegateBridge final : public RuntimeDelegate {
++ public:
++  DartRuntimeDelegateBridge() = default;
++  ~DartRuntimeDelegateBridge() override = default;
++
++  void SetEngineApi(const FlutterSpiEngineApi* engine_api,
++                    FlutterSpiEngine* engine);
++  void SetFrameToken(uint64_t frame_token);
++  const FlutterSpiEngineApi* engine_api() const { return engine_api_; }
++  FlutterSpiEngine* engine() const { return engine_; }
++
++  std::string DefaultRouteName() override;
++  void ScheduleFrame(bool regenerate_layer_trees = true) override;
++  void OnAllViewsRendered() override;
++  void Render(int64_t view_id,
++              std::unique_ptr<LayerTree> layer_tree,
++              float device_pixel_ratio) override;
++  void UpdateSemantics(int64_t view_id,
++                       SemanticsNodeUpdates update,
++                       CustomAccessibilityActionUpdates actions) override;
++  void SetApplicationLocale(std::string locale) override;
++  void SetSemanticsTreeEnabled(bool enabled) override;
++  void HandlePlatformMessage(
++      std::unique_ptr<PlatformMessage> message) override;
++  FontCollection& GetFontCollection() override;
++  std::shared_ptr<AssetManager> GetAssetManager() override;
++  void OnRootIsolateCreated() override;
++  void UpdateIsolateDescription(const std::string isolate_name,
++                                int64_t isolate_port) override;
++  void SetNeedsReportTimings(bool value) override;
++  std::unique_ptr<std::vector<std::string>> ComputePlatformResolvedLocale(
++      const std::vector<std::string>& supported_locale_data) override;
++  void RequestDartDeferredLibrary(intptr_t loading_unit_id) override;
++  std::weak_ptr<PlatformMessageHandler> GetPlatformMessageHandler()
++      const override;
++  void SendChannelUpdate(std::string name, bool listening) override;
++  double GetScaledFontSize(double unscaled_font_size,
++                           int configuration_id) const override;
++  void RequestViewFocusChange(
++      const ViewFocusChangeRequest& request) override;
++  void ResetInternalState() override;
++
++ private:
++  bool HasEngineApi() const;
++
++  const FlutterSpiEngineApi* engine_api_ = nullptr;
++  FlutterSpiEngine* engine_ = nullptr;
++  uint64_t frame_token_ = 0;
++};
++
++}  // namespace flutter
++
++#endif  // FLUTTER_SHELL_COMMON_DART_RUNTIME_DART_RUNTIME_DELEGATE_BRIDGE_H_
+diff --git a/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc b/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc
+new file mode 100644
+index 00000000000..6f58e02be6f
+--- /dev/null
++++ b/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc
+@@ -0,0 +1,791 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/shell/common/dart_runtime/flutter_dart_runtime.h"
++
++#include <cstdlib>
++#include <cstring>
++#include <string_view>
++#include <utility>
++
++#include "assets/native_assets.h"
++#include "flutter/fml/mapping.h"
++#include "flutter/lib/ui/window/key_data.h"
++#include "flutter/lib/ui/window/platform_message_response.h"
++#include "flutter/runtime/dart_vm.h"
++#include "flutter/runtime/runtime_controller.h"
++#include "flutter/runtime/service_protocol.h"
++#include "flutter/runtime_spi/spi_runtime_backend.h"
++#include "flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.h"
++#include "flutter/shell/common/display.h"
++#include "flutter/shell/common/run_configuration.h"
++#include "rapidjson/document.h"
++
++namespace flutter {
++namespace {
++
++constexpr char kKeyDataChannel[] = "flutter/keydata";
++
++FlutterDartRuntime* RuntimeFromUserData(void* user_data) {
++  return static_cast<FlutterDartRuntime*>(user_data);
++}
++
++char* CopyString(const std::string& value) {
++  const size_t size = value.size() + 1;
++  auto* result = static_cast<char*>(std::malloc(size));
++  if (result == nullptr) {
++    return nullptr;
++  }
++  std::memcpy(result, value.c_str(), size);
++  return result;
++}
++
++void FreeString(void*, char* string) {
++  std::free(string);
++}
++
++std::unique_ptr<const fml::Mapping> MakeMapping(FlutterSpiMapping mapping) {
++  return std::make_unique<fml::NonOwnedMapping>(
++      mapping.data, mapping.size,
++      [release = mapping.release,
++       release_user_data = mapping.release_user_data](const uint8_t*, size_t) {
++        if (release != nullptr) {
++          release(release_user_data);
++        }
++      });
++}
++
++ViewportMetrics ConvertMetrics(const FlutterSpiViewMetrics& metrics) {
++  ViewportMetrics result;
++  result.device_pixel_ratio = metrics.device_pixel_ratio;
++  result.physical_width = metrics.physical_width;
++  result.physical_height = metrics.physical_height;
++  result.physical_padding_top = metrics.physical_padding_top;
++  result.physical_padding_right = metrics.physical_padding_right;
++  result.physical_padding_bottom = metrics.physical_padding_bottom;
++  result.physical_padding_left = metrics.physical_padding_left;
++  result.physical_view_inset_top = metrics.physical_view_inset_top;
++  result.physical_view_inset_right = metrics.physical_view_inset_right;
++  result.physical_view_inset_bottom = metrics.physical_view_inset_bottom;
++  result.physical_view_inset_left = metrics.physical_view_inset_left;
++  return result;
++}
++
++class SpiRuntimePlatformMessageResponse final
++    : public PlatformMessageResponse {
++ public:
++  SpiRuntimePlatformMessageResponse(const FlutterSpiEngineApi* engine_api,
++                                    FlutterSpiEngine* engine,
++                                    FlutterSpiResponseHandle* response)
++      : engine_api_(engine_api), engine_(engine), response_(response) {}
++
++  void Complete(std::unique_ptr<fml::Mapping> data) override {
++    if (data == nullptr || data->GetSize() == 0) {
++      CompleteEmpty();
++      return;
++    }
++    if (engine_api_ != nullptr && engine_api_->respond != nullptr) {
++      engine_api_->respond(response_, data->GetMapping(), data->GetSize());
++    }
++  }
++
++  void CompleteEmpty() override {
++    if (engine_api_ != nullptr && engine_api_->respond != nullptr) {
++      engine_api_->respond(response_, nullptr, 0);
++    }
++  }
++
++ private:
++  const FlutterSpiEngineApi* engine_api_;
++  FlutterSpiEngine* engine_;
++  FlutterSpiResponseHandle* response_;
++};
++
++class KeyEventResponse final : public PlatformMessageResponse {
++ public:
++  explicit KeyEventResponse(bool* handled) : handled_(handled) {}
++
++  void Complete(std::unique_ptr<fml::Mapping> data) override {
++    *handled_ = data != nullptr && data->GetSize() != 0 &&
++                data->GetMapping()[0] != 0;
++  }
++
++  void CompleteEmpty() override { *handled_ = false; }
++
++ private:
++  bool* handled_;
++};
++
++}  // namespace
++
++class FlutterDartRuntime::ServiceProtocolHandler final
++    : public ServiceProtocol::Handler {
++ public:
++  ServiceProtocolHandler(const FlutterSpiServiceHandler* handler,
++                         Description description)
++      : handler_(handler), description_(std::move(description)) {}
++
++  fml::RefPtr<fml::TaskRunner> GetServiceProtocolHandlerTaskRunner(
++      std::string_view) const override {
++    return nullptr;
++  }
++
++  Description GetServiceProtocolDescription() const override {
++    return description_;
++  }
++
++  bool HandleServiceProtocolMessage(
++      std::string_view method,
++      const ServiceProtocolMap& params,
++      rapidjson::Document* response) override {
++    if (handler_ == nullptr || handler_->handle == nullptr ||
++        response == nullptr) {
++      return false;
++    }
++    std::string method_string(method);
++    std::vector<const char*> keys;
++    std::vector<const char*> values;
++    keys.reserve(params.size());
++    values.reserve(params.size());
++    for (const auto& [key, value] : params) {
++      keys.push_back(key.data());
++      values.push_back(value.data());
++    }
++    char* json = nullptr;
++    const bool handled = handler_->handle(
++        handler_->user_data, method_string.c_str(), keys.data(), values.data(),
++        params.size(), &json);
++    if (!handled || json == nullptr) {
++      return false;
++    }
++    response->Parse(json);
++    const bool valid_response = !response->HasParseError() &&
++                                response->IsObject();
++    if (handler_->free_json != nullptr) {
++      handler_->free_json(handler_->user_data, json);
++    }
++    return valid_response;
++  }
++
++  void SetDescription(Description description) {
++    description_ = std::move(description);
++  }
++
++ private:
++  const FlutterSpiServiceHandler* handler_;
++  Description description_;
++};
++
++FlutterDartRuntime::FlutterDartRuntime(
++    std::unique_ptr<RuntimeController> controller,
++    std::unique_ptr<DartRuntimeDelegateBridge> delegate_bridge,
++    Settings launch_settings,
++    fml::closure root_isolate_create_callback,
++    std::optional<int64_t> engine_id)
++    : delegate_bridge_(std::move(delegate_bridge)),
++      controller_(std::move(controller)),
++      launch_settings_(std::move(launch_settings)),
++      root_isolate_create_callback_(std::move(root_isolate_create_callback)),
++      engine_id_(engine_id),
++      extensions_(MakeExtensions(this)),
++      table_(MakeTable(this, &extensions_)) {}
++
++FlutterDartRuntime::~FlutterDartRuntime() = default;
++
++FlutterDartRuntime* FlutterDartRuntime::FromUserData(void* user_data) {
++  return RuntimeFromUserData(user_data);
++}
++
++RuntimeController& FlutterDartRuntime::controller() {
++  return *controller_;
++}
++
++const RuntimeController& FlutterDartRuntime::controller() const {
++  return *controller_;
++}
++
++DartRuntimeDelegateBridge& FlutterDartRuntime::delegate_bridge() {
++  return *delegate_bridge_;
++}
++
++void FlutterDartRuntime::Start(const FlutterSpiEngineApi* engine_api,
++                               FlutterSpiEngine* engine) {
++  delegate_bridge_->SetEngineApi(engine_api, engine);
++}
++
++FlutterSpiResult FlutterDartRuntime::StartThunk(
++    void* user_data,
++    const FlutterSpiEngineApi* engine_api,
++    FlutterSpiEngine* engine) {
++  auto* runtime = FromUserData(user_data);
++  if (runtime == nullptr || engine_api == nullptr || engine == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  runtime->Start(engine_api, engine);
++  return kFlutterSpiOk;
++}
++
++void FlutterDartRuntime::StopThunk(void*) {}
++
++void FlutterDartRuntime::DestroyThunk(void* user_data) {
++  delete FromUserData(user_data);
++}
++
++void FlutterDartRuntime::AddViewThunk(
++    void* user_data,
++    const FlutterSpiViewMetrics* metrics) {
++  if (metrics != nullptr) {
++    auto* runtime = FromUserData(user_data);
++    runtime->controller_->AddView(metrics->view_id, ConvertMetrics(*metrics),
++                                  nullptr);
++  }
++}
++
++void FlutterDartRuntime::RemoveViewThunk(void* user_data, int64_t view_id) {
++  FromUserData(user_data)->controller_->RemoveView(view_id);
++}
++
++void FlutterDartRuntime::SetViewMetricsThunk(
++    void* user_data,
++    const FlutterSpiViewMetrics* metrics) {
++  if (metrics != nullptr) {
++    auto* runtime = FromUserData(user_data);
++    runtime->controller_->SetViewportMetrics(metrics->view_id,
++                                             ConvertMetrics(*metrics));
++  }
++}
++
++void FlutterDartRuntime::BeginFrameThunk(
++    void* user_data,
++    const FlutterSpiFrameInfo* frame_info) {
++  if (frame_info == nullptr) {
++    return;
++  }
++  auto* runtime = FromUserData(user_data);
++  runtime->delegate_bridge_->SetFrameToken(frame_info->frame_token);
++  runtime->controller_->BeginFrame(
++      fml::TimePoint::FromEpochDelta(
++          fml::TimeDelta::FromNanoseconds(frame_info->deadline_ns)),
++      frame_info->frame_number);
++}
++
++void FlutterDartRuntime::PointerEventsThunk(void* user_data,
++                                            const FlutterSpiPointerEvent* events,
++                                            size_t count) {
++  if (count != 0 && events == nullptr) {
++    return;
++  }
++  PointerDataPacket packet(count);
++  for (size_t index = 0; index < count; index++) {
++    PointerData data;
++    data.Clear();
++    data.view_id = events[index].view_id;
++    data.time_stamp = events[index].timestamp_us;
++    data.change = static_cast<PointerData::Change>(events[index].change);
++    data.kind = static_cast<PointerData::DeviceKind>(events[index].device_kind);
++    data.device = events[index].device;
++    data.pointer_identifier = events[index].pointer_id;
++    data.physical_x = events[index].physical_x;
++    data.physical_y = events[index].physical_y;
++    data.buttons = events[index].buttons;
++    data.scroll_delta_x = events[index].scroll_delta_x;
++    data.scroll_delta_y = events[index].scroll_delta_y;
++    data.pressure = events[index].pressure;
++    packet.SetPointerData(index, data);
++  }
++  FromUserData(user_data)->controller_->DispatchPointerDataPacket(packet);
++}
++
++bool FlutterDartRuntime::KeyEventThunk(void* user_data,
++                                       const FlutterSpiKeyEvent* event) {
++  if (event == nullptr) {
++    return false;
++  }
++  const std::string character = event->character == nullptr ? "" : event->character;
++  const uint64_t character_size = character.size();
++  std::vector<uint8_t> bytes(sizeof(character_size) + sizeof(KeyData) +
++                             character.size());
++  KeyData key_data;
++  key_data.Clear();
++  key_data.timestamp = event->timestamp_us;
++  key_data.type = static_cast<KeyEventType>(event->type);
++  key_data.physical = event->physical;
++  key_data.logical = event->logical;
++  key_data.synthesized = event->synthesized ? 1 : 0;
++  key_data.device_type = static_cast<KeyEventDeviceType>(event->device_type);
++  std::memcpy(bytes.data(), &character_size, sizeof(character_size));
++  std::memcpy(bytes.data() + sizeof(character_size), &key_data,
++              sizeof(key_data));
++  std::memcpy(bytes.data() + sizeof(character_size) + sizeof(key_data),
++              character.data(), character.size());
++  bool handled = false;
++  auto response = fml::AdoptRef(new KeyEventResponse(&handled));
++  auto message = std::make_unique<PlatformMessage>(
++      kKeyDataChannel, fml::MallocMapping::Copy(bytes.data(), bytes.size()),
++      response);
++  FromUserData(user_data)->controller_->DispatchPlatformMessage(
++      std::move(message));
++  return handled;
++}
++
++void FlutterDartRuntime::PlatformMessageThunk(
++    void* user_data,
++    const FlutterSpiPlatformMessage* message) {
++  if (message == nullptr || message->channel == nullptr) {
++    return;
++  }
++  auto* runtime = FromUserData(user_data);
++  fml::RefPtr<PlatformMessageResponse> response;
++  if (message->response != nullptr) {
++    response = fml::AdoptRef(new SpiRuntimePlatformMessageResponse(
++        runtime->delegate_bridge_->engine_api(),
++        runtime->delegate_bridge_->engine(), message->response));
++  }
++  runtime->controller_->DispatchPlatformMessage(std::make_unique<PlatformMessage>(
++      message->channel,
++      fml::MallocMapping::Copy(message->data, message->data_size), response));
++}
++
++void FlutterDartRuntime::SetSemanticsEnabledThunk(void* user_data,
++                                                  bool enabled) {
++  FromUserData(user_data)->controller_->SetSemanticsEnabled(enabled);
++}
++
++void FlutterDartRuntime::SemanticsActionThunk(void* user_data,
++                                              int64_t view_id,
++                                              int32_t node_id,
++                                              int32_t action,
++                                              const uint8_t* args,
++                                              size_t args_size) {
++  FromUserData(user_data)->controller_->DispatchSemanticsAction(
++      view_id, node_id, static_cast<SemanticsAction>(action),
++      fml::MallocMapping::Copy(args, args_size));
++}
++
++void FlutterDartRuntime::SetAccessibilityFeaturesThunk(void* user_data,
++                                                        int32_t flags) {
++  FromUserData(user_data)->controller_->SetAccessibilityFeatures(flags);
++}
++
++void FlutterDartRuntime::SetLocalesThunk(void* user_data,
++                                         const char* const* locales,
++                                         size_t count) {
++  if (count != 0 && locales == nullptr) {
++    return;
++  }
++  std::vector<std::string> values;
++  values.reserve(count);
++  for (size_t index = 0; index < count; index++) {
++    values.emplace_back(locales[index] == nullptr ? "" : locales[index]);
++  }
++  FromUserData(user_data)->controller_->SetLocales(values);
++}
++
++void FlutterDartRuntime::SetUserSettingsThunk(void* user_data,
++                                               const char* json) {
++  FromUserData(user_data)->controller_->SetUserSettingsData(
++      json == nullptr ? "" : json);
++}
++
++void FlutterDartRuntime::SetLifecycleStateThunk(void* user_data,
++                                                const char* state) {
++  FromUserData(user_data)->controller_->SetInitialLifecycleState(
++      state == nullptr ? "" : state);
++}
++
++void FlutterDartRuntime::ViewFocusThunk(void* user_data,
++                                        int64_t view_id,
++                                        int32_t state,
++                                        int32_t direction) {
++  FromUserData(user_data)->controller_->SendViewFocusEvent(ViewFocusEvent(
++      view_id, static_cast<ViewFocusState>(state),
++      static_cast<ViewFocusDirection>(direction)));
++}
++
++void FlutterDartRuntime::NotifyIdleThunk(void* user_data, int64_t deadline_ns) {
++  FromUserData(user_data)->controller_->NotifyIdle(
++      fml::TimeDelta::FromNanoseconds(deadline_ns));
++}
++
++void FlutterDartRuntime::SetDisplaysThunk(void* user_data,
++                                           const FlutterSpiDisplay* displays,
++                                           size_t count) {
++  if (count != 0 && displays == nullptr) {
++    return;
++  }
++  std::vector<DisplayData> values;
++  values.reserve(count);
++  for (size_t index = 0; index < count; index++) {
++    values.push_back({.id = displays[index].id,
++                      .width = displays[index].width,
++                      .height = displays[index].height,
++                      .pixel_ratio = displays[index].pixel_ratio,
++                      .refresh_rate = displays[index].refresh_rate});
++  }
++  FromUserData(user_data)->controller_->SetDisplays(values);
++}
++
++void FlutterDartRuntime::ReportTimingsThunk(void* user_data,
++                                             const int64_t* timings,
++                                             size_t count) {
++  if (count != 0 && timings == nullptr) {
++    return;
++  }
++  std::vector<int64_t> values;
++  if (count != 0) {
++    values.assign(timings, timings + count);
++  }
++  FromUserData(user_data)->controller_->ReportTimings(std::move(values));
++}
++
++bool FlutterDartRuntime::HitTestThunk(void* user_data,
++                                      int64_t view_id,
++                                      double x,
++                                      double y) {
++  return FromUserData(user_data)
++      ->controller_->HitTest(view_id, PointData{x, y})
++      .has_platform_view;
++}
++
++FlutterSpiRuntimeExtensions FlutterDartRuntime::MakeExtensions(
++    FlutterDartRuntime* runtime) {
++  return {
++      .struct_size = sizeof(FlutterSpiRuntimeExtensions),
++      .user_data = runtime,
++      .free_string = FreeStringThunk,
++      .get_main_port = GetMainPortThunk,
++      .get_root_isolate_service_id = GetRootIsolateServiceIdThunk,
++      .get_root_isolate_return_code = GetRootIsolateReturnCodeThunk,
++      .get_isolate_name = GetIsolateNameThunk,
++      .get_last_error = GetLastErrorThunk,
++      .has_live_ports = HasLivePortsThunk,
++      .has_pending_microtasks = HasPendingMicrotasksThunk,
++      .flush_microtask_queue = FlushMicrotaskQueueThunk,
++      .load_deferred_library = LoadDeferredLibraryThunk,
++      .load_deferred_library_error = LoadDeferredLibraryErrorThunk,
++      .shutdown_platform_isolates = ShutdownPlatformIsolatesThunk,
++      .set_root_isolate_owner_to_current_thread =
++          SetRootIsolateOwnerToCurrentThreadThunk,
++      .register_service_handler = RegisterServiceHandlerThunk,
++      .unregister_service_handler = UnregisterServiceHandlerThunk,
++      .refresh_service_handler_description =
++          RefreshServiceHandlerDescriptionThunk,
++      .notify_low_memory = NotifyLowMemoryThunk,
++      .is_running_runtime_code = IsRunningRuntimeCodeThunk,
++      .launch_root_isolate = LaunchRootIsolateThunk,
++  };
++}
++
++FlutterSpiRuntimeTable FlutterDartRuntime::MakeTable(
++    FlutterDartRuntime* runtime,
++    const FlutterSpiRuntimeExtensions* extensions) {
++  constexpr FlutterSpiCapabilities kRequiredCapabilities =
++      kFlutterSpiCapTasks | kFlutterSpiCapPlatformMessages |
++      kFlutterSpiCapPointerEvents | kFlutterSpiCapKeyEvents |
++      kFlutterSpiCapSemantics | kFlutterSpiCapViewFocus |
++      kFlutterSpiCapEmptyScene | kFlutterSpiCapScene | kFlutterSpiCapText |
++      kFlutterSpiCapImage | kFlutterSpiCapImageOutput |
++      kFlutterSpiCapPaintEffects | kFlutterSpiCapSceneLayers |
++      kFlutterSpiCapFragmentPrograms | kFlutterSpiCapSemanticsUpdate;
++  return {
++      .struct_size = sizeof(FlutterSpiRuntimeTable),
++      .version_major = FLUTTER_SPI_VERSION_MAJOR,
++      .version_minor = FLUTTER_SPI_VERSION_MINOR,
++      .required_capabilities = kRequiredCapabilities,
++      .user_data = runtime,
++      .start = StartThunk,
++      .stop = StopThunk,
++      .destroy = DestroyThunk,
++      .add_view = AddViewThunk,
++      .remove_view = RemoveViewThunk,
++      .set_view_metrics = SetViewMetricsThunk,
++      .begin_frame = BeginFrameThunk,
++      .pointer_events = PointerEventsThunk,
++      .key_event = KeyEventThunk,
++      .platform_message = PlatformMessageThunk,
++      .set_semantics_enabled = SetSemanticsEnabledThunk,
++      .semantics_action = SemanticsActionThunk,
++      .set_accessibility_features = SetAccessibilityFeaturesThunk,
++      .set_locales = SetLocalesThunk,
++      .set_user_settings = SetUserSettingsThunk,
++      .set_lifecycle_state = SetLifecycleStateThunk,
++      .view_focus = ViewFocusThunk,
++      .notify_idle = NotifyIdleThunk,
++      .extensions = extensions,
++      .set_displays = SetDisplaysThunk,
++      .report_timings = ReportTimingsThunk,
++      .hit_test = HitTestThunk,
++  };
++}
++
++tonic::DartErrorHandleType FlutterDartRuntime::GetLastError() {
++  return controller_->GetLastError();
++}
++
++DartVM* FlutterDartRuntime::GetDartVM() const {
++  return controller_->GetDartVM();
++}
++
++int64_t FlutterDartRuntime::GetMainPort() {
++  return controller_->GetMainPort();
++}
++
++std::string FlutterDartRuntime::GetIsolateName() {
++  return controller_->GetIsolateName();
++}
++
++std::optional<std::string> FlutterDartRuntime::GetRootIsolateServiceID() const {
++  return controller_->GetRootIsolateServiceID();
++}
++
++std::optional<uint32_t> FlutterDartRuntime::GetRootIsolateReturnCode() {
++  return controller_->GetRootIsolateReturnCode();
++}
++
++bool FlutterDartRuntime::HasLivePorts() {
++  return controller_->HasLivePorts();
++}
++
++bool FlutterDartRuntime::HasPendingMicrotasks() {
++  return controller_->HasPendingMicrotasks();
++}
++
++void FlutterDartRuntime::FlushMicrotaskQueue() {
++  controller_->FlushMicrotaskQueue();
++}
++
++bool FlutterDartRuntime::LaunchRootIsolate(
++    const Settings& settings,
++    const fml::closure& root_isolate_create_callback,
++    std::optional<std::string> dart_entrypoint,
++    std::optional<std::string> dart_entrypoint_library,
++    const std::vector<std::string>& dart_entrypoint_args,
++    std::unique_ptr<IsolateConfiguration> isolate_configuration,
++    std::shared_ptr<NativeAssetsManager> native_assets_manager,
++    std::optional<int64_t> engine_id) {
++  return controller_->LaunchRootIsolate(
++      settings, root_isolate_create_callback, std::move(dart_entrypoint),
++      std::move(dart_entrypoint_library), dart_entrypoint_args,
++      std::move(isolate_configuration), std::move(native_assets_manager),
++      engine_id);
++}
++
++void FlutterDartRuntime::LoadDartDeferredLibrary(
++    intptr_t loading_unit_id,
++    std::unique_ptr<const fml::Mapping> snapshot_data,
++    std::unique_ptr<const fml::Mapping> snapshot_instructions) {
++  controller_->LoadDartDeferredLibrary(
++      loading_unit_id, std::move(snapshot_data),
++      std::move(snapshot_instructions));
++}
++
++void FlutterDartRuntime::LoadDartDeferredLibraryError(
++    intptr_t loading_unit_id,
++    const std::string& error_message,
++    bool transient) {
++  controller_->LoadDartDeferredLibraryError(loading_unit_id, error_message,
++                                            transient);
++}
++
++void FlutterDartRuntime::ShutdownPlatformIsolates() {
++  controller_->ShutdownPlatformIsolates();
++}
++
++void FlutterDartRuntime::SetRootIsolateOwnerToCurrentThread() {
++  controller_->SetRootIsolateOwnerToCurrentThread();
++}
++
++void FlutterDartRuntime::FreeStringThunk(void*, char* string) {
++  FreeString(nullptr, string);
++}
++
++int64_t FlutterDartRuntime::GetMainPortThunk(void* user_data) {
++  return FromUserData(user_data)->GetMainPort();
++}
++
++bool FlutterDartRuntime::GetRootIsolateServiceIdThunk(void* user_data,
++                                                      char** out_utf8) {
++  if (out_utf8 == nullptr) {
++    return false;
++  }
++  auto service_id = FromUserData(user_data)->GetRootIsolateServiceID();
++  if (!service_id.has_value()) {
++    *out_utf8 = nullptr;
++    return false;
++  }
++  *out_utf8 = CopyString(*service_id);
++  return *out_utf8 != nullptr;
++}
++
++bool FlutterDartRuntime::GetRootIsolateReturnCodeThunk(void* user_data,
++                                                       uint32_t* out_code) {
++  if (out_code == nullptr) {
++    return false;
++  }
++  auto return_code = FromUserData(user_data)->GetRootIsolateReturnCode();
++  if (!return_code.has_value()) {
++    return false;
++  }
++  *out_code = *return_code;
++  return true;
++}
++
++char* FlutterDartRuntime::GetIsolateNameThunk(void* user_data) {
++  return CopyString(FromUserData(user_data)->GetIsolateName());
++}
++
++int32_t FlutterDartRuntime::GetLastErrorThunk(void* user_data) {
++  return static_cast<int32_t>(FromUserData(user_data)->GetLastError());
++}
++
++bool FlutterDartRuntime::HasLivePortsThunk(void* user_data) {
++  return FromUserData(user_data)->HasLivePorts();
++}
++
++bool FlutterDartRuntime::HasPendingMicrotasksThunk(void* user_data) {
++  return FromUserData(user_data)->HasPendingMicrotasks();
++}
++
++void FlutterDartRuntime::FlushMicrotaskQueueThunk(void* user_data) {
++  FromUserData(user_data)->FlushMicrotaskQueue();
++}
++
++void FlutterDartRuntime::LoadDeferredLibraryThunk(
++    void* user_data,
++    int64_t loading_unit_id,
++    FlutterSpiMapping snapshot_data,
++    FlutterSpiMapping snapshot_instructions) {
++  FromUserData(user_data)->LoadDartDeferredLibrary(
++      static_cast<intptr_t>(loading_unit_id), MakeMapping(snapshot_data),
++      MakeMapping(snapshot_instructions));
++}
++
++void FlutterDartRuntime::LoadDeferredLibraryErrorThunk(
++    void* user_data,
++    int64_t loading_unit_id,
++    const char* error_message,
++    bool transient) {
++  FromUserData(user_data)->LoadDartDeferredLibraryError(
++      static_cast<intptr_t>(loading_unit_id),
++      error_message == nullptr ? "" : error_message, transient);
++}
++
++void FlutterDartRuntime::ShutdownPlatformIsolatesThunk(void* user_data) {
++  FromUserData(user_data)->ShutdownPlatformIsolates();
++}
++
++void FlutterDartRuntime::SetRootIsolateOwnerToCurrentThreadThunk(
++    void* user_data) {
++  FromUserData(user_data)->SetRootIsolateOwnerToCurrentThread();
++}
++
++bool FlutterDartRuntime::LaunchRootIsolateThunk(void* user_data,
++                                                void* run_configuration) {
++  auto* runtime = FromUserData(user_data);
++  auto* configuration = static_cast<RunConfiguration*>(run_configuration);
++  if (runtime == nullptr || configuration == nullptr) {
++    return false;
++  }
++  std::shared_ptr<NativeAssetsManager> native_assets_manager;
++  if (auto asset_manager = configuration->GetAssetManager()) {
++    native_assets_manager = std::make_shared<NativeAssetsManager>();
++    native_assets_manager->RegisterNativeAssets(asset_manager);
++  }
++  return runtime->LaunchRootIsolate(
++      runtime->launch_settings_, runtime->root_isolate_create_callback_,
++      configuration->GetEntrypoint(), configuration->GetEntrypointLibrary(),
++      configuration->GetEntrypointArgs(),
++      configuration->TakeIsolateConfiguration(),
++      std::move(native_assets_manager), runtime->engine_id_);
++}
++
++void FlutterDartRuntime::RegisterServiceHandlerThunk(
++    void* user_data,
++    const FlutterSpiServiceHandler* handler) {
++  FromUserData(user_data)->RegisterServiceHandler(handler);
++}
++
++void FlutterDartRuntime::UnregisterServiceHandlerThunk(
++    void* user_data,
++    const FlutterSpiServiceHandler* handler) {
++  FromUserData(user_data)->UnregisterServiceHandler(handler);
++}
++
++void FlutterDartRuntime::RefreshServiceHandlerDescriptionThunk(
++    void* user_data,
++    const FlutterSpiServiceHandler* handler) {
++  FromUserData(user_data)->RefreshServiceHandlerDescription(handler);
++}
++
++void FlutterDartRuntime::NotifyLowMemoryThunk(void* user_data) {
++  FromUserData(user_data)->NotifyLowMemory();
++}
++
++bool FlutterDartRuntime::IsRunningRuntimeCodeThunk(void* user_data) {
++  return FromUserData(user_data)->IsRunningRuntimeCode();
++}
++
++void FlutterDartRuntime::RegisterServiceHandler(
++    const FlutterSpiServiceHandler* handler) {
++  if (handler == nullptr || service_protocol_handlers_.contains(handler)) {
++    return;
++  }
++  DartVM* vm = controller_->GetDartVM();
++  if (vm == nullptr) {
++    return;
++  }
++  auto service_protocol = vm->GetServiceProtocol();
++  if (service_protocol == nullptr) {
++    return;
++  }
++  ServiceProtocol::Handler::Description description(GetMainPort(),
++                                                    GetIsolateName());
++  auto service_handler =
++      std::make_unique<ServiceProtocolHandler>(handler, description);
++  auto* service_handler_ptr = service_handler.get();
++  service_protocol->AddHandler(service_handler_ptr, description);
++  service_protocol_handlers_.emplace(handler, std::move(service_handler));
++}
++
++void FlutterDartRuntime::UnregisterServiceHandler(
++    const FlutterSpiServiceHandler* handler) {
++  auto found = service_protocol_handlers_.find(handler);
++  if (found == service_protocol_handlers_.end()) {
++    return;
++  }
++  if (DartVM* vm = controller_->GetDartVM(); vm != nullptr) {
++    if (auto service_protocol = vm->GetServiceProtocol();
++        service_protocol != nullptr) {
++      service_protocol->RemoveHandler(found->second.get());
++    }
++  }
++  service_protocol_handlers_.erase(found);
++}
++
++void FlutterDartRuntime::RefreshServiceHandlerDescription(
++    const FlutterSpiServiceHandler* handler) {
++  auto found = service_protocol_handlers_.find(handler);
++  if (found == service_protocol_handlers_.end()) {
++    return;
++  }
++  ServiceProtocol::Handler::Description description(GetMainPort(),
++                                                    GetIsolateName());
++  found->second->SetDescription(description);
++  if (DartVM* vm = controller_->GetDartVM(); vm != nullptr) {
++    if (auto service_protocol = vm->GetServiceProtocol();
++        service_protocol != nullptr) {
++      service_protocol->SetHandlerDescription(found->second.get(), description);
++    }
++  }
++}
++
++void FlutterDartRuntime::NotifyLowMemory() {
++  ::Dart_NotifyLowMemory();
++}
++
++bool FlutterDartRuntime::IsRunningRuntimeCode() const {
++  return Dart_CurrentIsolate() != nullptr;
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.h b/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.h
+new file mode 100644
+index 00000000000..1a0431941d3
+--- /dev/null
++++ b/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.h
+@@ -0,0 +1,189 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_SHELL_COMMON_DART_RUNTIME_FLUTTER_DART_RUNTIME_H_
++#define FLUTTER_SHELL_COMMON_DART_RUNTIME_FLUTTER_DART_RUNTIME_H_
++
++#include <cstdint>
++#include <functional>
++#include <memory>
++#include <optional>
++#include <string>
++#include <unordered_map>
++#include <vector>
++
++#include "flutter/common/settings.h"
++#include "flutter/fml/closure.h"
++#include "flutter/fml/mapping.h"
++#include "flutter/runtime_spi/include/flutter_runtime_extensions.h"
++#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
++#include "third_party/tonic/logging/dart_error.h"
++
++namespace flutter {
++
++class DartRuntimeDelegateBridge;
++class DartVM;
++class IsolateConfiguration;
++class NativeAssetsManager;
++class RuntimeController;
++class ServiceProtocolHandler;
++
++class FlutterDartRuntime final {
++ public:
++  FlutterDartRuntime(
++      std::unique_ptr<RuntimeController> controller,
++      std::unique_ptr<DartRuntimeDelegateBridge> delegate_bridge,
++      Settings launch_settings = {},
++      fml::closure root_isolate_create_callback = {},
++      std::optional<int64_t> engine_id = std::nullopt);
++  ~FlutterDartRuntime();
++
++  const FlutterSpiRuntimeTable& table() const { return table_; }
++  const FlutterSpiRuntimeExtensions* extensions() const {
++    return &extensions_;
++  }
++  RuntimeController& controller();
++  const RuntimeController& controller() const;
++  DartRuntimeDelegateBridge& delegate_bridge();
++
++  tonic::DartErrorHandleType GetLastError();
++  DartVM* GetDartVM() const;
++  int64_t GetMainPort();
++  std::string GetIsolateName();
++  std::optional<std::string> GetRootIsolateServiceID() const;
++  std::optional<uint32_t> GetRootIsolateReturnCode();
++  bool HasLivePorts();
++  bool HasPendingMicrotasks();
++  void FlushMicrotaskQueue();
++  bool LaunchRootIsolate(
++      const Settings& settings,
++      const fml::closure& root_isolate_create_callback,
++      std::optional<std::string> dart_entrypoint,
++      std::optional<std::string> dart_entrypoint_library,
++      const std::vector<std::string>& dart_entrypoint_args,
++      std::unique_ptr<IsolateConfiguration> isolate_configuration,
++      std::shared_ptr<NativeAssetsManager> native_assets_manager,
++      std::optional<int64_t> engine_id);
++  void LoadDartDeferredLibrary(
++      intptr_t loading_unit_id,
++      std::unique_ptr<const fml::Mapping> snapshot_data,
++      std::unique_ptr<const fml::Mapping> snapshot_instructions);
++  void LoadDartDeferredLibraryError(intptr_t loading_unit_id,
++                                    const std::string& error_message,
++                                    bool transient);
++  void ShutdownPlatformIsolates();
++  void SetRootIsolateOwnerToCurrentThread();
++
++ private:
++  class ServiceProtocolHandler;
++
++  static FlutterDartRuntime* FromUserData(void* user_data);
++  static FlutterSpiResult StartThunk(void* user_data,
++                                     const FlutterSpiEngineApi* engine_api,
++                                     FlutterSpiEngine* engine);
++  static void StopThunk(void* user_data);
++  static void DestroyThunk(void* user_data);
++  static void AddViewThunk(void* user_data,
++                           const FlutterSpiViewMetrics* metrics);
++  static void RemoveViewThunk(void* user_data, int64_t view_id);
++  static void SetViewMetricsThunk(void* user_data,
++                                  const FlutterSpiViewMetrics* metrics);
++  static void BeginFrameThunk(void* user_data,
++                              const FlutterSpiFrameInfo* frame_info);
++  static void PointerEventsThunk(void* user_data,
++                                const FlutterSpiPointerEvent* events,
++                                size_t count);
++  static bool KeyEventThunk(void* user_data,
++                            const FlutterSpiKeyEvent* event);
++  static void PlatformMessageThunk(
++      void* user_data, const FlutterSpiPlatformMessage* message);
++  static void SetSemanticsEnabledThunk(void* user_data, bool enabled);
++  static void SemanticsActionThunk(void* user_data,
++                                  int64_t view_id,
++                                  int32_t node_id,
++                                  int32_t action,
++                                  const uint8_t* args,
++                                  size_t args_size);
++  static void SetAccessibilityFeaturesThunk(void* user_data, int32_t flags);
++  static void SetLocalesThunk(void* user_data,
++                              const char* const* locales,
++                              size_t count);
++  static void SetUserSettingsThunk(void* user_data, const char* json);
++  static void SetLifecycleStateThunk(void* user_data, const char* state);
++  static void ViewFocusThunk(void* user_data,
++                             int64_t view_id,
++                             int32_t state,
++                             int32_t direction);
++  static void NotifyIdleThunk(void* user_data, int64_t deadline_ns);
++  static void SetDisplaysThunk(void* user_data,
++                               const FlutterSpiDisplay* displays,
++                               size_t count);
++  static void ReportTimingsThunk(void* user_data,
++                                 const int64_t* timings,
++                                 size_t count);
++  static bool HitTestThunk(void* user_data,
++                           int64_t view_id,
++                           double x,
++                           double y);
++
++  static void FreeStringThunk(void* user_data, char* string);
++  static int64_t GetMainPortThunk(void* user_data);
++  static bool GetRootIsolateServiceIdThunk(void* user_data, char** out_utf8);
++  static bool GetRootIsolateReturnCodeThunk(void* user_data,
++                                            uint32_t* out_code);
++  static char* GetIsolateNameThunk(void* user_data);
++  static int32_t GetLastErrorThunk(void* user_data);
++  static bool HasLivePortsThunk(void* user_data);
++  static bool HasPendingMicrotasksThunk(void* user_data);
++  static void FlushMicrotaskQueueThunk(void* user_data);
++  static void LoadDeferredLibraryThunk(void* user_data,
++                                       int64_t loading_unit_id,
++                                       FlutterSpiMapping snapshot_data,
++                                       FlutterSpiMapping snapshot_instructions);
++  static void LoadDeferredLibraryErrorThunk(void* user_data,
++                                            int64_t loading_unit_id,
++                                            const char* error_message,
++                                            bool transient);
++  static void ShutdownPlatformIsolatesThunk(void* user_data);
++  static void SetRootIsolateOwnerToCurrentThreadThunk(void* user_data);
++  static bool LaunchRootIsolateThunk(void* user_data,
++                                     void* run_configuration);
++  static void RegisterServiceHandlerThunk(
++      void* user_data, const FlutterSpiServiceHandler* handler);
++  static void UnregisterServiceHandlerThunk(
++      void* user_data, const FlutterSpiServiceHandler* handler);
++  static void RefreshServiceHandlerDescriptionThunk(
++      void* user_data, const FlutterSpiServiceHandler* handler);
++  static void NotifyLowMemoryThunk(void* user_data);
++  static bool IsRunningRuntimeCodeThunk(void* user_data);
++
++  static FlutterSpiRuntimeExtensions MakeExtensions(
++      FlutterDartRuntime* runtime);
++  static FlutterSpiRuntimeTable MakeTable(FlutterDartRuntime* runtime,
++                                          const FlutterSpiRuntimeExtensions*
++                                              extensions);
++
++  void Start(const FlutterSpiEngineApi* engine_api, FlutterSpiEngine* engine);
++  void RegisterServiceHandler(const FlutterSpiServiceHandler* handler);
++  void UnregisterServiceHandler(const FlutterSpiServiceHandler* handler);
++  void RefreshServiceHandlerDescription(
++      const FlutterSpiServiceHandler* handler);
++  void NotifyLowMemory();
++  bool IsRunningRuntimeCode() const;
++
++  std::unique_ptr<DartRuntimeDelegateBridge> delegate_bridge_;
++  std::unique_ptr<RuntimeController> controller_;
++  Settings launch_settings_;
++  fml::closure root_isolate_create_callback_;
++  std::optional<int64_t> engine_id_;
++  std::unordered_map<const FlutterSpiServiceHandler*,
++                     std::unique_ptr<ServiceProtocolHandler>>
++      service_protocol_handlers_;
++  FlutterSpiRuntimeExtensions extensions_ = {};
++  FlutterSpiRuntimeTable table_ = {};
++};
++
++}  // namespace flutter
++
++#endif  // FLUTTER_SHELL_COMMON_DART_RUNTIME_FLUTTER_DART_RUNTIME_H_
+diff --git a/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime_unittests.cc b/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime_unittests.cc
+new file mode 100644
+index 00000000000..ef87353a97d
+--- /dev/null
++++ b/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime_unittests.cc
+@@ -0,0 +1,302 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/shell/common/dart_runtime/flutter_dart_runtime.h"
++
++#include <memory>
++#include <string>
++#include <utility>
++#include <vector>
++
++#include "flutter/common/task_runners.h"
++#include "flutter/fml/mapping.h"
++#include "flutter/flow/layers/container_layer.h"
++#include "flutter/flow/layers/layer_tree.h"
++#include "flutter/lib/ui/window/platform_message.h"
++#include "flutter/lib/ui/window/platform_message_response.h"
++#include "flutter/runtime/runtime_controller.h"
++#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
++#include "flutter/runtime_spi/spi_runtime_backend.h"
++#include "flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.h"
++#include "flutter/testing/testing.h"
++#include "gtest/gtest.h"
++
++namespace flutter {
++namespace {
++
++class TrackingRuntimeController final : public RuntimeController {
++ public:
++  TrackingRuntimeController(RuntimeDelegate& delegate,
++                            const TaskRunners& task_runners,
++                            bool* destroyed)
++      : RuntimeController(delegate, task_runners), destroyed_(destroyed) {}
++
++  ~TrackingRuntimeController() override { *destroyed_ = true; }
++
++  bool DispatchPlatformMessage(
++      std::unique_ptr<PlatformMessage> message) override {
++    last_platform_message = std::move(message);
++    return true;
++  }
++
++  bool NotifyIdle(fml::TimeDelta) override {
++    idle_notification_count++;
++    return true;
++  }
++
++  bool IsRootIsolateRunning() const override { return true; }
++
++  size_t idle_notification_count = 0;
++  std::unique_ptr<PlatformMessage> last_platform_message;
++
++ private:
++  bool* destroyed_;
++};
++
++class CapturingResponse final : public PlatformMessageResponse {
++ public:
++  void Complete(std::unique_ptr<fml::Mapping> data) override {
++    if (data != nullptr) {
++      bytes.assign(data->GetMapping(), data->GetMapping() + data->GetSize());
++    }
++    completed = true;
++  }
++
++  void CompleteEmpty() override {
++    bytes.clear();
++    completed = true;
++  }
++
++  bool completed = false;
++  std::vector<uint8_t> bytes;
++};
++
++struct ApiCapture {
++  uint64_t submitted_frame_token = 0;
++  size_t submitted_frame_count = 0;
++  size_t frames_done_count = 0;
++  size_t response_count = 0;
++  std::vector<uint8_t> response_bytes;
++};
++
++ApiCapture* g_api_capture = nullptr;
++
++FlutterSpiResult CaptureSubmitFrame(FlutterSpiEngine*,
++                                    int64_t,
++                                    uint64_t frame_token,
++                                    FlutterSpiScene* scene,
++                                    double) {
++  g_api_capture->submitted_frame_token = frame_token;
++  g_api_capture->submitted_frame_count++;
++  (void)scene;
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CaptureFramesDone(FlutterSpiEngine*) {
++  g_api_capture->frames_done_count++;
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CaptureRespond(FlutterSpiResponseHandle*,
++                                const uint8_t* data,
++                                size_t data_size) {
++  g_api_capture->response_count++;
++  if (data_size == 0) {
++    g_api_capture->response_bytes.clear();
++  } else {
++    g_api_capture->response_bytes.assign(data, data + data_size);
++  }
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult CaptureSendPlatformMessage(
++    FlutterSpiEngine*,
++    const char*,
++    const uint8_t*,
++    size_t,
++    void (*on_reply)(void*, const uint8_t*, size_t),
++    void* reply_user_data) {
++  const uint8_t reply[] = {'o', 'k'};
++  if (on_reply != nullptr) {
++    on_reply(reply_user_data, reply, sizeof(reply));
++  }
++  return kFlutterSpiOk;
++}
++
++std::unique_ptr<FlutterDartRuntime> CreateRuntime(bool* destroyed) {
++  auto delegate_bridge = std::make_unique<DartRuntimeDelegateBridge>();
++  auto controller = std::make_unique<TrackingRuntimeController>(
++      *delegate_bridge, TaskRunners("FlutterDartRuntimeTest", nullptr, nullptr,
++                                    nullptr, nullptr),
++      destroyed);
++  return std::make_unique<FlutterDartRuntime>(std::move(controller),
++                                              std::move(delegate_bridge));
++}
++
++FlutterSpiEngineApi MakeEngineApi() {
++  return {
++      .struct_size = sizeof(FlutterSpiEngineApi),
++      .version_major = FLUTTER_SPI_VERSION_MAJOR,
++      .version_minor = FLUTTER_SPI_VERSION_MINOR,
++      .submit_frame = CaptureSubmitFrame,
++      .frames_done = CaptureFramesDone,
++      .send_platform_message = CaptureSendPlatformMessage,
++      .respond = CaptureRespond,
++  };
++}
++
++TEST(FlutterDartRuntimeTest, TableForwardsEveryCallToTheController) {
++  bool destroyed = false;
++  auto runtime = CreateRuntime(&destroyed);
++  const FlutterSpiRuntimeTable& table = runtime->table();
++
++  ASSERT_NE(table.start, nullptr);
++  ASSERT_NE(table.stop, nullptr);
++  ASSERT_NE(table.destroy, nullptr);
++  ASSERT_NE(table.add_view, nullptr);
++  ASSERT_NE(table.remove_view, nullptr);
++  ASSERT_NE(table.set_view_metrics, nullptr);
++  ASSERT_NE(table.begin_frame, nullptr);
++  ASSERT_NE(table.pointer_events, nullptr);
++  ASSERT_NE(table.key_event, nullptr);
++  ASSERT_NE(table.platform_message, nullptr);
++  ASSERT_NE(table.set_semantics_enabled, nullptr);
++  ASSERT_NE(table.semantics_action, nullptr);
++  ASSERT_NE(table.set_accessibility_features, nullptr);
++  ASSERT_NE(table.set_locales, nullptr);
++  ASSERT_NE(table.set_user_settings, nullptr);
++  ASSERT_NE(table.set_lifecycle_state, nullptr);
++  ASSERT_NE(table.view_focus, nullptr);
++  ASSERT_NE(table.notify_idle, nullptr);
++  ASSERT_NE(table.set_displays, nullptr);
++  ASSERT_NE(table.report_timings, nullptr);
++  ASSERT_NE(table.hit_test, nullptr);
++  ASSERT_NE(table.extensions, nullptr);
++}
++
++TEST(FlutterDartRuntimeTest, RenderSubmitsWithTheFrameToken) {
++  bool destroyed = false;
++  auto runtime = CreateRuntime(&destroyed);
++  ApiCapture capture;
++  g_api_capture = &capture;
++  FlutterSpiEngineApi api = MakeEngineApi();
++  FlutterSpiEngine engine;
++  ASSERT_EQ(runtime->table().start(runtime->table().user_data, &api, &engine),
++            kFlutterSpiOk);
++
++  FlutterSpiFrameInfo frame_info = {
++      .struct_size = sizeof(FlutterSpiFrameInfo),
++      .frame_token = 42,
++      .frame_number = 7,
++      .deadline_ns = 100,
++  };
++  runtime->table().begin_frame(runtime->table().user_data, &frame_info);
++  runtime->delegate_bridge().Render(
++      1, std::make_unique<LayerTree>(std::make_shared<ContainerLayer>(),
++                                     DlISize(10, 10)),
++      2.0f);
++
++  EXPECT_EQ(capture.submitted_frame_count, 1u);
++  EXPECT_EQ(capture.submitted_frame_token, 42u);
++  g_api_capture = nullptr;
++}
++
++TEST(FlutterDartRuntimeTest, WarmUpRenderUsesTokenZero) {
++  bool destroyed = false;
++  auto runtime = CreateRuntime(&destroyed);
++  ApiCapture capture;
++  g_api_capture = &capture;
++  FlutterSpiEngineApi api = MakeEngineApi();
++  FlutterSpiEngine engine;
++  ASSERT_EQ(runtime->table().start(runtime->table().user_data, &api, &engine),
++            kFlutterSpiOk);
++
++  runtime->delegate_bridge().Render(
++      1, std::make_unique<LayerTree>(std::make_shared<ContainerLayer>(),
++                                     DlISize(10, 10)),
++      2.0f);
++
++  EXPECT_EQ(capture.submitted_frame_count, 1u);
++  EXPECT_EQ(capture.submitted_frame_token, 0u);
++  g_api_capture = nullptr;
++}
++
++TEST(FlutterDartRuntimeTest, PlatformMessageRepliesReachTheEngine) {
++  bool destroyed = false;
++  auto runtime = CreateRuntime(&destroyed);
++  ApiCapture capture;
++  g_api_capture = &capture;
++  FlutterSpiEngineApi api = MakeEngineApi();
++  FlutterSpiEngine engine;
++  ASSERT_EQ(runtime->table().start(runtime->table().user_data, &api, &engine),
++            kFlutterSpiOk);
++  auto response = fml::AdoptRef(new CapturingResponse());
++
++  runtime->delegate_bridge().HandlePlatformMessage(
++      std::make_unique<PlatformMessage>(
++          "test", fml::MallocMapping::Copy(nullptr, 0), response));
++
++  ASSERT_TRUE(response->completed);
++  EXPECT_EQ(response->bytes, std::vector<uint8_t>({'o', 'k'}));
++  g_api_capture = nullptr;
++}
++
++TEST(FlutterDartRuntimeTest, IncomingPlatformMessageIsAnsweredThroughRespond) {
++  bool destroyed = false;
++  auto runtime = CreateRuntime(&destroyed);
++  ApiCapture capture;
++  g_api_capture = &capture;
++  FlutterSpiEngineApi api = MakeEngineApi();
++  FlutterSpiEngine engine;
++  ASSERT_EQ(runtime->table().start(runtime->table().user_data, &api, &engine),
++            kFlutterSpiOk);
++  auto& controller =
++      static_cast<TrackingRuntimeController&>(runtime->controller());
++  FlutterSpiResponseHandle response;
++  const uint8_t data[] = {'h', 'i'};
++  FlutterSpiPlatformMessage message = {
++      .struct_size = sizeof(FlutterSpiPlatformMessage),
++      .channel = "test",
++      .data = data,
++      .data_size = sizeof(data),
++      .response = &response,
++  };
++
++  runtime->table().platform_message(runtime->table().user_data, &message);
++
++  ASSERT_NE(controller.last_platform_message, nullptr);
++  const uint8_t reply[] = {'o', 'k'};
++  controller.last_platform_message->response()->Complete(
++      std::make_unique<fml::MallocMapping>(
++          fml::MallocMapping::Copy(reply, sizeof(reply))));
++
++  EXPECT_EQ(capture.response_count, 1u);
++  EXPECT_EQ(capture.response_bytes, std::vector<uint8_t>({'o', 'k'}));
++
++  FlutterSpiResponseHandle empty_response;
++  message.response = &empty_response;
++  runtime->table().platform_message(runtime->table().user_data, &message);
++
++  ASSERT_NE(controller.last_platform_message, nullptr);
++  controller.last_platform_message->response()->CompleteEmpty();
++
++  EXPECT_EQ(capture.response_count, 2u);
++  EXPECT_TRUE(capture.response_bytes.empty());
++  g_api_capture = nullptr;
++}
++
++TEST(FlutterDartRuntimeTest, DestroyTearsDownTheController) {
++  bool destroyed = false;
++  auto runtime = CreateRuntime(&destroyed);
++  void* user_data = runtime->table().user_data;
++  auto destroy = runtime->table().destroy;
++
++  runtime.release();
++  destroy(user_data);
++
++  EXPECT_TRUE(destroyed);
++}
++
++}  // namespace
++}  // namespace flutter
