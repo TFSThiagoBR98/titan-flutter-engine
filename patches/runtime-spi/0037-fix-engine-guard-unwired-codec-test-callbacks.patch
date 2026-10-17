@@ -1,0 +1,25 @@
+# Why: make the pre-implementation RED report a failed assertion instead of
+# dereferencing a null ABI function pointer.
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_codec_unittests.cc b/engine/src/flutter/runtime_spi/image/spi_image_codec_unittests.cc
+index bc94674fe61..f8375e45498 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_codec_unittests.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_codec_unittests.cc
+@@ -149,6 +149,10 @@ class SpiImageCodecTest : public ShellTest {
+ 
+   FlutterSpiCodec* CreateCodec(const sk_sp<SkData>& data) {
+     FlutterSpiCodec* codec = nullptr;
++    if (runtime_->engine_api->image->codec_create == nullptr) {
++      ADD_FAILURE() << "codec_create is not wired into the image API";
++      return nullptr;
++    }
+     PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
+       EXPECT_EQ(runtime_->engine_api->image->codec_create(
+                     runtime_->engine, data->bytes(), data->size(), nullptr,
+@@ -325,6 +329,7 @@ TEST_F(SpiImageCodecTest, RejectsUnknownEncoding) {
+   FlutterSpiCodec* codec = nullptr;
+   FlutterSpiResult result = kFlutterSpiOk;
+   PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++    ASSERT_NE(runtime_->engine_api->image->codec_create, nullptr);
+     result = runtime_->engine_api->image->codec_create(
+         runtime_->engine, bytes, sizeof(bytes), nullptr, &codec);
+   });

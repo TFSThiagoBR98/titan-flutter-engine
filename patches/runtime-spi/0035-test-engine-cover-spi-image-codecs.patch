@@ -1,0 +1,357 @@
+# Why: define the codec frame, animation, release, and invalid-input behaviors
+# before implementing the runtime SPI codec.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 019cc52a0d3..9e9ba7c5eb2 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -166,6 +166,7 @@ if (enable_unittests) {
+       "image/spi_image_canvas_parity_unittests.cc",
+       "image/spi_image_unittests.cc",
+       "image/spi_image_decoding_unittests.cc",
++      "image/spi_image_codec_unittests.cc",
+       "image/spi_image_readback_unittests.cc",
+       "image/spi_image_snapshot_unittests.cc",
+       "spi_runtime_backend_unittests.cc",
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_codec_unittests.cc b/engine/src/flutter/runtime_spi/image/spi_image_codec_unittests.cc
+new file mode 100644
+index 00000000000..82dfef92553
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/image/spi_image_codec_unittests.cc
+@@ -0,0 +1,337 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include <cstdint>
++#include <memory>
++#include <vector>
++
++#include "flutter/fml/synchronization/waitable_event.h"
++#include "flutter/fml/time/time_delta.h"
++#include "flutter/runtime_spi/image/spi_image.h"
++#include "flutter/runtime_spi/runtime_backend_factory.h"
++#include "flutter/runtime_spi/testing/c_test_runtime.h"
++#include "flutter/runtime_spi/testing/test_icu.h"
++#include "flutter/shell/common/shell_test.h"
++#include "flutter/shell/common/shell_test_platform_view.h"
++#include "flutter/testing/testing.h"
++#include "third_party/skia/include/core/SkBitmap.h"
++#include "third_party/skia/include/core/SkStream.h"
++#include "third_party/skia/include/encode/SkPngEncoder.h"
++#include "third_party/skia/include/encode/SkWebpEncoder.h"
++
++namespace flutter::testing {
++namespace {
++
++constexpr int32_t kImageWidth = 4;
++constexpr int32_t kImageHeight = 3;
++
++struct FrameCallbackState {
++  fml::AutoResetWaitableEvent completed;
++  FlutterSpiResult result = kFlutterSpiInternalError;
++  FlutterSpiImage* image = nullptr;
++  int32_t duration_ms = -1;
++  int calls = 0;
++};
++
++void CaptureFrame(void* user_data,
++                  FlutterSpiResult result,
++                  FlutterSpiImage* image,
++                  int32_t duration_ms) {
++  auto* state = static_cast<FrameCallbackState*>(user_data);
++  state->result = result;
++  state->image = image;
++  state->duration_ms = duration_ms;
++  state->calls++;
++  state->completed.Signal();
++}
++
++struct BytesCallbackState {
++  fml::AutoResetWaitableEvent completed;
++  FlutterSpiResult result = kFlutterSpiInternalError;
++  std::vector<uint8_t> bytes;
++};
++
++void CaptureBytes(void* user_data,
++                  FlutterSpiResult result,
++                  const uint8_t* bytes,
++                  size_t size) {
++  auto* state = static_cast<BytesCallbackState*>(user_data);
++  state->result = result;
++  if (bytes != nullptr) {
++    state->bytes.assign(bytes, bytes + size);
++  }
++  state->completed.Signal();
++}
++
++void PostSync(const fml::RefPtr<fml::TaskRunner>& task_runner,
++              const fml::closure& task) {
++  fml::AutoResetWaitableEvent completed;
++  task_runner->PostTask([&completed, &task] {
++    task();
++    completed.Signal();
++  });
++  completed.Wait();
++}
++
++sk_sp<SkData> MakePng(SkColor color) {
++  SkBitmap bitmap;
++  if (!bitmap.tryAllocPixels(
++          SkImageInfo::MakeN32Premul(kImageWidth, kImageHeight))) {
++    return nullptr;
++  }
++  bitmap.eraseColor(color);
++  const auto image = SkImages::RasterFromBitmap(bitmap);
++  return image == nullptr ? nullptr : SkPngEncoder::Encode(nullptr, image.get(), {});
++}
++
++sk_sp<SkData> MakeAnimatedWebp() {
++  SkBitmap first_bitmap;
++  SkBitmap second_bitmap;
++  if (!first_bitmap.tryAllocPixels(
++          SkImageInfo::MakeN32Premul(kImageWidth, kImageHeight)) ||
++      !second_bitmap.tryAllocPixels(
++          SkImageInfo::MakeN32Premul(kImageWidth, kImageHeight))) {
++    return nullptr;
++  }
++  first_bitmap.eraseColor(SK_ColorRED);
++  second_bitmap.eraseColor(SK_ColorGREEN);
++
++  SkPixmap first_pixmap;
++  SkPixmap second_pixmap;
++  if (!first_bitmap.peekPixels(&first_pixmap) ||
++      !second_bitmap.peekPixels(&second_pixmap)) {
++    return nullptr;
++  }
++
++  const std::vector<SkEncoder::Frame> frames = {
++      {.pixmap = first_pixmap, .duration = 100},
++      {.pixmap = second_pixmap, .duration = 200},
++  };
++  SkDynamicMemoryWStream stream;
++  if (!SkWebpEncoder::EncodeAnimated(&stream, frames,
++                                     {.fCompression = SkWebpEncoder::Compression::kLossless,
++                                      .fQuality = 100.0f})) {
++    return nullptr;
++  }
++  return stream.detachAsData();
++}
++
++class SpiImageCodecTest : public ShellTest {
++ protected:
++  void SetUp() override {
++    InitializeIcuForTesting();
++    runtime_ = c_test_runtime_create();
++    task_runners_ = std::make_unique<TaskRunners>(GetTaskRunnersForFixture());
++  }
++
++  void TearDown() override {
++    if (shell_ != nullptr) {
++      DestroyShell(std::move(shell_), *task_runners_);
++    }
++    c_test_runtime_free(runtime_);
++  }
++
++  void StartShell() {
++    auto settings = CreateSettingsForFixture();
++    settings.icu_data_path = IcuDataPathForTesting();
++    auto factory = std::make_shared<SpiRuntimeBackendFactory>(
++        c_test_runtime_table(runtime_));
++    shell_ = Shell::Create(
++        PlatformData(), *task_runners_, settings,
++        ShellTestPlatformViewBuilder({}),
++        [](Shell& shell) { return std::make_unique<Rasterizer>(shell); },
++        factory);
++    ASSERT_TRUE(shell_->IsSetup());
++    PlatformViewNotifyCreated(shell_.get());
++    RunEngine(shell_.get(), RunConfiguration::InferFromSettings(settings));
++  }
++
++  FlutterSpiCodec* CreateCodec(const sk_sp<SkData>& data) {
++    FlutterSpiCodec* codec = nullptr;
++    PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++      EXPECT_EQ(runtime_->engine_api->image->codec_create(
++                    runtime_->engine, data->bytes(), data->size(), nullptr,
++                    &codec),
++                kFlutterSpiOk);
++    });
++    return codec;
++  }
++
++  FlutterSpiResult GetCodecInfo(FlutterSpiCodec* codec,
++                                int32_t* frame_count,
++                                int32_t* repetition_count) {
++    FlutterSpiResult result = kFlutterSpiInternalError;
++    PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++      result = runtime_->engine_api->image->codec_get_info(
++          codec, frame_count, repetition_count);
++    });
++    return result;
++  }
++
++  FlutterSpiResult GetNextFrame(FlutterSpiCodec* codec,
++                                FrameCallbackState* callback) {
++    FlutterSpiResult result = kFlutterSpiInternalError;
++    PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++      result = runtime_->engine_api->image->codec_get_next_frame(
++          codec, CaptureFrame, callback);
++    });
++    if (result == kFlutterSpiOk) {
++      callback->completed.Wait();
++    }
++    return result;
++  }
++
++  std::vector<uint8_t> ReadRawRgba(FlutterSpiImage* image) {
++    BytesCallbackState callback;
++    PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++      EXPECT_EQ(runtime_->engine_api->image->image_to_bytes(
++                    runtime_->engine, image, kFlutterSpiImageByteFormatRawRGBA,
++                    CaptureBytes, &callback),
++                kFlutterSpiOk);
++    });
++    callback.completed.Wait();
++    EXPECT_EQ(callback.result, kFlutterSpiOk);
++    return callback.bytes;
++  }
++
++  void ReleaseImage(FlutterSpiImage* image) {
++    PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++      EXPECT_EQ(runtime_->engine_api->image->image_release(image),
++                kFlutterSpiOk);
++    });
++  }
++
++  void ReleaseCodec(FlutterSpiCodec* codec) {
++    PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++      EXPECT_EQ(runtime_->engine_api->image->codec_release(codec),
++                kFlutterSpiOk);
++    });
++  }
++
++  CTestRuntime* runtime_ = nullptr;
++  std::unique_ptr<TaskRunners> task_runners_;
++  std::unique_ptr<Shell> shell_;
++};
++
++TEST_F(SpiImageCodecTest, StaticImageHasOneFrame) {
++  StartShell();
++  const auto png = MakePng(SK_ColorRED);
++  ASSERT_TRUE(png);
++  FlutterSpiCodec* codec = CreateCodec(png);
++  ASSERT_NE(codec, nullptr);
++
++  int32_t frame_count = 0;
++  int32_t repetition_count = 0;
++  EXPECT_EQ(GetCodecInfo(codec, &frame_count, &repetition_count),
++            kFlutterSpiOk);
++  EXPECT_EQ(frame_count, 1);
++  EXPECT_EQ(repetition_count, 0);
++  ReleaseCodec(codec);
++}
++
++TEST_F(SpiImageCodecTest, StaticImageRepeatsSameFrame) {
++  StartShell();
++  const auto png = MakePng(SK_ColorRED);
++  ASSERT_TRUE(png);
++  FlutterSpiCodec* codec = CreateCodec(png);
++  ASSERT_NE(codec, nullptr);
++
++  FrameCallbackState first_callback;
++  ASSERT_EQ(GetNextFrame(codec, &first_callback), kFlutterSpiOk);
++  ASSERT_EQ(first_callback.result, kFlutterSpiOk);
++  ASSERT_NE(first_callback.image, nullptr);
++  const auto first_pixels = ReadRawRgba(first_callback.image);
++  ReleaseImage(first_callback.image);
++
++  FrameCallbackState second_callback;
++  ASSERT_EQ(GetNextFrame(codec, &second_callback), kFlutterSpiOk);
++  ASSERT_EQ(second_callback.result, kFlutterSpiOk);
++  ASSERT_NE(second_callback.image, nullptr);
++  const auto second_pixels = ReadRawRgba(second_callback.image);
++  ReleaseImage(second_callback.image);
++
++  EXPECT_EQ(first_pixels, second_pixels);
++  EXPECT_EQ(first_callback.duration_ms, 0);
++  EXPECT_EQ(second_callback.duration_ms, 0);
++  ReleaseCodec(codec);
++}
++
++TEST_F(SpiImageCodecTest, AnimatedInfoMatchesGenerator) {
++  StartShell();
++  const auto webp = MakeAnimatedWebp();
++  ASSERT_TRUE(webp);
++  FlutterSpiCodec* codec = CreateCodec(webp);
++  ASSERT_NE(codec, nullptr);
++
++  int32_t frame_count = 0;
++  int32_t repetition_count = 0;
++  EXPECT_EQ(GetCodecInfo(codec, &frame_count, &repetition_count),
++            kFlutterSpiOk);
++  EXPECT_EQ(frame_count, 2);
++  EXPECT_EQ(repetition_count, 0);
++  ReleaseCodec(codec);
++}
++
++TEST_F(SpiImageCodecTest, FramesWrapAroundWithDurations) {
++  StartShell();
++  const auto webp = MakeAnimatedWebp();
++  ASSERT_TRUE(webp);
++  FlutterSpiCodec* codec = CreateCodec(webp);
++  ASSERT_NE(codec, nullptr);
++
++  std::vector<std::vector<uint8_t>> pixels;
++  std::vector<int32_t> durations;
++  for (int index = 0; index < 3; index++) {
++    FrameCallbackState callback;
++    ASSERT_EQ(GetNextFrame(codec, &callback), kFlutterSpiOk);
++    ASSERT_EQ(callback.result, kFlutterSpiOk);
++    ASSERT_NE(callback.image, nullptr);
++    pixels.push_back(ReadRawRgba(callback.image));
++    durations.push_back(callback.duration_ms);
++    ReleaseImage(callback.image);
++  }
++
++  EXPECT_EQ(durations, (std::vector<int32_t>{100, 200, 100}));
++  EXPECT_EQ(pixels[0], pixels[2]);
++  EXPECT_NE(pixels[0], pixels[1]);
++  ReleaseCodec(codec);
++}
++
++TEST_F(SpiImageCodecTest, ReleaseWithPendingFrameDropsResult) {
++  StartShell();
++  const auto png = MakePng(SK_ColorRED);
++  ASSERT_TRUE(png);
++  FlutterSpiCodec* codec = CreateCodec(png);
++  ASSERT_NE(codec, nullptr);
++
++  FrameCallbackState callback;
++  PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++    EXPECT_EQ(runtime_->engine_api->image->codec_get_next_frame(
++                  codec, CaptureFrame, &callback),
++              kFlutterSpiOk);
++    EXPECT_EQ(runtime_->engine_api->image->codec_release(codec),
++              kFlutterSpiOk);
++  });
++
++  EXPECT_TRUE(callback.completed.WaitWithTimeout(
++      fml::TimeDelta::FromMilliseconds(100)));
++  EXPECT_EQ(callback.calls, 0);
++}
++
++TEST_F(SpiImageCodecTest, RejectsUnknownEncoding) {
++  StartShell();
++  const uint8_t bytes[] = {0x01, 0x02, 0x03, 0x04};
++  FlutterSpiCodec* codec = nullptr;
++  FlutterSpiResult result = kFlutterSpiOk;
++  PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++    result = runtime_->engine_api->image->codec_create(
++        runtime_->engine, bytes, sizeof(bytes), nullptr, &codec);
++  });
++
++  EXPECT_EQ(result, kFlutterSpiInvalidArgument);
++  EXPECT_EQ(codec, nullptr);
++}
++
++}  // namespace
++}  // namespace flutter::testing

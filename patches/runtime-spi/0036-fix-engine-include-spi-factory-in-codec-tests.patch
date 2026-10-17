@@ -1,0 +1,15 @@
+# Why: use the concrete backend factory required by the Shell fixture instead
+# of the abstract base factory.
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_codec_unittests.cc b/engine/src/flutter/runtime_spi/image/spi_image_codec_unittests.cc
+index 82dfef92553..bc94674fe61 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_codec_unittests.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_codec_unittests.cc
+@@ -9,7 +9,7 @@
+ #include "flutter/fml/synchronization/waitable_event.h"
+ #include "flutter/fml/time/time_delta.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
+-#include "flutter/runtime_spi/runtime_backend_factory.h"
++#include "flutter/runtime_spi/spi_runtime_backend_factory.h"
+ #include "flutter/runtime_spi/testing/c_test_runtime.h"
+ #include "flutter/runtime_spi/testing/test_icu.h"
+ #include "flutter/shell/common/shell_test.h"
