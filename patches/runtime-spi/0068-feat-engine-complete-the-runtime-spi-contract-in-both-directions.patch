@@ -1,0 +1,275 @@
+# Why: freeze ABI 0.12 with every RuntimeBackend request and RuntimeDelegate
+# request represented in the engine/runtime contract.
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 211251d69fd..351f7d61c93 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -60,6 +60,19 @@ SPI_EXPECT_OFFSET(FlutterSpiFrameInfo, deadline_ns,
+                   sizeof(void*) == 8 ? 32 : 32);
+ SPI_EXPECT_SIZE(FlutterSpiFrameInfo, sizeof(void*) == 8 ? 40 : 40);
+ 
++SPI_EXPECT_OFFSET(FlutterSpiDisplay, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiDisplay, id,
++                  sizeof(void*) == 8 ? 8 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiDisplay, width,
++                  sizeof(void*) == 8 ? 16 : 16);
++SPI_EXPECT_OFFSET(FlutterSpiDisplay, height,
++                  sizeof(void*) == 8 ? 24 : 24);
++SPI_EXPECT_OFFSET(FlutterSpiDisplay, pixel_ratio,
++                  sizeof(void*) == 8 ? 32 : 32);
++SPI_EXPECT_OFFSET(FlutterSpiDisplay, refresh_rate,
++                  sizeof(void*) == 8 ? 40 : 40);
++SPI_EXPECT_SIZE(FlutterSpiDisplay, sizeof(void*) == 8 ? 48 : 48);
++
+ SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, view_id, sizeof(void*) == 8 ? 8 : 8);
+ SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, timestamp_us,
+@@ -306,7 +319,13 @@ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, notify_idle,
+                   sizeof(void*) == 8 ? 168 : 96);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, extensions,
+                   sizeof(void*) == 8 ? 176 : 100);
+-SPI_EXPECT_SIZE(FlutterSpiRuntimeTable, sizeof(void*) == 8 ? 184 : 104);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, set_displays,
++                  sizeof(void*) == 8 ? 184 : 104);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, report_timings,
++                  sizeof(void*) == 8 ? 192 : 108);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, hit_test,
++                  sizeof(void*) == 8 ? 200 : 112);
++SPI_EXPECT_SIZE(FlutterSpiRuntimeTable, sizeof(void*) == 8 ? 208 : 120);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiColor, red, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiColor, green, 4);
+@@ -406,7 +425,37 @@ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, fragment,
+                   sizeof(void*) == 8 ? 144 : 84);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, semantics,
+                   sizeof(void*) == 8 ? 152 : 88);
+-SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 160 : 96);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, default_route_name,
++                  sizeof(void*) == 8 ? 160 : 92);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, free_string,
++                  sizeof(void*) == 8 ? 168 : 96);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, set_application_locale,
++                  sizeof(void*) == 8 ? 176 : 100);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, set_semantics_tree_enabled,
++                  sizeof(void*) == 8 ? 184 : 104);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, on_root_isolate_created,
++                  sizeof(void*) == 8 ? 192 : 108);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, update_isolate_description,
++                  sizeof(void*) == 8 ? 200 : 112);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, set_needs_report_timings,
++                  sizeof(void*) == 8 ? 208 : 116);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, compute_platform_resolved_locale,
++                  sizeof(void*) == 8 ? 216 : 120);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, free_string_list,
++                  sizeof(void*) == 8 ? 224 : 124);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, request_deferred_library,
++                  sizeof(void*) == 8 ? 232 : 128);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, send_channel_update,
++                  sizeof(void*) == 8 ? 240 : 132);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, get_scaled_font_size,
++                  sizeof(void*) == 8 ? 248 : 136);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, request_view_focus_change,
++                  sizeof(void*) == 8 ? 256 : 140);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, reset_internal_state,
++                  sizeof(void*) == 8 ? 264 : 144);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, asset_get,
++                  sizeof(void*) == 8 ? 272 : 148);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 280 : 152);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, color, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, offset, 20);
+@@ -565,7 +614,7 @@ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, fragment,
+                   sizeof(void*) == 8 ? 144 : 84);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, semantics,
+                   sizeof(void*) == 8 ? 152 : 88);
+-SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 160 : 96);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 280 : 152);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, name,
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index 78aa1d3e0cc..a6e04f2f290 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 11
++#define FLUTTER_SPI_VERSION_MINOR 12
+ 
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+@@ -69,6 +69,15 @@ typedef struct {
+   int64_t deadline_ns;
+ } FlutterSpiFrameInfo;
+ 
++typedef struct {
++  size_t struct_size;
++  uint64_t id;
++  double width;
++  double height;
++  double pixel_ratio;
++  double refresh_rate;
++} FlutterSpiDisplay;
++
+ typedef enum {
+   kFlutterSpiPointerChangeCancel = 0,
+   kFlutterSpiPointerChangeAdd,
+@@ -180,6 +189,16 @@ typedef struct {
+                      int32_t direction);
+   void (*notify_idle)(void* user_data, int64_t deadline_ns);
+   const FlutterSpiRuntimeExtensions* extensions;
++  void (*set_displays)(void* user_data,
++                       const FlutterSpiDisplay* displays,
++                       size_t count);
++  void (*report_timings)(void* user_data,
++                         const int64_t* timings,
++                         size_t count);
++  bool (*hit_test)(void* user_data,
++                   int64_t view_id,
++                   double x,
++                   double y);
+ } FlutterSpiRuntimeTable;
+ 
+ struct FlutterSpiEngineApi {
+@@ -226,6 +245,43 @@ struct FlutterSpiEngineApi {
+   const FlutterSpiPaintEffectsApi* paint_effects;
+   const FlutterSpiFragmentApi* fragment;
+   const FlutterSpiSemanticsApi* semantics;
++  char* (*default_route_name)(FlutterSpiEngine* engine);
++  void (*free_string)(FlutterSpiEngine* engine, char* string);
++  FlutterSpiResult (*set_application_locale)(FlutterSpiEngine* engine,
++                                             const char* locale);
++  FlutterSpiResult (*set_semantics_tree_enabled)(FlutterSpiEngine* engine,
++                                                  bool enabled);
++  FlutterSpiResult (*on_root_isolate_created)(FlutterSpiEngine* engine);
++  FlutterSpiResult (*update_isolate_description)(FlutterSpiEngine* engine,
++                                                 const char* name,
++                                                 int64_t port);
++  FlutterSpiResult (*set_needs_report_timings)(FlutterSpiEngine* engine,
++                                               bool value);
++  FlutterSpiResult (*compute_platform_resolved_locale)(
++      FlutterSpiEngine* engine,
++      const char* const* supported,
++      size_t count,
++      char*** out_locale,
++      size_t* out_count);
++  void (*free_string_list)(FlutterSpiEngine* engine,
++                           char** list,
++                           size_t count);
++  FlutterSpiResult (*request_deferred_library)(FlutterSpiEngine* engine,
++                                               int64_t loading_unit_id);
++  FlutterSpiResult (*send_channel_update)(FlutterSpiEngine* engine,
++                                          const char* name,
++                                          bool listening);
++  double (*get_scaled_font_size)(FlutterSpiEngine* engine,
++                                 double unscaled_font_size,
++                                 int32_t configuration_id);
++  FlutterSpiResult (*request_view_focus_change)(FlutterSpiEngine* engine,
++                                                int64_t view_id,
++                                                int32_t state,
++                                                int32_t direction);
++  FlutterSpiResult (*reset_internal_state)(FlutterSpiEngine* engine);
++  bool (*asset_get)(FlutterSpiEngine* engine,
++                    const char* name,
++                    FlutterSpiMapping* out_mapping);
+ };
+ 
+ /*
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index cf4f820d3a0..08f2853f009 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -93,7 +93,7 @@ TEST(SpiAbi, ImageEnumValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawUnmodified, 2);
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawExtendedRGBA128, 3);
+   EXPECT_EQ(kFlutterSpiImageByteFormatPNG, 4);
+-  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 11);
++  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 12);
+ }
+ 
+ TEST(SpiAbi, SemanticsLayoutIsFrozen) {
+@@ -347,6 +347,16 @@ TEST(SpiAbi, FrameInfoLayoutIsFrozen) {
+   EXPECT_EQ(sizeof(FlutterSpiFrameInfo), sizeof(void*) == 8 ? 40u : 40u);
+ }
+ 
++TEST(SpiAbi, DisplayLayoutIsFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiDisplay, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiDisplay, id, 8, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiDisplay, width, 16, 16);
++  EXPECT_SPI_OFFSET(FlutterSpiDisplay, height, 24, 24);
++  EXPECT_SPI_OFFSET(FlutterSpiDisplay, pixel_ratio, 32, 32);
++  EXPECT_SPI_OFFSET(FlutterSpiDisplay, refresh_rate, 40, 40);
++  EXPECT_EQ(sizeof(FlutterSpiDisplay), 48u);
++}
++
+ TEST(SpiAbi, PointerEventLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, struct_size, 0, 0);
+   EXPECT_SPI_OFFSET(FlutterSpiPointerEvent, view_id, 8, 8);
+@@ -410,7 +420,11 @@ TEST(SpiAbi, RuntimeTableLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, view_focus, 160, 92);
+   EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, notify_idle, 168, 96);
+   EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, extensions, 176, 100);
+-  EXPECT_EQ(sizeof(FlutterSpiRuntimeTable), sizeof(void*) == 8 ? 184u : 104u);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, set_displays, 184, 104);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, report_timings, 192, 108);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, hit_test, 200, 112);
++  EXPECT_EQ(sizeof(FlutterSpiRuntimeTable),
++            sizeof(void*) == 8 ? 208u : 120u);
+ }
+ 
+ TEST(SpiAbi, RuntimeExtensionsEnumAndLayoutsAreFrozen) {
+@@ -531,7 +545,25 @@ TEST(SpiAbi, EngineApiLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, paint_effects, 136, 80);
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, fragment, 144, 84);
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, semantics, 152, 88);
+-  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 160u : 92u);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, default_route_name, 160, 92);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, free_string, 168, 96);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, set_application_locale, 176, 100);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, set_semantics_tree_enabled, 184,
++                    104);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, on_root_isolate_created, 192, 108);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, update_isolate_description, 200,
++                    112);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, set_needs_report_timings, 208, 116);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, compute_platform_resolved_locale,
++                    216, 120);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, free_string_list, 224, 124);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, request_deferred_library, 232, 128);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, send_channel_update, 240, 132);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, get_scaled_font_size, 248, 136);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, request_view_focus_change, 256, 140);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, reset_internal_state, 264, 144);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, asset_get, 272, 148);
++  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 280u : 152u);
+ }
+ 
+ TEST(SpiAbi, FragmentUniformInfoLayoutIsFrozen) {
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index 4acb297a260..64531306c3e 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -169,6 +169,21 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+       .paint_effects = &kPaintEffectsApi,
+       .fragment = SpiFragment::Api(),
+       .semantics = &kSemanticsApi,
++      .default_route_name = nullptr,
++      .free_string = nullptr,
++      .set_application_locale = nullptr,
++      .set_semantics_tree_enabled = nullptr,
++      .on_root_isolate_created = nullptr,
++      .update_isolate_description = nullptr,
++      .set_needs_report_timings = nullptr,
++      .compute_platform_resolved_locale = nullptr,
++      .free_string_list = nullptr,
++      .request_deferred_library = nullptr,
++      .send_channel_update = nullptr,
++      .get_scaled_font_size = nullptr,
++      .request_view_focus_change = nullptr,
++      .reset_internal_state = nullptr,
++      .asset_get = nullptr,
+   };
+ }
+ 
