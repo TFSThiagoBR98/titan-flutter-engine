@@ -1,0 +1,250 @@
+# Why: Add the C runtime fragment-program frame path and conformance coverage
+# for capability announcement, asset loading, uniform updates, shader
+# conversion, and scene submission.
+diff --git a/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+index dfd5b3b9ee1..2924ed0c780 100644
+--- a/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+@@ -15,6 +15,7 @@
+ #include <vector>
+ 
+ #include "flutter/fml/mapping.h"
++#include "flutter/fml/paths.h"
+ #include "flutter/fml/synchronization/waitable_event.h"
+ #include "flutter/fml/time/time_delta.h"
+ #include "flutter/fml/time/time_point.h"
+@@ -74,6 +75,17 @@ void PostSync(const fml::RefPtr<fml::TaskRunner>& task_runner,
+   latch.Wait();
+ }
+ 
++std::unique_ptr<fml::Mapping> LoadFragmentProgramFixture() {
++  const auto executable_directory = fml::paths::GetExecutableDirectoryPath();
++  if (!executable_directory.first) {
++    return nullptr;
++  }
++  return fml::FileMapping::CreateReadOnly(fml::paths::JoinPaths(
++      {executable_directory.second,
++       "gen/flutter/lib/ui/fixtures/shaders/general_shaders/iplr/"
++       "simple.frag.iplr"}));
++}
++
+ class CapturingResponse final : public PlatformMessageResponse {
+  public:
+   void Complete(std::unique_ptr<fml::Mapping> data) override {
+@@ -420,6 +432,38 @@ TEST_F(SpiConformance, PaintEffectsFrameRoundTrip) {
+   });
+ }
+ 
++TEST_F(SpiConformance, FragmentProgramsAnnouncedByCapability) {
++  StartShell();
++
++  ASSERT_NE(runtime_->engine_api, nullptr);
++  ASSERT_NE(runtime_->engine_api->fragment, nullptr);
++  EXPECT_NE(runtime_->engine_api->capabilities &
++                kFlutterSpiCapFragmentPrograms,
++            0u);
++}
++
++TEST_F(SpiConformance, FragmentShaderFrameRoundTrip) {
++  const auto mapping = LoadFragmentProgramFixture();
++  ASSERT_NE(mapping, nullptr);
++  runtime_->fragment_on_begin_frame = true;
++  runtime_->fragment_program_data = mapping->GetMapping();
++  runtime_->fragment_program_size = mapping->GetSize();
++  StartShell();
++
++  PumpOneFrame(shell_.get());
++  PostSync(shell_->GetTaskRunners().GetRasterTaskRunner(), [&] {
++    auto* layer_tree =
++        shell_->GetRasterizer()->GetLastLayerTree(kImplicitViewId);
++    ASSERT_NE(layer_tree, nullptr);
++    EXPECT_EQ(SceneTrace(*layer_tree),
++              "scene 1x1\n"
++              "container\n"
++              "  picture 0 0\n"
++              "    op setColorSource\n"
++              "    drawRect 0 0 16 16\n");
++  });
++}
++
+ TEST_F(SpiConformance, SnapshotRoundTrip) {
+   runtime_->snapshot_on_begin_frame = true;
+   StartShell();
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.c b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+index 49f4ad71c10..bc2a3c8d1de 100644
+--- a/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+@@ -73,6 +73,9 @@ static void test_runtime_submit_retained_layers_scene(
+ static void test_runtime_submit_effects_scene(
+     CTestRuntime* runtime,
+     const FlutterSpiFrameInfo* frame_info);
++static void test_runtime_submit_fragment_scene(
++    CTestRuntime* runtime,
++    const FlutterSpiFrameInfo* frame_info);
+ static void test_runtime_submit_text_scene(
+     CTestRuntime* runtime,
+     const FlutterSpiFrameInfo* frame_info);
+@@ -161,6 +164,7 @@ static void test_runtime_begin_frame(void* user_data,
+   }
+   if ((!runtime->submit_on_begin_frame && !runtime->draw_scene_on_begin_frame &&
+        !runtime->draw_effects_on_begin_frame &&
++       !runtime->fragment_on_begin_frame &&
+        !runtime->retained_layers_on_begin_frame &&
+        !runtime->draw_text_on_begin_frame &&
+        !runtime->draw_image_on_begin_frame &&
+@@ -206,6 +210,10 @@ static void test_runtime_begin_frame(void* user_data,
+     test_runtime_submit_effects_scene(runtime, frame_info);
+     return;
+   }
++  if (runtime->fragment_on_begin_frame) {
++    test_runtime_submit_fragment_scene(runtime, frame_info);
++    return;
++  }
+   if (runtime->draw_scene_on_begin_frame) {
+     test_runtime_submit_drawn_scene(runtime, frame_info);
+     return;
+@@ -716,6 +724,130 @@ static void test_runtime_submit_effects_scene(
+       runtime->last_view_metrics.device_pixel_ratio);
+ }
+ 
++static void test_runtime_release_fragment_resources(
++    CTestRuntime* runtime,
++    FlutterSpiPictureRecorder* recorder,
++    FlutterSpiFragmentProgram* program,
++    FlutterSpiFragmentShader* fragment_shader,
++    FlutterSpiShader* shader) {
++  const FlutterSpiSceneApi* scene_api = runtime->engine_api->scene;
++  const FlutterSpiFragmentApi* fragment_api = runtime->engine_api->fragment;
++  const FlutterSpiPaintEffectsApi* effects_api =
++      runtime->engine_api->paint_effects;
++
++  if (shader != NULL && effects_api != NULL) {
++    effects_api->shader_release(shader);
++  }
++  if (fragment_shader != NULL && fragment_api != NULL) {
++    fragment_api->shader_release(fragment_shader);
++  }
++  if (program != NULL && fragment_api != NULL) {
++    fragment_api->program_release(program);
++  }
++  if (recorder != NULL && scene_api != NULL) {
++    scene_api->recorder_release(recorder);
++  }
++}
++
++static bool test_runtime_create_fragment_picture(
++    CTestRuntime* runtime,
++    FlutterSpiPicture** out_picture) {
++  const FlutterSpiSceneApi* scene_api = runtime->engine_api->scene;
++  const FlutterSpiFragmentApi* fragment_api = runtime->engine_api->fragment;
++  const FlutterSpiPaintEffectsApi* effects_api =
++      runtime->engine_api->paint_effects;
++  const FlutterSpiRect rect = {
++      .left = 0.0f, .top = 0.0f, .right = 16.0f, .bottom = 16.0f};
++  FlutterSpiPictureRecorder* recorder = NULL;
++  FlutterSpiFragmentProgram* program = NULL;
++  FlutterSpiFragmentShader* fragment_shader = NULL;
++  FlutterSpiShader* shader = NULL;
++  FlutterSpiPaint paint = k_scene_paint;
++  size_t uniform_count = 0;
++  size_t float_count = 0;
++  size_t sampler_count = 0;
++
++  if (scene_api == NULL || fragment_api == NULL || effects_api == NULL ||
++      runtime->fragment_program_data == NULL ||
++      runtime->fragment_program_size == 0 ||
++      scene_api->recorder_create(runtime->engine, NULL, &recorder) !=
++          kFlutterSpiOk ||
++      fragment_api->program_from_bytes(
++          runtime->engine, runtime->fragment_program_data,
++          runtime->fragment_program_size, "fragment_on_begin_frame", &program,
++          NULL) != kFlutterSpiOk ||
++      fragment_api->program_get_counts(program, &uniform_count, &float_count,
++                                       &sampler_count) != kFlutterSpiOk ||
++      sampler_count != 0 ||
++      fragment_api->shader_create(program, &fragment_shader) != kFlutterSpiOk) {
++    test_runtime_release_fragment_resources(runtime, recorder, program,
++                                            fragment_shader, shader);
++    return false;
++  }
++
++  for (size_t index = 0; index < float_count; index++) {
++    if (fragment_api->shader_set_float(fragment_shader, index,
++                                       1.0f + (float)index) != kFlutterSpiOk) {
++      test_runtime_release_fragment_resources(runtime, recorder, program,
++                                              fragment_shader, shader);
++      return false;
++    }
++  }
++
++  if (fragment_api->shader_to_shader(fragment_shader,
++                                     kFlutterSpiFilterQualityNone,
++                                     &shader) != kFlutterSpiOk) {
++    test_runtime_release_fragment_resources(runtime, recorder, program,
++                                            fragment_shader, shader);
++    return false;
++  }
++  paint.shader = shader;
++  if (scene_api->canvas_draw_rect(recorder, &rect, &paint) != kFlutterSpiOk ||
++      scene_api->recorder_finish(recorder, out_picture) != kFlutterSpiOk) {
++    test_runtime_release_fragment_resources(runtime, recorder, program,
++                                            fragment_shader, shader);
++    return false;
++  }
++
++  effects_api->shader_release(shader);
++  fragment_api->shader_release(fragment_shader);
++  fragment_api->program_release(program);
++  return true;
++}
++
++static void test_runtime_submit_fragment_scene(
++    CTestRuntime* runtime,
++    const FlutterSpiFrameInfo* frame_info) {
++  const FlutterSpiSceneApi* scene_api = runtime->engine_api->scene;
++  FlutterSpiPicture* picture = NULL;
++  FlutterSpiSceneBuilder* builder = NULL;
++  FlutterSpiScene* scene = NULL;
++
++  if (!test_runtime_create_fragment_picture(runtime, &picture) ||
++      scene_api->scene_builder_create(runtime->engine, &builder) !=
++          kFlutterSpiOk ||
++      scene_api->scene_add_picture(builder, 0.0f, 0.0f, picture, false,
++                                   false) != kFlutterSpiOk ||
++      scene_api->scene_build(
++          builder, (int64_t)runtime->last_view_metrics.physical_width,
++          (int64_t)runtime->last_view_metrics.physical_height,
++          &scene) != kFlutterSpiOk) {
++    if (builder != NULL) {
++      scene_api->scene_builder_release(builder);
++    }
++    if (picture != NULL) {
++      scene_api->picture_release(picture);
++    }
++    return;
++  }
++
++  scene_api->picture_release(picture);
++  runtime->engine_api->submit_frame(
++      runtime->engine, runtime->last_view_metrics.view_id,
++      frame_info->frame_token, scene,
++      runtime->last_view_metrics.device_pixel_ratio);
++}
++
+ static bool test_runtime_create_image_picture(CTestRuntime* runtime,
+                                               FlutterSpiPicture** out_picture) {
+   const FlutterSpiSceneApi* scene_api = runtime->engine_api->scene;
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.h b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+index 90f1d4bb7dd..b7b937c7763 100644
+--- a/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+@@ -46,6 +46,9 @@ typedef struct CTestRuntime {
+   bool submit_on_begin_frame;
+   bool draw_scene_on_begin_frame;
+   bool draw_effects_on_begin_frame;
++  bool fragment_on_begin_frame;
++  const uint8_t* fragment_program_data;
++  size_t fragment_program_size;
+   bool retained_layers_on_begin_frame;
+   FlutterSpiEngineLayer* retained_layer;
+   bool draw_text_on_begin_frame;
