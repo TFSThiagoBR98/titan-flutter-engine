@@ -39,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   blur com tile mode dinâmico e bounds, com conformidade ponta a ponta sem Dart.
 - Runtime SPI S3b-4c: ABI 0.8 para fragment programs (runtime effects do impellerc) carregados de asset ou bytes, com uniforms, samplers e
   conversão em shader de paint ou image filter, sem Dart.
+- Runtime SPI S3b-5: ABI 0.9 para publicar a árvore de semântica (nós, flags, textos com atributos, transformações, filhos e ações
+  customizadas) de uma view, com o mesmo resultado do SemanticsUpdateBuilder do dart:ui e sem Dart.
 
 ### Fixed
 

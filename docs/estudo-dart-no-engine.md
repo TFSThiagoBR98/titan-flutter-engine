@@ -346,6 +346,16 @@ O backend do runtime stage usado pelo SPI vem da fábrica, que já o recebe para
 
 O checkpoint confirmou 1221 PASS e 0 FAIL no `check-runtime-spi.sh`, o probe `9afdbcd18abd9b35` em x64 e arm64-musl sob QEMU, a configuração `--gn-only` dos dez alvos, o alvo `runtime_spi_c_api` em arm-hard e `tools/ci.sh engine`. A série limpa contém 72 patches do repositório do Flutter, dos quais 57 pertencem a `runtime-spi`; o `engine.lock` registra `patches_sha256=94269ed8c3d24e9e52bb09ca1ded81a2c166307f57e4f4058a874cd8bbb7fc78`. Os números e a identificação do engine estão em [runtime-spi-s3b4c.md](medidas/runtime-spi-s3b4c.md).
 
+## S3b-5: semântica
+
+A S3b-5 acrescenta a ABI 0.9 para publicar a árvore de semântica de uma view sem Dart. Um builder opaco recebe nós e ações customizadas por structs com `struct_size`, e `update_submit` consome o builder e entrega a atualização ao engine. A capacidade `kFlutterSpiCapSemanticsUpdate` anuncia esse sentido da API; ela é distinta de `kFlutterSpiCapSemantics`, da S2, que liga a semântica e as ações vindas da plataforma.
+
+A conversão copia campo a campo o que `SemanticsUpdateBuilder::updateNode` e `updateCustomAction` constroem: flags e tristates, ações, textos com atributos, geometria, transformações, filhos, papéis, validação e ações customizadas. O comparador dos testes monta o `SemanticsNode` e a `CustomAccessibilityAction` diretamente na mesma sequência e confere todos os campos, inclusive o tipo e o locale dos atributos de string.
+
+O SPI rejeita com `kFlutterSpiInvalidArgument` entradas que o `dart:ui` derrubaria com `FML_CHECK`, como `scroll_children` sem `children_in_hit_test_order`; `NULL` representa a string vazia e todo texto UTF-8 é validado. Essas diferenças são deliberadas para manter uma ABI C sem exceções e devolver erros explícitos ao chamador.
+
+O checkpoint confirmou 1236 PASS e 0 FAIL no `check-runtime-spi.sh`, o probe `9afdbcd18abd9b35` em x64 e arm64-musl sob QEMU, a configuração `--gn-only` dos dez alvos, o alvo `runtime_spi_c_api` em arm-hard e `tools/ci.sh engine`. A série limpa contém 75 patches do repositório do Flutter, dos quais 60 pertencem a `runtime-spi`; o `engine.lock` registra `patches_sha256=6d0d5a87f04b484c75a377ba1f01794109e1d2c7ba02d0e96e4894002b9a4dfb`. Os números e a identificação do engine estão em [runtime-spi-s3b5.md](medidas/runtime-spi-s3b5.md). Com ela, a S3 está completa; a próxima fase é a S4, com `dart:ui` sobre o SPI.
+
 ## Ciclo de vida e falhas
 
 O host cria, inicia, encerra e libera o backend. Uma falha recuperável encerra o runtime ativo e limpa os recursos;

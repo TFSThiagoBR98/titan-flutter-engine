@@ -65,6 +65,9 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0055-feat-engine-add-the-runtime-spi-fragment-program-header.patch` | Adicionar a ABI C11 0.8 para fragment programs, uniforms e samplers. | |
 | `0056-feat-engine-load-spi-fragment-programs-and-shaders.patch` | Carregar runtime stages de assets ou bytes e construir shaders e image filters com paridade ao `dart:ui`. | |
 | `0057-test-engine-exercise-spi-fragment-programs-end-to-end.patch` | Exercitar fragment programs, uniforms, samplers, shaders e image filters pela suíte de conformidade ponta a ponta. | |
+| `0058-feat-engine-add-the-runtime-spi-semantics-header.patch` | Adicionar a ABI C11 0.9 para nós de semântica, flags, textos, transformações, filhos e ações customizadas. | |
+| `0059-feat-engine-build-spi-semantics-updates.patch` | Converter nós e ações customizadas pela ABI com paridade ao `SemanticsUpdateBuilder` do `dart:ui`. | |
+| `0060-feat-engine-publish-spi-semantics-updates.patch` | Publicar atualizações de semântica no engine pela tabela do Runtime SPI e pela capacidade da ABI. | |
 
 O fluxo é:
 
