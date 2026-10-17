@@ -91,8 +91,26 @@ raise 'Linux SDK job must include the host and GTK variants' unless linux_sdk.fe
 raise 'Linux platform job must include Android and web' unless %w[android-debug-arm web-release].all? { |variant| linux_platform.fetch('env').fetch('TITAN_VARIANTS').include?(variant) }
 # Fuchsia is kept out of the CI matrix on purpose (user decision, 2026-10-17).
 raise 'Linux platform job must not build Fuchsia' if linux_platform.fetch('env').fetch('TITAN_VARIANTS').include?('fuchsia')
-raise 'macOS job must build Darwin and iOS' unless macos.fetch('steps').any? { |step| step['run']&.include?('--kind ios') } && macos.fetch('steps').any? { |step| step['run']&.include?('--kind framework') }
-raise 'Windows job must build Windows and Android' unless windows.fetch('steps').any? { |step| step['run']&.include?('-Kind host') } && windows.fetch('steps').any? { |step| step['run']&.include?('-Kind android') }
+linux_sdk_build = linux_sdk.fetch('steps').find { |step| step['run']&.include?('build-matrix.sh') }
+raise 'Linux SDK build must use the progress wrapper' unless linux_sdk_build&.fetch('run').to_s.include?('scripts/ci.sh with-progress')
+linux_platform_build = linux_platform.fetch('steps').find { |step| step['run']&.include?('build-matrix.sh') }
+raise 'Linux platform build must use the progress wrapper' unless linux_platform_build&.fetch('run').to_s.include?('scripts/ci.sh with-progress')
+
+macos_builds = macos.fetch('steps').select { |step| step['run']&.include?('build-engine-macos.sh') }
+raise 'macOS build steps are incomplete' unless macos_builds.length == 2
+raise 'macOS build must use the progress wrapper' unless macos_builds.all? do |step|
+  run = step.fetch('run')
+  run.include?('scripts/ci.sh with-progress') && run.include?('$TITAN_WORK_DIR/matrix')
+end
+raise 'macOS job must build Darwin and iOS' unless macos_builds.any? { |step| step['run'].include?('--kind ios') } && macos_builds.any? { |step| step['run'].include?('--kind framework') }
+
+windows_builds = windows.fetch('steps').select { |step| step['run']&.include?('build-engine-windows.ps1') }
+raise 'Windows build steps are incomplete' unless windows_builds.length == 2
+raise 'Windows build must use a background heartbeat' unless windows_builds.all? do |step|
+  run = step.fetch('run')
+  run.include?('Start-Job') && run.include?('TITAN_PROGRESS_SECONDS') && run.include?('TITAN_WORK_DIR')
+end
+raise 'Windows job must build Windows and Android' unless windows_builds.any? { |step| step['run'].include?("-Kind', 'host") } && windows_builds.any? { |step| step['run'].include?("-Kind', 'android") }
 raise 'sysroot cache must be keyed per defconfig' unless build.fetch('steps').any? { |step| step['uses'] == 'actions/cache@v4' && step.dig('with', 'key').to_s.include?('${{ matrix.defconfig }}') && step.dig('with', 'key').to_s.include?('hashFiles(format(') }
 raise 'download-artifact must merge matrix artifacts' unless release['steps'].any? do |step|
   step['uses'] == 'actions/download-artifact@v4' && step.dig('with', 'merge-multiple') == true

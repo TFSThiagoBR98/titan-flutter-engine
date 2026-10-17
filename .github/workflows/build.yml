@@ -134,7 +134,7 @@ jobs:
       - name: Build sysroots
         run: scripts/ci.sh sysroots
       - name: Build SDK and GTK variants
-        run: scripts/build-matrix.sh --parallel 1 --zip $TITAN_VARIANTS
+        run: scripts/ci.sh with-progress $TITAN_VARIANTS -- scripts/build-matrix.sh --parallel 1 --zip $TITAN_VARIANTS
       - name: Upload Linux SDK build logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -170,7 +170,7 @@ jobs:
       - name: Install dependencies
         run: scripts/ci.sh deps
       - name: Build platform artifacts
-        run: scripts/build-matrix.sh --parallel 1 --zip $TITAN_VARIANTS
+        run: scripts/ci.sh with-progress $TITAN_VARIANTS -- scripts/build-matrix.sh --parallel 1 --zip $TITAN_VARIANTS
       - name: Upload Linux platform build logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -201,22 +201,56 @@ jobs:
         run: brew install flock
       - name: Build macOS host, frameworks and snapshots
         run: |
+          progress_variants=()
           for mode in debug profile release; do
-            scripts/build-engine-macos.sh --kind host --mode "$mode" --cpu x64 --jobs 2
-            scripts/build-engine-macos.sh --kind host --mode "$mode" --cpu arm64 --jobs 2
-            scripts/build-engine-macos.sh --kind framework --mode "$mode" --cpu x64 --jobs 2
-            scripts/build-engine-macos.sh --kind gen-snapshot --mode "$mode" --cpu x64 --jobs 2
+            progress_variants+=("macos-host-$mode-x64" "macos-host-$mode-arm64")
+            progress_variants+=("macos-framework-$mode-x64" "macos-gen-snapshot-$mode-x64")
           done
+          scripts/ci.sh with-progress "${progress_variants[@]}" -- bash -c '
+            run_logged_build() {
+              local variant=$1
+              shift
+              local log="$TITAN_WORK_DIR/matrix/$variant.log"
+              mkdir -p "$(dirname "$log")"
+              "$@" >"$log" 2>&1
+            }
+
+            for mode in debug profile release; do
+              run_logged_build "macos-host-$mode-x64" scripts/build-engine-macos.sh --kind host --mode "$mode" --cpu x64 --jobs 2
+              run_logged_build "macos-host-$mode-arm64" scripts/build-engine-macos.sh --kind host --mode "$mode" --cpu arm64 --jobs 2
+              run_logged_build "macos-framework-$mode-x64" scripts/build-engine-macos.sh --kind framework --mode "$mode" --cpu x64 --jobs 2
+              run_logged_build "macos-gen-snapshot-$mode-x64" scripts/build-engine-macos.sh --kind gen-snapshot --mode "$mode" --cpu x64 --jobs 2
+            done
+          '
       - name: Build iOS and Android snapshots
         run: |
+          progress_variants=()
           for mode in debug profile release; do
-            scripts/build-engine-macos.sh --kind ios --mode "$mode" --jobs 2
+            progress_variants+=("macos-ios-$mode")
           done
           for mode in profile release; do
             for android_cpu in arm arm64 x64; do
-              scripts/build-engine-macos.sh --kind android --mode "$mode" --android-cpu "$android_cpu" --jobs 2
+              progress_variants+=("macos-android-$mode-$android_cpu")
             done
           done
+          scripts/ci.sh with-progress "${progress_variants[@]}" -- bash -c '
+            run_logged_build() {
+              local variant=$1
+              shift
+              local log="$TITAN_WORK_DIR/matrix/$variant.log"
+              mkdir -p "$(dirname "$log")"
+              "$@" >"$log" 2>&1
+            }
+
+            for mode in debug profile release; do
+              run_logged_build "macos-ios-$mode" scripts/build-engine-macos.sh --kind ios --mode "$mode" --jobs 2
+            done
+            for mode in profile release; do
+              for android_cpu in arm arm64 x64; do
+                run_logged_build "macos-android-$mode-$android_cpu" scripts/build-engine-macos.sh --kind android --mode "$mode" --android-cpu "$android_cpu" --jobs 2
+              done
+            done
+          '
       - name: Upload macOS build logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -242,17 +276,124 @@ jobs:
       - name: Build Windows host artifacts
         shell: pwsh
         run: |
-          foreach ($mode in @('debug', 'profile', 'release')) {
-            pwsh -NoProfile -File scripts/build-engine-windows.ps1 -Kind host -Mode $mode -Cpu x64 -Jobs 2
-            pwsh -NoProfile -File scripts/build-engine-windows.ps1 -Kind host -Mode $mode -Cpu arm64 -Jobs 2
+          $progressInterval = if ([string]::IsNullOrWhiteSpace($env:TITAN_PROGRESS_SECONDS)) { 60 } else { [int]$env:TITAN_PROGRESS_SECONDS }
+          $progressVariants = foreach ($mode in @('debug', 'profile', 'release')) {
+            "windows-host-$mode-x64"
+            "windows-host-$mode-arm64"
+          }
+          $matrixDirectory = Join-Path $env:TITAN_WORK_DIR 'matrix'
+          New-Item -ItemType Directory -Force -Path $matrixDirectory | Out-Null
+          $heartbeat = Start-Job -ScriptBlock {
+            param([string[]]$Variants, [string]$WorkDirectory, [int]$Interval)
+            while ($true) {
+              Start-Sleep -Seconds $Interval
+              foreach ($variant in $Variants) {
+                $log = Join-Path (Join-Path $WorkDirectory 'matrix') "$variant.log"
+                $status = if (Test-Path -LiteralPath $log) {
+                  Get-Content -LiteralPath $log -Tail 4096 -ErrorAction SilentlyContinue |
+                    Select-String -Pattern '^\[[0-9]+/[0-9]+\]' |
+                    Select-Object -Last 1
+                }
+                if ($null -eq $status) {
+                  "$variant`: preparing (checkout, gclient, GN)"
+                } else {
+                  "$variant`: $($status.Line)"
+                }
+              }
+            }
+          } -ArgumentList (,$progressVariants), $env:TITAN_WORK_DIR, $progressInterval
+          function Invoke-LoggedBuild {
+            param([string]$Variant, [string[]]$Arguments)
+            $log = Join-Path $matrixDirectory "$Variant.log"
+            $buildJob = Start-Job -ScriptBlock {
+              param([string]$ScriptPath, [string[]]$ScriptArguments, [string]$LogPath)
+              & pwsh -NoProfile -File $ScriptPath @ScriptArguments *> $LogPath
+              [int]$LASTEXITCODE
+            } -ArgumentList 'scripts/build-engine-windows.ps1', (,$Arguments), $log
+            try {
+              do {
+                Receive-Job -Job $heartbeat | ForEach-Object { Write-Host $_ }
+                Start-Sleep -Seconds 1
+              } while ((Get-Job -Id $buildJob.Id).State -in @('NotStarted', 'Running'))
+              $exitCode = [int](Receive-Job -Job $buildJob -Wait | Select-Object -Last 1)
+            } finally {
+              Remove-Job -Job $buildJob -Force -ErrorAction SilentlyContinue
+            }
+            if ($exitCode -ne 0) {
+              throw "Windows build failed for $Variant with exit code $exitCode"
+            }
+          }
+          try {
+            foreach ($mode in @('debug', 'profile', 'release')) {
+              Invoke-LoggedBuild "windows-host-$mode-x64" @('-Kind', 'host', '-Mode', $mode, '-Cpu', 'x64', '-Jobs', '2')
+              Invoke-LoggedBuild "windows-host-$mode-arm64" @('-Kind', 'host', '-Mode', $mode, '-Cpu', 'arm64', '-Jobs', '2')
+            }
+          } finally {
+            Stop-Job -Job $heartbeat -ErrorAction SilentlyContinue
+            Receive-Job -Job $heartbeat -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+            Remove-Job -Job $heartbeat -Force -ErrorAction SilentlyContinue
           }
       - name: Build Android snapshots
         shell: pwsh
         run: |
-          foreach ($mode in @('profile', 'release')) {
+          $progressInterval = if ([string]::IsNullOrWhiteSpace($env:TITAN_PROGRESS_SECONDS)) { 60 } else { [int]$env:TITAN_PROGRESS_SECONDS }
+          $progressVariants = foreach ($mode in @('profile', 'release')) {
             foreach ($androidCpu in @('arm', 'arm64', 'x64')) {
-              pwsh -NoProfile -File scripts/build-engine-windows.ps1 -Kind android -Mode $mode -AndroidCpu $androidCpu -Jobs 2
+              "windows-android-$mode-$androidCpu"
             }
+          }
+          $matrixDirectory = Join-Path $env:TITAN_WORK_DIR 'matrix'
+          New-Item -ItemType Directory -Force -Path $matrixDirectory | Out-Null
+          $heartbeat = Start-Job -ScriptBlock {
+            param([string[]]$Variants, [string]$WorkDirectory, [int]$Interval)
+            while ($true) {
+              Start-Sleep -Seconds $Interval
+              foreach ($variant in $Variants) {
+                $log = Join-Path (Join-Path $WorkDirectory 'matrix') "$variant.log"
+                $status = if (Test-Path -LiteralPath $log) {
+                  Get-Content -LiteralPath $log -Tail 4096 -ErrorAction SilentlyContinue |
+                    Select-String -Pattern '^\[[0-9]+/[0-9]+\]' |
+                    Select-Object -Last 1
+                }
+                if ($null -eq $status) {
+                  "$variant`: preparing (checkout, gclient, GN)"
+                } else {
+                  "$variant`: $($status.Line)"
+                }
+              }
+            }
+          } -ArgumentList (,$progressVariants), $env:TITAN_WORK_DIR, $progressInterval
+          function Invoke-LoggedBuild {
+            param([string]$Variant, [string[]]$Arguments)
+            $log = Join-Path $matrixDirectory "$Variant.log"
+            $buildJob = Start-Job -ScriptBlock {
+              param([string]$ScriptPath, [string[]]$ScriptArguments, [string]$LogPath)
+              & pwsh -NoProfile -File $ScriptPath @ScriptArguments *> $LogPath
+              [int]$LASTEXITCODE
+            } -ArgumentList 'scripts/build-engine-windows.ps1', (,$Arguments), $log
+            try {
+              do {
+                Receive-Job -Job $heartbeat | ForEach-Object { Write-Host $_ }
+                Start-Sleep -Seconds 1
+              } while ((Get-Job -Id $buildJob.Id).State -in @('NotStarted', 'Running'))
+              $exitCode = [int](Receive-Job -Job $buildJob -Wait | Select-Object -Last 1)
+            } finally {
+              Remove-Job -Job $buildJob -Force -ErrorAction SilentlyContinue
+            }
+            if ($exitCode -ne 0) {
+              throw "Windows build failed for $Variant with exit code $exitCode"
+            }
+          }
+          try {
+            foreach ($mode in @('profile', 'release')) {
+              foreach ($androidCpu in @('arm', 'arm64', 'x64')) {
+                Invoke-LoggedBuild "windows-android-$mode-$androidCpu" @('-Kind', 'android', '-Mode', $mode, '-AndroidCpu', $androidCpu, '-Jobs', '2')
+              }
+            }
+          } finally {
+            Stop-Job -Job $heartbeat -ErrorAction SilentlyContinue
+            Receive-Job -Job $heartbeat -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+            Remove-Job -Job $heartbeat -Force -ErrorAction SilentlyContinue
           }
       - name: Upload Windows build logs
         if: always()

@@ -118,16 +118,32 @@ report_build_progress() {
   done
 }
 
+run_with_progress() {
+  local -a variants=()
+  while (($# > 0)) && [[ "$1" != -- ]]; do
+    variants+=("$1")
+    shift
+  done
+  (($# > 0)) || die "with-progress requires -- before the command"
+  shift
+  ((${#variants[@]} > 0 && $# > 0)) || die "with-progress requires variants and a command"
+
+  report_build_progress "${variants[@]}" &
+  local reporter=$!
+  local status=0
+  "$@" || status=$?
+  kill "$reporter" 2>/dev/null || true
+  wait "$reporter" 2>/dev/null || true
+  return "$status"
+}
+
 run_build() {
   local variants_text=${TITAN_VARIANTS:-$linux_all_variants}
   local parallel=${TITAN_PARALLEL:-3}
   read -r -a variants <<<"$variants_text"
   local variant status=0
-  report_build_progress "${variants[@]}" &
-  local reporter=$!
-  "$scripts_root/build-matrix.sh" --parallel "$parallel" --zip "${variants[@]}" || status=$?
-  kill "$reporter" 2>/dev/null || true
-  wait "$reporter" 2>/dev/null || true
+  run_with_progress "${variants[@]}" -- \
+    "$scripts_root/build-matrix.sh" --parallel "$parallel" --zip "${variants[@]}" || status=$?
   if ((status != 0)); then
     # The per-variant logs live on the runner's disk; show the end of each one so
     # the failure is visible in the job output.
@@ -290,7 +306,12 @@ case "$stage" in
     (($# == 2)) || die "sysroot requires exactly one defconfig"
     run_sysroot "$2"
     ;;
+  with-progress)
+    (($# >= 3)) || die "with-progress requires variants and a command"
+    shift
+    run_with_progress "$@"
+    ;;
   *)
-    die "usage: scripts/ci.sh deps|free-disk|sysroot|sysroots|build|probe|package|assemble|release|all"
+    die "usage: scripts/ci.sh deps|free-disk|sysroot|sysroots|build|probe|package|assemble|release|all|with-progress"
     ;;
 esac

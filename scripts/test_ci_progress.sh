@@ -42,4 +42,22 @@ grep -qE '^x64-debug: [123]00/1000 \([123]0%\)' "$output" || {
   cat "$output" >&2
   exit 1
 }
+
+generic_output="$temporary_directory/generic-output.log"
+TITAN_WORK_DIR="$temporary_directory/generic-work" \
+TITAN_BUNDLE_DIR="$temporary_directory/bundles" \
+TITAN_PROGRESS_SECONDS=1 \
+  bash "$ci_repository/scripts/ci.sh" with-progress x64-debug -- \
+    bash "$ci_repository/scripts/build-matrix.sh" > "$generic_output"
+
+grep -q '^x64-debug: preparing (checkout, gclient, GN)$' "$generic_output" || {
+  printf 'generic progress mode did not report preparation\n' >&2
+  cat "$generic_output" >&2
+  exit 1
+}
+grep -qE '^x64-debug: [123]00/1000 \([123]0%\)' "$generic_output" || {
+  printf 'generic progress mode did not report Ninja progress\n' >&2
+  cat "$generic_output" >&2
+  exit 1
+}
 printf 'test_ci_progress.sh: ok\n'
