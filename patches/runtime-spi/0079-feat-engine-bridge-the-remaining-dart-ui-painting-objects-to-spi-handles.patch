@@ -1,0 +1,640 @@
+# Why: Keep temporary SPI handles backed by the existing DisplayList painting
+# values so canvas operations preserve representation and ownership until the
+# remaining migrations land.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 291eb922efa..ed4afa9d529 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -236,6 +236,7 @@ if (enable_unittests) {
+       "scene/spi_scene_layers_parity_unittests.cc",
+       "scene/spi_retained_layers_unittests.cc",
+       "scene/spi_scene_trace_unittests.cc",
++      "internal/spi_internal_bridges_unittests.cc",
+       "effects/spi_effects_parity_unittests.cc",
+       "effects/spi_fragment_unittests.cc",
+       "effects/spi_vertices_unittests.cc",
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_color_filter.cc b/engine/src/flutter/runtime_spi/effects/spi_color_filter.cc
+index 68e23d5fce7..7f4add093fc 100644
+--- a/engine/src/flutter/runtime_spi/effects/spi_color_filter.cc
++++ b/engine/src/flutter/runtime_spi/effects/spi_color_filter.cc
+@@ -121,6 +121,15 @@ FlutterSpiResult SpiColorFilterRelease(FlutterSpiColorFilter* filter) {
+                                                       : kFlutterSpiInvalidHandle;
+ }
+ 
++FlutterSpiResult SpiColorFilterCreate(
++    std::shared_ptr<const DlColorFilter> filter,
++    FlutterSpiColorFilter** out_filter) {
++  if (out_filter == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return StoreColorFilter(std::move(filter), out_filter);
++}
++
+ std::shared_ptr<const DlColorFilter> SpiColorFilterGet(
+     FlutterSpiColorFilter* filter) {
+   const auto filter_value = FindColorFilter(filter);
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_color_filter.h b/engine/src/flutter/runtime_spi/effects/spi_color_filter.h
+index d8983a87f22..35a59f92047 100644
+--- a/engine/src/flutter/runtime_spi/effects/spi_color_filter.h
++++ b/engine/src/flutter/runtime_spi/effects/spi_color_filter.h
+@@ -27,6 +27,9 @@ FlutterSpiResult SpiColorFilterSrgbToLinearGamma(
+     FlutterSpiEngine* engine,
+     FlutterSpiColorFilter** out_filter);
+ FlutterSpiResult SpiColorFilterRelease(FlutterSpiColorFilter* filter);
++FlutterSpiResult SpiColorFilterCreate(
++    std::shared_ptr<const DlColorFilter> filter,
++    FlutterSpiColorFilter** out_filter);
+ std::shared_ptr<const DlColorFilter> SpiColorFilterGet(
+     FlutterSpiColorFilter* filter);
+ 
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_vertices.cc b/engine/src/flutter/runtime_spi/effects/spi_vertices.cc
+index a4ef00f50c7..1a8233f5edb 100644
+--- a/engine/src/flutter/runtime_spi/effects/spi_vertices.cc
++++ b/engine/src/flutter/runtime_spi/effects/spi_vertices.cc
+@@ -158,6 +158,13 @@ FlutterSpiResult SpiVerticesCreate(FlutterSpiEngine* engine,
+   return kFlutterSpiOk;
+ }
+ 
++FlutterSpiVertices* SpiVerticesWrap(std::shared_ptr<DlVertices> vertices) {
++  if (vertices == nullptr) {
++    return nullptr;
++  }
++  return MakeHandle<FlutterSpiVertices>(Vertices().Insert(std::move(vertices)));
++}
++
+ FlutterSpiResult SpiVerticesRelease(FlutterSpiVertices* vertices) {
+   return Vertices().Release(HandleValue(vertices)) ? kFlutterSpiOk
+                                                    : kFlutterSpiInvalidHandle;
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_vertices.h b/engine/src/flutter/runtime_spi/effects/spi_vertices.h
+index 48699e604e8..8b7ca835df5 100644
+--- a/engine/src/flutter/runtime_spi/effects/spi_vertices.h
++++ b/engine/src/flutter/runtime_spi/effects/spi_vertices.h
+@@ -5,6 +5,9 @@
+ #ifndef FLUTTER_RUNTIME_SPI_EFFECTS_SPI_VERTICES_H_
+ #define FLUTTER_RUNTIME_SPI_EFFECTS_SPI_VERTICES_H_
+ 
++#include <memory>
++
++#include "flutter/display_list/dl_vertices.h"
+ #include "flutter/runtime_spi/include/flutter_paint_effects.h"
+ 
+ namespace flutter {
+@@ -19,6 +22,7 @@ FlutterSpiResult SpiVerticesCreate(
+     const uint16_t* indices,
+     size_t index_count,
+     FlutterSpiVertices** out_vertices);
++FlutterSpiVertices* SpiVerticesWrap(std::shared_ptr<DlVertices> vertices);
+ FlutterSpiResult SpiVerticesRelease(FlutterSpiVertices* vertices);
+ FlutterSpiResult CanvasDrawVertices(FlutterSpiPictureRecorder* recorder,
+                                     FlutterSpiVertices* vertices,
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_scene.h b/engine/src/flutter/runtime_spi/include/flutter_scene.h
+index 0951798e17b..78be0c5213f 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_scene.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_scene.h
+@@ -178,6 +178,7 @@ typedef struct {
+ struct FlutterSpiSceneApi {
+   size_t struct_size;
+ 
++  // The engine owns the object, or NULL for an object without an engine.
+   FlutterSpiResult (*path_create)(FlutterSpiEngine* engine,
+                                   FlutterSpiPath** out_path);
+   FlutterSpiResult (*path_set_fill_type)(FlutterSpiPath* path,
+@@ -212,6 +213,7 @@ struct FlutterSpiSceneApi {
+   FlutterSpiResult (*path_retain)(FlutterSpiPath* path);
+   FlutterSpiResult (*path_release)(FlutterSpiPath* path);
+ 
++  // The engine owns the object, or NULL for an object without an engine.
+   FlutterSpiResult (*recorder_create)(FlutterSpiEngine* engine,
+                                       const FlutterSpiRect* cull_rect,
+                                       FlutterSpiPictureRecorder** out_recorder);
+@@ -303,6 +305,7 @@ struct FlutterSpiSceneApi {
+   FlutterSpiResult (*picture_retain)(FlutterSpiPicture* picture);
+   FlutterSpiResult (*picture_release)(FlutterSpiPicture* picture);
+ 
++  // The engine owns the object, or NULL for an object without an engine.
+   FlutterSpiResult (*scene_builder_create)(FlutterSpiEngine* engine,
+                                            FlutterSpiSceneBuilder** out_builder);
+   FlutterSpiResult (*scene_push_transform)(FlutterSpiSceneBuilder* builder,
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
+index 4018f546c0d..653f70e7102 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
+@@ -10,11 +10,69 @@
+ #include "flutter/flow/layers/layer_tree.h"
+ #include "flutter/lib/ui/text/font_collection.h"
+ #include "flutter/runtime/runtime_delegate.h"
++#include "flutter/runtime_spi/effects/spi_color_filter.h"
++#include "flutter/runtime_spi/effects/spi_image_filter.h"
++#include "flutter/runtime_spi/effects/spi_shader.h"
++#include "flutter/runtime_spi/effects/spi_vertices.h"
++#include "flutter/runtime_spi/image/spi_image.h"
++#include "flutter/runtime_spi/scene/spi_canvas.h"
+ #include "flutter/runtime_spi/spi_runtime_backend.h"
+ #include "flutter/runtime_spi/spi_scene.h"
+ 
+ namespace flutter {
+ 
++FlutterSpiShader* SpiShaderFromColorSource(
++    std::shared_ptr<DlColorSource> source) {
++  FlutterSpiShader* handle = nullptr;
++  if (SpiShaderCreate(std::move(source), &handle) != kFlutterSpiOk) {
++    return nullptr;
++  }
++  return handle;
++}
++
++FlutterSpiColorFilter* SpiColorFilterFromDl(
++    std::shared_ptr<const DlColorFilter> filter) {
++  FlutterSpiColorFilter* handle = nullptr;
++  if (SpiColorFilterCreate(std::move(filter), &handle) != kFlutterSpiOk) {
++    return nullptr;
++  }
++  return handle;
++}
++
++FlutterSpiImageFilter* SpiImageFilterFromDl(
++    std::shared_ptr<DlImageFilter> filter) {
++  FlutterSpiImageFilter* handle = nullptr;
++  if (SpiImageFilterCreate(std::move(filter), &handle) != kFlutterSpiOk) {
++    return nullptr;
++  }
++  return handle;
++}
++
++FlutterSpiPath* SpiPathFromDlPath(const DlPath& path) {
++  return SpiPathWrap(path);
++}
++
++FlutterSpiImage* SpiImageFromDlImage(sk_sp<DlImage> image) {
++  FlutterSpiImage* handle = nullptr;
++  if (SpiImageWrap(std::move(image), &handle) != kFlutterSpiOk) {
++    return nullptr;
++  }
++  return handle;
++}
++
++FlutterSpiVertices* SpiVerticesFromDl(std::shared_ptr<DlVertices> vertices) {
++  return SpiVerticesWrap(std::move(vertices));
++}
++
++const DisplayList* SpiPictureDisplayList(FlutterSpiPicture* picture) {
++  return SpiPictureDisplayListForTesting(picture);
++}
++
++sk_sp<DisplayList> SpiPictureSharedDisplayList(FlutterSpiPicture* picture) {
++  const DisplayList* display_list = SpiPictureDisplayList(picture);
++  return display_list == nullptr ? nullptr : sk_ref_sp(display_list);
++}
++
+ FlutterSpiResult SpiSceneFromLayerTree(std::unique_ptr<LayerTree> layer_tree,
+                                        FlutterSpiScene** out) {
+   if (out == nullptr || layer_tree == nullptr) {
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+index 3c845fd6450..2dcd5e97040 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+@@ -7,6 +7,13 @@
+ 
+ #include <memory>
+ 
++#include "flutter/display_list/effects/dl_color_filter.h"
++#include "flutter/display_list/effects/dl_color_source.h"
++#include "flutter/display_list/effects/dl_image_filter.h"
++#include "flutter/display_list/geometry/dl_path.h"
++#include "flutter/display_list/image/dl_image.h"
++#include "flutter/display_list/display_list.h"
++#include "flutter/display_list/dl_vertices.h"
+ #include "flutter/lib/ui/semantics/custom_accessibility_action.h"
+ #include "flutter/lib/ui/semantics/semantics_node.h"
+ #include "flutter/runtime_spi/include/flutter_runtime_spi.h"
+@@ -18,6 +25,31 @@ class FontCollection;
+ class LayerTree;
+ class PlatformMessageHandler;
+ 
++// Temporary bridge until S4g moves color-source creation behind dart:ui SPI.
++FlutterSpiShader* SpiShaderFromColorSource(std::shared_ptr<DlColorSource>);
++
++// Temporary bridge until S4g moves color-filter creation behind dart:ui SPI.
++FlutterSpiColorFilter* SpiColorFilterFromDl(
++    std::shared_ptr<const DlColorFilter>);
++
++// Temporary bridge until S4g moves image-filter creation behind dart:ui SPI.
++FlutterSpiImageFilter* SpiImageFilterFromDl(std::shared_ptr<DlImageFilter>);
++
++// Temporary bridge until S4d-2 moves path creation behind dart:ui SPI.
++FlutterSpiPath* SpiPathFromDlPath(const DlPath&);
++
++// Temporary bridge until S4g moves image creation behind dart:ui SPI.
++FlutterSpiImage* SpiImageFromDlImage(sk_sp<DlImage>);
++
++// Temporary bridge until S4g moves vertices creation behind dart:ui SPI.
++FlutterSpiVertices* SpiVerticesFromDl(std::shared_ptr<DlVertices>);
++
++// Temporary bridge until S4e moves picture ownership behind dart:ui SPI.
++const DisplayList* SpiPictureDisplayList(FlutterSpiPicture*);
++
++// Temporary bridge until S4e moves picture ownership behind dart:ui SPI.
++sk_sp<DisplayList> SpiPictureSharedDisplayList(FlutterSpiPicture*);
++
+ // Temporary bridge until S4d moves LayerTree conversion behind dart:ui SPI.
+ FlutterSpiResult SpiSceneFromLayerTree(std::unique_ptr<LayerTree> layer_tree,
+                                        FlutterSpiScene** out);
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges_unittests.cc b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges_unittests.cc
+new file mode 100644
+index 00000000000..ab16e49cac0
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges_unittests.cc
+@@ -0,0 +1,206 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
++
++#include <array>
++#include <memory>
++
++#include "flutter/display_list/dl_builder.h"
++#include "flutter/display_list/effects/dl_color_source.h"
++#include "flutter/display_list/image/dl_image_skia.h"
++#include "flutter/runtime_spi/effects/spi_color_filter.h"
++#include "flutter/runtime_spi/effects/spi_image_filter.h"
++#include "flutter/runtime_spi/effects/spi_shader.h"
++#include "flutter/runtime_spi/effects/spi_vertices.h"
++#include "flutter/runtime_spi/image/spi_image_canvas.h"
++#include "flutter/runtime_spi/scene/spi_canvas.h"
++#include "flutter/runtime_spi/scene/spi_paint.h"
++#include "flutter/runtime_spi/testing/c_test_runtime.h"
++#include "flutter/testing/testing.h"
++#include "third_party/skia/include/core/SkBitmap.h"
++#include "third_party/skia/include/core/SkImage.h"
++
++namespace flutter::testing {
++namespace {
++
++constexpr FlutterSpiRect kRect = {
++    .left = 1.0f, .top = 2.0f, .right = 30.0f, .bottom = 40.0f};
++constexpr FlutterSpiPaint kPaint = {
++    .struct_size = sizeof(FlutterSpiPaint),
++    .color = {.red = 0.1f,
++              .green = 0.2f,
++              .blue = 0.3f,
++              .alpha = 0.4f,
++              .color_space = kFlutterSpiColorSpaceSRGB},
++    .blend_mode = kFlutterSpiBlendModeSrcOver,
++    .style = kFlutterSpiPaintStyleFill,
++    .stroke_width = 1.0f,
++    .stroke_cap = kFlutterSpiStrokeCapButt,
++    .stroke_join = kFlutterSpiStrokeJoinMiter,
++    .stroke_miter = 4.0f,
++    .anti_alias = true,
++    .invert_colors = false,
++};
++
++class SpiInternalBridgesTest : public ::testing::Test {
++ protected:
++  const FlutterSpiSceneApi* api() const { return SpiSceneApi(); }
++
++  sk_sp<DisplayList> FinishPicture(FlutterSpiPictureRecorder* recorder) {
++    FlutterSpiPicture* picture = nullptr;
++    EXPECT_EQ(api()->recorder_finish(recorder, &picture), kFlutterSpiOk);
++    const DisplayList* display_list =
++        SpiPictureDisplayListForTesting(picture);
++    EXPECT_NE(display_list, nullptr);
++    sk_sp<DisplayList> result = sk_ref_sp(display_list);
++    EXPECT_EQ(api()->picture_release(picture), kFlutterSpiOk);
++    return result;
++  }
++
++  FlutterSpiPictureRecorder* CreateRecorder() {
++    FlutterSpiPictureRecorder* recorder = nullptr;
++    EXPECT_EQ(api()->recorder_create(nullptr, &kRect, &recorder),
++              kFlutterSpiOk);
++    return recorder;
++  }
++};
++
++TEST_F(SpiInternalBridgesTest, ShaderHandleMatchesDirectColorSource) {
++  const auto shader = DlColorSource::MakeLinear(
++      {1.0f, 2.0f}, {30.0f, 40.0f}, 2,
++      std::array<DlColor, 2>{DlColor::kRed(), DlColor::kBlue()}.data(),
++      nullptr, DlTileMode::kClamp, nullptr);
++  FlutterSpiShader* shader_handle = SpiShaderFromColorSource(shader);
++  ASSERT_NE(shader_handle, nullptr);
++
++  FlutterSpiPaint paint = kPaint;
++  paint.shader = shader_handle;
++  FlutterSpiPictureRecorder* recorder = CreateRecorder();
++  ASSERT_EQ(api()->canvas_draw_rect(recorder, &kRect, &paint), kFlutterSpiOk);
++  const auto actual = FinishPicture(recorder);
++
++  DlPaint expected_paint = ToDlPaint(kPaint);
++  expected_paint.setColorSource(shader);
++  DisplayListBuilder expected_builder(DlRect::MakeLTRB(1, 2, 30, 40));
++  expected_builder.DrawRect(DlRect::MakeLTRB(1, 2, 30, 40), expected_paint);
++  EXPECT_TRUE(actual->Equals(expected_builder.Build()));
++}
++
++TEST_F(SpiInternalBridgesTest, ColorFilterHandleMatchesDirectColorFilter) {
++  const auto filter = DlColorFilter::MakeSrgbToLinearGamma();
++  FlutterSpiColorFilter* filter_handle = SpiColorFilterFromDl(filter);
++  ASSERT_NE(filter_handle, nullptr);
++
++  FlutterSpiPaint paint = kPaint;
++  paint.color_filter = filter_handle;
++  FlutterSpiPictureRecorder* recorder = CreateRecorder();
++  ASSERT_EQ(api()->canvas_draw_rect(recorder, &kRect, &paint), kFlutterSpiOk);
++  const auto actual = FinishPicture(recorder);
++
++  DlPaint expected_paint = ToDlPaint(kPaint);
++  expected_paint.setColorFilter(filter);
++  DisplayListBuilder expected_builder(DlRect::MakeLTRB(1, 2, 30, 40));
++  expected_builder.DrawRect(DlRect::MakeLTRB(1, 2, 30, 40), expected_paint);
++  EXPECT_TRUE(actual->Equals(expected_builder.Build()));
++}
++
++TEST_F(SpiInternalBridgesTest, ImageFilterHandleMatchesDirectImageFilter) {
++  const auto filter = DlImageFilter::MakeBlur(2.0f, 3.0f, DlTileMode::kDecal);
++  FlutterSpiImageFilter* filter_handle = SpiImageFilterFromDl(filter);
++  ASSERT_NE(filter_handle, nullptr);
++
++  FlutterSpiPaint paint = kPaint;
++  paint.image_filter = filter_handle;
++  FlutterSpiPictureRecorder* recorder = CreateRecorder();
++  ASSERT_EQ(api()->canvas_draw_rect(recorder, &kRect, &paint), kFlutterSpiOk);
++  const auto actual = FinishPicture(recorder);
++
++  DlPaint expected_paint = ToDlPaint(kPaint);
++  expected_paint.setImageFilter(filter);
++  DisplayListBuilder expected_builder(DlRect::MakeLTRB(1, 2, 30, 40));
++  expected_builder.DrawRect(DlRect::MakeLTRB(1, 2, 30, 40), expected_paint);
++  EXPECT_TRUE(actual->Equals(expected_builder.Build()));
++}
++
++TEST_F(SpiInternalBridgesTest, PathHandleMatchesDirectPath) {
++  const DlPath path = DlPath::MakeRoundRect(
++      DlRoundRect::MakeRectXY(DlRect::MakeLTRB(1, 2, 30, 40), 4.0f, 5.0f));
++  FlutterSpiPath* path_handle = SpiPathFromDlPath(path);
++  ASSERT_NE(path_handle, nullptr);
++
++  FlutterSpiPictureRecorder* recorder = CreateRecorder();
++  ASSERT_EQ(api()->canvas_draw_path(recorder, path_handle, &kPaint),
++            kFlutterSpiOk);
++  const auto actual = FinishPicture(recorder);
++
++  DisplayListBuilder expected_builder(DlRect::MakeLTRB(1, 2, 30, 40));
++  expected_builder.DrawPath(path, ToDlPaint(kPaint));
++  EXPECT_TRUE(actual->Equals(expected_builder.Build()));
++}
++
++sk_sp<DlImage> MakeTestImage() {
++  SkBitmap bitmap;
++  if (!bitmap.tryAllocPixels(SkImageInfo::MakeN32Premul(4, 3))) {
++    return nullptr;
++  }
++  bitmap.eraseColor(SK_ColorBLUE);
++  bitmap.setImmutable();
++  return DlImageSkia::Make(SkImages::RasterFromBitmap(bitmap));
++}
++
++TEST_F(SpiInternalBridgesTest, ImageHandleMatchesDirectImage) {
++  const sk_sp<DlImage> image = MakeTestImage();
++  ASSERT_NE(image, nullptr);
++  FlutterSpiImage* image_handle = SpiImageFromDlImage(image);
++  ASSERT_NE(image_handle, nullptr);
++
++  FlutterSpiPictureRecorder* recorder = CreateRecorder();
++  ASSERT_EQ(SpiCanvasDrawImage(recorder, image_handle, {10.0f, 12.0f},
++                               kFlutterSpiFilterQualityLow, nullptr),
++            kFlutterSpiOk);
++  const auto actual = FinishPicture(recorder);
++
++  DisplayListBuilder expected_builder(DlRect::MakeLTRB(1, 2, 30, 40));
++  expected_builder.DrawImage(image, {10.0f, 12.0f}, DlImageSampling::kLinear,
++                             nullptr);
++  EXPECT_TRUE(actual->Equals(expected_builder.Build()));
++}
++
++TEST_F(SpiInternalBridgesTest, VerticesHandleMatchesDirectVertices) {
++  const std::array<DlPoint, 3> positions = {{{1.0f, 2.0f},
++                                             {30.0f, 2.0f},
++                                             {1.0f, 40.0f}}};
++  const auto vertices = DlVertices::Make(DlVertexMode::kTriangles,
++                                         positions.size(), positions.data(),
++                                         nullptr, nullptr);
++  FlutterSpiVertices* vertices_handle = SpiVerticesFromDl(vertices);
++  ASSERT_NE(vertices_handle, nullptr);
++
++  FlutterSpiPictureRecorder* recorder = CreateRecorder();
++  ASSERT_EQ(CanvasDrawVertices(recorder, vertices_handle,
++                               kFlutterSpiBlendModeSrcOver, &kPaint),
++            kFlutterSpiOk);
++  const auto actual = FinishPicture(recorder);
++
++  DisplayListBuilder expected_builder(DlRect::MakeLTRB(1, 2, 30, 40));
++  expected_builder.DrawVertices(vertices, DlBlendMode::kSrcOver,
++                                ToDlPaint(kPaint));
++  EXPECT_TRUE(actual->Equals(expected_builder.Build()));
++}
++
++TEST_F(SpiInternalBridgesTest, PictureBridgeReturnsTheOriginalDisplayList) {
++  FlutterSpiPictureRecorder* recorder = CreateRecorder();
++  ASSERT_EQ(api()->canvas_draw_rect(recorder, &kRect, &kPaint), kFlutterSpiOk);
++  FlutterSpiPicture* picture = nullptr;
++  ASSERT_EQ(api()->recorder_finish(recorder, &picture), kFlutterSpiOk);
++
++  const DisplayList* display_list = SpiPictureDisplayList(picture);
++  ASSERT_NE(display_list, nullptr);
++  EXPECT_TRUE(display_list->Equals(*SpiPictureSharedDisplayList(picture)));
++  EXPECT_EQ(api()->picture_release(picture), kFlutterSpiOk);
++}
++
++}  // namespace
++}  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+index b94d4a185a3..fcd999c5db1 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+@@ -149,9 +149,9 @@ FlutterSpiResult ConvertPaint(const FlutterSpiPaint* paint,
+   return TryToDlPaint(*paint, tile_mode, out_paint);
+ }
+ 
+-FlutterSpiResult PathCreate(FlutterSpiEngine* engine,
++FlutterSpiResult PathCreate(FlutterSpiEngine* /*engine*/,
+                             FlutterSpiPath** out_path) {
+-  if (engine == nullptr || out_path == nullptr) {
++  if (out_path == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+   const uintptr_t handle = Paths().Insert(std::make_shared<SpiPath>());
+@@ -318,10 +318,10 @@ FlutterSpiResult PathRelease(FlutterSpiPath* path) {
+   return ToResult(Paths().Release(HandleValue(path)));
+ }
+ 
+-FlutterSpiResult RecorderCreate(FlutterSpiEngine* engine,
++FlutterSpiResult RecorderCreate(FlutterSpiEngine* /*engine*/,
+                                 const FlutterSpiRect* cull_rect,
+                                 FlutterSpiPictureRecorder** out_recorder) {
+-  if (engine == nullptr || out_recorder == nullptr) {
++  if (out_recorder == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+   DlRect dl_cull_rect = DisplayListBuilder::kMaxCullRect;
+@@ -1018,6 +1018,11 @@ const FlutterSpiSceneApi kSceneApi = {
+ 
+ }  // namespace
+ 
++FlutterSpiPath* SpiPathWrap(const DlPath& path) {
++  const uintptr_t handle = Paths().Insert(std::make_shared<SpiPath>(path));
++  return MakeHandle<FlutterSpiPath>(handle);
++}
++
+ FlutterSpiResult CanvasDrawParagraph(FlutterSpiPictureRecorder* recorder,
+                                      FlutterSpiParagraph* paragraph,
+                                      float x,
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas.h b/engine/src/flutter/runtime_spi/scene/spi_canvas.h
+index 750056593fb..fb890c5fd7c 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas.h
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas.h
+@@ -24,6 +24,7 @@ const DisplayList* SpiPictureDisplayListForTesting(FlutterSpiPicture* picture);
+ DisplayListBuilder* SpiPictureRecorderBuilder(
+     FlutterSpiPictureRecorder* recorder);
+ const DlPath* SpiPathForTesting(FlutterSpiPath* path);
++FlutterSpiPath* SpiPathWrap(const DlPath& path);
+ 
+ }  // namespace flutter
+ 
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas_parity_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_canvas_parity_unittests.cc
+index d91587cf5df..78cd7e044d3 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas_parity_unittests.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas_parity_unittests.cc
+@@ -142,6 +142,25 @@ void ExpectPaintOperation(const DisplayList* display_list,
+   EXPECT_EQ(probe.save_layer_count, expected_save_layer_count);
+ }
+ 
++TEST_F(SpiCanvasTest, ObjectsCanBeCreatedWithoutAnEngine) {
++  FlutterSpiPath* path = nullptr;
++  ASSERT_EQ(api()->path_create(nullptr, &path), kFlutterSpiOk);
++  ASSERT_EQ(api()->path_release(path), kFlutterSpiOk);
++
++  FlutterSpiPictureRecorder* recorder = nullptr;
++  ASSERT_EQ(api()->recorder_create(nullptr, nullptr, &recorder),
++            kFlutterSpiOk);
++  ASSERT_EQ(api()->canvas_draw_rect(recorder, &kRect, &kPaint), kFlutterSpiOk);
++  FlutterSpiPicture* picture = nullptr;
++  ASSERT_EQ(api()->recorder_finish(recorder, &picture), kFlutterSpiOk);
++  ASSERT_NE(SpiPictureDisplayListForTesting(picture), nullptr);
++  ASSERT_EQ(api()->picture_release(picture), kFlutterSpiOk);
++
++  FlutterSpiSceneBuilder* builder = nullptr;
++  ASSERT_EQ(api()->scene_builder_create(nullptr, &builder), kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_builder_release(builder), kFlutterSpiOk);
++}
++
+ TEST_F(SpiCanvasTest, AbiSequenceMatchesDisplayListBuilder) {
+   FlutterSpiPictureRecorder* recorder = nullptr;
+   ASSERT_EQ(api()->recorder_create(engine(), &kRect, &recorder), kFlutterSpiOk);
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_path.cc b/engine/src/flutter/runtime_spi/scene/spi_path.cc
+index 81756cd24e0..58318aab250 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_path.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_path.cc
+@@ -7,50 +7,63 @@
+ namespace flutter {
+ 
+ void SpiPath::SetFillType(DlPathFillType fill_type) {
++  has_direct_path_ = false;
+   builder_.SetFillType(fill_type);
+ }
+ 
+ void SpiPath::MoveTo(DlPoint point) {
++  has_direct_path_ = false;
+   builder_.MoveTo(point);
+ }
+ 
+ void SpiPath::LineTo(DlPoint point) {
++  has_direct_path_ = false;
+   builder_.LineTo(point);
+ }
+ 
+ void SpiPath::QuadraticCurveTo(DlPoint control_point, DlPoint point) {
++  has_direct_path_ = false;
+   builder_.QuadraticCurveTo(control_point, point);
+ }
+ 
+ void SpiPath::ConicCurveTo(DlPoint control_point,
+                            DlPoint point,
+                            DlScalar weight) {
++  has_direct_path_ = false;
+   builder_.ConicCurveTo(control_point, point, weight);
+ }
+ 
+ void SpiPath::CubicCurveTo(DlPoint control_point_1,
+                            DlPoint control_point_2,
+                            DlPoint point) {
++  has_direct_path_ = false;
+   builder_.CubicCurveTo(control_point_1, control_point_2, point);
+ }
+ 
+ void SpiPath::Close() {
++  has_direct_path_ = false;
+   builder_.Close();
+ }
+ 
+ void SpiPath::AddRect(const DlRect& rect) {
++  has_direct_path_ = false;
+   builder_.AddRect(rect);
+ }
+ 
+ void SpiPath::AddOval(const DlRect& bounds) {
++  has_direct_path_ = false;
+   builder_.AddOval(bounds);
+ }
+ 
+ void SpiPath::AddRoundRect(const DlRoundRect& round_rect) {
++  has_direct_path_ = false;
+   builder_.AddRoundRect(round_rect);
+ }
+ 
+ const DlPath& SpiPath::path() {
++  if (has_direct_path_) {
++    return path_;
++  }
+   path_ = builder_.CopyPath();
+   return path_;
+ }
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_path.h b/engine/src/flutter/runtime_spi/scene/spi_path.h
+index e42de26aa4a..2f53650aeb7 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_path.h
++++ b/engine/src/flutter/runtime_spi/scene/spi_path.h
+@@ -12,6 +12,7 @@ namespace flutter {
+ class SpiPath final {
+  public:
+   SpiPath() = default;
++  explicit SpiPath(const DlPath& path) : path_(path), has_direct_path_(true) {}
+ 
+   void SetFillType(DlPathFillType fill_type);
+   void MoveTo(DlPoint point);
+@@ -31,6 +32,7 @@ class SpiPath final {
+  private:
+   DlPathBuilder builder_;
+   DlPath path_;
++  bool has_direct_path_ = false;
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
+index fdc4add700b..a7099e2deb4 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
+@@ -134,9 +134,9 @@ DlImageSampling SamplingFromFilterQuality(int32_t filter_quality) {
+ 
+ }  // namespace
+ 
+-FlutterSpiResult SpiSceneBuilderCreate(FlutterSpiEngine* engine,
++FlutterSpiResult SpiSceneBuilderCreate(FlutterSpiEngine* /*engine*/,
+                                        FlutterSpiSceneBuilder** out_builder) {
+-  if (engine == nullptr || out_builder == nullptr) {
++  if (out_builder == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+   const uintptr_t handle =
