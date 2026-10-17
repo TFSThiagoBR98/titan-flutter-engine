@@ -1,0 +1,1714 @@
+# Why: route PictureRecorder, Canvas, Picture, and cached painting handles
+# through the runtime scene SPI while preserving Dart UI encoding and
+# DisplayList behavior.
+diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
+index 36589eaa6c2..8160fe3f3fc 100644
+--- a/engine/src/flutter/lib/ui/BUILD.gn
++++ b/engine/src/flutter/lib/ui/BUILD.gn
+@@ -310,6 +310,10 @@ source_set("ui") {
+     "//flutter/impeller/runtime_stage",
+     "//flutter/runtime:dart_plugin_registrant",
+     "//flutter/runtime:test_font",
++    "//flutter/runtime_spi:effects",
++    "//flutter/runtime_spi:image",
++    "//flutter/runtime_spi:scene",
++    "//flutter/runtime_spi:spi_backend",
+     "//flutter/skia",
+     "//flutter/third_party/rapidjson",
+     "//flutter/third_party/tonic",
+diff --git a/engine/src/flutter/lib/ui/fixtures/ui_test.dart b/engine/src/flutter/lib/ui/fixtures/ui_test.dart
+index 6d4682cd9af..a927c324ba2 100644
+--- a/engine/src/flutter/lib/ui/fixtures/ui_test.dart
++++ b/engine/src/flutter/lib/ui/fixtures/ui_test.dart
+@@ -944,6 +944,28 @@ void convertDefaultPaintToDlPaint() {
+   _convertPaintToDlPaint(paint);
+ }
+ 
++@pragma('vm:entry-point')
++void convertPaintToSpiPaint() {
++  Paint paint = Paint()
++    ..blendMode = BlendMode.modulate
++    ..color = const Color(0x11223344)
++    ..colorFilter = ColorFilter.mode(const Color(0x55667788), BlendMode.xor)
++    ..imageFilter = ImageFilter.blur(sigmaX: 1.25, sigmaY: 2.5)
++    ..maskFilter = MaskFilter.blur(BlurStyle.inner, .75)
++    ..style = PaintingStyle.stroke
++    ..strokeWidth = 3.5
++    ..strokeCap = StrokeCap.round
++    ..strokeJoin = StrokeJoin.bevel
++    ..strokeMiterLimit = 6.0
++    ..isAntiAlias = false
++    ..invertColors = true
++    ..filterQuality = FilterQuality.high;
++  _convertPaintToSpiPaint(paint);
++}
++
++@pragma('vm:external-name', 'ConvertPaintToSpiPaint')
++external void _convertPaintToSpiPaint(Paint paint);
++
+ /// Hooks for platform_configuration_unittests.cc
+ @pragma('vm:entry-point')
+ void _beginFrameHijack(int microseconds, int frameNumber) {
+diff --git a/engine/src/flutter/lib/ui/painting/canvas.cc b/engine/src/flutter/lib/ui/painting/canvas.cc
+index d560929d1b3..823f09c1c14 100644
+--- a/engine/src/flutter/lib/ui/painting/canvas.cc
++++ b/engine/src/flutter/lib/ui/painting/canvas.cc
+@@ -6,18 +6,53 @@
+ 
+ #include <cmath>
+ 
+-#include "flutter/display_list/dl_builder.h"
+ #include "flutter/lib/ui/floating_point.h"
+ #include "flutter/lib/ui/painting/image.h"
+ #include "flutter/lib/ui/painting/image_filter.h"
+ #include "flutter/lib/ui/painting/paint.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/lib/ui/window/platform_configuration.h"
++#include "flutter/runtime_spi/effects/spi_vertices.h"
++#include "flutter/runtime_spi/image/spi_image_canvas.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
++#include "flutter/runtime_spi/scene/spi_canvas.h"
++#include "flutter/runtime_spi/scene/spi_geometry.h"
+ 
+ using tonic::ToDart;
+ 
+ namespace flutter {
+ 
++namespace {
++
++FlutterSpiRect ToSpiRect(const DlRect& rect) {
++  return {rect.GetLeft(), rect.GetTop(), rect.GetRight(), rect.GetBottom()};
++}
++
++FlutterSpiColor ToSpiColor(const DlColor& color) {
++  return {color.getRedF(), color.getGreenF(), color.getBlueF(), color.getAlphaF(),
++          static_cast<int32_t>(color.getColorSpace())};
++}
++
++template <typename RoundRect>
++FlutterSpiRRect ToSpiRRect(const RoundRect& round_rect) {
++  const auto& bounds = round_rect.GetBounds();
++  const auto& radii = round_rect.GetRadii();
++  return {ToSpiRect(bounds),
++          {{radii.top_left.width, radii.top_left.height},
++           {radii.top_right.width, radii.top_right.height},
++           {radii.bottom_right.width, radii.bottom_right.height},
++           {radii.bottom_left.width, radii.bottom_left.height}}};
++}
++
++FlutterSpiPaint ToSpiPaint(const Paint& paint) {
++  FlutterSpiPaint spi_paint = {};
++  spi_paint.struct_size = sizeof(FlutterSpiPaint);
++  paint.ToSpiPaint(&spi_paint);
++  return spi_paint;
++}
++
++}  // namespace
++
+ IMPLEMENT_WRAPPERTYPEINFO(ui, Canvas);
+ 
+ void Canvas::Create(Dart_Handle wrapper,
+@@ -42,14 +77,13 @@ void Canvas::Create(Dart_Handle wrapper,
+   canvas->AssociateWithDartWrapper(wrapper);
+ }
+ 
+-Canvas::Canvas(sk_sp<DisplayListBuilder> builder)
+-    : display_list_builder_(std::move(builder)) {}
++Canvas::Canvas(FlutterSpiPictureRecorder* recorder) : recorder_(recorder) {}
+ 
+ Canvas::~Canvas() {}
+ 
+ void Canvas::save() {
+-  if (display_list_builder_) {
+-    builder()->Save();
++  if (recorder_ != nullptr) {
++    SpiSceneApi()->canvas_save(recorder_);
+   }
+ }
+ 
+@@ -58,13 +92,10 @@ void Canvas::saveLayerWithoutBounds(Dart_Handle paint_objects,
+   Paint paint(paint_objects, paint_data);
+ 
+   FML_DCHECK(paint.isNotNull());
+-  if (display_list_builder_) {
+-    DlPaint dl_paint;
+-    const DlPaint* save_paint =
+-        paint.paint(dl_paint, kSaveLayerWithPaintFlags, DlTileMode::kDecal);
+-    FML_DCHECK(save_paint);
++  if (recorder_ != nullptr) {
++    FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+     TRACE_EVENT0("flutter", "ui.Canvas::saveLayer (Recorded)");
+-    builder()->SaveLayer(std::nullopt, save_paint);
++    SpiSceneApi()->canvas_save_layer(recorder_, nullptr, &spi_paint);
+   }
+ }
+ 
+@@ -79,81 +110,77 @@ void Canvas::saveLayer(double left,
+   FML_DCHECK(paint.isNotNull());
+   DlRect bounds = DlRect::MakeLTRB(SafeNarrow(left), SafeNarrow(top),
+                                    SafeNarrow(right), SafeNarrow(bottom));
+-  if (display_list_builder_) {
+-    DlPaint dl_paint;
+-    const DlPaint* save_paint =
+-        paint.paint(dl_paint, kSaveLayerWithPaintFlags, DlTileMode::kDecal);
+-    FML_DCHECK(save_paint);
++  if (recorder_ != nullptr) {
++    FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+     TRACE_EVENT0("flutter", "ui.Canvas::saveLayer (Recorded)");
+-    builder()->SaveLayer(bounds, save_paint);
++    FlutterSpiRect spi_bounds = ToSpiRect(bounds);
++    SpiSceneApi()->canvas_save_layer(recorder_, &spi_bounds, &spi_paint);
+   }
+ }
+ 
+ void Canvas::restore() {
+-  if (display_list_builder_) {
+-    builder()->Restore();
++  if (recorder_ != nullptr) {
++    SpiSceneApi()->canvas_restore(recorder_);
+   }
+ }
+ 
+ int Canvas::getSaveCount() {
+-  if (display_list_builder_) {
+-    return builder()->GetSaveCount();
++  if (recorder_ != nullptr) {
++    int32_t count = 0;
++    SpiSceneApi()->canvas_get_save_count(recorder_, &count);
++    return count;
+   } else {
+     return 0;
+   }
+ }
+ 
+ void Canvas::restoreToCount(int count) {
+-  if (display_list_builder_ && count < getSaveCount()) {
+-    builder()->RestoreToCount(count);
++  if (recorder_ != nullptr && count < getSaveCount()) {
++    SpiSceneApi()->canvas_restore_to_count(recorder_, count);
+   }
+ }
+ 
+ void Canvas::translate(double dx, double dy) {
+-  if (display_list_builder_) {
+-    builder()->Translate(SafeNarrow(dx), SafeNarrow(dy));
++  if (recorder_ != nullptr) {
++    SpiSceneApi()->canvas_translate(recorder_, SafeNarrow(dx), SafeNarrow(dy));
+   }
+ }
+ 
+ void Canvas::scale(double sx, double sy) {
+-  if (display_list_builder_) {
+-    builder()->Scale(SafeNarrow(sx), SafeNarrow(sy));
++  if (recorder_ != nullptr) {
++    SpiSceneApi()->canvas_scale(recorder_, SafeNarrow(sx), SafeNarrow(sy));
+   }
+ }
+ 
+ void Canvas::rotate(double radians) {
+-  if (display_list_builder_) {
+-    builder()->Rotate(SafeNarrow(radians) * 180.0f / static_cast<float>(M_PI));
++  if (recorder_ != nullptr) {
++    SpiSceneApi()->canvas_rotate(recorder_, SafeNarrow(radians));
+   }
+ }
+ 
+ void Canvas::skew(double sx, double sy) {
+-  if (display_list_builder_) {
+-    builder()->Skew(SafeNarrow(sx), SafeNarrow(sy));
++  if (recorder_ != nullptr) {
++    SpiSceneApi()->canvas_skew(recorder_, SafeNarrow(sx), SafeNarrow(sy));
+   }
+ }
+ 
+ void Canvas::transform(const tonic::Float64List& matrix4) {
+-  // The Float array stored by Dart Matrix4 is in column-major order
+-  // DisplayList TransformFullPerspective takes row-major matrix order
+-  if (display_list_builder_) {
+-    // clang-format off
+-    builder()->TransformFullPerspective(
+-        SafeNarrow(matrix4[ 0]), SafeNarrow(matrix4[ 4]), SafeNarrow(matrix4[ 8]), SafeNarrow(matrix4[12]),
+-        SafeNarrow(matrix4[ 1]), SafeNarrow(matrix4[ 5]), SafeNarrow(matrix4[ 9]), SafeNarrow(matrix4[13]),
+-        SafeNarrow(matrix4[ 2]), SafeNarrow(matrix4[ 6]), SafeNarrow(matrix4[10]), SafeNarrow(matrix4[14]),
+-        SafeNarrow(matrix4[ 3]), SafeNarrow(matrix4[ 7]), SafeNarrow(matrix4[11]), SafeNarrow(matrix4[15]));
+-    // clang-format on
++  if (recorder_ != nullptr) {
++    FlutterSpiMatrix spi_matrix = {};
++    for (size_t index = 0; index < 16; ++index) {
++      spi_matrix.m[index] = SafeNarrow(matrix4[index]);
++    }
++    SpiSceneApi()->canvas_transform(recorder_, &spi_matrix);
+   }
+ }
+ 
+ void Canvas::getTransform(Dart_Handle matrix4_handle) {
+-  if (display_list_builder_) {
+-    // The Float array stored by DlMatrix is in column-major order
+-    DlMatrix matrix = builder()->GetMatrix();
++  if (recorder_ != nullptr) {
++    double matrix[16] = {};
++    SpiSceneApi()->canvas_get_transform(recorder_, matrix);
+     auto matrix4 = tonic::Float64List(matrix4_handle);
+     for (int i = 0; i < 16; i++) {
+-      matrix4[i] = matrix.m[i];
++      matrix4[i] = matrix[i];
+     }
+   }
+ }
+@@ -164,23 +191,27 @@ void Canvas::clipRect(double left,
+                       double bottom,
+                       DlClipOp clipOp,
+                       bool doAntiAlias) {
+-  if (display_list_builder_) {
+-    builder()->ClipRect(DlRect::MakeLTRB(SafeNarrow(left), SafeNarrow(top),
+-                                         SafeNarrow(right), SafeNarrow(bottom)),
+-                        clipOp, doAntiAlias);
++  if (recorder_ != nullptr) {
++    FlutterSpiRect rect = {SafeNarrow(left), SafeNarrow(top), SafeNarrow(right),
++                           SafeNarrow(bottom)};
++    SpiSceneApi()->canvas_clip_rect(recorder_, &rect,
++                                    static_cast<int32_t>(clipOp), doAntiAlias);
+   }
+ }
+ 
+ void Canvas::clipRRect(const RRect& rrect, bool doAntiAlias) {
+-  if (display_list_builder_) {
+-    builder()->ClipRoundRect(rrect.rrect, DlClipOp::kIntersect, doAntiAlias);
++  if (recorder_ != nullptr) {
++    FlutterSpiRRect spi_rrect = ToSpiRRect(rrect.rrect);
++    SpiSceneApi()->canvas_clip_rrect(recorder_, &spi_rrect,
++                                     kFlutterSpiClipOpIntersect, doAntiAlias);
+   }
+ }
+ 
+ void Canvas::clipRSuperellipse(const RSuperellipse* rse, bool doAntiAlias) {
+-  if (display_list_builder_) {
+-    builder()->ClipRoundSuperellipse(rse->rsuperellipse(), DlClipOp::kIntersect,
+-                                     doAntiAlias);
++  if (recorder_ != nullptr) {
++    FlutterSpiRRect spi_rrect = ToSpiRRect(rse->rsuperellipse());
++    SpiSceneApi()->canvas_clip_rsuperellipse(
++        recorder_, &spi_rrect, kFlutterSpiClipOpIntersect, doAntiAlias);
+   }
+ }
+ 
+@@ -190,36 +221,41 @@ void Canvas::clipPath(const CanvasPath* path, bool doAntiAlias) {
+         ToDart("Canvas.clipPath called with non-genuine Path."));
+     return;
+   }
+-  if (display_list_builder_) {
+-    builder()->ClipPath(path->path(), DlClipOp::kIntersect, doAntiAlias);
++  if (recorder_ != nullptr) {
++    SpiSceneApi()->canvas_clip_path(recorder_, path->spi_handle(),
++                                    kFlutterSpiClipOpIntersect, doAntiAlias);
+   }
+ }
+ 
+ void Canvas::getDestinationClipBounds(Dart_Handle rect_handle) {
+-  if (display_list_builder_) {
++  if (recorder_ != nullptr) {
+     auto rect = tonic::Float64List(rect_handle);
+-    DlRect bounds = builder()->GetDestinationClipCoverage();
+-    rect[0] = bounds.GetLeft();
+-    rect[1] = bounds.GetTop();
+-    rect[2] = bounds.GetRight();
+-    rect[3] = bounds.GetBottom();
++    FlutterSpiRect bounds = {};
++    SpiSceneApi()->canvas_get_destination_clip_bounds(recorder_, &bounds);
++    rect[0] = bounds.left;
++    rect[1] = bounds.top;
++    rect[2] = bounds.right;
++    rect[3] = bounds.bottom;
+   }
+ }
+ 
+ void Canvas::getLocalClipBounds(Dart_Handle rect_handle) {
+-  if (display_list_builder_) {
++  if (recorder_ != nullptr) {
+     auto rect = tonic::Float64List(rect_handle);
+-    DlRect bounds = builder()->GetLocalClipCoverage();
+-    rect[0] = bounds.GetLeft();
+-    rect[1] = bounds.GetTop();
+-    rect[2] = bounds.GetRight();
+-    rect[3] = bounds.GetBottom();
++    FlutterSpiRect bounds = {};
++    SpiSceneApi()->canvas_get_local_clip_bounds(recorder_, &bounds);
++    rect[0] = bounds.left;
++    rect[1] = bounds.top;
++    rect[2] = bounds.right;
++    rect[3] = bounds.bottom;
+   }
+ }
+ 
+ void Canvas::drawColor(uint32_t color, DlBlendMode blend_mode) {
+-  if (display_list_builder_) {
+-    builder()->DrawColor(DlColor(color), blend_mode);
++  if (recorder_ != nullptr) {
++    FlutterSpiColor spi_color = ToSpiColor(DlColor(color));
++    SpiSceneApi()->canvas_draw_color(recorder_, &spi_color,
++                                     static_cast<int32_t>(blend_mode));
+   }
+ }
+ 
+@@ -232,11 +268,11 @@ void Canvas::drawLine(double x1,
+   Paint paint(paint_objects, paint_data);
+ 
+   FML_DCHECK(paint.isNotNull());
+-  if (display_list_builder_) {
+-    DlPaint dl_paint;
+-    paint.paint(dl_paint, kDrawLineFlags, DlTileMode::kDecal);
+-    builder()->DrawLine(DlPoint(SafeNarrow(x1), SafeNarrow(y1)),
+-                        DlPoint(SafeNarrow(x2), SafeNarrow(y2)), dl_paint);
++  if (recorder_ != nullptr) {
++    FlutterSpiPaint spi_paint = ToSpiPaint(paint);
++    FlutterSpiPoint start = {SafeNarrow(x1), SafeNarrow(y1)};
++    FlutterSpiPoint end = {SafeNarrow(x2), SafeNarrow(y2)};
++    SpiSceneApi()->canvas_draw_line(recorder_, &start, &end, &spi_paint);
+   }
+ }
+ 
+@@ -244,16 +280,14 @@ void Canvas::drawPaint(Dart_Handle paint_objects, Dart_Handle paint_data) {
+   Paint paint(paint_objects, paint_data);
+ 
+   FML_DCHECK(paint.isNotNull());
+-  if (display_list_builder_) {
+-    DlPaint dl_paint;
+-    paint.paint(dl_paint, kDrawPaintFlags, DlTileMode::kClamp);
+-    std::shared_ptr<DlImageFilter> filter = dl_paint.getImageFilter();
+-    if (filter && !filter->asColorFilter()) {
++  if (recorder_ != nullptr) {
++    FlutterSpiPaint spi_paint = ToSpiPaint(paint);
++    if (spi_paint.image_filter != nullptr) {
+       // drawPaint does an implicit saveLayer if an DlImageFilter is
+       // present that cannot be replaced by an DlColorFilter.
+       TRACE_EVENT0("flutter", "ui.Canvas::saveLayer (Recorded)");
+     }
+-    builder()->DrawPaint(dl_paint);
++    SpiSceneApi()->canvas_draw_paint(recorder_, &spi_paint);
+   }
+ }
+ 
+@@ -266,12 +300,11 @@ void Canvas::drawRect(double left,
+   Paint paint(paint_objects, paint_data);
+ 
+   FML_DCHECK(paint.isNotNull());
+-  if (display_list_builder_) {
+-    DlPaint dl_paint;
+-    paint.paint(dl_paint, kDrawRectFlags, DlTileMode::kDecal);
+-    builder()->DrawRect(DlRect::MakeLTRB(SafeNarrow(left), SafeNarrow(top),
+-                                         SafeNarrow(right), SafeNarrow(bottom)),
+-                        dl_paint);
++  if (recorder_ != nullptr) {
++    FlutterSpiPaint spi_paint = ToSpiPaint(paint);
++    FlutterSpiRect rect = {SafeNarrow(left), SafeNarrow(top), SafeNarrow(right),
++                           SafeNarrow(bottom)};
++    SpiSceneApi()->canvas_draw_rect(recorder_, &rect, &spi_paint);
+   }
+ }
+ 
+@@ -281,10 +314,10 @@ void Canvas::drawRRect(const RRect& rrect,
+   Paint paint(paint_objects, paint_data);
+ 
+   FML_DCHECK(paint.isNotNull());
+-  if (display_list_builder_) {
+-    DlPaint dl_paint;
+-    paint.paint(dl_paint, kDrawRRectFlags, DlTileMode::kDecal);
+-    builder()->DrawRoundRect(rrect.rrect, dl_paint);
++  if (recorder_ != nullptr) {
++    FlutterSpiPaint spi_paint = ToSpiPaint(paint);
++    FlutterSpiRRect spi_rrect = ToSpiRRect(rrect.rrect);
++    SpiSceneApi()->canvas_draw_rrect(recorder_, &spi_rrect, &spi_paint);
+   }
+ }
+ 
+@@ -295,10 +328,12 @@ void Canvas::drawDRRect(const RRect& outer,
+   Paint paint(paint_objects, paint_data);
+ 
+   FML_DCHECK(paint.isNotNull());
+-  if (display_list_builder_) {
+-    DlPaint dl_paint;
+-    paint.paint(dl_paint, kDrawDRRectFlags, DlTileMode::kDecal);
+-    builder()->DrawDiffRoundRect(outer.rrect, inner.rrect, dl_paint);
++  if (recorder_ != nullptr) {
++    FlutterSpiPaint spi_paint = ToSpiPaint(paint);
++    FlutterSpiRRect spi_outer = ToSpiRRect(outer.rrect);
++    FlutterSpiRRect spi_inner = ToSpiRRect(inner.rrect);
++    SpiSceneApi()->canvas_draw_drrect(recorder_, &spi_outer, &spi_inner,
++                                      &spi_paint);
+   }
+ }
+ 
+@@ -308,10 +343,11 @@ void Canvas::drawRSuperellipse(const RSuperellipse* rse,
+   Paint paint(paint_objects, paint_data);
+ 
+   FML_DCHECK(paint.isNotNull());
+-  if (display_list_builder_) {
+-    DlPaint dl_paint;
+-    paint.paint(dl_paint, kDrawDRRectFlags, DlTileMode::kDecal);
+-    builder()->DrawRoundSuperellipse(rse->rsuperellipse(), dl_paint);
++  if (recorder_ != nullptr) {
++    FlutterSpiPaint spi_paint = ToSpiPaint(paint);
++    FlutterSpiRRect spi_rrect = ToSpiRRect(rse->rsuperellipse());
++    SpiSceneApi()->canvas_draw_rsuperellipse(recorder_, &spi_rrect,
++                                             &spi_paint);
+   }
+ }
+ 
+@@ -324,12 +360,11 @@ void Canvas::drawOval(double left,
+   Paint paint(paint_objects, paint_data);
+ 
+   FML_DCHECK(paint.isNotNull());
+-  if (display_list_builder_) {
+-    DlPaint dl_paint;
+-    paint.paint(dl_paint, kDrawOvalFlags, DlTileMode::kDecal);
+-    builder()->DrawOval(DlRect::MakeLTRB(SafeNarrow(left), SafeNarrow(top),
+-                                         SafeNarrow(right), SafeNarrow(bottom)),
+-                        dl_paint);
++  if (recorder_ != nullptr) {
++    FlutterSpiPaint spi_paint = ToSpiPaint(paint);
++    FlutterSpiRect rect = {SafeNarrow(left), SafeNarrow(top), SafeNarrow(right),
++                           SafeNarrow(bottom)};
++    SpiSceneApi()->canvas_draw_oval(recorder_, &rect, &spi_paint);
+   }
+ }
+ 
+@@ -341,11 +376,11 @@ void Canvas::drawCircle(double x,
+   Paint paint(paint_objects, paint_data);
+ 
+   FML_DCHECK(paint.isNotNull());
+-  if (display_list_builder_) {
+-    DlPaint dl_paint;
+-    paint.paint(dl_paint, kDrawCircleFlags, DlTileMode::kDecal);
+-    builder()->DrawCircle(DlPoint(SafeNarrow(x), SafeNarrow(y)),
+-                          SafeNarrow(radius), dl_paint);
++  if (recorder_ != nullptr) {
++    FlutterSpiPaint spi_paint = ToSpiPaint(paint);
++    FlutterSpiPoint center = {SafeNarrow(x), SafeNarrow(y)};
++    SpiSceneApi()->canvas_draw_circle(recorder_, &center, SafeNarrow(radius),
++                                      &spi_paint);
+   }
+ }
+ 
+@@ -361,17 +396,13 @@ void Canvas::drawArc(double left,
+   Paint paint(paint_objects, paint_data);
+ 
+   FML_DCHECK(paint.isNotNull());
+-  if (display_list_builder_) {
+-    DlPaint dl_paint;
+-    paint.paint(dl_paint,
+-                useCenter ? kDrawArcWithCenterFlags : kDrawArcNoCenterFlags,
+-                DlTileMode::kDecal);
+-    builder()->DrawArc(
+-        DlRect::MakeLTRB(SafeNarrow(left), SafeNarrow(top), SafeNarrow(right),
+-                         SafeNarrow(bottom)),
+-        SafeNarrow(startAngle) * 180.0f / static_cast<float>(M_PI),
+-        SafeNarrow(sweepAngle) * 180.0f / static_cast<float>(M_PI), useCenter,
+-        dl_paint);
++  if (recorder_ != nullptr) {
++    FlutterSpiPaint spi_paint = ToSpiPaint(paint);
++    FlutterSpiRect rect = {SafeNarrow(left), SafeNarrow(top), SafeNarrow(right),
++                           SafeNarrow(bottom)};
++    SpiSceneApi()->canvas_draw_arc(recorder_, &rect, SafeNarrow(startAngle),
++                                   SafeNarrow(sweepAngle), useCenter,
++                                   &spi_paint);
+   }
+ }
+ 
+@@ -383,12 +414,11 @@ void Canvas::drawPath(const CanvasPath* path,
+         ToDart("Canvas.drawPath called with non-genuine Path."));
+     return;
+   }
+-  if (display_list_builder_) {
++  if (recorder_ != nullptr) {
+     Paint paint(paint_objects, paint_data);
+     FML_DCHECK(paint.isNotNull());
+-    DlPaint dl_paint;
+-    paint.paint(dl_paint, kDrawPathFlags, DlTileMode::kDecal);
+-    builder()->DrawPath(path->path(), dl_paint);
++    FlutterSpiPaint spi_paint = ToSpiPaint(paint);
++    SpiSceneApi()->canvas_draw_path(recorder_, path->spi_handle(), &spi_paint);
+   }
+ }
+ 
+@@ -414,13 +444,11 @@ Dart_Handle Canvas::drawImage(const CanvasImage* image,
+     return ToDart(error.value());
+   }
+ 
+-  auto sampling = ImageFilter::SamplingFromIndex(filterQualityIndex);
+-  if (display_list_builder_) {
+-    DlPaint dl_paint;
+-    const DlPaint* opt_paint =
+-        paint.paint(dl_paint, kDrawImageWithPaintFlags, DlTileMode::kClamp);
+-    builder()->DrawImage(dl_image, DlPoint(SafeNarrow(x), SafeNarrow(y)),
+-                         sampling, opt_paint);
++  if (recorder_ != nullptr) {
++    FlutterSpiPaint spi_paint = ToSpiPaint(paint);
++    FlutterSpiPoint offset = {SafeNarrow(x), SafeNarrow(y)};
++    SpiCanvasDrawImage(recorder_, image->spi_handle(), offset, filterQualityIndex,
++                       &spi_paint);
+   }
+   return Dart_Null();
+ }
+@@ -457,13 +485,12 @@ Dart_Handle Canvas::drawImageRect(const CanvasImage* image,
+                                 SafeNarrow(src_right), SafeNarrow(src_bottom));
+   DlRect dst = DlRect::MakeLTRB(SafeNarrow(dst_left), SafeNarrow(dst_top),
+                                 SafeNarrow(dst_right), SafeNarrow(dst_bottom));
+-  auto sampling = ImageFilter::SamplingFromIndex(filterQualityIndex);
+-  if (display_list_builder_) {
+-    DlPaint dl_paint;
+-    const DlPaint* opt_paint =
+-        paint.paint(dl_paint, kDrawImageRectWithPaintFlags, DlTileMode::kClamp);
+-    builder()->DrawImageRect(dl_image, src, dst, sampling, opt_paint,
+-                             DlSrcRectConstraint::kFast);
++  if (recorder_ != nullptr) {
++    FlutterSpiPaint spi_paint = ToSpiPaint(paint);
++    FlutterSpiRect spi_src = ToSpiRect(src);
++    FlutterSpiRect spi_dst = ToSpiRect(dst);
++    SpiCanvasDrawImageRect(recorder_, image->spi_handle(), &spi_src, &spi_dst,
++                           filterQualityIndex, &spi_paint);
+   }
+   return Dart_Null();
+ }
+@@ -498,15 +525,14 @@ Dart_Handle Canvas::drawImageNine(const CanvasImage* image,
+   DlRect center =
+       DlRect::MakeLTRB(SafeNarrow(center_left), SafeNarrow(center_top),
+                        SafeNarrow(center_right), SafeNarrow(center_bottom));
+-  DlIRect icenter = DlIRect::Round(center);
+   DlRect dst = DlRect::MakeLTRB(SafeNarrow(dst_left), SafeNarrow(dst_top),
+                                 SafeNarrow(dst_right), SafeNarrow(dst_bottom));
+-  auto filter = ImageFilter::FilterModeFromIndex(bitmapSamplingIndex);
+-  if (display_list_builder_) {
+-    DlPaint dl_paint;
+-    const DlPaint* opt_paint =
+-        paint.paint(dl_paint, kDrawImageNineWithPaintFlags, DlTileMode::kClamp);
+-    builder()->DrawImageNine(dl_image, icenter, dst, filter, opt_paint);
++  if (recorder_ != nullptr) {
++    FlutterSpiPaint spi_paint = ToSpiPaint(paint);
++    FlutterSpiRect spi_center = ToSpiRect(center);
++    FlutterSpiRect spi_dst = ToSpiRect(dst);
++    SpiCanvasDrawImageNine(recorder_, image->spi_handle(), &spi_center, &spi_dst,
++                           bitmapSamplingIndex, &spi_paint);
+   }
+   return Dart_Null();
+ }
+@@ -517,10 +543,8 @@ void Canvas::drawPicture(Picture* picture) {
+         ToDart("Canvas.drawPicture called with non-genuine Picture."));
+     return;
+   }
+-  if (picture->display_list()) {
+-    if (display_list_builder_) {
+-      builder()->DrawDisplayList(picture->display_list());
+-    }
++  if (recorder_ != nullptr && picture->spi_handle() != nullptr) {
++    SpiSceneApi()->canvas_draw_picture(recorder_, picture->spi_handle());
+   } else {
+     FML_DCHECK(false);
+   }
+@@ -536,23 +560,12 @@ void Canvas::drawPoints(Dart_Handle paint_objects,
+                 "DlPoint doesn't use floats.");
+ 
+   FML_DCHECK(paint.isNotNull());
+-  if (display_list_builder_) {
+-    DlPaint dl_paint;
+-    switch (point_mode) {
+-      case DlPointMode::kPoints:
+-        paint.paint(dl_paint, kDrawPointsAsPointsFlags, DlTileMode::kDecal);
+-        break;
+-      case DlPointMode::kLines:
+-        paint.paint(dl_paint, kDrawPointsAsLinesFlags, DlTileMode::kDecal);
+-        break;
+-      case DlPointMode::kPolygon:
+-        paint.paint(dl_paint, kDrawPointsAsPolygonFlags, DlTileMode::kDecal);
+-        break;
+-    }
+-    builder()->DrawPoints(point_mode,
+-                          points.num_elements() / 2,  // DlPoints have 2 floats
+-                          reinterpret_cast<const DlPoint*>(points.data()),
+-                          dl_paint);
++  if (recorder_ != nullptr) {
++    FlutterSpiPaint spi_paint = ToSpiPaint(paint);
++    SpiSceneApi()->canvas_draw_points(
++        recorder_, static_cast<int32_t>(point_mode),
++        reinterpret_cast<const FlutterSpiPoint*>(points.data()),
++        points.num_elements() / 2, &spi_paint);
+   }
+ }
+ 
+@@ -568,10 +581,10 @@ void Canvas::drawVertices(const Vertices* vertices,
+     return;
+   }
+   FML_DCHECK(paint.isNotNull());
+-  if (display_list_builder_) {
+-    DlPaint dl_paint;
+-    paint.paint(dl_paint, kDrawVerticesFlags, DlTileMode::kDecal);
+-    builder()->DrawVertices(vertices->vertices(), blend_mode, dl_paint);
++  if (recorder_ != nullptr) {
++    FlutterSpiPaint spi_paint = ToSpiPaint(paint);
++    CanvasDrawVertices(recorder_, vertices->spi_handle(),
++                       static_cast<int32_t>(blend_mode), &spi_paint);
+   }
+ }
+ 
+@@ -603,30 +616,28 @@ Dart_Handle Canvas::drawAtlas(Dart_Handle paint_objects,
+   static_assert(sizeof(DlRect) == sizeof(float) * 4,
+                 "DlRect doesn't use floats.");
+ 
+-  auto sampling = ImageFilter::SamplingFromIndex(filterQualityIndex);
+-
+   FML_DCHECK(paint.isNotNull());
+-  if (display_list_builder_) {
++  if (recorder_ != nullptr) {
+     tonic::Float32List transforms(transforms_handle);
+     tonic::Float32List rects(rects_handle);
+     tonic::Int32List colors(colors_handle);
+     tonic::Float32List cull_rect(cull_rect_handle);
+ 
+-    std::vector<DlColor> dl_color(colors.num_elements());
++    std::vector<FlutterSpiColor> spi_colors(colors.num_elements());
+     size_t count = colors.num_elements();
+     for (size_t i = 0; i < count; i++) {
+-      dl_color[i] = DlColor(colors[i]);
++      spi_colors[i] = ToSpiColor(DlColor(colors[i]));
+     }
+ 
+-    DlPaint dl_paint;
+-    const DlPaint* opt_paint =
+-        paint.paint(dl_paint, kDrawAtlasWithPaintFlags, DlTileMode::kClamp);
+-    builder()->DrawAtlas(
+-        dl_image, reinterpret_cast<const DlRSTransform*>(transforms.data()),
+-        reinterpret_cast<const DlRect*>(rects.data()), dl_color.data(),
+-        rects.num_elements() / 4,  // DlRect have four floats.
+-        blend_mode, sampling, reinterpret_cast<const DlRect*>(cull_rect.data()),
+-        opt_paint);
++    FlutterSpiPaint spi_paint = ToSpiPaint(paint);
++    SpiCanvasDrawAtlas(
++        recorder_, atlas->spi_handle(),
++        reinterpret_cast<const FlutterSpiRSTransform*>(transforms.data()),
++        reinterpret_cast<const FlutterSpiRect*>(rects.data()),
++        spi_colors.empty() ? nullptr : spi_colors.data(),
++        rects.num_elements() / 4, static_cast<int32_t>(blend_mode),
++        filterQualityIndex,
++        reinterpret_cast<const FlutterSpiRect*>(cull_rect.data()), &spi_paint);
+   }
+   return Dart_Null();
+ }
+@@ -652,14 +663,16 @@ void Canvas::drawShadow(const CanvasPath* path,
+   } else {
+     dpr = static_cast<float>(metrics->device_pixel_ratio);
+   }
+-  if (display_list_builder_) {
+-    builder()->DrawShadow(path->path(), DlColor(color), SafeNarrow(elevation),
+-                          transparentOccluder, dpr);
++  if (recorder_ != nullptr) {
++    FlutterSpiColor spi_color = ToSpiColor(DlColor(color));
++    SpiSceneApi()->canvas_draw_shadow(recorder_, path->spi_handle(), &spi_color,
++                                      SafeNarrow(elevation),
++                                      transparentOccluder, dpr);
+   }
+ }
+ 
+ void Canvas::Invalidate() {
+-  display_list_builder_ = nullptr;
++  recorder_ = nullptr;
+   if (dart_wrapper()) {
+     ClearDartWrapper();
+   }
+diff --git a/engine/src/flutter/lib/ui/painting/canvas.h b/engine/src/flutter/lib/ui/painting/canvas.h
+index 9f892308bd3..50ea7b56d5e 100644
+--- a/engine/src/flutter/lib/ui/painting/canvas.h
++++ b/engine/src/flutter/lib/ui/painting/canvas.h
+@@ -15,6 +15,7 @@
+ #include "flutter/lib/ui/painting/rsuperellipse.h"
+ #include "flutter/lib/ui/painting/vertices.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
++#include "flutter/runtime_spi/include/flutter_scene.h"
+ 
+ namespace flutter {
+ class CanvasImage;
+@@ -192,12 +193,12 @@ class Canvas : public RefCountedDartWrappable<Canvas>, DisplayListOpFlags {
+ 
+   void Invalidate();
+ 
+-  DisplayListBuilder* builder() { return display_list_builder_.get(); }
++  FlutterSpiPictureRecorder* recorder() const { return recorder_; }
+ 
+  private:
+-  explicit Canvas(sk_sp<DisplayListBuilder> builder);
++  explicit Canvas(FlutterSpiPictureRecorder* recorder);
+ 
+-  sk_sp<DisplayListBuilder> display_list_builder_;
++  FlutterSpiPictureRecorder* recorder_;
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/color_filter.cc b/engine/src/flutter/lib/ui/painting/color_filter.cc
+index e58cb659209..e6e7c8e041b 100644
+--- a/engine/src/flutter/lib/ui/painting/color_filter.cc
++++ b/engine/src/flutter/lib/ui/painting/color_filter.cc
+@@ -4,6 +4,9 @@
+ 
+ #include "flutter/lib/ui/painting/color_filter.h"
+ 
++#include "flutter/runtime_spi/effects/spi_color_filter.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
++
+ #include <cstring>
+ 
+ #include "flutter/lib/ui/ui_dart_state.h"
+@@ -50,6 +53,17 @@ void ColorFilter::initSrgbToLinearGamma() {
+   filter_ = DlColorFilter::MakeSrgbToLinearGamma();
+ }
+ 
+-ColorFilter::~ColorFilter() = default;
++ColorFilter::~ColorFilter() {
++  if (spi_filter_ != nullptr) {
++    SpiColorFilterRelease(spi_filter_);
++  }
++}
++
++FlutterSpiColorFilter* ColorFilter::spi_handle() const {
++  if (spi_filter_ == nullptr && filter_ != nullptr) {
++    spi_filter_ = SpiColorFilterFromDl(filter_);
++  }
++  return spi_filter_;
++}
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/color_filter.h b/engine/src/flutter/lib/ui/painting/color_filter.h
+index 2d43c68995e..010373a5513 100644
+--- a/engine/src/flutter/lib/ui/painting/color_filter.h
++++ b/engine/src/flutter/lib/ui/painting/color_filter.h
+@@ -7,6 +7,7 @@
+ 
+ #include "flutter/display_list/effects/dl_color_filter.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
++#include "flutter/runtime_spi/include/flutter_paint_effects.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
+ 
+ namespace flutter {
+@@ -29,9 +30,11 @@ class ColorFilter : public RefCountedDartWrappable<ColorFilter> {
+   ~ColorFilter() override;
+ 
+   const std::shared_ptr<const DlColorFilter> filter() const { return filter_; }
++  FlutterSpiColorFilter* spi_handle() const;
+ 
+  private:
+   std::shared_ptr<const DlColorFilter> filter_;
++  mutable FlutterSpiColorFilter* spi_filter_ = nullptr;
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/fragment_shader.cc b/engine/src/flutter/lib/ui/painting/fragment_shader.cc
+index bf308846c63..c462e3a5c43 100644
+--- a/engine/src/flutter/lib/ui/painting/fragment_shader.cc
++++ b/engine/src/flutter/lib/ui/painting/fragment_shader.cc
+@@ -11,6 +11,8 @@
+ #include "flutter/display_list/effects/dl_color_source.h"
+ #include "flutter/lib/ui/painting/fragment_program.h"
+ #include "flutter/lib/ui/painting/image_filter.h"
++#include "flutter/runtime_spi/effects/spi_shader.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ 
+ namespace flutter {
+@@ -84,6 +86,10 @@ void ReusableFragmentShader::SetImageSampler(Dart_Handle index_handle,
+   samplers_[index] = DlColorSource::MakeImage(
+       image->image(), DlTileMode::kClamp, DlTileMode::kClamp,
+       ImageFilter::SamplingFromIndex(filterQualityIndex), nullptr);
++  if (spi_shader_ != nullptr) {
++    SpiShaderRelease(spi_shader_);
++    spi_shader_ = nullptr;
++  }
+   // This should be true since we already checked the image above, but
+   // we check again for sanity.
+   FML_DCHECK(samplers_[index]->isUIThreadSafe());
+@@ -146,12 +152,29 @@ bool ReusableFragmentShader::ValidateImageFilter() {
+ }
+ 
+ void ReusableFragmentShader::Dispose() {
++  if (spi_shader_ != nullptr) {
++    SpiShaderRelease(spi_shader_);
++    spi_shader_ = nullptr;
++  }
+   uniform_data_.reset();
+   program_ = nullptr;
+   samplers_.clear();
+   ClearDartWrapper();
+ }
+ 
+-ReusableFragmentShader::~ReusableFragmentShader() = default;
++FlutterSpiShader* ReusableFragmentShader::spi_handle() const {
++  if (spi_shader_ == nullptr && program_) {
++    spi_shader_ = SpiShaderFromColorSource(
++        const_cast<ReusableFragmentShader*>(this)->shader(
++            DlImageSampling::kLinear));
++  }
++  return spi_shader_;
++}
++
++ReusableFragmentShader::~ReusableFragmentShader() {
++  if (spi_shader_ != nullptr) {
++    SpiShaderRelease(spi_shader_);
++  }
++}
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/fragment_shader.h b/engine/src/flutter/lib/ui/painting/fragment_shader.h
+index 60efb487f8b..0b161b08ab6 100644
+--- a/engine/src/flutter/lib/ui/painting/fragment_shader.h
++++ b/engine/src/flutter/lib/ui/painting/fragment_shader.h
+@@ -46,6 +46,7 @@ class ReusableFragmentShader : public Shader {
+ 
+   // |Shader|
+   std::shared_ptr<DlColorSource> shader(DlImageSampling) override;
++  FlutterSpiShader* spi_handle() const override;
+ 
+   std::shared_ptr<DlImageFilter> as_image_filter(
+       DlImageSampling input_sampling) const;
+@@ -59,6 +60,7 @@ class ReusableFragmentShader : public Shader {
+   sk_sp<SkData> uniform_data_;
+   std::vector<std::shared_ptr<DlColorSource>> samplers_;
+   size_t float_count_;
++  mutable FlutterSpiShader* spi_shader_ = nullptr;
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/gradient.cc b/engine/src/flutter/lib/ui/painting/gradient.cc
+index a4d783910af..5e8633b9107 100644
+--- a/engine/src/flutter/lib/ui/painting/gradient.cc
++++ b/engine/src/flutter/lib/ui/painting/gradient.cc
+@@ -4,6 +4,9 @@
+ 
+ #include "flutter/lib/ui/painting/gradient.h"
+ 
++#include "flutter/runtime_spi/effects/spi_shader.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
++
+ #include "flutter/lib/ui/floating_point.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+@@ -135,6 +138,17 @@ void CanvasGradient::initTwoPointConical(double start_x,
+ 
+ CanvasGradient::CanvasGradient() = default;
+ 
+-CanvasGradient::~CanvasGradient() = default;
++CanvasGradient::~CanvasGradient() {
++  if (spi_shader_ != nullptr) {
++    SpiShaderRelease(spi_shader_);
++  }
++}
++
++FlutterSpiShader* CanvasGradient::spi_handle() const {
++  if (spi_shader_ == nullptr && dl_shader_ != nullptr) {
++    spi_shader_ = SpiShaderFromColorSource(dl_shader_);
++  }
++  return spi_shader_;
++}
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/gradient.h b/engine/src/flutter/lib/ui/painting/gradient.h
+index c33843cc8fb..2d040ce7da5 100644
+--- a/engine/src/flutter/lib/ui/painting/gradient.h
++++ b/engine/src/flutter/lib/ui/painting/gradient.h
+@@ -58,10 +58,12 @@ class CanvasGradient : public Shader {
+     // Gradient color sources do not have image sampling variants...
+     return dl_shader_;
+   }
++  FlutterSpiShader* spi_handle() const override;
+ 
+  private:
+   CanvasGradient();
+   std::shared_ptr<DlColorSource> dl_shader_;
++  mutable FlutterSpiShader* spi_shader_ = nullptr;
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/image.cc b/engine/src/flutter/lib/ui/painting/image.cc
+index 8678ce138d9..a05ba64661f 100644
+--- a/engine/src/flutter/lib/ui/painting/image.cc
++++ b/engine/src/flutter/lib/ui/painting/image.cc
+@@ -13,6 +13,8 @@
+ #include "flutter/display_list/image/dl_image.h"
+ #include "flutter/lib/ui/painting/image_encoding.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
++#include "flutter/runtime_spi/image/spi_image.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
+ 
+@@ -27,7 +29,18 @@ const tonic::DartWrapperInfo& Image::dart_wrapper_info_ =
+ 
+ CanvasImage::CanvasImage() = default;
+ 
+-CanvasImage::~CanvasImage() = default;
++CanvasImage::~CanvasImage() {
++  if (spi_image_ != nullptr) {
++    SpiImageRelease(spi_image_);
++  }
++}
++
++FlutterSpiImage* CanvasImage::spi_handle() const {
++  if (spi_image_ == nullptr && image_ != nullptr) {
++    spi_image_ = SpiImageFromDlImage(image_);
++  }
++  return spi_image_;
++}
+ 
+ Dart_Handle CanvasImage::CreateOuterWrapping() {
+   Dart_Handle ui_lib = Dart_LookupLibrary(tonic::ToDart("dart:ui"));
+@@ -39,6 +52,10 @@ Dart_Handle CanvasImage::toByteData(int format, Dart_Handle callback) {
+ }
+ 
+ void CanvasImage::dispose() {
++  if (spi_image_ != nullptr) {
++    SpiImageRelease(spi_image_);
++    spi_image_ = nullptr;
++  }
+   image_.reset();
+   ClearDartWrapper();
+ }
+diff --git a/engine/src/flutter/lib/ui/painting/image.h b/engine/src/flutter/lib/ui/painting/image.h
+index 45c4a7061d6..fe254fd1b6c 100644
+--- a/engine/src/flutter/lib/ui/painting/image.h
++++ b/engine/src/flutter/lib/ui/painting/image.h
+@@ -7,6 +7,7 @@
+ 
+ #include "flutter/display_list/image/dl_image.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
++#include "flutter/runtime_spi/include/flutter_image.h"
+ 
+ namespace flutter {
+ 
+@@ -54,6 +55,7 @@ class CanvasImage final : public RefCountedDartWrappable<CanvasImage> {
+   void dispose();
+ 
+   sk_sp<DlImage> image() const { return image_; }
++  FlutterSpiImage* spi_handle() const;
+ 
+   void set_image(const sk_sp<DlImage>& image) {
+     FML_DCHECK(image->isUIThreadSafe());
+@@ -66,6 +68,7 @@ class CanvasImage final : public RefCountedDartWrappable<CanvasImage> {
+   CanvasImage();
+ 
+   sk_sp<DlImage> image_;
++  mutable FlutterSpiImage* spi_image_ = nullptr;
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/image_filter.cc b/engine/src/flutter/lib/ui/painting/image_filter.cc
+index 3fb577980e1..6fc1f461af5 100644
+--- a/engine/src/flutter/lib/ui/painting/image_filter.cc
++++ b/engine/src/flutter/lib/ui/painting/image_filter.cc
+@@ -4,6 +4,9 @@
+ 
+ #include "flutter/lib/ui/painting/image_filter.h"
+ 
++#include "flutter/runtime_spi/effects/spi_image_filter.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
++
+ #include "display_list/dl_sampling_options.h"
+ #include "display_list/effects/dl_image_filters.h"
+ #include "flutter/lib/ui/floating_point.h"
+@@ -53,7 +56,18 @@ DlFilterMode ImageFilter::FilterModeFromIndex(int filterQualityIndex) {
+ 
+ ImageFilter::ImageFilter() {}
+ 
+-ImageFilter::~ImageFilter() {}
++ImageFilter::~ImageFilter() {
++  if (spi_filter_ != nullptr) {
++    SpiImageFilterRelease(spi_filter_);
++  }
++}
++
++FlutterSpiImageFilter* ImageFilter::spi_handle() const {
++  if (spi_filter_ == nullptr && filter_ != nullptr) {
++    spi_filter_ = SpiImageFilterFromDl(filter_);
++  }
++  return spi_filter_;
++}
+ 
+ const std::shared_ptr<DlImageFilter> ImageFilter::filter(
+     DlTileMode mode) const {
+diff --git a/engine/src/flutter/lib/ui/painting/image_filter.h b/engine/src/flutter/lib/ui/painting/image_filter.h
+index 47449193119..462a8851015 100644
+--- a/engine/src/flutter/lib/ui/painting/image_filter.h
++++ b/engine/src/flutter/lib/ui/painting/image_filter.h
+@@ -10,6 +10,7 @@
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "flutter/lib/ui/painting/color_filter.h"
+ #include "lib/ui/painting/fragment_shader.h"
++#include "flutter/runtime_spi/include/flutter_paint_effects.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
+ 
+ namespace tonic {
+@@ -46,6 +47,7 @@ class ImageFilter : public RefCountedDartWrappable<ImageFilter> {
+   static bool equals(Dart_Handle a_handle, Dart_Handle b_handle);
+ 
+   const std::shared_ptr<DlImageFilter> filter(DlTileMode mode) const;
++  FlutterSpiImageFilter* spi_handle() const;
+ 
+   static void RegisterNatives(tonic::DartLibraryNatives* natives);
+ 
+@@ -54,6 +56,7 @@ class ImageFilter : public RefCountedDartWrappable<ImageFilter> {
+ 
+   std::shared_ptr<DlImageFilter> filter_;
+   bool is_dynamic_tile_mode_ = false;
++  mutable FlutterSpiImageFilter* spi_filter_ = nullptr;
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/image_shader.cc b/engine/src/flutter/lib/ui/painting/image_shader.cc
+index a55c885d16e..0e10b6429e7 100644
+--- a/engine/src/flutter/lib/ui/painting/image_shader.cc
++++ b/engine/src/flutter/lib/ui/painting/image_shader.cc
+@@ -8,6 +8,8 @@
+ #include "flutter/display_list/effects/color_sources/dl_image_color_source.h"
+ #include "flutter/lib/ui/painting/display_list_image_gpu.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
++#include "flutter/runtime_spi/effects/spi_shader.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+@@ -66,6 +68,10 @@ int ImageShader::height() {
+ }
+ 
+ void ImageShader::dispose() {
++  if (spi_shader_ != nullptr) {
++    SpiShaderRelease(spi_shader_);
++    spi_shader_ = nullptr;
++  }
+   cached_shader_.reset();
+   image_.reset();
+   ClearDartWrapper();
+@@ -73,6 +79,17 @@ void ImageShader::dispose() {
+ 
+ ImageShader::ImageShader() = default;
+ 
+-ImageShader::~ImageShader() = default;
++FlutterSpiShader* ImageShader::spi_handle() const {
++  if (spi_shader_ == nullptr && cached_shader_ != nullptr) {
++    spi_shader_ = SpiShaderFromColorSource(cached_shader_);
++  }
++  return spi_shader_;
++}
++
++ImageShader::~ImageShader() {
++  if (spi_shader_ != nullptr) {
++    SpiShaderRelease(spi_shader_);
++  }
++}
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/image_shader.h b/engine/src/flutter/lib/ui/painting/image_shader.h
+index 07042abd1ef..5c8e62da6a2 100644
+--- a/engine/src/flutter/lib/ui/painting/image_shader.h
++++ b/engine/src/flutter/lib/ui/painting/image_shader.h
+@@ -31,6 +31,7 @@ class ImageShader : public Shader {
+                             Dart_Handle matrix_handle);
+ 
+   std::shared_ptr<DlColorSource> shader(DlImageSampling) override;
++  FlutterSpiShader* spi_handle() const override;
+ 
+   int width();
+   int height();
+@@ -44,6 +45,7 @@ class ImageShader : public Shader {
+   bool sampling_is_locked_;
+ 
+   std::shared_ptr<DlColorSource> cached_shader_;
++  mutable FlutterSpiShader* spi_shader_ = nullptr;
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/paint.cc b/engine/src/flutter/lib/ui/painting/paint.cc
+index 08c061e65be..6a219d822a8 100644
+--- a/engine/src/flutter/lib/ui/painting/paint.cc
++++ b/engine/src/flutter/lib/ui/painting/paint.cc
+@@ -10,6 +10,7 @@
+ #include "flutter/lib/ui/painting/color_filter.h"
+ #include "flutter/lib/ui/painting/image_filter.h"
+ #include "flutter/lib/ui/painting/shader.h"
++#include "flutter/runtime_spi/include/flutter_scene.h"
+ #include "third_party/skia/include/core/SkColorFilter.h"
+ #include "third_party/skia/include/core/SkImageFilter.h"
+ #include "third_party/skia/include/core/SkMaskFilter.h"
+@@ -209,4 +210,69 @@ const DlPaint* Paint::paint(DlPaint& paint,
+   return &paint;
+ }
+ 
++void Paint::ToSpiPaint(FlutterSpiPaint* out) const {
++  if (out == nullptr || isNull()) {
++    return;
++  }
++
++  tonic::DartByteData byte_data(paint_data_);
++  FML_CHECK(byte_data.length_in_bytes() == kDataByteCount);
++  const uint32_t* uint_data = static_cast<const uint32_t*>(byte_data.data());
++  const float* float_data = static_cast<const float*>(byte_data.data());
++
++  out->struct_size = sizeof(FlutterSpiPaint);
++  out->color = {float_data[kColorRedIndex],
++                float_data[kColorGreenIndex],
++                float_data[kColorBlueIndex],
++                1.f - float_data[kColorAlphaIndex],
++                static_cast<int32_t>(uint_data[kColorSpaceIndex])};
++  out->blend_mode =
++      static_cast<int32_t>(uint_data[kBlendModeIndex] ^ kBlendModeDefault);
++  out->style = static_cast<int32_t>(uint_data[kStyleIndex]);
++  out->stroke_width = float_data[kStrokeWidthIndex];
++  out->stroke_cap = static_cast<int32_t>(uint_data[kStrokeCapIndex]);
++  out->stroke_join = static_cast<int32_t>(uint_data[kStrokeJoinIndex]);
++  out->stroke_miter =
++      float_data[kStrokeMiterLimitIndex] + kStrokeMiterLimitDefault;
++  out->anti_alias = uint_data[kIsAntiAliasIndex] == 0;
++  out->invert_colors = uint_data[kInvertColorIndex] != 0;
++  out->filter_quality = static_cast<int32_t>(uint_data[kFilterQualityIndex]);
++  out->has_mask_blur = false;
++  out->mask_blur_style = kFlutterSpiBlurStyleNormal;
++  out->mask_blur_sigma = 0.0f;
++
++  Dart_Handle values[kObjectCount];
++  if (Dart_IsNull(paint_objects_)) {
++    out->shader = nullptr;
++    out->color_filter = nullptr;
++    out->image_filter = nullptr;
++    return;
++  }
++
++  FML_DCHECK(Dart_IsList(paint_objects_));
++  intptr_t length = 0;
++  FML_CHECK(!Dart_IsError(Dart_ListLength(paint_objects_, &length)));
++  FML_CHECK(length == kObjectCount);
++  FML_CHECK(!Dart_IsError(
++      Dart_ListGetRange(paint_objects_, 0, kObjectCount, values)));
++
++  Shader* shader = tonic::DartConverter<Shader*>::FromDart(values[kShaderIndex]);
++  out->shader = shader == nullptr ? nullptr : shader->spi_handle();
++  ColorFilter* color_filter =
++      tonic::DartConverter<ColorFilter*>::FromDart(values[kColorFilterIndex]);
++  out->color_filter =
++      color_filter == nullptr ? nullptr : color_filter->spi_handle();
++  ImageFilter* image_filter =
++      tonic::DartConverter<ImageFilter*>::FromDart(values[kImageFilterIndex]);
++  out->image_filter =
++      image_filter == nullptr ? nullptr : image_filter->spi_handle();
++
++  if (uint_data[kMaskFilterIndex] == kBlur) {
++    out->has_mask_blur = true;
++    out->mask_blur_style =
++        static_cast<int32_t>(uint_data[kMaskFilterBlurStyleIndex]);
++    out->mask_blur_sigma = float_data[kMaskFilterSigmaIndex];
++  }
++}
++
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/paint.h b/engine/src/flutter/lib/ui/painting/paint.h
+index cfd882e259d..300049162f2 100644
+--- a/engine/src/flutter/lib/ui/painting/paint.h
++++ b/engine/src/flutter/lib/ui/painting/paint.h
+@@ -8,6 +8,7 @@
+ #include "flutter/display_list/display_list.h"
+ #include "flutter/display_list/dl_op_flags.h"
+ #include "third_party/dart/runtime/include/dart_api.h"
++#include "flutter/runtime_spi/include/flutter_scene.h"
+ 
+ namespace flutter {
+ 
+@@ -19,6 +20,8 @@ class Paint {
+                        const DisplayListAttributeFlags& flags,
+                        DlTileMode tile_mode) const;
+ 
++  void ToSpiPaint(FlutterSpiPaint* out) const;
++
+   bool isNull() const { return Dart_IsNull(paint_data_); }
+   bool isNotNull() const { return !Dart_IsNull(paint_data_); }
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/paint_unittests.cc b/engine/src/flutter/lib/ui/painting/paint_unittests.cc
+index d0c81f85b67..44711cb228a 100644
+--- a/engine/src/flutter/lib/ui/painting/paint_unittests.cc
++++ b/engine/src/flutter/lib/ui/painting/paint_unittests.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "flutter/display_list/dl_op_flags.h"
+ #include "flutter/lib/ui/painting/paint.h"
++#include "flutter/runtime_spi/scene/spi_paint.h"
+ #include "flutter/shell/common/shell_test.h"
+ #include "flutter/shell/common/thread_host.h"
+ 
+@@ -12,6 +13,8 @@
+ namespace flutter {
+ namespace testing {
+ 
++class PaintTest : public ShellTest {};
++
+ TEST_F(ShellTest, ConvertPaintToDlPaint) {
+   auto message_latch = std::make_shared<fml::AutoResetWaitableEvent>();
+   DlPaint dl_paint;
+@@ -114,5 +117,60 @@ TEST_F(ShellTest, ConvertDefaultPaintToDlPaint) {
+   EXPECT_TRUE(dl_paint.isAntiAlias());
+ }
+ 
++TEST_F(PaintTest, SpiPaintMatchesDartEncoding) {
++  auto message_latch = std::make_shared<fml::AutoResetWaitableEvent>();
++  DlPaint dl_paint;
++
++  auto native_to_spi_paint = [message_latch, &dl_paint](Dart_NativeArguments args) {
++    Dart_Handle dart_paint = Dart_GetNativeArgument(args, 0);
++    Dart_Handle paint_objects =
++        Dart_GetField(dart_paint, tonic::ToDart("_objects"));
++    Dart_Handle paint_data = Dart_GetField(dart_paint, tonic::ToDart("_data"));
++    Paint ui_paint(paint_objects, paint_data);
++    FlutterSpiPaint spi_paint = {};
++    spi_paint.struct_size = sizeof(FlutterSpiPaint);
++    ui_paint.ToSpiPaint(&spi_paint);
++    dl_paint = ToDlPaint(spi_paint, DlTileMode::kDecal);
++    message_latch->Signal();
++  };
++
++  Settings settings = CreateSettingsForFixture();
++  TaskRunners task_runners("test",                  // label
++                           GetCurrentTaskRunner(),  // platform
++                           CreateNewThread(),       // raster
++                           CreateNewThread(),       // ui
++                           CreateNewThread()        // io
++  );
++
++  AddNativeCallback("ConvertPaintToSpiPaint",
++                    CREATE_NATIVE_ENTRY(native_to_spi_paint));
++
++  std::unique_ptr<Shell> shell = CreateShell(settings, task_runners);
++
++  ASSERT_TRUE(shell->IsSetup());
++  auto configuration = RunConfiguration::InferFromSettings(settings);
++  configuration.SetEntrypoint("convertPaintToSpiPaint");
++
++  shell->RunEngine(std::move(configuration), [](auto result) {
++    ASSERT_EQ(result, Engine::RunStatus::Success);
++  });
++
++  message_latch->Wait();
++  DestroyShell(std::move(shell), task_runners);
++
++  EXPECT_FALSE(dl_paint.isAntiAlias());
++  EXPECT_EQ(dl_paint.getBlendMode(), DlBlendMode::kModulate);
++  EXPECT_EQ(static_cast<uint32_t>(dl_paint.getColor().argb()), 0x11223344u);
++  EXPECT_EQ(dl_paint.getDrawStyle(), DlDrawStyle::kStroke);
++  EXPECT_EQ(dl_paint.getStrokeWidth(), 3.5f);
++  EXPECT_EQ(dl_paint.getStrokeCap(), DlStrokeCap::kRound);
++  EXPECT_EQ(dl_paint.getStrokeJoin(), DlStrokeJoin::kBevel);
++  EXPECT_EQ(dl_paint.getStrokeMiter(), 6.0f);
++  EXPECT_TRUE(dl_paint.isInvertColors());
++  ASSERT_NE(dl_paint.getColorFilter(), nullptr);
++  ASSERT_NE(dl_paint.getImageFilter(), nullptr);
++  ASSERT_NE(dl_paint.getMaskFilter(), nullptr);
++}
++
+ }  // namespace testing
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/path.cc b/engine/src/flutter/lib/ui/painting/path.cc
+index efb90e9c2dd..b293d0111d9 100644
+--- a/engine/src/flutter/lib/ui/painting/path.cc
++++ b/engine/src/flutter/lib/ui/painting/path.cc
+@@ -11,6 +11,8 @@
+ #include "flutter/lib/ui/floating_point.h"
+ #include "flutter/lib/ui/painting/matrix.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
++#include "flutter/runtime_spi/scene/spi_canvas.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+@@ -30,9 +32,17 @@ CanvasPath::CanvasPath() {
+   resetVolatility();
+ }
+ 
+-CanvasPath::~CanvasPath() = default;
++CanvasPath::~CanvasPath() {
++  if (spi_path_ != nullptr) {
++    SpiSceneApi()->path_release(spi_path_);
++  }
++}
+ 
+ void CanvasPath::resetVolatility() {
++  if (spi_path_ != nullptr) {
++    SpiSceneApi()->path_release(spi_path_);
++    spi_path_ = nullptr;
++  }
+   dl_path_.reset();
+ }
+ 
+@@ -348,4 +358,11 @@ const DlPath& CanvasPath::path() const {
+   return dl_path_.value();
+ }
+ 
++FlutterSpiPath* CanvasPath::spi_handle() const {
++  if (spi_path_ == nullptr) {
++    spi_path_ = SpiPathFromDlPath(path());
++  }
++  return spi_path_;
++}
++
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/path.h b/engine/src/flutter/lib/ui/painting/path.h
+index dc82a188be3..3c35f1a2d98 100644
+--- a/engine/src/flutter/lib/ui/painting/path.h
++++ b/engine/src/flutter/lib/ui/painting/path.h
+@@ -9,6 +9,7 @@
+ #include "flutter/lib/ui/painting/rrect.h"
+ #include "flutter/lib/ui/painting/rsuperellipse.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
++#include "flutter/runtime_spi/include/flutter_scene.h"
+ #include "third_party/skia/include/core/SkPath.h"
+ #include "third_party/skia/include/core/SkPathBuilder.h"
+ #include "third_party/skia/include/pathops/SkPathOps.h"
+@@ -117,12 +118,14 @@ class CanvasPath : public RefCountedDartWrappable<CanvasPath> {
+   void clone(Dart_Handle path_handle);
+ 
+   const DlPath& path() const;
++  FlutterSpiPath* spi_handle() const;
+ 
+  private:
+   CanvasPath();
+ 
+   SkPathBuilder sk_path_;
+   mutable std::optional<const DlPath> dl_path_;
++  mutable FlutterSpiPath* spi_path_ = nullptr;
+ 
+   // Must be called whenever the path is created or mutated.
+   void resetVolatility();
+diff --git a/engine/src/flutter/lib/ui/painting/picture.cc b/engine/src/flutter/lib/ui/painting/picture.cc
+index 37d0e739e0e..01bbeefc8de 100644
+--- a/engine/src/flutter/lib/ui/painting/picture.cc
++++ b/engine/src/flutter/lib/ui/painting/picture.cc
+@@ -10,6 +10,8 @@
+ #include "flutter/fml/make_copyable.h"
+ #include "flutter/lib/ui/painting/canvas.h"
+ #include "flutter/lib/ui/painting/image_snapshot.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
++#include "flutter/runtime_spi/scene/spi_canvas.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+@@ -30,25 +32,48 @@ void Picture::CreateAndAssociateWithDartWrapper(
+   canvas_picture->AssociateWithDartWrapper(dart_handle);
+ }
+ 
++void Picture::CreateAndAssociateWithDartWrapper(
++    Dart_Handle dart_handle,
++    FlutterSpiPicture* spi_picture) {
++  auto canvas_picture = fml::MakeRefCounted<Picture>(spi_picture);
++  canvas_picture->AssociateWithDartWrapper(dart_handle);
++}
++
+ Picture::Picture(sk_sp<DisplayList> display_list)
+     : display_list_(std::move(display_list)) {}
+ 
+-Picture::~Picture() = default;
++Picture::Picture(FlutterSpiPicture* spi_picture) : spi_picture_(spi_picture) {}
++
++Picture::~Picture() {
++  if (spi_picture_ != nullptr) {
++    SpiSceneApi()->picture_release(spi_picture_);
++  }
++}
++
++sk_sp<DisplayList> Picture::display_list() const {
++  if (spi_picture_ != nullptr) {
++    return SpiPictureSharedDisplayList(spi_picture_);
++  }
++  return display_list_;
++}
+ 
+ Dart_Handle Picture::toImage(uint32_t width,
+                              uint32_t height,
+                              Dart_Handle raw_image_callback) {
+-  if (!display_list_) {
++  auto recorded_display_list = display_list();
++  if (!recorded_display_list) {
+     return tonic::ToDart("Picture is null");
+   }
+-  return RasterizeToImage(display_list_, width, height, raw_image_callback);
++  return RasterizeToImage(recorded_display_list, width, height,
++                          raw_image_callback);
+ }
+ 
+ void Picture::toImageSync(uint32_t width,
+                           uint32_t height,
+                           int32_t target_format,
+                           Dart_Handle raw_image_handle) {
+-  FML_DCHECK(display_list_);
++  auto recorded_display_list = display_list();
++  FML_DCHECK(recorded_display_list);
+   SnapshotPixelFormat snapshot_pixel_format;
+   // This must be kept in sync with painting.dart.
+   switch (target_format) {
+@@ -66,7 +91,7 @@ void Picture::toImageSync(uint32_t width,
+       snapshot_pixel_format = SnapshotPixelFormat::kDontCare;
+       break;
+   }
+-  RasterizeToImageSync(display_list_, width, height, snapshot_pixel_format,
++  RasterizeToImageSync(recorded_display_list, width, height, snapshot_pixel_format,
+                        raw_image_handle);
+ }
+ 
+@@ -99,13 +124,18 @@ void Picture::RasterizeToImageSync(sk_sp<DisplayList> display_list,
+ }
+ 
+ void Picture::dispose() {
++  if (spi_picture_ != nullptr) {
++    SpiSceneApi()->picture_release(spi_picture_);
++    spi_picture_ = nullptr;
++  }
+   display_list_.reset();
+   ClearDartWrapper();
+ }
+ 
+ size_t Picture::GetAllocationSize() const {
+-  if (display_list_) {
+-    return display_list_->bytes() + sizeof(Picture);
++  auto recorded_display_list = display_list();
++  if (recorded_display_list) {
++    return recorded_display_list->bytes() + sizeof(Picture);
+   } else {
+     return sizeof(Picture);
+   }
+diff --git a/engine/src/flutter/lib/ui/painting/picture.h b/engine/src/flutter/lib/ui/painting/picture.h
+index b52830d609b..97b1ea9d09c 100644
+--- a/engine/src/flutter/lib/ui/painting/picture.h
++++ b/engine/src/flutter/lib/ui/painting/picture.h
+@@ -11,6 +11,7 @@
+ #include "flutter/lib/ui/painting/image.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/shell/common/snapshot_pixel_format.h"
++#include "flutter/runtime_spi/include/flutter_scene.h"
+ 
+ namespace flutter {
+ class Canvas;
+@@ -24,8 +25,12 @@ class Picture : public RefCountedDartWrappable<Picture> {
+   static void CreateAndAssociateWithDartWrapper(
+       Dart_Handle dart_handle,
+       sk_sp<DisplayList> display_list);
++  static void CreateAndAssociateWithDartWrapper(
++      Dart_Handle dart_handle,
++      FlutterSpiPicture* spi_picture);
+ 
+-  sk_sp<DisplayList> display_list() const { return display_list_; }
++  sk_sp<DisplayList> display_list() const;
++  FlutterSpiPicture* spi_handle() const { return spi_picture_; }
+ 
+   Dart_Handle toImage(uint32_t width,
+                       uint32_t height,
+@@ -67,8 +72,10 @@ class Picture : public RefCountedDartWrappable<Picture> {
+ 
+  private:
+   explicit Picture(sk_sp<DisplayList> display_list);
++  explicit Picture(FlutterSpiPicture* spi_picture);
+ 
+   sk_sp<DisplayList> display_list_;
++  FlutterSpiPicture* spi_picture_ = nullptr;
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/picture_recorder.cc b/engine/src/flutter/lib/ui/painting/picture_recorder.cc
+index fc57254250a..3d7f6557d08 100644
+--- a/engine/src/flutter/lib/ui/painting/picture_recorder.cc
++++ b/engine/src/flutter/lib/ui/painting/picture_recorder.cc
+@@ -6,6 +6,7 @@
+ 
+ #include "flutter/lib/ui/painting/canvas.h"
+ #include "flutter/lib/ui/painting/picture.h"
++#include "flutter/runtime_spi/scene/spi_canvas.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+@@ -23,12 +24,20 @@ void PictureRecorder::Create(Dart_Handle wrapper) {
+ 
+ PictureRecorder::PictureRecorder() {}
+ 
+-PictureRecorder::~PictureRecorder() {}
++PictureRecorder::~PictureRecorder() {
++  if (spi_recorder_ != nullptr) {
++    SpiSceneApi()->recorder_release(spi_recorder_);
++  }
++}
+ 
+-sk_sp<DisplayListBuilder> PictureRecorder::BeginRecording(DlRect bounds) {
+-  display_list_builder_ =
+-      sk_make_sp<DisplayListBuilder>(bounds, /*prepare_rtree=*/true);
+-  return display_list_builder_;
++FlutterSpiPictureRecorder* PictureRecorder::BeginRecording(DlRect bounds) {
++  FlutterSpiRect spi_bounds = {bounds.GetLeft(), bounds.GetTop(),
++                               bounds.GetRight(), bounds.GetBottom()};
++  if (SpiSceneApi()->recorder_create(nullptr, &spi_bounds, &spi_recorder_) !=
++      kFlutterSpiOk) {
++    spi_recorder_ = nullptr;
++  }
++  return spi_recorder_;
+ }
+ 
+ void PictureRecorder::endRecording(Dart_Handle dart_picture) {
+@@ -36,11 +45,14 @@ void PictureRecorder::endRecording(Dart_Handle dart_picture) {
+     return;
+   }
+ 
+-  auto display_list = display_list_builder_->Build();
+-  display_list_builder_ = nullptr;
++  FlutterSpiPicture* picture = nullptr;
++  if (SpiSceneApi()->recorder_finish(spi_recorder_, &picture) !=
++      kFlutterSpiOk) {
++    return;
++  }
++  spi_recorder_ = nullptr;
+ 
+-  FML_DCHECK(display_list->has_rtree());
+-  Picture::CreateAndAssociateWithDartWrapper(dart_picture, display_list);
++  Picture::CreateAndAssociateWithDartWrapper(dart_picture, picture);
+ 
+   canvas_->Invalidate();
+   canvas_ = nullptr;
+diff --git a/engine/src/flutter/lib/ui/painting/picture_recorder.h b/engine/src/flutter/lib/ui/painting/picture_recorder.h
+index a0903962f62..481b547d989 100644
+--- a/engine/src/flutter/lib/ui/painting/picture_recorder.h
++++ b/engine/src/flutter/lib/ui/painting/picture_recorder.h
+@@ -5,8 +5,9 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_PICTURE_RECORDER_H_
+ #define FLUTTER_LIB_UI_PAINTING_PICTURE_RECORDER_H_
+ 
+-#include "flutter/display_list/dl_builder.h"
++#include "flutter/display_list/geometry/dl_geometry_types.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
++#include "flutter/runtime_spi/include/flutter_scene.h"
+ 
+ namespace flutter {
+ class Canvas;
+@@ -21,7 +22,7 @@ class PictureRecorder : public RefCountedDartWrappable<PictureRecorder> {
+ 
+   ~PictureRecorder() override;
+ 
+-  sk_sp<DisplayListBuilder> BeginRecording(DlRect bounds);
++  FlutterSpiPictureRecorder* BeginRecording(DlRect bounds);
+   void endRecording(Dart_Handle dart_picture);
+ 
+   void set_canvas(fml::RefPtr<Canvas> canvas) { canvas_ = std::move(canvas); }
+@@ -29,7 +30,7 @@ class PictureRecorder : public RefCountedDartWrappable<PictureRecorder> {
+  private:
+   PictureRecorder();
+ 
+-  sk_sp<DisplayListBuilder> display_list_builder_;
++  FlutterSpiPictureRecorder* spi_recorder_ = nullptr;
+ 
+   fml::RefPtr<Canvas> canvas_;
+ };
+diff --git a/engine/src/flutter/lib/ui/painting/shader.h b/engine/src/flutter/lib/ui/painting/shader.h
+index fdec8c9e800..41b90ed59c5 100644
+--- a/engine/src/flutter/lib/ui/painting/shader.h
++++ b/engine/src/flutter/lib/ui/painting/shader.h
+@@ -8,6 +8,7 @@
+ #include "flutter/display_list/effects/dl_color_source.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
++#include "flutter/runtime_spi/include/flutter_paint_effects.h"
+ 
+ namespace flutter {
+ 
+@@ -19,6 +20,7 @@ class Shader : public RefCountedDartWrappable<Shader> {
+   ~Shader() override;
+ 
+   virtual std::shared_ptr<DlColorSource> shader(DlImageSampling) = 0;
++  virtual FlutterSpiShader* spi_handle() const = 0;
+ 
+  protected:
+   Shader() {}
+diff --git a/engine/src/flutter/lib/ui/painting/vertices.cc b/engine/src/flutter/lib/ui/painting/vertices.cc
+index 1eb69acef0f..fc8e39d5194 100644
+--- a/engine/src/flutter/lib/ui/painting/vertices.cc
++++ b/engine/src/flutter/lib/ui/painting/vertices.cc
+@@ -7,6 +7,8 @@
+ #include <algorithm>
+ 
+ #include "flutter/lib/ui/ui_dart_state.h"
++#include "flutter/runtime_spi/effects/spi_vertices.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+ #include "third_party/tonic/dart_library_natives.h"
+ 
+@@ -16,7 +18,18 @@ IMPLEMENT_WRAPPERTYPEINFO(ui, Vertices);
+ 
+ Vertices::Vertices() {}
+ 
+-Vertices::~Vertices() {}
++Vertices::~Vertices() {
++  if (spi_vertices_ != nullptr) {
++    SpiVerticesRelease(spi_vertices_);
++  }
++}
++
++FlutterSpiVertices* Vertices::spi_handle() const {
++  if (spi_vertices_ == nullptr && vertices_ != nullptr) {
++    spi_vertices_ = SpiVerticesFromDl(vertices_);
++  }
++  return spi_vertices_;
++}
+ 
+ bool Vertices::init(Dart_Handle vertices_handle,
+                     DlVertexMode vertex_mode,
+@@ -81,6 +94,10 @@ bool Vertices::init(Dart_Handle vertices_handle,
+ }
+ 
+ void Vertices::dispose() {
++  if (spi_vertices_ != nullptr) {
++    SpiVerticesRelease(spi_vertices_);
++    spi_vertices_ = nullptr;
++  }
+   vertices_.reset();
+   ClearDartWrapper();
+ }
+diff --git a/engine/src/flutter/lib/ui/painting/vertices.h b/engine/src/flutter/lib/ui/painting/vertices.h
+index 6574cd8ca96..171e1d54752 100644
+--- a/engine/src/flutter/lib/ui/painting/vertices.h
++++ b/engine/src/flutter/lib/ui/painting/vertices.h
+@@ -9,6 +9,7 @@
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "third_party/skia/include/core/SkVertices.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
++#include "flutter/runtime_spi/include/flutter_paint_effects.h"
+ 
+ namespace flutter {
+ 
+@@ -27,6 +28,7 @@ class Vertices : public RefCountedDartWrappable<Vertices> {
+                    Dart_Handle indices_handle);
+ 
+   const std::shared_ptr<DlVertices>& vertices() const { return vertices_; }
++  FlutterSpiVertices* spi_handle() const;
+ 
+   void dispose();
+ 
+@@ -34,6 +36,7 @@ class Vertices : public RefCountedDartWrappable<Vertices> {
+   Vertices();
+ 
+   std::shared_ptr<DlVertices> vertices_;
++  mutable FlutterSpiVertices* spi_vertices_ = nullptr;
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/text/paragraph.cc b/engine/src/flutter/lib/ui/text/paragraph.cc
+index 509c6e586ed..0c068cab80b 100644
+--- a/engine/src/flutter/lib/ui/text/paragraph.cc
++++ b/engine/src/flutter/lib/ui/text/paragraph.cc
+@@ -8,6 +8,7 @@
+ #include "flutter/common/task_runners.h"
+ #include "flutter/fml/logging.h"
+ #include "flutter/fml/task_runner.h"
++#include "flutter/runtime_spi/scene/spi_canvas.h"
+ #include "third_party/dart/runtime/include/dart_api.h"
+ #include "third_party/skia/modules/skparagraph/include/DartTypes.h"
+ #include "third_party/skia/modules/skparagraph/include/Paragraph.h"
+@@ -68,7 +69,7 @@ void Paragraph::paint(Canvas* canvas, double x, double y) {
+     return;
+   }
+ 
+-  DisplayListBuilder* builder = canvas->builder();
++  DisplayListBuilder* builder = SpiPictureRecorderBuilder(canvas->recorder());
+   if (builder) {
+     m_paragraph_->Paint(builder, x, y);
+   }
