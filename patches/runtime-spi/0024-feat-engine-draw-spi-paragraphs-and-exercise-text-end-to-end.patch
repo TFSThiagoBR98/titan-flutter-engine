@@ -1,0 +1,734 @@
+# Why: Why: expose paragraph drawing through the runtime SPI, advertise the
+text capability, and cover the C runtime round trip with deterministic ICU and
+opaque-font test fixtures. Compare display-list text by recorded color,
+bounds, and glyph content because DlText equality is pointer-based.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index fcb87ce3d36..d8395e947b5 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -130,7 +130,9 @@ if (enable_unittests) {
+       "scene/spi_scene_builder_parity_unittests.cc",
+       "scene/spi_scene_trace_unittests.cc",
+       "spi_runtime_backend_unittests.cc",
++      "testing/test_icu.cc",
+       "text/spi_font_unittests.cc",
++      "text/spi_paragraph_draw_parity_unittests.cc",
+       "text/spi_paragraph_parity_unittests.cc",
+       "text/spi_text_style_unittests.cc",
+     ]
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+index 4c955ff09ed..e20632e4191 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+@@ -18,6 +18,7 @@
+ #include "flutter/runtime_spi/scene/spi_path.h"
+ #include "flutter/runtime_spi/scene/spi_scene_builder.h"
+ #include "flutter/runtime_spi/scene/spi_scene_trace.h"
++#include "flutter/runtime_spi/text/spi_paragraph.h"
+ 
+ namespace flutter {
+ namespace {
+@@ -812,6 +813,17 @@ const FlutterSpiSceneApi kSceneApi = {
+ 
+ }  // namespace
+ 
++FlutterSpiResult CanvasDrawParagraph(FlutterSpiPictureRecorder* recorder,
++                                     FlutterSpiParagraph* paragraph,
++                                     float x,
++                                     float y) {
++  const auto recorder_value = FindRecorder(recorder);
++  if (recorder_value == nullptr || recorder_value->builder() == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  return SpiParagraphPaint(paragraph, recorder_value->builder(), x, y);
++}
++
+ const FlutterSpiSceneApi* SpiSceneApi() {
+   return &kSceneApi;
+ }
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas.h b/engine/src/flutter/runtime_spi/scene/spi_canvas.h
+index 115833eb121..d9f66df5e06 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas.h
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas.h
+@@ -7,12 +7,18 @@
+ 
+ #include "flutter/runtime_spi/include/flutter_scene.h"
+ 
++struct FlutterSpiParagraph;
++
+ namespace flutter {
+ 
+ class DisplayList;
+ class DlPath;
+ 
+ const FlutterSpiSceneApi* SpiSceneApi();
++FlutterSpiResult CanvasDrawParagraph(FlutterSpiPictureRecorder* recorder,
++                                     FlutterSpiParagraph* paragraph,
++                                     float x,
++                                     float y);
+ const DisplayList* SpiPictureDisplayListForTesting(FlutterSpiPicture* picture);
+ const DlPath* SpiPathForTesting(FlutterSpiPath* path);
+ 
+diff --git a/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+index 2573476ad8a..59011e1a804 100644
+--- a/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+@@ -18,6 +18,7 @@
+ #include "flutter/lib/ui/window/pointer_data_packet.h"
+ #include "flutter/runtime/dart_vm.h"
+ #include "flutter/runtime_spi/testing/c_test_runtime.h"
++#include "flutter/runtime_spi/testing/test_icu.h"
+ #include "flutter/runtime_spi/scene/spi_scene_trace.h"
+ #include "flutter/shell/common/platform_message_handler.h"
+ #include "flutter/shell/common/platform_view.h"
+@@ -131,6 +132,7 @@ class HandlerPlatformView final : public PlatformView {
+ class SpiConformance : public ShellTest {
+  protected:
+   void SetUp() override {
++    InitializeIcuForTesting();
+     runtime_ = c_test_runtime_create();
+     task_runners_ = std::make_unique<TaskRunners>(GetTaskRunnersForFixture());
+   }
+@@ -144,6 +146,7 @@ class SpiConformance : public ShellTest {
+ 
+   void StartShell() {
+     auto settings = CreateSettingsForFixture();
++    settings.icu_data_path = IcuDataPathForTesting();
+     auto factory = std::make_shared<SpiRuntimeBackendFactory>(
+         c_test_runtime_table(runtime_));
+     shell_ = Shell::Create(
+@@ -161,6 +164,7 @@ class SpiConformance : public ShellTest {
+   void StartShellWithHandler(
+       const std::shared_ptr<PlatformMessageHandler>& handler) {
+     auto settings = CreateSettingsForFixture();
++    settings.icu_data_path = IcuDataPathForTesting();
+     auto factory = std::make_shared<SpiRuntimeBackendFactory>(
+         c_test_runtime_table(runtime_));
+     shell_ = Shell::Create(
+@@ -260,6 +264,35 @@ TEST_F(SpiConformance, SceneApiAnnouncedByCapability) {
+   EXPECT_NE(runtime_->engine_api->capabilities & kFlutterSpiCapScene, 0u);
+ }
+ 
++TEST_F(SpiConformance, TextApiAnnouncedByCapability) {
++  StartShell();
++
++  ASSERT_NE(runtime_->engine_api, nullptr);
++  ASSERT_NE(runtime_->engine_api->text, nullptr);
++  EXPECT_NE(runtime_->engine_api->capabilities & kFlutterSpiCapText, 0u);
++}
++
++TEST_F(SpiConformance, TextFrameRoundTrip) {
++  auto font = OpenFixtureAsMapping("Roboto-Regular.ttf");
++  ASSERT_NE(font, nullptr);
++  runtime_->draw_text_on_begin_frame = true;
++  runtime_->draw_text_font_data = font->GetMapping();
++  runtime_->draw_text_font_size = font->GetSize();
++  StartShell();
++
++  PumpOneFrame(shell_.get());
++  PostSync(shell_->GetTaskRunners().GetRasterTaskRunner(), [&] {
++    auto* layer_tree =
++        shell_->GetRasterizer()->GetLastLayerTree(kImplicitViewId);
++    ASSERT_NE(layer_tree, nullptr);
++    EXPECT_EQ(SceneTrace(*layer_tree),
++              "scene 1x1\n"
++              "container\n"
++              "  picture 0 0\n"
++              "    op drawText\n");
++  });
++}
++
+ TEST_F(SpiConformance, PointerEventsReachRuntime) {
+   StartShell();
+   auto packet = std::make_unique<PointerDataPacket>(1);
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index a968e51b636..10936a3db95 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -4,11 +4,50 @@
+ 
+ #include "flutter/runtime_spi/spi_engine_api.h"
+ 
++#include <utility>
++
++#include "flutter/lib/ui/text/font_collection.h"
++#include "flutter/runtime/runtime_delegate.h"
+ #include "flutter/runtime_spi/spi_runtime_backend.h"
+ #include "flutter/runtime_spi/spi_scene.h"
+ #include "flutter/runtime_spi/scene/spi_canvas.h"
++#include "flutter/runtime_spi/text/spi_font.h"
++#include "flutter/runtime_spi/text/spi_paragraph.h"
+ 
+ namespace flutter {
++namespace {
++
++void RegisterDynamicFont(void* user_data,
++                         std::string family_name,
++                         sk_sp<SkTypeface> typeface) {
++  static_cast<FontCollection*>(user_data)->RegisterDynamicFont(
++      std::move(family_name), std::move(typeface));
++}
++
++const FlutterSpiTextApi kTextApi = {
++    .struct_size = sizeof(FlutterSpiTextApi),
++    .font_load = SpiEngineApi::TextFontLoad,
++    .paragraph_builder_create = SpiEngineApi::TextParagraphBuilderCreate,
++    .paragraph_builder_push_style = SpiParagraphBuilderPushStyle,
++    .paragraph_builder_pop = SpiParagraphBuilderPop,
++    .paragraph_builder_add_text = SpiParagraphBuilderAddText,
++    .paragraph_builder_add_placeholder = SpiParagraphBuilderAddPlaceholder,
++    .paragraph_builder_build = SpiParagraphBuilderBuild,
++    .paragraph_builder_release = SpiParagraphBuilderRelease,
++    .paragraph_layout = SpiParagraphLayout,
++    .paragraph_get_metrics = SpiParagraphGetMetrics,
++    .paragraph_get_rects_for_range = SpiParagraphGetRectsForRange,
++    .paragraph_get_rects_for_placeholders =
++        SpiParagraphGetRectsForPlaceholders,
++    .paragraph_get_glyph_position_at = SpiParagraphGetGlyphPositionAt,
++    .paragraph_get_word_boundary = SpiParagraphGetWordBoundary,
++    .paragraph_get_line_metrics = SpiParagraphGetLineMetrics,
++    .paragraph_retain = SpiParagraphRetain,
++    .paragraph_release = SpiParagraphRelease,
++    .canvas_draw_paragraph = CanvasDrawParagraph,
++};
++
++}  // namespace
+ 
+ FlutterSpiEngineApi SpiEngineApi::Create() {
+   return {
+@@ -18,7 +57,8 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+       .capabilities = kFlutterSpiCapTasks | kFlutterSpiCapPlatformMessages |
+                       kFlutterSpiCapPointerEvents | kFlutterSpiCapKeyEvents |
+                       kFlutterSpiCapSemantics | kFlutterSpiCapViewFocus |
+-                      kFlutterSpiCapEmptyScene | kFlutterSpiCapScene,
++                      kFlutterSpiCapEmptyScene | kFlutterSpiCapScene |
++                      kFlutterSpiCapText,
+       .request_frame = RequestFrame,
+       .scene_create_empty = SceneCreateEmpty,
+       .scene_release = SceneRelease,
+@@ -31,9 +71,40 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+       .log = Log,
+       .report_error = ReportError,
+       .scene = SpiSceneApi(),
++      .text = &kTextApi,
+   };
+ }
+ 
++FlutterSpiResult SpiEngineApi::TextFontLoad(FlutterSpiEngine* engine,
++                                            const uint8_t* data,
++                                            size_t size,
++                                            const char* family_alias) {
++  if (engine == nullptr || engine->backend == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (!engine->backend->HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  return FontLoad(data, size, family_alias,
++                  &engine->backend->runtime_delegate_.GetFontCollection(),
++                  RegisterDynamicFont);
++}
++
++FlutterSpiResult SpiEngineApi::TextParagraphBuilderCreate(
++    FlutterSpiEngine* engine,
++    const FlutterSpiParagraphStyle* style,
++    FlutterSpiParagraphBuilder** out_builder) {
++  if (engine == nullptr || engine->backend == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (!engine->backend->HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  return SpiParagraphBuilderCreate(
++      engine->backend->runtime_delegate_.GetFontCollection().GetFontCollection(),
++      false, style, out_builder);
++}
++
+ FlutterSpiResult SpiEngineApi::RequestFrame(FlutterSpiEngine* engine) {
+   return engine == nullptr ? kFlutterSpiInvalidArgument
+                            : engine->backend->RequestFrame();
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.h b/engine/src/flutter/runtime_spi/spi_engine_api.h
+index 6e674c7217e..6f1f10ddb05 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.h
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.h
+@@ -46,6 +46,14 @@ class SpiEngineApi final {
+                   const char* message);
+   static FlutterSpiResult ReportError(FlutterSpiEngine* engine,
+                                       const char* message);
++  static FlutterSpiResult TextFontLoad(FlutterSpiEngine* engine,
++                                       const uint8_t* data,
++                                       size_t size,
++                                       const char* family_alias);
++  static FlutterSpiResult TextParagraphBuilderCreate(
++      FlutterSpiEngine* engine,
++      const FlutterSpiParagraphStyle* style,
++      FlutterSpiParagraphBuilder** out_builder);
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.c b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+index 49d32f01fb8..b26ebb0dcd5 100644
+--- a/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+@@ -67,6 +67,9 @@ static void copy_pointer_events(CTestRuntime* runtime,
+ static void test_runtime_submit_drawn_scene(
+     CTestRuntime* runtime,
+     const FlutterSpiFrameInfo* frame_info);
++static void test_runtime_submit_text_scene(
++    CTestRuntime* runtime,
++    const FlutterSpiFrameInfo* frame_info);
+ 
+ static FlutterSpiResult test_runtime_start(void* user_data,
+                                            const FlutterSpiEngineApi* api,
+@@ -120,12 +123,17 @@ static void test_runtime_begin_frame(void* user_data,
+     runtime->has_last_frame_info = true;
+   }
+   if ((!runtime->submit_on_begin_frame &&
+-       !runtime->draw_scene_on_begin_frame) ||
++       !runtime->draw_scene_on_begin_frame &&
++       !runtime->draw_text_on_begin_frame) ||
+       frame_info == NULL ||
+       !runtime->has_last_view_metrics || runtime->engine_api == NULL ||
+       runtime->engine == NULL) {
+     return;
+   }
++  if (runtime->draw_text_on_begin_frame) {
++    test_runtime_submit_text_scene(runtime, frame_info);
++    return;
++  }
+   if (runtime->draw_scene_on_begin_frame) {
+     test_runtime_submit_drawn_scene(runtime, frame_info);
+     return;
+@@ -258,6 +266,112 @@ static const FlutterSpiPaint k_scene_paint = {
+     .anti_alias = true,
+ };
+ 
++static const FlutterSpiColor k_text_color = {
++    .alpha = 1.0f,
++    .color_space = kFlutterSpiColorSpaceSRGB,
++};
++
++static bool test_runtime_load_text_font(CTestRuntime* runtime) {
++  const FlutterSpiTextApi* api = runtime->engine_api->text;
++
++  return api != NULL &&
++         api->font_load(runtime->engine, runtime->draw_text_font_data,
++                        runtime->draw_text_font_size, "Roboto") ==
++             kFlutterSpiOk;
++}
++
++static bool test_runtime_build_text_paragraph(
++    CTestRuntime* runtime,
++    FlutterSpiParagraph** out_paragraph) {
++  const FlutterSpiTextApi* api = runtime->engine_api->text;
++  const char* families[] = {"Roboto"};
++  const FlutterSpiParagraphStyle paragraph_style = {
++      .struct_size = sizeof(FlutterSpiParagraphStyle),
++      .font_family = "Roboto",
++      .font_size = 18.0f,
++  };
++  const FlutterSpiTextStyle text_style = {
++      .struct_size = sizeof(FlutterSpiTextStyle),
++      .color = k_text_color,
++      .font_families = families,
++      .font_family_count = 1,
++      .font_size = 18.0f,
++  };
++  FlutterSpiParagraphBuilder* builder = NULL;
++
++  if (api == NULL ||
++      api->paragraph_builder_create(runtime->engine, &paragraph_style,
++                                    &builder) != kFlutterSpiOk ||
++      api->paragraph_builder_push_style(builder, &text_style) !=
++          kFlutterSpiOk ||
++      api->paragraph_builder_add_text(builder, "Hello, SPI", 10) !=
++          kFlutterSpiOk ||
++      api->paragraph_builder_build(builder, out_paragraph) != kFlutterSpiOk) {
++    if (builder != NULL) {
++      api->paragraph_builder_release(builder);
++    }
++    return false;
++  }
++  return api->paragraph_layout(*out_paragraph, 160.0) == kFlutterSpiOk;
++}
++
++static bool test_runtime_create_text_picture(CTestRuntime* runtime,
++                                             FlutterSpiPicture** out_picture) {
++  const FlutterSpiTextApi* text_api = runtime->engine_api->text;
++  const FlutterSpiSceneApi* scene_api = runtime->engine_api->scene;
++  FlutterSpiParagraph* paragraph = NULL;
++  FlutterSpiPictureRecorder* recorder = NULL;
++
++  if (!test_runtime_load_text_font(runtime) ||
++      !test_runtime_build_text_paragraph(runtime, &paragraph) ||
++      scene_api->recorder_create(runtime->engine, NULL, &recorder) !=
++          kFlutterSpiOk ||
++      text_api->canvas_draw_paragraph(recorder, paragraph, 0.0f, 0.0f) !=
++          kFlutterSpiOk ||
++      scene_api->recorder_finish(recorder, out_picture) != kFlutterSpiOk) {
++    if (recorder != NULL) {
++      scene_api->recorder_release(recorder);
++    }
++    if (paragraph != NULL) {
++      text_api->paragraph_release(paragraph);
++    }
++    return false;
++  }
++  text_api->paragraph_release(paragraph);
++  return true;
++}
++
++static void test_runtime_submit_text_scene(
++    CTestRuntime* runtime,
++    const FlutterSpiFrameInfo* frame_info) {
++  const FlutterSpiSceneApi* api = runtime->engine_api->scene;
++  FlutterSpiPicture* picture = NULL;
++  FlutterSpiSceneBuilder* builder = NULL;
++  FlutterSpiScene* scene = NULL;
++
++  if (!test_runtime_create_text_picture(runtime, &picture) ||
++      api->scene_builder_create(runtime->engine, &builder) != kFlutterSpiOk ||
++      api->scene_add_picture(builder, 0.0f, 0.0f, picture, false, false) !=
++          kFlutterSpiOk ||
++      api->scene_build(builder, (int64_t)runtime->last_view_metrics.physical_width,
++                       (int64_t)runtime->last_view_metrics.physical_height,
++                       &scene) != kFlutterSpiOk) {
++    if (builder != NULL) {
++      api->scene_builder_release(builder);
++    }
++    if (picture != NULL) {
++      api->picture_release(picture);
++    }
++    return;
++  }
++
++  api->picture_release(picture);
++  runtime->engine_api->submit_frame(
++      runtime->engine, runtime->last_view_metrics.view_id,
++      frame_info->frame_token, scene,
++      runtime->last_view_metrics.device_pixel_ratio);
++}
++
+ static bool create_scene_picture(const FlutterSpiSceneApi* api,
+                                 FlutterSpiEngine* engine,
+                                 FlutterSpiPicture** out_picture) {
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.h b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+index c5df03d6dd1..0b0d0b34ea9 100644
+--- a/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+@@ -45,6 +45,9 @@ typedef struct CTestRuntime {
+   bool respond_to_messages;
+   bool submit_on_begin_frame;
+   bool draw_scene_on_begin_frame;
++  bool draw_text_on_begin_frame;
++  const uint8_t* draw_text_font_data;
++  size_t draw_text_font_size;
+   bool fail_start;
+   bool key_event_handled;
+ } CTestRuntime;
+diff --git a/engine/src/flutter/runtime_spi/testing/test_icu.cc b/engine/src/flutter/runtime_spi/testing/test_icu.cc
+new file mode 100644
+index 00000000000..612acf27b50
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/test_icu.cc
+@@ -0,0 +1,24 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/testing/test_icu.h"
++
++#include "flutter/fml/icu_util.h"
++#include "flutter/fml/paths.h"
++
++namespace flutter::testing {
++
++std::string IcuDataPathForTesting() {
++  const auto executable_directory = fml::paths::GetExecutableDirectoryPath();
++  if (!executable_directory.first) {
++    return {};
++  }
++  return fml::paths::JoinPaths({executable_directory.second, "icudtl.dat"});
++}
++
++void InitializeIcuForTesting() {
++  fml::icu::InitializeICU(IcuDataPathForTesting());
++}
++
++}  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/testing/test_icu.h b/engine/src/flutter/runtime_spi/testing/test_icu.h
+new file mode 100644
+index 00000000000..b06794d3a2a
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/test_icu.h
+@@ -0,0 +1,17 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_TESTING_TEST_ICU_H_
++#define FLUTTER_RUNTIME_SPI_TESTING_TEST_ICU_H_
++
++#include <string>
++
++namespace flutter::testing {
++
++std::string IcuDataPathForTesting();
++void InitializeIcuForTesting();
++
++}  // namespace flutter::testing
++
++#endif  // FLUTTER_RUNTIME_SPI_TESTING_TEST_ICU_H_
+diff --git a/engine/src/flutter/runtime_spi/text/spi_paragraph_draw_parity_unittests.cc b/engine/src/flutter/runtime_spi/text/spi_paragraph_draw_parity_unittests.cc
+new file mode 100644
+index 00000000000..d305731ffa1
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/text/spi_paragraph_draw_parity_unittests.cc
+@@ -0,0 +1,217 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/spi_engine_api.h"
++
++#include <memory>
++#include <string_view>
++#include <variant>
++#include <vector>
++
++#include "flutter/display_list/utils/dl_receiver_utils.h"
++#include "flutter/lib/ui/text/font_collection.h"
++#include "flutter/runtime_spi/scene/spi_canvas.h"
++#include "flutter/runtime_spi/testing/test_icu.h"
++#include "flutter/runtime_spi/scene/spi_geometry.h"
++#include "flutter/runtime_spi/text/spi_font.h"
++#include "flutter/runtime_spi/text/spi_paragraph.h"
++#include "flutter/runtime_spi/text/spi_text_style.h"
++#include "flutter/runtime_spi/spi_runtime_backend.h"
++#include "flutter/testing/testing.h"
++#include "flutter/third_party/skia/include/core/SkTextBlob.h"
++#include "txt/paragraph_builder.h"
++
++namespace flutter::testing {
++namespace {
++
++constexpr double kLayoutWidth = 160.0;
++constexpr float kParagraphX = 9.0f;
++constexpr float kParagraphY = 11.0f;
++const char* const kRobotoFamilies[] = {"Roboto"};
++constexpr FlutterSpiColor kTextColor = {
++    .alpha = 1.0f,
++    .color_space = kFlutterSpiColorSpaceSRGB,
++};
++
++void RegisterFont(void* user_data,
++                  std::string family_name,
++                  sk_sp<SkTypeface> typeface) {
++  static_cast<FontCollection*>(user_data)->RegisterDynamicFont(
++      std::move(family_name), std::move(typeface));
++}
++
++class SpiParagraphDrawTest : public ::testing::Test {
++ protected:
++  void SetUp() override {
++    InitializeIcuForTesting();
++
++    font_collection_ = std::make_shared<FontCollection>();
++    auto mapping = OpenFixtureAsMapping("Roboto-Regular.ttf");
++    ASSERT_NE(mapping, nullptr);
++    ASSERT_EQ(FontLoad(mapping->GetMapping(), mapping->GetSize(), nullptr,
++                       font_collection_.get(), RegisterFont),
++              kFlutterSpiOk);
++  }
++
++  FlutterSpiParagraph* BuildSpiParagraph() const {
++    const FlutterSpiParagraphStyle paragraph_style = {
++        .struct_size = sizeof(FlutterSpiParagraphStyle),
++        .font_family = "Roboto",
++        .font_size = 18.0f,
++    };
++    const FlutterSpiTextStyle text_style = {
++        .struct_size = sizeof(FlutterSpiTextStyle),
++        .color = kTextColor,
++        .font_families = kRobotoFamilies,
++        .font_family_count = 1,
++        .font_size = 18.0f,
++    };
++    FlutterSpiParagraphBuilder* builder = nullptr;
++    EXPECT_EQ(SpiParagraphBuilderCreate(font_collection_->GetFontCollection(),
++                                        false, &paragraph_style, &builder),
++              kFlutterSpiOk);
++    EXPECT_EQ(SpiParagraphBuilderPushStyle(builder, &text_style),
++              kFlutterSpiOk);
++    EXPECT_EQ(SpiParagraphBuilderAddText(builder, "Hello, SPI", 10),
++              kFlutterSpiOk);
++    FlutterSpiParagraph* paragraph = nullptr;
++    EXPECT_EQ(SpiParagraphBuilderBuild(builder, &paragraph), kFlutterSpiOk);
++    return paragraph;
++  }
++
++  std::unique_ptr<txt::Paragraph> BuildTxtParagraph() const {
++    const FlutterSpiParagraphStyle paragraph_style = {
++        .struct_size = sizeof(FlutterSpiParagraphStyle),
++        .font_family = "Roboto",
++        .font_size = 18.0f,
++    };
++    const FlutterSpiTextStyle text_style = {
++        .struct_size = sizeof(FlutterSpiTextStyle),
++        .color = kTextColor,
++        .font_families = kRobotoFamilies,
++        .font_family_count = 1,
++        .font_size = 18.0f,
++    };
++    auto builder = txt::ParagraphBuilder::CreateSkiaBuilder(
++        ToTxtParagraphStyle(&paragraph_style),
++        font_collection_->GetFontCollection(), false);
++    builder->PushStyle(ToTxtTextStyle(&text_style));
++    builder->AddText(u"Hello, SPI");
++    auto paragraph = builder->Build();
++    paragraph->Layout(kLayoutWidth);
++    return paragraph;
++  }
++
++  std::shared_ptr<FontCollection> font_collection_;
++};
++
++struct ColorDrawRecord {
++  DlColor color;
++
++  bool operator==(const ColorDrawRecord&) const = default;
++};
++
++struct TextDrawRecord {
++  DlScalar x;
++  DlScalar y;
++  DlRect bounds;
++  std::vector<SkGlyphID> glyphs;
++
++  bool operator==(const TextDrawRecord&) const = default;
++};
++
++using TextDrawOperation = std::variant<ColorDrawRecord, TextDrawRecord>;
++
++class TextDrawRecorder final
++    : public IgnoreAttributeDispatchHelper,
++      public IgnoreClipDispatchHelper,
++      public IgnoreTransformDispatchHelper,
++      public IgnoreDrawDispatchHelper {
++ public:
++  void setColor(DlColor color) override {
++    operations.emplace_back(ColorDrawRecord{.color = color});
++  }
++
++  void drawText(const std::shared_ptr<DlText>& text,
++                DlScalar x,
++                DlScalar y) override {
++    ASSERT_NE(text, nullptr);
++    const SkTextBlob* blob = text->GetTextBlob();
++    ASSERT_NE(blob, nullptr)
++        << "TextDrawRecorder requires a SkTextBlob-backed DlText";
++    if (blob == nullptr) {
++      return;
++    }
++
++    TextDrawRecord record = {
++        .x = x,
++        .y = y,
++        .bounds = text->GetBounds(),
++    };
++    SkTextBlob::Iter iterator(*blob);
++    SkTextBlob::Iter::Run run = {};
++    while (iterator.next(&run)) {
++      if (run.fGlyphCount == 0) {
++        continue;
++      }
++      record.glyphs.insert(record.glyphs.end(), run.fGlyphIndices,
++                           run.fGlyphIndices + run.fGlyphCount);
++    }
++    operations.emplace_back(std::move(record));
++  }
++
++  bool HasDrawTextWithGlyphs() const {
++    for (const TextDrawOperation& operation : operations) {
++      const auto* text = std::get_if<TextDrawRecord>(&operation);
++      if (text != nullptr && !text->glyphs.empty()) {
++        return true;
++      }
++    }
++    return false;
++  }
++
++  std::vector<TextDrawOperation> operations;
++};
++
++TEST_F(SpiParagraphDrawTest, DrawParagraphMatchesTxtPaint) {
++  FlutterSpiEngine engine = {};
++  FlutterSpiParagraph* paragraph = BuildSpiParagraph();
++  ASSERT_NE(paragraph, nullptr);
++  ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
++
++  const FlutterSpiTextApi* text_api = SpiEngineApi::Create().text;
++  ASSERT_NE(text_api, nullptr);
++
++  FlutterSpiPictureRecorder* recorder = nullptr;
++  ASSERT_EQ(SpiSceneApi()->recorder_create(&engine, nullptr, &recorder),
++            kFlutterSpiOk);
++  ASSERT_EQ(text_api->canvas_draw_paragraph(recorder, paragraph, kParagraphX,
++                                            kParagraphY),
++            kFlutterSpiOk);
++  FlutterSpiPicture* picture = nullptr;
++  ASSERT_EQ(SpiSceneApi()->recorder_finish(recorder, &picture), kFlutterSpiOk);
++
++  auto expected_paragraph = BuildTxtParagraph();
++  DisplayListBuilder expected(DisplayListBuilder::kMaxCullRect);
++  ASSERT_TRUE(expected_paragraph->Paint(&expected, kParagraphX, kParagraphY));
++  const auto expected_list = expected.Build();
++  const auto actual_list = SpiPictureDisplayListForTesting(picture);
++  ASSERT_NE(actual_list, nullptr);
++
++  EXPECT_EQ(actual_list->op_count(), expected_list->op_count());
++  EXPECT_EQ(actual_list->GetBounds(), expected_list->GetBounds());
++
++  TextDrawRecorder actual_recorder;
++  actual_list->Dispatch(actual_recorder);
++  TextDrawRecorder expected_recorder;
++  expected_list->Dispatch(expected_recorder);
++  EXPECT_EQ(actual_recorder.operations, expected_recorder.operations);
++  EXPECT_TRUE(expected_recorder.HasDrawTextWithGlyphs());
++
++  EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
++  EXPECT_EQ(SpiSceneApi()->picture_release(picture), kFlutterSpiOk);
++}
++
++}  // namespace
++}  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/text/spi_paragraph_parity_unittests.cc b/engine/src/flutter/runtime_spi/text/spi_paragraph_parity_unittests.cc
+index adb6868e50d..6e3329495c8 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_paragraph_parity_unittests.cc
++++ b/engine/src/flutter/runtime_spi/text/spi_paragraph_parity_unittests.cc
+@@ -8,11 +8,10 @@
+ #include <string>
+ #include <string_view>
+ 
+-#include "flutter/fml/icu_util.h"
+-#include "flutter/fml/paths.h"
+ #include "flutter/lib/ui/text/font_collection.h"
+ #include "flutter/runtime_spi/text/spi_font.h"
+ #include "flutter/runtime_spi/text/spi_text_style.h"
++#include "flutter/runtime_spi/testing/test_icu.h"
+ #include "flutter/testing/testing.h"
+ #include "txt/paragraph_builder.h"
+ 
+@@ -32,11 +31,7 @@ void RegisterFont(void* user_data,
+ class SpiParagraphTest : public ::testing::Test {
+  protected:
+   void SetUp() override {
+-    const auto executable_directory =
+-        fml::paths::GetExecutableDirectoryPath();
+-    ASSERT_TRUE(executable_directory.first);
+-    fml::icu::InitializeICU(fml::paths::JoinPaths(
+-        {executable_directory.second, "icudtl.dat"}));
++    InitializeIcuForTesting();
+ 
+     font_collection_ = std::make_shared<FontCollection>();
+     auto mapping = OpenFixtureAsMapping("Roboto-Regular.ttf");
