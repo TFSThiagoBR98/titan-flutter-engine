@@ -1,0 +1,102 @@
+# Why: specify reuse for identical paints and invalidation for changed fields
+# or released shader handles.
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_paint.h b/engine/src/flutter/runtime_spi/scene/spi_paint.h
+index 6429ab051a8..529af28907d 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_paint.h
++++ b/engine/src/flutter/runtime_spi/scene/spi_paint.h
+@@ -9,6 +9,10 @@
+ #include "flutter/display_list/dl_tile_mode.h"
+ #include "flutter/runtime_spi/include/flutter_scene.h"
+ 
++#include <cstddef>
++#include <cstdint>
++#include <vector>
++
+ namespace flutter {
+ 
+ FlutterSpiResult TryToDlPaint(const FlutterSpiPaint& paint,
+@@ -18,6 +22,26 @@ FlutterSpiResult TryToDlPaint(const FlutterSpiPaint& paint, DlPaint* out_paint);
+ DlPaint ToDlPaint(const FlutterSpiPaint& paint, DlTileMode tile_mode);
+ DlPaint ToDlPaint(const FlutterSpiPaint& paint);
+ 
++class SpiPaintCache final {
++ public:
++  FlutterSpiResult Convert(const FlutterSpiPaint& paint,
++                           DlTileMode tile_mode,
++                           const DlPaint** out_paint);
++
++ private:
++  bool Matches(const FlutterSpiPaint& paint, DlTileMode tile_mode) const;
++  bool HandlesAreValid(const FlutterSpiPaint& paint) const;
++  void Store(const FlutterSpiPaint& paint,
++             DlTileMode tile_mode,
++             DlPaint converted_paint);
++
++  std::vector<uint8_t> paint_bytes_;
++  std::size_t struct_size_ = 0;
++  DlTileMode tile_mode_ = DlTileMode::kDecal;
++  DlPaint paint_;
++  bool has_paint_ = false;
++};
++
+ }  // namespace flutter
+ 
+ #endif  // FLUTTER_RUNTIME_SPI_SCENE_SPI_PAINT_H_
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_paint_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_paint_unittests.cc
+index 70c106937ef..d9a9c4a788c 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_paint_unittests.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_paint_unittests.cc
+@@ -212,5 +212,53 @@ TEST(SpiPaint, OlderStructUsesDlPaintDefaults) {
+   EXPECT_FALSE(paint.isInvertColors());
+ }
+ 
++TEST(SpiPaint, CachedPaintIsReusedForIdenticalStructs) {
++  SpiPaintCache cache;
++  const FlutterSpiPaint input = TestPaint();
++  const DlPaint* first = nullptr;
++  const DlPaint* second = nullptr;
++
++  ASSERT_EQ(cache.Convert(input, DlTileMode::kDecal, &first), kFlutterSpiOk);
++  ASSERT_EQ(cache.Convert(input, DlTileMode::kDecal, &second), kFlutterSpiOk);
++
++  EXPECT_EQ(first, second);
++}
++
++TEST(SpiPaint, CacheMissesWhenAFieldChanges) {
++  SpiPaintCache cache;
++  FlutterSpiPaint input = TestPaint();
++  const DlPaint* first = nullptr;
++  const DlPaint* second = nullptr;
++
++  ASSERT_EQ(cache.Convert(input, DlTileMode::kDecal, &first), kFlutterSpiOk);
++  input.color.red = 0.9f;
++  ASSERT_EQ(cache.Convert(input, DlTileMode::kDecal, &second), kFlutterSpiOk);
++
++  EXPECT_NE(first, second);
++}
++
++TEST(SpiPaint, CacheMissesWhenTheShaderHandleWasReleased) {
++  FlutterSpiEngine engine = {};
++  const auto colors = TestGradientColors();
++  FlutterSpiShader* shader = nullptr;
++  ASSERT_EQ(SpiShaderLinearGradient(&engine, {1.0f, 2.0f}, {30.0f, 40.0f},
++                                    colors.data(), nullptr, colors.size(),
++                                    kFlutterSpiTileModeMirror, nullptr,
++                                    &shader),
++            kFlutterSpiOk);
++
++  SpiPaintCache cache;
++  FlutterSpiPaint input = TestPaint();
++  input.shader = shader;
++  const DlPaint* first = nullptr;
++  ASSERT_EQ(cache.Convert(input, DlTileMode::kDecal, &first), kFlutterSpiOk);
++  ASSERT_EQ(SpiShaderRelease(shader), kFlutterSpiOk);
++
++  const DlPaint* second = first;
++  EXPECT_EQ(cache.Convert(input, DlTileMode::kDecal, &second),
++            kFlutterSpiInvalidHandle);
++  EXPECT_EQ(second, nullptr);
++}
++
+ }  // namespace
+ }  // namespace flutter::testing

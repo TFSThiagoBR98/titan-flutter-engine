@@ -1,0 +1,19 @@
+# Why: compare paint values after the cache replaces its reusable storage
+# instead of comparing its stable address.
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_paint_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_paint_unittests.cc
+index d9a9c4a788c..30a7adf9d64 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_paint_unittests.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_paint_unittests.cc
+@@ -231,10 +231,11 @@ TEST(SpiPaint, CacheMissesWhenAFieldChanges) {
+   const DlPaint* second = nullptr;
+ 
+   ASSERT_EQ(cache.Convert(input, DlTileMode::kDecal, &first), kFlutterSpiOk);
++  const DlPaint first_paint = *first;
+   input.color.red = 0.9f;
+   ASSERT_EQ(cache.Convert(input, DlTileMode::kDecal, &second), kFlutterSpiOk);
+ 
+-  EXPECT_NE(first, second);
++  EXPECT_NE(first_paint, *second);
+ }
+ 
+ TEST(SpiPaint, CacheMissesWhenTheShaderHandleWasReleased) {
