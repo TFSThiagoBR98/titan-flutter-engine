@@ -100,11 +100,19 @@ run_ninja() {
     )
   fi
 
-  if nice "$ninja" -C "$output_directory" -k 0 -j "$TITAN_JOBS" "${targets[@]}"; then
-    printf 'ninja: ok\n'
-    return 0
+  setsid nice "$ninja" -C "$output_directory" -k 0 -j "$TITAN_JOBS" \
+    "${targets[@]}" &
+  ninja_pid=$!
+  if wait "$ninja_pid"; then
+    status=0
   else
     status=$?
+  fi
+  ninja_pid=''
+
+  if ((status == 0)); then
+    printf 'ninja: ok\n'
+    return 0
   fi
 
   printf 'ninja: failed (%s)\n' "$status" >&2
@@ -128,6 +136,41 @@ run_tests() {
   printf 'tests: failed (%s)\n' "$status" >&2
   return "$status"
 }
+
+ninja_pid=''
+
+stop_ninja() {
+  local child_pid=${ninja_pid:-}
+  if [[ -z "$child_pid" ]]; then
+    return 0
+  fi
+
+  ninja_pid=''
+  kill -TERM -- "-$child_pid" 2>/dev/null || \
+    kill -TERM "$child_pid" 2>/dev/null || true
+  wait "$child_pid" 2>/dev/null || true
+}
+
+handle_signal() {
+  local signal=$1
+  local status=143
+  case "$signal" in
+    HUP)
+      status=129
+      ;;
+    INT)
+      status=130
+      ;;
+  esac
+
+  stop_ninja
+  exit "$status"
+}
+
+trap 'handle_signal TERM' TERM
+trap 'handle_signal INT' INT
+trap 'handle_signal HUP' HUP
+trap stop_ninja EXIT
 
 run_build
 

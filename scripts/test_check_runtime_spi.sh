@@ -4,12 +4,22 @@ set -euo pipefail
 repository_root=$(cd "$(dirname "$0")/.." && pwd -P)
 check_script="$repository_root/scripts/check-runtime-spi.sh"
 temporary_directory=$(mktemp -d)
-trap 'rm -rf "$temporary_directory"' EXIT
 
 fail() {
   printf 'error: %s\n' "$*" >&2
   exit 1
 }
+
+cleanup() {
+  if [[ -f ${ninja_pid_log:-} ]]; then
+    while read -r pid; do
+      kill -TERM "$pid" 2>/dev/null || true
+    done < "$ninja_pid_log"
+  fi
+  rm -rf "$temporary_directory"
+}
+
+trap cleanup EXIT
 
 assert_contains() {
   local file=$1 expected=$2 description=$3
@@ -39,6 +49,7 @@ work_directory="$temporary_directory/.build_flutter"
 fake_bin="$temporary_directory/bin"
 build_log="$temporary_directory/build.log"
 ninja_log="$temporary_directory/ninja.log"
+ninja_pid_log="$temporary_directory/ninja-pids.log"
 ninja_environment="$temporary_directory/ninja-environment.log"
 runner_log="$temporary_directory/runner.log"
 order_log="$temporary_directory/order.log"
@@ -77,6 +88,12 @@ printf '%s\n' "$@" > "$NINJA_LOG"
   printf 'PATH=%s\n' "$PATH"
 } > "$NINJA_ENVIRONMENT"
 printf 'ninja\n' >> "$ORDER_LOG"
+if ((FAKE_NINJA_SLEEP_SECONDS > 0)); then
+  sleep "$FAKE_NINJA_SLEEP_SECONDS" &
+  sleep_pid=$!
+  printf '%s\n%s\n' "$$" "$sleep_pid" > "$NINJA_PID_LOG"
+  wait "$sleep_pid"
+fi
 exit "${FAKE_NINJA_STATUS:-0}"
 EOF
 chmod +x "$fake_bin/ninja"
@@ -98,12 +115,14 @@ run_check() {
   TITAN_RUN_ENGINE_TESTS="$fake_bin/run-engine-tests" \
   BUILD_LOG="$build_log" \
   NINJA_LOG="$ninja_log" \
+  NINJA_PID_LOG="$ninja_pid_log" \
   NINJA_ENVIRONMENT="$ninja_environment" \
   RUNNER_LOG="$runner_log" \
   ORDER_LOG="$order_log" \
   FAKE_NO_UNIT_BUILD_STATUS="${FAKE_NO_UNIT_BUILD_STATUS:-0}" \
   FAKE_ARGS_GN="${FAKE_ARGS_GN:-enable_unittests = true}" \
   FAKE_NINJA_STATUS="${FAKE_NINJA_STATUS:-0}" \
+  FAKE_NINJA_SLEEP_SECONDS="${FAKE_NINJA_SLEEP_SECONDS:-0}" \
     "$check_script" "$@"
 }
 
@@ -225,5 +244,39 @@ assert_contains "$output_log" "another build is running in $lock_directory" \
 [[ ! -s "$build_log" ]] || fail 'build-engine ran while the check lock was held'
 [[ ! -e "$ninja_log" ]] || fail 'ninja ran while the check lock was held'
 [[ ! -e "$runner_log" ]] || fail 'runner ran while the check lock was held'
+
+rm -f "$ninja_log" "$runner_log" "$ninja_pid_log"
+if timeout --foreground --preserve-status 2 env \
+  TITAN_WORK_DIR="$work_directory" \
+  TITAN_BUILD_ENGINE="$fake_bin/build-engine" \
+  TITAN_NINJA="$fake_bin/ninja" \
+  TITAN_RUN_ENGINE_TESTS="$fake_bin/run-engine-tests" \
+  BUILD_LOG="$build_log" \
+  NINJA_LOG="$ninja_log" \
+  NINJA_PID_LOG="$ninja_pid_log" \
+  NINJA_ENVIRONMENT="$ninja_environment" \
+  RUNNER_LOG="$runner_log" \
+  ORDER_LOG="$order_log" \
+  FAKE_NO_UNIT_BUILD_STATUS=0 \
+  FAKE_ARGS_GN='enable_unittests = true' \
+  FAKE_NINJA_STATUS=0 \
+  FAKE_NINJA_SLEEP_SECONDS=30 \
+  "$check_script" >"$output_log" 2>&1; then
+  fail 'interrupted check should fail'
+else
+  status=$?
+fi
+[[ "$status" -eq 143 ]] || fail "interrupted check returned $status instead of 143"
+[[ -s "$ninja_pid_log" ]] || fail 'fake ninja did not start before interruption'
+while read -r pid; do
+  if kill -0 "$pid" 2>/dev/null; then
+    fail "fake ninja process $pid survived interruption"
+  fi
+done < "$ninja_pid_log"
+if (exec 9>"$lock_path"; flock -n 9); then
+  :
+else
+  fail 'build lock remained held after interruption'
+fi
 
 printf 'test_check_runtime_spi.sh: ok\n'
