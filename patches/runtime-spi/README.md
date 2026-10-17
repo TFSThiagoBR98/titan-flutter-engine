@@ -55,6 +55,12 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0045-feat-engine-draw-spi-vertices.patch` | Expor a criação e o desenho de vertices pela API de cena. | |
 | `0046-test-engine-exercise-spi-paint-effects-end-to-end.patch` | Exercitar efeitos de pintura e vertices pela suíte de conformidade ponta a ponta. | |
 | `0047-fix-engine-freeze-the-32-bit-size-of-the-spi-engine-api-at-abi-0-6.patch` | Congelar o tamanho correto da tabela ABI em 32 bits depois da inclusão de `paint_effects`. | |
+| `0048-feat-engine-add-the-runtime-spi-scene-layers-to-the-abi.patch` | Adicionar a ABI 0.7 para as camadas restantes do scene builder. | |
+| `0049-feat-engine-resolve-dynamic-spi-blur-tile-modes-like-dart-ui.patch` | Resolver tile modes dinâmicos de blur como o `dart:ui`, incluindo bounds. | |
+| `0050-feat-engine-push-spi-filter-mask-and-superellipse-layers.patch` | Expor camadas de filtro, máscara e clip de superelipse pela API de cena. | |
+| `0051-feat-engine-add-spi-texture-platform-view-and-overlay-layers.patch` | Expor camadas de textura, platform view e performance overlay pela API de cena. | |
+| `0052-feat-engine-retain-spi-engine-layers-across-frames.patch` | Reter camadas do engine entre quadros e reutilizá-las no scene builder. | |
+| `0053-test-engine-exercise-spi-scene-layers-end-to-end.patch` | Exercitar as camadas do scene builder pela suíte de conformidade ponta a ponta. | |
 
 O fluxo é:
 

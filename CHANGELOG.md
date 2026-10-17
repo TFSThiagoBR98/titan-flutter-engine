@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   saída de imagens ponta a ponta.
 - Runtime SPI S3b-4a: ABI 0.6 para shaders, filtros de cor e imagem, máscara de
   blur e vertices, com pintura e conformidade ponta a ponta sem Dart.
+- Runtime SPI S3b-4b: ABI 0.7 para as camadas restantes do scene builder (color filter, image filter, backdrop,
+  shader mask, clip de superelipse, textura, platform view e performance overlay), camadas retidas entre quadros e
+  blur com tile mode dinâmico e bounds, com conformidade ponta a ponta sem Dart.
 
 ### Fixed
 

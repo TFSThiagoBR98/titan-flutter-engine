@@ -326,6 +326,16 @@ contém 62 patches do repositório do Flutter, dos quais 47 pertencem a
 Os números, o hash do engine e as correções do layout de 32 bits estão em
 [runtime-spi-s3b4a.md](medidas/runtime-spi-s3b4a.md).
 
+## S3b-4b: camadas do scene builder
+
+A S3b-4b amplia o Runtime SPI para as camadas restantes do scene builder: color filter, image filter, backdrop, shader mask, clip de superelipse, textura, platform view e performance overlay. A ABI 0.7 acrescenta as funções novas no fim da `FlutterSpiSceneApi`, além de `image_filter_blur_bounded` no fim da `FlutterSpiPaintEffectsApi`, e a capacidade `kFlutterSpiCapSceneLayers`.
+
+As camadas retidas usam o handle `FlutterSpiEngineLayer`. Em vez de mudar as `scene_push_*` congeladas da S3a, o runtime usa `scene_take_last_layer` para obter a camada no topo da pilha, `scene_assign_old_layer` para preservar o `original_layer_id`, como o `oldLayer` do `dart:ui`, e `scene_add_retained` para inserir o mesmo objeto `Layer` no quadro seguinte. O handle sobrevive ao builder, e a regra de uso único por cena de `compositing.dart` (`_debugCheckUsedOnce`) é aplicada sempre, não só em debug.
+
+O blur dinâmico usa `tile_mode = -1`, como o `tile_mode_index < 0` do `ImageFilter::initBlur`; quem usa o filtro escolhe o modo: imagens, atlas e `drawPaint` resolvem `kClamp`, as demais operações de canvas resolvem `kDecal`, a camada de image filter resolve `kDecal` e o backdrop resolve `kMirror`, como o `canvas.cc` e o `scene_builder.cc`. Esse suporte, junto com os `bounds`, faltava na S3b-4a.
+
+O checkpoint confirmou 1204 PASS e 0 FAIL no `check-runtime-spi.sh`, o probe `9afdbcd18abd9b35` em x64 e arm64-musl sob QEMU, a configuração `--gn-only` dos dez alvos, o alvo `runtime_spi_c_api` em arm-hard e `tools/ci.sh engine`. A série limpa contém 68 patches do repositório do Flutter, dos quais 53 pertencem a `runtime-spi`. Os números e a identificação do engine estão em [runtime-spi-s3b4b.md](medidas/runtime-spi-s3b4b.md).
+
 ## Ciclo de vida e falhas
 
 O host cria, inicia, encerra e libera o backend. Uma falha recuperável encerra o runtime ativo e limpa os recursos;
