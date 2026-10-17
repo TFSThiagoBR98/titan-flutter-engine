@@ -1,0 +1,159 @@
+# Why: drive picture snapshots, RawRGBA readback, and image drawing through
+# the pure C Runtime SPI conformance runtime.
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.c b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+index 52d35ceb6cb..52e1c1daee8 100644
+--- a/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+@@ -73,6 +73,15 @@ static void test_runtime_submit_text_scene(
+ static void test_runtime_submit_image_scene(
+     CTestRuntime* runtime,
+     const FlutterSpiFrameInfo* frame_info);
++static void test_runtime_snapshot_image_callback(void* user_data,
++                                                 FlutterSpiResult result,
++                                                 FlutterSpiImage* image);
++static void test_runtime_snapshot_bytes_callback(void* user_data,
++                                                 FlutterSpiResult result,
++                                                 const uint8_t* bytes,
++                                                 size_t size);
++static bool test_runtime_create_snapshot_picture(CTestRuntime* runtime,
++                                                 FlutterSpiPicture** out_picture);
+ 
+ static void test_runtime_image_callback(void* user_data,
+                                         FlutterSpiResult result,
+@@ -146,11 +155,37 @@ static void test_runtime_begin_frame(void* user_data,
+   }
+   if ((!runtime->submit_on_begin_frame && !runtime->draw_scene_on_begin_frame &&
+        !runtime->draw_text_on_begin_frame &&
+-       !runtime->draw_image_on_begin_frame) ||
++       !runtime->draw_image_on_begin_frame &&
++       !runtime->snapshot_on_begin_frame) ||
+       frame_info == NULL || !runtime->has_last_view_metrics ||
+       runtime->engine_api == NULL || runtime->engine == NULL) {
+     return;
+   }
++  if (runtime->snapshot_on_begin_frame) {
++    if (!runtime->snapshot_requested) {
++      const FlutterSpiImageApi* api = runtime->engine_api->image;
++      FlutterSpiPicture* picture = NULL;
++      runtime->snapshot_requested = true;
++      if (api == NULL ||
++          !test_runtime_create_snapshot_picture(runtime, &picture)) {
++        runtime->snapshot_callback_result = kFlutterSpiInternalError;
++        return;
++      }
++      runtime->snapshot_picture = picture;
++      runtime->snapshot_callback_result = api->picture_to_image(
++          runtime->engine, picture, 1, 1, test_runtime_snapshot_image_callback,
++          runtime);
++      if (runtime->snapshot_callback_result != kFlutterSpiOk) {
++        runtime->engine_api->scene->picture_release(picture);
++        runtime->snapshot_picture = NULL;
++      }
++      return;
++    }
++    if (runtime->snapshot_bytes_ready && runtime->image != NULL) {
++      test_runtime_submit_image_scene(runtime, frame_info);
++    }
++    return;
++  }
+   if (runtime->draw_text_on_begin_frame) {
+     test_runtime_submit_text_scene(runtime, frame_info);
+     return;
+@@ -303,6 +338,16 @@ static const FlutterSpiPaint k_scene_paint = {
+     .anti_alias = true,
+ };
+ 
++static const FlutterSpiPaint k_snapshot_paint = {
++    .struct_size = sizeof(FlutterSpiPaint),
++    .color = {.red = 1.0f,
++              .alpha = 1.0f,
++              .color_space = kFlutterSpiColorSpaceSRGB},
++    .blend_mode = kFlutterSpiBlendModeSrcOver,
++    .style = kFlutterSpiPaintStyleFill,
++    .anti_alias = false,
++};
++
+ static const FlutterSpiColor k_text_color = {
+     .alpha = 1.0f,
+     .color_space = kFlutterSpiColorSpaceSRGB,
+@@ -522,6 +567,80 @@ static void test_runtime_submit_image_scene(
+       runtime->last_view_metrics.device_pixel_ratio);
+ }
+ 
++static void test_runtime_snapshot_bytes_callback(void* user_data,
++                                                 FlutterSpiResult result,
++                                                 const uint8_t* bytes,
++                                                 size_t size) {
++  CTestRuntime* runtime = (CTestRuntime*)user_data;
++  size_t byte_count = size < sizeof(runtime->snapshot_bytes)
++                          ? size
++                          : sizeof(runtime->snapshot_bytes);
++
++  runtime->snapshot_bytes_callback_count++;
++  runtime->snapshot_bytes_result = result;
++  runtime->snapshot_byte_count = byte_count;
++  if (bytes != NULL && byte_count != 0) {
++    memcpy(runtime->snapshot_bytes, bytes, byte_count);
++  }
++  runtime->snapshot_bytes_ready =
++      result == kFlutterSpiOk && byte_count == sizeof(runtime->snapshot_bytes);
++  if (runtime->snapshot_bytes_ready && runtime->engine_api != NULL &&
++      runtime->engine != NULL) {
++    runtime->engine_api->request_frame(runtime->engine);
++  }
++}
++
++static void test_runtime_snapshot_image_callback(void* user_data,
++                                                 FlutterSpiResult result,
++                                                 FlutterSpiImage* image) {
++  CTestRuntime* runtime = (CTestRuntime*)user_data;
++  const FlutterSpiImageApi* api = runtime->engine_api->image;
++
++  runtime->snapshot_callback_count++;
++  runtime->snapshot_callback_result = result;
++  if (runtime->snapshot_picture != NULL) {
++    runtime->engine_api->scene->picture_release(runtime->snapshot_picture);
++    runtime->snapshot_picture = NULL;
++  }
++  if (result != kFlutterSpiOk || image == NULL || api == NULL ||
++      api->image_to_bytes == NULL) {
++    if (image != NULL && api != NULL && api->image_release != NULL) {
++      api->image_release(image);
++    }
++    return;
++  }
++  runtime->image = image;
++  if (api->image_to_bytes(runtime->engine, image,
++                          kFlutterSpiImageByteFormatRawRGBA,
++                          test_runtime_snapshot_bytes_callback,
++                          runtime) != kFlutterSpiOk) {
++    runtime->snapshot_bytes_result = kFlutterSpiInternalError;
++    api->image_release(image);
++    runtime->image = NULL;
++  }
++}
++
++static bool test_runtime_create_snapshot_picture(CTestRuntime* runtime,
++                                                 FlutterSpiPicture** out_picture) {
++  const FlutterSpiSceneApi* api = runtime->engine_api->scene;
++  FlutterSpiPictureRecorder* recorder = NULL;
++  const FlutterSpiRect rect = {
++      .left = 0.0f, .top = 0.0f, .right = 1.0f, .bottom = 1.0f};
++
++  if (api == NULL ||
++      api->recorder_create(runtime->engine, NULL, &recorder) !=
++          kFlutterSpiOk ||
++      api->canvas_draw_rect(recorder, &rect, &k_snapshot_paint) !=
++          kFlutterSpiOk ||
++      api->recorder_finish(recorder, out_picture) != kFlutterSpiOk) {
++    if (recorder != NULL) {
++      api->recorder_release(recorder);
++    }
++    return false;
++  }
++  return true;
++}
++
+ CTestRuntime* c_test_runtime_create(void) {
+   CTestRuntime* runtime = (CTestRuntime*)calloc(1, sizeof(CTestRuntime));
+   if (runtime != NULL) {

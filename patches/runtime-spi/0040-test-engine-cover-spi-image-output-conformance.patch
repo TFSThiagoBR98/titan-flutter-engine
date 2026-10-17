@@ -1,0 +1,88 @@
+# Why: define capability advertisement and snapshot readback round-trip
+# expectations before adding the C runtime mode.
+diff --git a/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+index 426f8e6d976..17012b7c97f 100644
+--- a/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+@@ -224,6 +224,16 @@ class SpiConformance : public ShellTest {
+     return runtime_->image_callback_count == 1u;
+   }
+ 
++  bool WaitForSnapshotBytes(fml::TimeDelta timeout) {
++    const fml::TimePoint deadline = fml::TimePoint::Now() + timeout;
++    while (!runtime_->snapshot_bytes_ready &&
++           fml::TimePoint::Now() < deadline) {
++      FlushUi();
++      std::this_thread::sleep_for(std::chrono::milliseconds(10));
++    }
++    return runtime_->snapshot_bytes_ready;
++  }
++
+   CTestRuntime* runtime_ = nullptr;
+   std::unique_ptr<TaskRunners> task_runners_;
+   std::unique_ptr<Shell> shell_;
+@@ -318,6 +328,43 @@ TEST_F(SpiConformance, ImageApiAnnouncedByCapability) {
+   EXPECT_NE(runtime_->engine_api->capabilities & kFlutterSpiCapImage, 0u);
+ }
+ 
++TEST_F(SpiConformance, ImageOutputAnnouncedByCapability) {
++  StartShell();
++
++  ASSERT_NE(runtime_->engine_api, nullptr);
++  ASSERT_NE(runtime_->engine_api->image, nullptr);
++  EXPECT_NE(runtime_->engine_api->capabilities & kFlutterSpiCapImageOutput, 0u);
++  EXPECT_NE(runtime_->engine_api->image->picture_to_image, nullptr);
++  EXPECT_NE(runtime_->engine_api->image->image_to_bytes, nullptr);
++}
++
++TEST_F(SpiConformance, SnapshotRoundTrip) {
++  runtime_->snapshot_on_begin_frame = true;
++  StartShell();
++
++  PumpOneFrame(shell_.get());
++  ASSERT_TRUE(WaitForSnapshotBytes(fml::TimeDelta::FromSeconds(5)));
++  ASSERT_EQ(runtime_->snapshot_callback_result, kFlutterSpiOk);
++  ASSERT_EQ(runtime_->snapshot_bytes_result, kFlutterSpiOk);
++  ASSERT_EQ(runtime_->snapshot_byte_count, 4u);
++  EXPECT_EQ(runtime_->snapshot_bytes[0], 255u);
++  EXPECT_EQ(runtime_->snapshot_bytes[1], 0u);
++  EXPECT_EQ(runtime_->snapshot_bytes[2], 0u);
++  EXPECT_EQ(runtime_->snapshot_bytes[3], 255u);
++
++  PumpOneFrame(shell_.get());
++  PostSync(shell_->GetTaskRunners().GetRasterTaskRunner(), [&] {
++    auto* layer_tree =
++        shell_->GetRasterizer()->GetLastLayerTree(kImplicitViewId);
++    ASSERT_NE(layer_tree, nullptr);
++    EXPECT_EQ(SceneTrace(*layer_tree),
++              "scene 1x1\n"
++              "container\n"
++              "  picture 0 0\n"
++              "    op drawImage\n");
++  });
++}
++
+ TEST_F(SpiConformance, ImageFrameRoundTrip) {
+   const auto png = MakeTestPng();
+   ASSERT_TRUE(png);
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.h b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+index 6c2b60a4ae4..a77f226f25e 100644
+--- a/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+@@ -51,6 +51,16 @@ typedef struct CTestRuntime {
+   bool draw_image_on_begin_frame;
+   const uint8_t* draw_image_png_data;
+   size_t draw_image_png_size;
++  bool snapshot_on_begin_frame;
++  bool snapshot_requested;
++  size_t snapshot_callback_count;
++  FlutterSpiResult snapshot_callback_result;
++  size_t snapshot_bytes_callback_count;
++  FlutterSpiResult snapshot_bytes_result;
++  uint8_t snapshot_bytes[4];
++  size_t snapshot_byte_count;
++  bool snapshot_bytes_ready;
++  FlutterSpiPicture* snapshot_picture;
+   FlutterSpiResult image_callback_result;
+   size_t image_callback_count;
+   int32_t image_width;
