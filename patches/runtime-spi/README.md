@@ -78,6 +78,12 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0068-feat-engine-complete-the-runtime-spi-contract-in-both-directions.patch` | Completar a ABI C11 0.12 com o contrato entre engine e runtime nos dois sentidos. | |
 | `0069-feat-engine-serve-the-full-runtime-contract-from-the-spi-backend.patch` | Servir o contrato completo pelo backend do Runtime SPI e pelo `RuntimeDelegate`. | |
 | `0070-test-engine-exercise-the-full-runtime-contract-end-to-end.patch` | Exercitar o contrato completo do Runtime SPI ponta a ponta. | |
+| `0071-feat-engine-add-warm-up-frames-opaque-launch-and-internal-bridges-to-the-spi.patch` | Adicionar warm-up frames, lançamento opaco do isolate e pontes internas à ABI 0.13. | |
+| `0072-feat-engine-run-the-dart-runtime-behind-the-spi-table.patch` | Executar o runtime Dart atrás da tabela do Runtime SPI. | |
+| `0073-refactor-engine-drive-dart-apps-through-the-spi-runtime-backend.patch` | Conduzir os apps Dart pelo backend de runtime do SPI. | |
+| `0074-feat-engine-report-view-results-and-running-state-through-the-spi-table.patch` | Reportar resultados de view e o estado de execução do runtime pela tabela do SPI. | |
+| `0075-fix-engine-give-the-dart-runtime-the-shell-s-platform-message-handler.patch` | Fornecer ao runtime Dart o `PlatformMessageHandler` do Shell. | |
+| `0076-fix-engine-carry-the-full-view-metrics-and-consume-submitted-scenes-through-the-spi.patch` | Transportar as métricas completas de view e consumir cenas submetidas pelo SPI. | |
 
 O fluxo é:
 

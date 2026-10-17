@@ -380,6 +380,16 @@ As strings e listas devolvidas pelo engine são alocadas e liberadas pela própr
 
 O checkpoint confirmou **1275 PASS** e **0 FAIL** no `check-runtime-spi.sh`, contra 1250 PASS na S4b, além do probe `9afdbcd18abd9b35` em x64 e arm64-musl sob QEMU, da configuração `--gn-only` dos dez alvos, do alvo `runtime_spi_c_api` em arm-hard e de `tools/ci.sh engine`. A série limpa contém **85 patches** do repositório do Flutter, dos quais **70** pertencem a `runtime-spi`; o `engine.lock` registra `patches_sha256=a02204f0857fc6a46f7e1dc1315f48368bbd88b4c2b157295710bbec820512de`. Os benchmarks não foram medidos nesta fase, que não altera o pipeline de quadros; os números completos estão em [runtime-spi-s4c1.md](medidas/runtime-spi-s4c1.md).
 
+## S4c-2: Dart como runtime de tabela
+
+A S4c-2 transforma o Dart em um runtime de tabela: o `FlutterDartRuntime` passa a ser dono do `RuntimeController` e publica a `FlutterSpiRuntimeTable` inteira, enquanto a `DartRuntimeDelegateBridge` implementa a ponte do `RuntimeDelegate` e encaminha cada pedido para a `FlutterSpiEngineApi`. A fábrica passa a devolver um `SpiRuntimeBackend` sobre essa tabela, removendo o `DartRuntimeBackend` sem alterar o comportamento do caminho Dart.
+
+As funções que ainda precisam de objetos C++ do engine passam por pontes internas do `runtime_spi`: `LayerTree`, `SemanticsNodeUpdates`, `FontCollection` e `AssetManager`. Elas não fazem parte do header público e são temporárias; desaparecem à medida que as áreas correspondentes de `dart:ui` passam a usar o SPI nas fases S4d–S4h.
+
+O warm-up frame usa `frame_token == 0` fora de um `begin_frame`, quando não há quadro em andamento, e a conclusão correspondente vira `frames_done`; durante um quadro ativo, o token 0 continua obsoleto e é recusado. O lançamento do isolate cruza como ponteiro opaco pela extensão nova, e a ABI 0.14 acrescenta o resultado de adicionar/remover view, o estado "rodando" do runtime e métricas completas de view, incluindo restrições, insets de gesto e display features.
+
+O checkpoint confirmou **1298 PASS** e **0 FAIL** no `check-runtime-spi.sh`, além do probe `9afdbcd18abd9b35` em x64 e arm64-musl sob QEMU, da configuração `--gn-only` dos dez alvos, do alvo `runtime_spi_c_api` em arm-hard e de `tools/ci.sh engine`. A série limpa contém **91 patches** do repositório do Flutter, dos quais **76** pertencem a `runtime-spi`; o `engine.lock` registra `patches_sha256=1e5f99699a9a3b4efaf91a9b209ff1097d270bc9d9681661c6f29809d9def115`. Os benchmarks de `shell_benchmarks` e `ui_benchmarks` permanecem pendentes e serão executados em rodada isolada depois da preparação dos sysroots, para não contaminar a medição com os seis núcleos ocupados pelo checkpoint.
+
 ## Ciclo de vida e falhas
 
 O host cria, inicia, encerra e libera o backend. Uma falha recuperável encerra o runtime ativo e limpa os recursos;
