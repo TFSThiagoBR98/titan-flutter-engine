@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tests.
 - Runtime SPI S3b-2: ABI C11 de imagens, handles e operações de desenho,
   decodificação assíncrona e testes de conformidade ponta a ponta.
+- Runtime SPI S3b-3: API ABI 0.5 para transformar pictures e cenas em imagens,
+  ler pixels e PNGs, decodificar codecs quadro a quadro e validar o caminho de
+  saída de imagens ponta a ponta.
 
 ### Fixed
 

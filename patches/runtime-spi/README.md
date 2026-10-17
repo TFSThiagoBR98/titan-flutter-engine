@@ -37,6 +37,18 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0027-feat-engine-draw-images-through-the-runtime-spi.patch` | Expor handles de imagem e operações de desenho de imagens pela API de cena. | |
 | `0028-feat-engine-decode-images-through-the-runtime-spi.patch` | Decodificar imagens codificadas e pixels crus com callbacks assíncronos no UI runner. | |
 | `0029-feat-engine-decode-spi-images-on-core-workers-and-test-them-end-to-end.patch` | Fornecer workers concorrentes ao core e validar a decodificação de imagens ponta a ponta. | |
+| `0030-refactor-engine-separate-picture-snapshots-from-their-dart-wrappers.patch` | Separar a rasterização de pictures e cenas dos wrappers Dart. | |
+| `0031-refactor-engine-separate-image-readback-from-its-dart-wrapper.patch` | Separar a conversão para raster e a codificação de imagens do wrapper Dart. | |
+| `0032-refactor-engine-separate-animated-image-frames-from-their-dart-codec.patch` | Separar a decodificação e o avanço de quadros animados do codec Dart. | |
+| `0033-feat-engine-turn-spi-pictures-and-scenes-into-images.patch` | Expor snapshots assíncronos e síncronos de pictures e cenas pela ABI 0.5. | |
+| `0034-feat-engine-read-spi-image-pixels.patch` | Expor leitura de pixels e codificação PNG pela ABI do Runtime SPI. | |
+| `0035-test-engine-cover-spi-image-codecs.patch` | Cobrir codecs estáticos e animados pela suíte do Runtime SPI. | |
+| `0036-fix-engine-include-spi-factory-in-codec-tests.patch` | Corrigir o include da fábrica usado pelos testes de codec. | |
+| `0037-fix-engine-guard-unwired-codec-test-callbacks.patch` | Evitar callbacks de teste de codec quando a costura ainda não está ligada. | |
+| `0038-feat-engine-decode-spi-image-codecs-frame-by-frame.patch` | Expor criação, informações e leitura de quadros de codecs pela ABI. | |
+| `0039-fix-engine-preserve-infinite-spi-codec-repetition.patch` | Preservar a repetição infinita dos codecs animados no Runtime SPI. | |
+| `0040-test-engine-cover-spi-image-output-conformance.patch` | Cobrir a saída de imagens na suíte de conformidade do Runtime SPI. | |
+| `0041-test-engine-exercise-spi-image-output-end-to-end.patch` | Exercitar snapshots, leitura de pixels e desenho de imagens ponta a ponta. | |
 
 O fluxo é:
 

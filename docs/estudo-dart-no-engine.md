@@ -251,6 +251,45 @@ ausentes usam o tamanho original, e uma única dimensão preserva a proporção.
 Os detalhes e os resultados de build estão em
 [runtime-spi-s3b2.md](medidas/runtime-spi-s3b2.md).
 
+## S3b-3: imagens de saída
+
+A S3b-3 amplia o Runtime SPI para transformar pictures e cenas em imagens,
+ler os pixels resultantes e decodificar codecs quadro a quadro, sem colocar
+código Dart no core. O trabalho que era próprio dos wrappers de `dart:ui` foi
+separado em três costuras Dart-free no alvo GN `ui_image_output`:
+`image_snapshot` rasteriza pictures e cenas; `image_readback` converte imagens
+para raster e codifica bytes; `animated_image_frames` mantém o estado e o
+avanço dos quadros de um `ImageGenerator`.
+
+A ABI 0.5 adiciona a capacidade `kFlutterSpiCapImageOutput` e funções para
+`picture_to_image`, `scene_to_image`, suas variantes síncronas diferidas,
+`image_to_bytes` e o ciclo de vida de `FlutterSpiCodec`. A API mantém as
+regras de `dart:ui`: dimensões não positivas são rejeitadas, snapshots
+assíncronos entregam o resultado no UI runner, bytes só são válidos durante o
+callback e a cena continua utilizável depois de virar imagem. A variante
+síncrona devolve uma imagem diferida, enquanto a variante assíncrona espera a
+rasterização antes de chamar o runtime.
+
+Codecs estáticos repetem o único quadro com duração zero. Codecs animados
+usam o runner de IO, expõem a contagem de quadros e repetições, preservam as
+durações do `ImageGenerator` e voltam ao primeiro quadro depois do último.
+Liberar um codec enquanto há uma leitura pendente descarta o resultado e não
+invoca o callback posteriormente. O caminho de saída mantém os mesmos
+contratos de handles, callbacks e encerramento do backend das fases anteriores.
+
+O checkpoint confirmou que o caminho Dart não mudou e que o probe manteve o
+hash `9afdbcd18abd9b35` em x64 e arm64-musl. A série limpa contém 56 patches
+do repositório do Flutter, dos quais 41 pertencem a `runtime-spi`.
+`check-runtime-spi.sh` passou com e sem testes, totalizando **1142 PASS** e
+**0 FAIL**; `runtime_spi_unittests` executou 122 testes, com um teste pulado
+e o motivo registrado porque o fixture não injeta um `SnapshotDelegate` sem
+superfície. A repetição embaralhada tripla, a configuração `--gn-only` dos
+dez alvos, o layout arm-hard de `runtime_spi_c_api` e
+`tools/ci.sh engine` também passaram.
+
+Os números e a identificação do engine estão em
+[runtime-spi-s3b3.md](medidas/runtime-spi-s3b3.md).
+
 ## Ciclo de vida e falhas
 
 O host cria, inicia, encerra e libera o backend. Uma falha recuperável encerra o runtime ativo e limpa os recursos;
