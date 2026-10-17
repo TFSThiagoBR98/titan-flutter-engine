@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if ((BASH_VERSINFO[0] < 4)); then
+  printf 'ci.sh: bash 4 or newer is required (found %s)\n' "$BASH_VERSION" >&2
+  exit 1
+fi
+
 if [[ "${GITHUB_ACTIONS:-}" == true ]]; then
   if [[ -z "${TITAN_JOBS+x}" ]]; then
     TITAN_JOBS=$(getconf _NPROCESSORS_ONLN)

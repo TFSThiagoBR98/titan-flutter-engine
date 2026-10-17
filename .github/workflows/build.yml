@@ -197,8 +197,13 @@ jobs:
         run: echo "TITAN_WORK_DIR=$RUNNER_TEMP/titan/work" >> "$GITHUB_ENV"
       # The checkout scripts serialize patch application with flock(1), which
       # macOS does not ship; Homebrew's flock has the util-linux semantics.
-      - name: Install flock
-        run: brew install flock
+      # The build scripts also need bash 4+ (associative arrays, mapfile),
+      # and macOS ships bash 3.2; Homebrew's bin precedes /bin on the runner.
+      # coreutils provides sha256sum for the patch-series stamp.
+      - name: Install flock, bash and coreutils
+        run: |
+          brew install flock bash coreutils
+          bash -c '((BASH_VERSINFO[0] >= 4))' || { echo "bash 4+ is not first on PATH" >&2; exit 1; }
       - name: Build macOS host, frameworks and snapshots
         run: |
           progress_variants=()
