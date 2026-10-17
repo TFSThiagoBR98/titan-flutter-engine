@@ -200,6 +200,17 @@ assert_contains "$second_patch" 'diff --git' 'second diff header'
 assert_contains "$prefixed_patch" '# Why: keep X' 'single Why prefix'
 assert_contains "$prefixed_patch" 'diff --git' 'prefixed diff header'
 
+prepared_again_output="$temporary_directory/prepared-again.out"
+if ! run_patch_branch prepare "$flutter_directory" "$worktree_directory" \
+  >"$prepared_again_output" 2>&1; then
+  printf 'error: prepare did not recognize the exported patch series in the existing worktree\n' >&2
+  cat "$prepared_again_output" >&2
+  exit 1
+fi
+assert_contains "$prepared_again_output" \
+  "prepared worktree already matches the patch series: $worktree_directory" \
+  'existing patch series reuse'
+
 why_header_lines=0
 while IFS= read -r line; do
   [[ "$line" == diff\ --git* ]] && break

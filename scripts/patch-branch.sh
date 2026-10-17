@@ -49,6 +49,25 @@ patch_why() {
   printf '%s\n' "${first_line:7}"
 }
 
+patch_why_body() {
+  local patch=$1 line body=
+  while IFS= read -r line; do
+    case "$line" in
+      '# Why: '*) body+="${line#'# Why: '}" ;;
+      '# '*) body+=" ${line#'# '}" ;;
+      *) break ;;
+    esac
+  done < "$patch"
+  [[ -n "$body" ]] || die "patch $patch has no Why header"
+  printf '%s\n' "$body"
+}
+
+normalize_why_body() {
+  local body=$1
+  printf '%s' "$body" | python3 -c \
+    'import re, sys; body = re.sub(r"(?i)^\s*why\s*:\s*", "", sys.stdin.read().strip(), count=1); print(" ".join(body.split()))'
+}
+
 patch_repository() {
   local patch=$1 first_line= repo=.
   IFS= read -r first_line < "$patch" || true
@@ -106,12 +125,12 @@ runtime_patch_whys() {
   RUNTIME_WHYS=()
   while IFS= read -r patch; do
     [[ -n "$patch" ]] || continue
-    RUNTIME_WHYS+=("$(patch_why "$patch")")
+    RUNTIME_WHYS+=("$(patch_why_body "$patch")")
   done < <(patch_files "$runtime_folder")
 }
 
 existing_worktree_matches_series() {
-  local flutter_commit=$1 worktree_dir=$2 base_commit base_subject_actual commit index
+  local flutter_commit=$1 worktree_dir=$2 base_commit base_subject_actual commit commit_body_normalized index
   local -a commits=()
   runtime_patch_whys
   while IFS= read -r commit; do
@@ -130,7 +149,8 @@ existing_worktree_matches_series() {
   fi
   for index in "${!RUNTIME_WHYS[@]}"; do
     commit=${commits[index + 1]}
-    [[ "$(git -C "$worktree_dir" log -1 --format=%b "$commit")" == "${RUNTIME_WHYS[index]}" ]] || return 2
+    commit_body_normalized=$(normalize_why_body "$(git -C "$worktree_dir" log -1 --format=%b "$commit")")
+    [[ "$commit_body_normalized" == "$(normalize_why_body "${RUNTIME_WHYS[index]}")" ]] || return 2
   done
   return 0
 }
@@ -202,9 +222,10 @@ commit_slug() {
 }
 
 why_header() {
-  local body=$1
-  printf '%s' "$body" | python3 -c \
-    'import re, sys, textwrap; body = re.sub(r"(?i)^\s*why\s*:\s*", "", sys.stdin.read().strip(), count=1); print(textwrap.fill("# Why: " + body, width=78, subsequent_indent="# "))'
+  local body=$1 normalized_body
+  normalized_body=$(normalize_why_body "$body")
+  printf '%s' "$normalized_body" | python3 -c \
+    'import sys, textwrap; print(textwrap.fill("# Why: " + sys.stdin.read().strip(), width=78, subsequent_indent="# "))'
 }
 
 export_patches() {
