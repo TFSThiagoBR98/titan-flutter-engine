@@ -130,8 +130,14 @@ sysroot_cache_publish() {
   }
   repository=${TITAN_CACHE_REPO:-TFSThiagoBR98/titan-flutter-engine}
   if ! gh release view sysroots-cache --repo "$repository" >/dev/null 2>&1; then
-    gh release create sysroots-cache --repo "$repository" --prerelease \
-      --title sysroots-cache --notes 'Buildroot sysroot cache'
+    if ! gh release create sysroots-cache --repo "$repository" --prerelease \
+      --title sysroots-cache --notes 'Buildroot sysroot cache'; then
+      if [[ "${CI:-}" == true ]]; then
+        printf 'warning: sysroot cache publish failed; continuing without publishing\n' >&2
+        return 0
+      fi
+      return 1
+    fi
   fi
   temporary_directory=$(mktemp -d)
   if gh release download sysroots-cache --repo "$repository" \
@@ -141,7 +147,13 @@ sysroot_cache_publish() {
     return 0
   fi
   rm -rf "$temporary_directory"
-  gh release upload sysroots-cache "$archive" --repo "$repository"
+  if ! gh release upload sysroots-cache "$archive" --repo "$repository"; then
+    if [[ "${CI:-}" == true ]]; then
+      printf 'warning: sysroot cache publish failed; continuing without publishing\n' >&2
+      return 0
+    fi
+    return 1
+  fi
   printf 'sysroot cache published: %s\n' "$archive"
 }
 

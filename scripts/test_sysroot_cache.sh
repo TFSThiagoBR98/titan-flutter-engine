@@ -31,6 +31,10 @@ mkdir -p "$state_root/releases"
 command=${2:-}
 tag=${3:-}
 [[ "$tag" == sysroots-cache ]] || exit 2
+if [[ "${TITAN_GH_STATUS:-}" == 403 && ( "$command" == create || "$command" == upload ) ]]; then
+  printf 'HTTP 403: Resource not accessible by integration\n' >&2
+  exit 1
+fi
 case "$command" in
   view)
     if [[ "${4:-}" == --json ]]; then
@@ -85,6 +89,8 @@ run_cache() {
   TITAN_WORK_DIR="$work_root" \
   TITAN_CACHE_REPO=example/titan-flutter-engine \
   TITAN_GH_STATE="$state_root" \
+  CI="${CI:-}" \
+  TITAN_GH_STATUS="${TITAN_GH_STATUS:-}" \
   PATH="$fake_bin:$PATH" \
     "$repository_root/scripts/sysroot-cache.sh" "$@"
 }
@@ -110,6 +116,28 @@ run_cache publish "$defconfig"
   exit 1
 }
 
+rm "$state_root/releases/sysroots-cache/assets/$archive"
+ci_publish_log="$temporary_directory/ci-publish.log"
+if ! CI=true TITAN_GH_STATUS=403 run_cache publish "$defconfig" >"$ci_publish_log" 2>&1; then
+  printf 'CI publish did not ignore a forbidden cache upload\n' >&2
+  exit 1
+fi
+grep -Fq 'HTTP 403: Resource not accessible by integration' "$ci_publish_log"
+grep -Fq 'warning: sysroot cache publish failed; continuing without publishing' "$ci_publish_log"
+
+outside_ci_status=0
+if CI=false TITAN_GH_STATUS=403 run_cache publish "$defconfig" >"$temporary_directory/outside-ci-publish.log" 2>&1; then
+  printf 'non-CI publish unexpectedly ignored a forbidden cache upload\n' >&2
+  exit 1
+else
+  outside_ci_status=$?
+fi
+[[ "$outside_ci_status" -eq 1 ]] || {
+  printf 'non-CI publish returned %s instead of 1\n' "$outside_ci_status" >&2
+  exit 1
+}
+
+run_cache publish "$defconfig"
 rm -rf "$sysroot"
 run_cache fetch "$defconfig"
 [[ "$(<"$sysroot/fixture.txt")" == cache-fixture ]] || {

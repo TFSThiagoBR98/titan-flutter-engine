@@ -75,7 +75,7 @@ jobs:
           key: sysroot-${{ matrix.defconfig }}-${{ hashFiles(format('buildroot/configs/{0}', matrix.defconfig)) }}
       - name: Build sysroot
         if: matrix.defconfig != ''
-        run: scripts/ci.sh sysroot "${{ matrix.defconfig }}"
+        run: CI=true scripts/ci.sh sysroot "${{ matrix.defconfig }}"
       - name: Build engine
         id: build
         run: scripts/ci.sh build
