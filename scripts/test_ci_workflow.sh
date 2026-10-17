@@ -121,11 +121,17 @@ raise 'Linux engine and SDK upload must include both archive roots' unless sdk_u
 sysroot_step = steps.find { |step| step['run']&.include?('scripts/ci.sh sysroot') }
 raise 'sysroot step is missing' unless sysroot_step
 raise 'sysroot step must be conditional' unless sysroot_step['if'] == "matrix.defconfig != ''"
-raise 'Linux platform job must include Android and web' unless %w[android-debug-arm web-release].all? { |variant| linux_platform.fetch('env').fetch('TITAN_VARIANTS').include?(variant) }
-# Fuchsia is kept out of the CI matrix on purpose (user decision, 2026-10-17).
-raise 'Linux platform job must not build Fuchsia' if linux_platform.fetch('env').fetch('TITAN_VARIANTS').include?('fuchsia')
+platform_matrix = linux_platform.fetch('strategy').fetch('matrix')
+raise 'Android platform matrix CPUs are incomplete' unless platform_matrix['android_cpu'] == %w[arm arm64 x64]
+raise 'Android platform matrix modes are incomplete' unless platform_matrix['mode'] == %w[debug profile release]
+raise 'web-release platform cell is missing' unless platform_matrix['include'].include?('android_cpu' => 'web', 'mode' => 'release', 'variant' => 'web-release')
+raise 'Linux platform variant must be selected from the matrix' unless linux_platform.fetch('env').fetch('TITAN_VARIANTS') == "${{ matrix.variant || format('android-{0}-{1}', matrix.mode, matrix.android_cpu) }}"
 linux_platform_build = linux_platform.fetch('steps').find { |step| step['run']&.include?('build-matrix.sh') }
 raise 'Linux platform build must use the progress wrapper' unless linux_platform_build&.fetch('run').to_s.include?('scripts/ci.sh with-progress')
+raise 'Linux platform build must build one selected variant' unless linux_platform_build.fetch('run').include?('"$TITAN_VARIANTS"')
+platform_upload = linux_platform.fetch('steps').find { |step| step['uses'] == 'actions/upload-artifact@v4' && step.dig('with', 'name').to_s.include?('flutter-sdk-') }
+raise 'Linux platform archive upload is missing' unless platform_upload
+raise 'Linux platform archive upload must be named per cell' unless platform_upload.dig('with', 'name') == "flutter-sdk-${{ matrix.variant || format('android-{0}-{1}', matrix.mode, matrix.android_cpu) }}"
 
 macos_builds = macos.fetch('steps').select { |step| step['run']&.include?('build-engine-macos.sh') }
 raise 'macOS build steps are incomplete' unless macos_builds.length == 2

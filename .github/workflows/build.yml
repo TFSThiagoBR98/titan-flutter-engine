@@ -112,17 +112,22 @@ jobs:
           if-no-files-found: error
 
   linux_platform:
-    name: Build Android and web artifacts
+    name: Build platform artifact (${{ matrix.variant || format('android-{0}-{1}', matrix.mode, matrix.android_cpu) }})
     runs-on: ubuntu-24.04
     timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        android_cpu: [arm, arm64, x64]
+        mode: [debug, profile, release]
+        include:
+          - android_cpu: web
+            mode: release
+            variant: web-release
     env:
       TITAN_WORK_DIR: /mnt/titan/work
       TITAN_BUNDLE_DIR: /mnt/titan/bundles
-      TITAN_VARIANTS: >-
-        android-debug-arm android-debug-arm64 android-debug-x64
-        android-profile-arm android-profile-arm64 android-profile-x64
-        android-release-arm android-release-arm64 android-release-x64
-        web-release
+      TITAN_VARIANTS: ${{ matrix.variant || format('android-{0}-{1}', matrix.mode, matrix.android_cpu) }}
     steps:
       - uses: actions/checkout@v4
       - name: Prepare workspace
@@ -131,19 +136,19 @@ jobs:
           sudo chown "$USER" /mnt/titan
       - name: Install dependencies
         run: scripts/ci.sh deps
-      - name: Build platform artifacts
-        run: scripts/ci.sh with-progress $TITAN_VARIANTS -- scripts/build-matrix.sh --parallel 1 --zip $TITAN_VARIANTS
+      - name: Build platform artifact
+        run: scripts/ci.sh with-progress "$TITAN_VARIANTS" -- scripts/build-matrix.sh --parallel 1 --zip "$TITAN_VARIANTS"
       - name: Upload Linux platform build logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs-linux-platform
+          name: build-logs-${{ matrix.variant || format('android-{0}-{1}', matrix.mode, matrix.android_cpu) }}
           path: /mnt/titan/work/matrix/
           if-no-files-found: ignore
       - name: Upload Linux platform archives
         uses: actions/upload-artifact@v4
         with:
-          name: flutter-sdk-linux-platform
+          name: flutter-sdk-${{ matrix.variant || format('android-{0}-{1}', matrix.mode, matrix.android_cpu) }}
           path: /mnt/titan/work/flutter/engine/src/out/*/zip_archives/**
           if-no-files-found: error
 
