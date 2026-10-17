@@ -81,6 +81,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Runtime SPI S4a: o engine chama as funções que só existem com Dart (microtasks, deferred libraries, código de retorno,
+  service ID, platform isolates) por uma tabela C opcional de extensões do runtime (ABI 0.10), e não mais por uma
+  interface C++.
 - riscv32 stays out of the default build and CI matrix; request it by name.
 - CI runs on GitHub-hosted runners with a shallow Flutter checkout, ccache in
   `actions/cache`, one variant per job, and releases via `gh`.

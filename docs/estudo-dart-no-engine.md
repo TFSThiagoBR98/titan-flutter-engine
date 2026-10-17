@@ -356,6 +356,14 @@ O SPI rejeita com `kFlutterSpiInvalidArgument` entradas que o `dart:ui` derrubar
 
 O checkpoint confirmou 1236 PASS e 0 FAIL no `check-runtime-spi.sh`, o probe `9afdbcd18abd9b35` em x64 e arm64-musl sob QEMU, a configuração `--gn-only` dos dez alvos, o alvo `runtime_spi_c_api` em arm-hard e `tools/ci.sh engine`. A série limpa contém 75 patches do repositório do Flutter, dos quais 60 pertencem a `runtime-spi`; o `engine.lock` registra `patches_sha256=6d0d5a87f04b484c75a377ba1f01794109e1d2c7ba02d0e96e4894002b9a4dfb`. Os números e a identificação do engine estão em [runtime-spi-s3b5.md](medidas/runtime-spi-s3b5.md). Com ela, a S3 está completa; a próxima fase é a S4, com `dart:ui` sobre o SPI.
 
+## S4a: extensões do runtime
+
+Na S4a, o Engine passa as funções que só existem com Dart por uma tabela C opcional de extensões do Runtime SPI (ABI 0.10). A decisão evita uma ponte C++ entre as bibliotecas `.so`, que manteria uma fronteira dependente de tipos e convenções privadas do C++, e evita mover essas funções para fora do core, onde elas ainda são necessárias para o caminho Dart e devem permanecer na fronteira explícita entre o Engine e o runtime.
+
+O `DartRuntimeBackend` preenche uma tabela estática de *thunks* para seus membros, enquanto o `SpiRuntimeBackend` obtém a tabela entregue pelo runtime C. O campo `extensions` fica no fim de `FlutterSpiRuntimeTable` e pode ser nulo para runtimes sem extensões ou tabelas antigas. Strings retornadas pelo runtime são liberadas por `free_string` da própria tabela, e os mapeamentos de bibliotecas deferred carregam a função de liberação do runtime, que mantém a propriedade enquanto as instruções estiverem em uso.
+
+O checkpoint confirmou **1242 PASS** e **0 FAIL** no `check-runtime-spi.sh`, contra 1236 PASS na S3b-5, além do hash `9afdbcd18abd9b35` do probe em x64 e arm64-musl sob QEMU, a configuração `--gn-only` dos dez alvos, o alvo `runtime_spi_c_api` em arm-hard e `tools/ci.sh engine`. A série limpa contém **78 patches** do repositório do Flutter, dos quais **63** pertencem a `runtime-spi`; o `engine.lock` registra `patches_sha256=644a727099bb6ab1018ae5d2de2cad44b9ae255a1a7f73fa036e57dd681bec1b`. Os benchmarks e seus critérios estão em [runtime-spi-s4a.md](medidas/runtime-spi-s4a.md).
+
 ## Ciclo de vida e falhas
 
 O host cria, inicia, encerra e libera o backend. Uma falha recuperável encerra o runtime ativo e limpa os recursos;
