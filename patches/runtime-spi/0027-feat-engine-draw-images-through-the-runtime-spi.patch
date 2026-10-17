@@ -1,0 +1,941 @@
+# Why: expose runtime image handles and DisplayList-parity drawing operations
+# without Dart.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 8ba18fbb7cd..e4dcfe851fc 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -89,6 +89,31 @@ source_set("scene") {
+   ]
+ }
+ 
++source_set("image") {
++  public = [
++    "image/spi_image.h",
++    "image/spi_image_canvas.h",
++  ]
++  sources = [
++    "image/spi_image.cc",
++    "image/spi_image.h",
++    "image/spi_image_canvas.cc",
++    "image/spi_image_canvas.h",
++  ]
++  public_deps = [
++    ":runtime_spi_c_api",
++    ":scene",
++    "//flutter/display_list",
++  ]
++  assert_no_deps = [
++    "//flutter/third_party/dart/*",
++    "//flutter/third_party/tonic/*",
++    "//flutter/runtime:runtime",
++    "//flutter/runtime:libdart",
++    "//flutter/lib/ui:ui",
++  ]
++}
++
+ source_set("text") {
+   public = [
+     "text/spi_font.h",
+@@ -130,6 +155,8 @@ if (enable_unittests) {
+       "scene/spi_paint_unittests.cc",
+       "scene/spi_scene_builder_parity_unittests.cc",
+       "scene/spi_scene_trace_unittests.cc",
++      "image/spi_image_canvas_parity_unittests.cc",
++      "image/spi_image_unittests.cc",
+       "spi_runtime_backend_unittests.cc",
+       "testing/test_icu.cc",
+       "text/spi_font_unittests.cc",
+@@ -141,6 +168,7 @@ if (enable_unittests) {
+       ":c_test_runtime",
+       ":runtime_spi_c_api",
+       ":scene",
++      ":image",
+       ":spi_backend",
+       ":text",
+       "//flutter/common",
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image.cc b/engine/src/flutter/runtime_spi/image/spi_image.cc
+new file mode 100644
+index 00000000000..aa08e9b4fc6
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/image/spi_image.cc
+@@ -0,0 +1,87 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/image/spi_image.h"
++
++#include <cstdint>
++#include <memory>
++
++#include "flutter/runtime_spi/scene/spi_handle_table.h"
++
++namespace flutter {
++namespace {
++
++template <typename Handle>
++uintptr_t HandleValue(Handle* handle) {
++  return reinterpret_cast<uintptr_t>(handle);
++}
++
++template <typename Handle>
++Handle* MakeHandle(uintptr_t value) {
++  return reinterpret_cast<Handle*>(value);
++}
++
++class SpiImage final {
++ public:
++  explicit SpiImage(sk_sp<DlImage> image) : image_(std::move(image)) {}
++
++  const sk_sp<DlImage>& image() const { return image_; }
++
++ private:
++  sk_sp<DlImage> image_;
++};
++
++SpiHandleTable<SpiImage>& Images() {
++  static SpiHandleTable<SpiImage> images;
++  return images;
++}
++
++std::shared_ptr<SpiImage> FindImage(FlutterSpiImage* image) {
++  return Images().Find(HandleValue(image));
++}
++
++}  // namespace
++
++FlutterSpiResult SpiImageWrap(sk_sp<DlImage> image,
++                              FlutterSpiImage** out_image) {
++  if (image == nullptr || out_image == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const uintptr_t handle = Images().Insert(std::make_shared<SpiImage>(image));
++  *out_image = MakeHandle<FlutterSpiImage>(handle);
++  return kFlutterSpiOk;
++}
++
++sk_sp<DlImage> SpiImageGet(FlutterSpiImage* image) {
++  const auto image_value = FindImage(image);
++  return image_value == nullptr ? nullptr : image_value->image();
++}
++
++FlutterSpiResult SpiImageGetSize(FlutterSpiImage* image,
++                                 int32_t* out_width,
++                                 int32_t* out_height) {
++  const auto image_value = FindImage(image);
++  if (image_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (out_width == nullptr || out_height == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const DlISize size = image_value->image()->GetSize();
++  *out_width = size.width;
++  *out_height = size.height;
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiImageRetain(FlutterSpiImage* image) {
++  return Images().Retain(HandleValue(image)) ? kFlutterSpiOk
++                                              : kFlutterSpiInvalidHandle;
++}
++
++FlutterSpiResult SpiImageRelease(FlutterSpiImage* image) {
++  return Images().Release(HandleValue(image)) ? kFlutterSpiOk
++                                               : kFlutterSpiInvalidHandle;
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image.h b/engine/src/flutter/runtime_spi/image/spi_image.h
+new file mode 100644
+index 00000000000..8275d70874f
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/image/spi_image.h
+@@ -0,0 +1,24 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_IMAGE_SPI_IMAGE_H_
++#define FLUTTER_RUNTIME_SPI_IMAGE_SPI_IMAGE_H_
++
++#include "flutter/display_list/image/dl_image.h"
++#include "flutter/runtime_spi/include/flutter_image.h"
++
++namespace flutter {
++
++FlutterSpiResult SpiImageWrap(sk_sp<DlImage> image,
++                              FlutterSpiImage** out_image);
++sk_sp<DlImage> SpiImageGet(FlutterSpiImage* image);
++FlutterSpiResult SpiImageGetSize(FlutterSpiImage* image,
++                                 int32_t* out_width,
++                                 int32_t* out_height);
++FlutterSpiResult SpiImageRetain(FlutterSpiImage* image);
++FlutterSpiResult SpiImageRelease(FlutterSpiImage* image);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_IMAGE_SPI_IMAGE_H_
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_canvas.cc b/engine/src/flutter/runtime_spi/image/spi_image_canvas.cc
+new file mode 100644
+index 00000000000..38e9d80c864
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/image/spi_image_canvas.cc
+@@ -0,0 +1,244 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/image/spi_image_canvas.h"
++
++#include <cmath>
++#include <limits>
++#include <optional>
++#include <vector>
++
++#include "flutter/display_list/dl_builder.h"
++#include "flutter/display_list/dl_paint.h"
++#include "flutter/runtime_spi/image/spi_image.h"
++#include "flutter/runtime_spi/scene/spi_canvas.h"
++#include "flutter/runtime_spi/scene/spi_geometry.h"
++#include "flutter/runtime_spi/scene/spi_paint.h"
++
++namespace flutter {
++namespace {
++
++std::optional<DlPaint> ToOptionalPaint(const FlutterSpiPaint* paint) {
++  if (paint == nullptr) {
++    return std::nullopt;
++  }
++  return ToDlPaint(*paint);
++}
++
++bool IsFinite(const FlutterSpiRSTransform& transform) {
++  return std::isfinite(transform.scos) && std::isfinite(transform.ssin) &&
++         std::isfinite(transform.tx) && std::isfinite(transform.ty);
++}
++
++bool IsValidFilterQuality(int32_t quality) {
++  return quality >= kFlutterSpiFilterQualityNone &&
++         quality <= kFlutterSpiFilterQualityHigh;
++}
++
++FlutterSpiResult FindCanvasDependencies(FlutterSpiPictureRecorder* recorder,
++                                        FlutterSpiImage* image,
++                                        DisplayListBuilder** out_builder,
++                                        sk_sp<DlImage>* out_image) {
++  DisplayListBuilder* builder = SpiPictureRecorderBuilder(recorder);
++  if (builder == nullptr || out_builder == nullptr || out_image == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  sk_sp<DlImage> dl_image = SpiImageGet(image);
++  if (dl_image == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  *out_builder = builder;
++  *out_image = std::move(dl_image);
++  return kFlutterSpiOk;
++}
++
++}  // namespace
++
++DlImageSampling SpiSamplingFromFilterQuality(int32_t quality, bool* ok) {
++  if (!IsValidFilterQuality(quality)) {
++    if (ok != nullptr) {
++      *ok = false;
++    }
++    return DlImageSampling::kNearestNeighbor;
++  }
++  if (ok != nullptr) {
++    *ok = true;
++  }
++  return static_cast<DlImageSampling>(quality);
++}
++
++DlFilterMode SpiFilterModeFromFilterQuality(int32_t quality, bool* ok) {
++  if (!IsValidFilterQuality(quality)) {
++    if (ok != nullptr) {
++      *ok = false;
++    }
++    return DlFilterMode::kNearest;
++  }
++  if (ok != nullptr) {
++    *ok = true;
++  }
++  return quality == kFlutterSpiFilterQualityNone ? DlFilterMode::kNearest
++                                                  : DlFilterMode::kLinear;
++}
++
++FlutterSpiResult SpiCanvasDrawImage(FlutterSpiPictureRecorder* recorder,
++                                    FlutterSpiImage* image,
++                                    FlutterSpiPoint offset,
++                                    int32_t filter_quality,
++                                    const FlutterSpiPaint* paint) {
++  DisplayListBuilder* builder = nullptr;
++  sk_sp<DlImage> dl_image;
++  const FlutterSpiResult dependencies =
++      FindCanvasDependencies(recorder, image, &builder, &dl_image);
++  if (dependencies != kFlutterSpiOk) {
++    return dependencies;
++  }
++  DlPoint dl_offset;
++  bool quality_ok = false;
++  const DlImageSampling sampling =
++      SpiSamplingFromFilterQuality(filter_quality, &quality_ok);
++  if (!quality_ok || !ToDlPoint(offset, &dl_offset)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const std::optional<DlPaint> dl_paint = ToOptionalPaint(paint);
++  builder->DrawImage(dl_image, dl_offset, sampling,
++                     dl_paint.has_value() ? &dl_paint.value() : nullptr);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiCanvasDrawImageRect(
++    FlutterSpiPictureRecorder* recorder,
++    FlutterSpiImage* image,
++    const FlutterSpiRect* src,
++    const FlutterSpiRect* dst,
++    int32_t filter_quality,
++    const FlutterSpiPaint* paint) {
++  DisplayListBuilder* builder = nullptr;
++  sk_sp<DlImage> dl_image;
++  const FlutterSpiResult dependencies =
++      FindCanvasDependencies(recorder, image, &builder, &dl_image);
++  if (dependencies != kFlutterSpiOk) {
++    return dependencies;
++  }
++  DlRect dl_src;
++  DlRect dl_dst;
++  bool quality_ok = false;
++  const DlImageSampling sampling =
++      SpiSamplingFromFilterQuality(filter_quality, &quality_ok);
++  if (!quality_ok || src == nullptr || dst == nullptr ||
++      !ToDlRect(*src, &dl_src) || !ToDlRect(*dst, &dl_dst)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const std::optional<DlPaint> dl_paint = ToOptionalPaint(paint);
++  builder->DrawImageRect(dl_image, dl_src, dl_dst, sampling,
++                         dl_paint.has_value() ? &dl_paint.value()
++                                              : nullptr,
++                         DlSrcRectConstraint::kFast);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiCanvasDrawImageNine(
++    FlutterSpiPictureRecorder* recorder,
++    FlutterSpiImage* image,
++    const FlutterSpiRect* center,
++    const FlutterSpiRect* dst,
++    int32_t filter_quality,
++    const FlutterSpiPaint* paint) {
++  DisplayListBuilder* builder = nullptr;
++  sk_sp<DlImage> dl_image;
++  const FlutterSpiResult dependencies =
++      FindCanvasDependencies(recorder, image, &builder, &dl_image);
++  if (dependencies != kFlutterSpiOk) {
++    return dependencies;
++  }
++  DlRect dl_center;
++  DlRect dl_dst;
++  bool quality_ok = false;
++  const DlFilterMode filter =
++      SpiFilterModeFromFilterQuality(filter_quality, &quality_ok);
++  if (!quality_ok || center == nullptr || dst == nullptr ||
++      !ToDlRect(*center, &dl_center) || !ToDlRect(*dst, &dl_dst)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const std::optional<DlPaint> dl_paint = ToOptionalPaint(paint);
++  builder->DrawImageNine(dl_image, DlIRect::Round(dl_center), dl_dst, filter,
++                         dl_paint.has_value() ? &dl_paint.value() : nullptr);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiCanvasDrawAtlas(
++    FlutterSpiPictureRecorder* recorder,
++    FlutterSpiImage* image,
++    const FlutterSpiRSTransform* transforms,
++    const FlutterSpiRect* rects,
++    const FlutterSpiColor* colors,
++    size_t count,
++    int32_t blend_mode,
++    int32_t filter_quality,
++    const FlutterSpiRect* cull_rect,
++    const FlutterSpiPaint* paint) {
++  DisplayListBuilder* builder = nullptr;
++  sk_sp<DlImage> dl_image;
++  const FlutterSpiResult dependencies =
++      FindCanvasDependencies(recorder, image, &builder, &dl_image);
++  if (dependencies != kFlutterSpiOk) {
++    return dependencies;
++  }
++  bool quality_ok = false;
++  const DlImageSampling sampling =
++      SpiSamplingFromFilterQuality(filter_quality, &quality_ok);
++  if (!quality_ok || count > static_cast<size_t>(std::numeric_limits<int>::max())) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (count == 0) {
++    return kFlutterSpiOk;
++  }
++  if (transforms == nullptr || rects == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++
++  std::vector<DlRSTransform> dl_transforms;
++  std::vector<DlRect> dl_rects;
++  dl_transforms.reserve(count);
++  dl_rects.reserve(count);
++  for (size_t index = 0; index < count; ++index) {
++    if (!IsFinite(transforms[index])) {
++      return kFlutterSpiInvalidArgument;
++    }
++    DlRect dl_rect;
++    if (!ToDlRect(rects[index], &dl_rect)) {
++      return kFlutterSpiInvalidArgument;
++    }
++    dl_transforms.emplace_back(transforms[index].scos, transforms[index].ssin,
++                               transforms[index].tx, transforms[index].ty);
++    dl_rects.push_back(dl_rect);
++  }
++
++  std::vector<DlColor> dl_colors;
++  if (colors != nullptr) {
++    dl_colors.reserve(count);
++    for (size_t index = 0; index < count; ++index) {
++      dl_colors.push_back(ToDlColor(colors[index]));
++    }
++  }
++
++  std::optional<DlRect> dl_cull_rect;
++  if (cull_rect != nullptr) {
++    DlRect converted_cull_rect;
++    if (!ToDlRect(*cull_rect, &converted_cull_rect)) {
++      return kFlutterSpiInvalidArgument;
++    }
++    dl_cull_rect = converted_cull_rect;
++  }
++  const std::optional<DlPaint> dl_paint = ToOptionalPaint(paint);
++  builder->DrawAtlas(
++      dl_image, dl_transforms.data(), dl_rects.data(),
++      colors == nullptr ? nullptr : dl_colors.data(), static_cast<int>(count),
++      static_cast<DlBlendMode>(blend_mode), sampling,
++      dl_cull_rect.has_value() ? &dl_cull_rect.value() : nullptr,
++      dl_paint.has_value() ? &dl_paint.value() : nullptr);
++  return kFlutterSpiOk;
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_canvas.h b/engine/src/flutter/runtime_spi/image/spi_image_canvas.h
+new file mode 100644
+index 00000000000..fdeba67fd25
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/image/spi_image_canvas.h
+@@ -0,0 +1,49 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_IMAGE_SPI_IMAGE_CANVAS_H_
++#define FLUTTER_RUNTIME_SPI_IMAGE_SPI_IMAGE_CANVAS_H_
++
++#include "flutter/display_list/dl_sampling_options.h"
++#include "flutter/runtime_spi/include/flutter_image.h"
++
++namespace flutter {
++
++DlImageSampling SpiSamplingFromFilterQuality(int32_t quality, bool* ok);
++DlFilterMode SpiFilterModeFromFilterQuality(int32_t quality, bool* ok);
++
++FlutterSpiResult SpiCanvasDrawImage(FlutterSpiPictureRecorder* recorder,
++                                    FlutterSpiImage* image,
++                                    FlutterSpiPoint offset,
++                                    int32_t filter_quality,
++                                    const FlutterSpiPaint* paint);
++FlutterSpiResult SpiCanvasDrawImageRect(
++    FlutterSpiPictureRecorder* recorder,
++    FlutterSpiImage* image,
++    const FlutterSpiRect* src,
++    const FlutterSpiRect* dst,
++    int32_t filter_quality,
++    const FlutterSpiPaint* paint);
++FlutterSpiResult SpiCanvasDrawImageNine(
++    FlutterSpiPictureRecorder* recorder,
++    FlutterSpiImage* image,
++    const FlutterSpiRect* center,
++    const FlutterSpiRect* dst,
++    int32_t filter_quality,
++    const FlutterSpiPaint* paint);
++FlutterSpiResult SpiCanvasDrawAtlas(
++    FlutterSpiPictureRecorder* recorder,
++    FlutterSpiImage* image,
++    const FlutterSpiRSTransform* transforms,
++    const FlutterSpiRect* rects,
++    const FlutterSpiColor* colors,
++    size_t count,
++    int32_t blend_mode,
++    int32_t filter_quality,
++    const FlutterSpiRect* cull_rect,
++    const FlutterSpiPaint* paint);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_IMAGE_SPI_IMAGE_CANVAS_H_
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_canvas_parity_unittests.cc b/engine/src/flutter/runtime_spi/image/spi_image_canvas_parity_unittests.cc
+new file mode 100644
+index 00000000000..f15ddc2983b
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/image/spi_image_canvas_parity_unittests.cc
+@@ -0,0 +1,366 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/image/spi_image_canvas.h"
++
++#include <cmath>
++#include <memory>
++
++#include "flutter/display_list/dl_builder.h"
++#include "flutter/display_list/image/dl_image_skia.h"
++#include "flutter/display_list/utils/dl_receiver_utils.h"
++#include "flutter/runtime_spi/image/spi_image.h"
++#include "flutter/runtime_spi/scene/spi_canvas.h"
++#include "flutter/runtime_spi/scene/spi_paint.h"
++#include "flutter/runtime_spi/spi_runtime_backend.h"
++#include "flutter/testing/testing.h"
++#include "third_party/skia/include/core/SkBitmap.h"
++#include "third_party/skia/include/core/SkImage.h"
++
++namespace flutter::testing {
++namespace {
++
++constexpr FlutterSpiRect kCullRect = {
++    .left = 0.0f, .top = 0.0f, .right = 100.0f, .bottom = 100.0f};
++
++sk_sp<DlImage> MakeTestImage() {
++  SkBitmap bitmap;
++  if (!bitmap.tryAllocPixels(SkImageInfo::MakeN32Premul(4, 3))) {
++    return nullptr;
++  }
++  bitmap.eraseColor(SK_ColorBLUE);
++  bitmap.setImmutable();
++  return DlImageSkia::Make(SkImages::RasterFromBitmap(bitmap));
++}
++
++class ImageOpProbe final : public IgnoreAttributeDispatchHelper,
++                           public IgnoreClipDispatchHelper,
++                           public IgnoreTransformDispatchHelper,
++                           public IgnoreDrawDispatchHelper {
++ public:
++  void drawImage(const sk_sp<DlImage>,
++                 const DlPoint&,
++                 DlImageSampling,
++                 bool) override {
++    image_count++;
++  }
++
++  void drawImageRect(const sk_sp<DlImage>,
++                     const DlRect&,
++                     const DlRect&,
++                     DlImageSampling,
++                     bool,
++                     DlSrcRectConstraint) override {
++    image_rect_count++;
++  }
++
++  void drawImageNine(const sk_sp<DlImage>,
++                     const DlIRect&,
++                     const DlRect&,
++                     DlFilterMode,
++                     bool) override {
++    image_nine_count++;
++  }
++
++  void drawAtlas(const sk_sp<DlImage>,
++                 const DlRSTransform[],
++                 const DlRect[],
++                 const DlColor[],
++                 int,
++                 DlBlendMode,
++                 DlImageSampling,
++                 const DlRect*,
++                 bool) override {
++    atlas_count++;
++  }
++
++  int image_count = 0;
++  int image_rect_count = 0;
++  int image_nine_count = 0;
++  int atlas_count = 0;
++};
++
++class SpiImageCanvasTest : public ::testing::Test {
++ protected:
++  void SetUp() override { engine_ = std::make_unique<FlutterSpiEngine>(); }
++
++  FlutterSpiPictureRecorder* CreateRecorder() {
++    FlutterSpiPictureRecorder* recorder = nullptr;
++    EXPECT_EQ(SpiSceneApi()->recorder_create(engine_.get(), &kCullRect,
++                                             &recorder),
++              kFlutterSpiOk);
++    return recorder;
++  }
++
++  FlutterSpiImage* WrapImage(const sk_sp<DlImage>& image) {
++    FlutterSpiImage* handle = nullptr;
++    EXPECT_EQ(SpiImageWrap(image, &handle), kFlutterSpiOk);
++    return handle;
++  }
++
++  sk_sp<DisplayList> Finish(FlutterSpiPictureRecorder* recorder) {
++    FlutterSpiPicture* picture = nullptr;
++    EXPECT_EQ(SpiSceneApi()->recorder_finish(recorder, &picture),
++              kFlutterSpiOk);
++    const DisplayList* display_list = SpiPictureDisplayListForTesting(picture);
++    EXPECT_NE(display_list, nullptr);
++    sk_sp<DisplayList> retained_display_list = sk_ref_sp(display_list);
++    EXPECT_EQ(SpiSceneApi()->picture_release(picture), kFlutterSpiOk);
++    return retained_display_list;
++  }
++
++  std::unique_ptr<FlutterSpiEngine> engine_;
++};
++
++void ExpectImageOp(const DisplayList* display_list, int expected_count) {
++  ImageOpProbe probe;
++  display_list->Dispatch(probe);
++  EXPECT_EQ(probe.image_count, expected_count);
++}
++
++void ExpectImageRectOp(const DisplayList* display_list, int expected_count) {
++  ImageOpProbe probe;
++  display_list->Dispatch(probe);
++  EXPECT_EQ(probe.image_rect_count, expected_count);
++}
++
++void ExpectImageNineOp(const DisplayList* display_list, int expected_count) {
++  ImageOpProbe probe;
++  display_list->Dispatch(probe);
++  EXPECT_EQ(probe.image_nine_count, expected_count);
++}
++
++void ExpectAtlasOp(const DisplayList* display_list, int expected_count) {
++  ImageOpProbe probe;
++  display_list->Dispatch(probe);
++  EXPECT_EQ(probe.atlas_count, expected_count);
++}
++
++TEST_F(SpiImageCanvasTest, DrawImageMatchesDl) {
++  const auto image = MakeTestImage();
++  FlutterSpiImage* handle = WrapImage(image);
++  FlutterSpiPictureRecorder* recorder = CreateRecorder();
++  ASSERT_EQ(SpiCanvasDrawImage(recorder, handle, {10.0f, 11.0f},
++                               kFlutterSpiFilterQualityLow, nullptr),
++            kFlutterSpiOk);
++
++  DisplayListBuilder expected(DlRect::MakeLTRB(0, 0, 100, 100));
++  expected.DrawImage(image, {10.0f, 11.0f}, DlImageSampling::kLinear);
++  const auto expected_list = expected.Build();
++  const auto actual = Finish(recorder);
++  EXPECT_TRUE(actual->Equals(expected_list));
++  ExpectImageOp(actual.get(), 1);
++  EXPECT_EQ(SpiImageRelease(handle), kFlutterSpiOk);
++}
++
++TEST_F(SpiImageCanvasTest, DrawImageRectMatchesDl) {
++  const auto image = MakeTestImage();
++  FlutterSpiImage* handle = WrapImage(image);
++  FlutterSpiPictureRecorder* recorder = CreateRecorder();
++  const FlutterSpiRect src = {0.0f, 0.0f, 2.0f, 3.0f};
++  const FlutterSpiRect dst = {4.0f, 5.0f, 20.0f, 30.0f};
++  ASSERT_EQ(SpiCanvasDrawImageRect(recorder, handle, &src, &dst,
++                                   kFlutterSpiFilterQualityMedium, nullptr),
++            kFlutterSpiOk);
++
++  DisplayListBuilder expected(DlRect::MakeLTRB(0, 0, 100, 100));
++  expected.DrawImageRect(image, DlRect::MakeLTRB(0, 0, 2, 3),
++                         DlRect::MakeLTRB(4, 5, 20, 30),
++                         DlImageSampling::kMipmapLinear, nullptr,
++                         DlSrcRectConstraint::kFast);
++  const auto expected_list = expected.Build();
++  const auto actual = Finish(recorder);
++  EXPECT_TRUE(actual->Equals(expected_list));
++  ExpectImageRectOp(actual.get(), 1);
++  EXPECT_EQ(SpiImageRelease(handle), kFlutterSpiOk);
++}
++
++TEST_F(SpiImageCanvasTest, DrawImageNineMatchesDl) {
++  const auto image = MakeTestImage();
++  FlutterSpiImage* handle = WrapImage(image);
++  FlutterSpiPictureRecorder* recorder = CreateRecorder();
++  const FlutterSpiRect center = {1.5f, 1.5f, 2.5f, 2.5f};
++  const FlutterSpiRect dst = {4.0f, 5.0f, 20.0f, 30.0f};
++  ASSERT_EQ(SpiCanvasDrawImageNine(recorder, handle, &center, &dst,
++                                   kFlutterSpiFilterQualityHigh, nullptr),
++            kFlutterSpiOk);
++
++  DisplayListBuilder expected(DlRect::MakeLTRB(0, 0, 100, 100));
++  expected.DrawImageNine(image, DlIRect::Round(DlRect::MakeLTRB(1.5f, 1.5f, 2.5f, 2.5f)),
++                         DlRect::MakeLTRB(4, 5, 20, 30), DlFilterMode::kLinear);
++  const auto expected_list = expected.Build();
++  const auto actual = Finish(recorder);
++  EXPECT_TRUE(actual->Equals(expected_list));
++  ExpectImageNineOp(actual.get(), 1);
++  EXPECT_EQ(SpiImageRelease(handle), kFlutterSpiOk);
++}
++
++TEST_F(SpiImageCanvasTest, DrawAtlasMatchesDl) {
++  const auto image = MakeTestImage();
++  FlutterSpiImage* handle = WrapImage(image);
++  FlutterSpiPictureRecorder* recorder = CreateRecorder();
++  const FlutterSpiRSTransform transforms[] = {
++      {.scos = 1.0f, .ssin = 0.0f, .tx = 2.0f, .ty = 3.0f},
++      {.scos = 0.5f, .ssin = 0.5f, .tx = 4.0f, .ty = 5.0f},
++  };
++  const FlutterSpiRect rects[] = {
++      {0.0f, 0.0f, 2.0f, 3.0f},
++      {1.0f, 1.0f, 3.0f, 4.0f},
++  };
++  const FlutterSpiColor colors[] = {
++      {.red = 1.0f, .green = 0.0f, .blue = 0.0f, .alpha = 1.0f,
++       .color_space = kFlutterSpiColorSpaceSRGB},
++      {.red = 0.0f, .green = 1.0f, .blue = 0.0f, .alpha = 0.5f,
++       .color_space = kFlutterSpiColorSpaceSRGB},
++  };
++  const FlutterSpiRect cull_rect = {0.0f, 0.0f, 50.0f, 50.0f};
++  ASSERT_EQ(SpiCanvasDrawAtlas(
++                recorder, handle, transforms, rects, colors, 2,
++                kFlutterSpiBlendModeSrcOver, kFlutterSpiFilterQualityLow,
++                &cull_rect, nullptr),
++            kFlutterSpiOk);
++  ASSERT_EQ(SpiCanvasDrawAtlas(
++                recorder, handle, transforms, rects, nullptr, 2,
++                kFlutterSpiBlendModeSrcOver, kFlutterSpiFilterQualityLow,
++                nullptr, nullptr),
++            kFlutterSpiOk);
++
++  const DlColor dl_colors[] = {
++      DlColor::kRed(),
++      DlColor(0.5f, 0.0f, 1.0f, 0.0f, DlColorSpace::kSRGB),
++  };
++  DisplayListBuilder expected(DlRect::MakeLTRB(0, 0, 100, 100));
++  expected.DrawAtlas(image, reinterpret_cast<const DlRSTransform*>(transforms),
++                     reinterpret_cast<const DlRect*>(rects), dl_colors, 2,
++                     DlBlendMode::kSrcOver, DlImageSampling::kLinear,
++                     reinterpret_cast<const DlRect*>(&cull_rect));
++  expected.DrawAtlas(image, reinterpret_cast<const DlRSTransform*>(transforms),
++                     reinterpret_cast<const DlRect*>(rects), nullptr, 2,
++                     DlBlendMode::kSrcOver, DlImageSampling::kLinear, nullptr);
++  const auto expected_list = expected.Build();
++  const auto actual = Finish(recorder);
++  EXPECT_TRUE(actual->Equals(expected_list));
++  ExpectAtlasOp(actual.get(), 2);
++  EXPECT_EQ(SpiImageRelease(handle), kFlutterSpiOk);
++}
++
++TEST_F(SpiImageCanvasTest, DrawImageWithPaintMatchesDl) {
++  const auto image = MakeTestImage();
++  FlutterSpiImage* handle = WrapImage(image);
++  FlutterSpiPictureRecorder* recorder = CreateRecorder();
++  const FlutterSpiPaint paint = {
++      .struct_size = sizeof(FlutterSpiPaint),
++      .color = {.red = 0.1f,
++                .green = 0.2f,
++                .blue = 0.3f,
++                .alpha = 0.5f,
++                .color_space = kFlutterSpiColorSpaceSRGB},
++      .blend_mode = kFlutterSpiBlendModeMultiply,
++  };
++  ASSERT_EQ(SpiCanvasDrawImage(recorder, handle, {10.0f, 11.0f},
++                               kFlutterSpiFilterQualityNone, &paint),
++            kFlutterSpiOk);
++
++  const DlPaint dl_paint = ToDlPaint(paint);
++  DisplayListBuilder expected(DlRect::MakeLTRB(0, 0, 100, 100));
++  expected.DrawImage(image, {10.0f, 11.0f}, DlImageSampling::kNearestNeighbor,
++                     &dl_paint);
++  const auto expected_list = expected.Build();
++  const auto actual = Finish(recorder);
++  EXPECT_TRUE(actual->Equals(expected_list));
++  ExpectImageOp(actual.get(), 1);
++  EXPECT_EQ(SpiImageRelease(handle), kFlutterSpiOk);
++}
++
++TEST_F(SpiImageCanvasTest, EachFilterQualityMatchesDl) {
++  const auto image = MakeTestImage();
++  for (int32_t quality = kFlutterSpiFilterQualityNone;
++       quality <= kFlutterSpiFilterQualityHigh; ++quality) {
++    FlutterSpiImage* handle = WrapImage(image);
++    FlutterSpiPictureRecorder* recorder = CreateRecorder();
++    ASSERT_EQ(SpiCanvasDrawImage(recorder, handle, {1.0f, 2.0f}, quality,
++                                 nullptr),
++              kFlutterSpiOk);
++    bool ok = false;
++    const DlImageSampling sampling =
++        SpiSamplingFromFilterQuality(quality, &ok);
++    ASSERT_TRUE(ok);
++    DisplayListBuilder expected(DlRect::MakeLTRB(0, 0, 100, 100));
++    expected.DrawImage(image, {1.0f, 2.0f}, sampling);
++    const auto expected_list = expected.Build();
++    const auto actual = Finish(recorder);
++    EXPECT_TRUE(actual->Equals(expected_list));
++    ExpectImageOp(actual.get(), 1);
++    EXPECT_EQ(SpiImageRelease(handle), kFlutterSpiOk);
++  }
++}
++
++TEST_F(SpiImageCanvasTest, ReleasedImageIsInvalid) {
++  const auto image = MakeTestImage();
++  FlutterSpiImage* handle = WrapImage(image);
++  ASSERT_EQ(SpiImageRelease(handle), kFlutterSpiOk);
++  FlutterSpiPictureRecorder* recorder = CreateRecorder();
++  EXPECT_EQ(SpiCanvasDrawImage(recorder, handle, {1.0f, 2.0f},
++                               kFlutterSpiFilterQualityNone, nullptr),
++            kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiSceneApi()->recorder_release(recorder), kFlutterSpiOk);
++}
++
++TEST_F(SpiImageCanvasTest, InvalidArgumentsAreRejected) {
++  const auto image = MakeTestImage();
++  FlutterSpiImage* handle = WrapImage(image);
++  FlutterSpiPictureRecorder* recorder = CreateRecorder();
++  const FlutterSpiRect rect = {0.0f, 0.0f, 2.0f, 3.0f};
++  const FlutterSpiRSTransform transform = {1.0f, 0.0f, 0.0f, 0.0f};
++  EXPECT_EQ(SpiCanvasDrawImage(recorder, handle, {1.0f, 2.0f}, 4, nullptr),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(SpiCanvasDrawAtlas(recorder, handle, nullptr, &rect, nullptr, 1,
++                               kFlutterSpiBlendModeSrcOver,
++                               kFlutterSpiFilterQualityNone, nullptr, nullptr),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(SpiCanvasDrawAtlas(recorder, handle, &transform, nullptr, nullptr,
++                               1, kFlutterSpiBlendModeSrcOver,
++                               kFlutterSpiFilterQualityNone, nullptr, nullptr),
++            kFlutterSpiInvalidArgument);
++  const FlutterSpiRect non_finite_rect = {0.0f, 0.0f, INFINITY, 3.0f};
++  EXPECT_EQ(SpiCanvasDrawAtlas(recorder, handle, &transform, &non_finite_rect,
++                               nullptr, 1, kFlutterSpiBlendModeSrcOver,
++                               kFlutterSpiFilterQualityNone, nullptr, nullptr),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(SpiSceneApi()->recorder_release(recorder), kFlutterSpiOk);
++  EXPECT_EQ(SpiImageRelease(handle), kFlutterSpiOk);
++}
++
++TEST_F(SpiImageCanvasTest, ZeroAtlasCountRecordsNoOperation) {
++  const auto image = MakeTestImage();
++  FlutterSpiImage* handle = WrapImage(image);
++  FlutterSpiPictureRecorder* recorder = CreateRecorder();
++  ASSERT_EQ(SpiCanvasDrawAtlas(recorder, handle, nullptr, nullptr, nullptr, 0,
++                               kFlutterSpiBlendModeSrcOver,
++                               kFlutterSpiFilterQualityNone, nullptr, nullptr),
++            kFlutterSpiOk);
++  const auto actual = Finish(recorder);
++  ExpectAtlasOp(actual.get(), 0);
++  EXPECT_EQ(SpiImageRelease(handle), kFlutterSpiOk);
++}
++
++TEST_F(SpiImageCanvasTest, ReleasedImageStaysInPicture) {
++  const auto image = MakeTestImage();
++  FlutterSpiImage* handle = WrapImage(image);
++  FlutterSpiPictureRecorder* recorder = CreateRecorder();
++  ASSERT_EQ(SpiCanvasDrawImage(recorder, handle, {10.0f, 11.0f},
++                               kFlutterSpiFilterQualityLow, nullptr),
++            kFlutterSpiOk);
++  ASSERT_EQ(SpiImageRelease(handle), kFlutterSpiOk);
++
++  DisplayListBuilder expected(DlRect::MakeLTRB(0, 0, 100, 100));
++  expected.DrawImage(image, {10.0f, 11.0f}, DlImageSampling::kLinear);
++  const auto expected_list = expected.Build();
++  const auto actual = Finish(recorder);
++  EXPECT_TRUE(actual->Equals(expected_list));
++  ExpectImageOp(actual.get(), 1);
++}
++
++}  // namespace
++}  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_unittests.cc b/engine/src/flutter/runtime_spi/image/spi_image_unittests.cc
+new file mode 100644
+index 00000000000..af2bb334706
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/image/spi_image_unittests.cc
+@@ -0,0 +1,42 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/image/spi_image.h"
++
++#include "flutter/display_list/image/dl_image_skia.h"
++#include "flutter/testing/testing.h"
++#include "third_party/skia/include/core/SkBitmap.h"
++#include "third_party/skia/include/core/SkImage.h"
++
++namespace flutter::testing {
++namespace {
++
++sk_sp<DlImage> MakeTestImage() {
++  SkBitmap bitmap;
++  if (!bitmap.tryAllocPixels(SkImageInfo::MakeN32Premul(4, 3))) {
++    return nullptr;
++  }
++  bitmap.eraseColor(SK_ColorBLUE);
++  bitmap.setImmutable();
++  return DlImageSkia::Make(SkImages::RasterFromBitmap(bitmap));
++}
++
++TEST(SpiImage, WrapGetSizeAndRetainRelease) {
++  FlutterSpiImage* image = nullptr;
++  ASSERT_EQ(SpiImageWrap(MakeTestImage(), &image), kFlutterSpiOk);
++
++  int32_t width = 0;
++  int32_t height = 0;
++  EXPECT_EQ(SpiImageGetSize(image, &width, &height), kFlutterSpiOk);
++  EXPECT_EQ(width, 4);
++  EXPECT_EQ(height, 3);
++
++  EXPECT_EQ(SpiImageRetain(image), kFlutterSpiOk);
++  EXPECT_EQ(SpiImageRelease(image), kFlutterSpiOk);
++  EXPECT_EQ(SpiImageRelease(image), kFlutterSpiOk);
++  EXPECT_EQ(SpiImageGetSize(image, &width, &height), kFlutterSpiInvalidHandle);
++}
++
++}  // namespace
++}  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+index e20632e4191..dc900e68e80 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+@@ -833,6 +833,12 @@ const DisplayList* SpiPictureDisplayListForTesting(FlutterSpiPicture* picture) {
+   return picture_value == nullptr ? nullptr : picture_value->display_list();
+ }
+ 
++DisplayListBuilder* SpiPictureRecorderBuilder(
++    FlutterSpiPictureRecorder* recorder) {
++  const auto recorder_value = FindRecorder(recorder);
++  return recorder_value == nullptr ? nullptr : recorder_value->builder();
++}
++
+ const DlPath* SpiPathForTesting(FlutterSpiPath* path) {
+   const auto path_value = FindPath(path);
+   return path_value == nullptr ? nullptr : &path_value->path();
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas.h b/engine/src/flutter/runtime_spi/scene/spi_canvas.h
+index d9f66df5e06..750056593fb 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas.h
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas.h
+@@ -12,6 +12,7 @@ struct FlutterSpiParagraph;
+ namespace flutter {
+ 
+ class DisplayList;
++class DisplayListBuilder;
+ class DlPath;
+ 
+ const FlutterSpiSceneApi* SpiSceneApi();
+@@ -20,6 +21,8 @@ FlutterSpiResult CanvasDrawParagraph(FlutterSpiPictureRecorder* recorder,
+                                      float x,
+                                      float y);
+ const DisplayList* SpiPictureDisplayListForTesting(FlutterSpiPicture* picture);
++DisplayListBuilder* SpiPictureRecorderBuilder(
++    FlutterSpiPictureRecorder* recorder);
+ const DlPath* SpiPathForTesting(FlutterSpiPath* path);
+ 
+ }  // namespace flutter
