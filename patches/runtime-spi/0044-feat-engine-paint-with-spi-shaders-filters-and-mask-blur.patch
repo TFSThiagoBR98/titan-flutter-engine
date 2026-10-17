@@ -1,0 +1,742 @@
+# Why: Apply SPI paint effects to DisplayList paints, retain them in recorded
+# pictures, and return explicit handle errors from drawing APIs.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 0a7a89ac54e..1fa6d444d0c 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -239,6 +239,7 @@ if (enable_unittests) {
+     testonly = true
+     sources = [ "spi_scene_benchmarks.cc" ]
+     deps = [
++      ":effects",
+       ":scene",
+       ":spi_backend",
+       "//flutter/benchmarking",
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_canvas.cc b/engine/src/flutter/runtime_spi/image/spi_image_canvas.cc
+index 38e9d80c864..c8de1aee5e3 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_canvas.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_canvas.cc
+@@ -19,11 +19,22 @@
+ namespace flutter {
+ namespace {
+ 
+-std::optional<DlPaint> ToOptionalPaint(const FlutterSpiPaint* paint) {
++FlutterSpiResult ToOptionalPaint(const FlutterSpiPaint* paint,
++                                 std::optional<DlPaint>* out_paint) {
++  if (out_paint == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
+   if (paint == nullptr) {
+-    return std::nullopt;
++    out_paint->reset();
++    return kFlutterSpiOk;
+   }
+-  return ToDlPaint(*paint);
++  DlPaint value;
++  const FlutterSpiResult result = TryToDlPaint(*paint, &value);
++  if (result != kFlutterSpiOk) {
++    return result;
++  }
++  *out_paint = std::move(value);
++  return kFlutterSpiOk;
+ }
+ 
+ bool IsFinite(const FlutterSpiRSTransform& transform) {
+@@ -101,7 +112,11 @@ FlutterSpiResult SpiCanvasDrawImage(FlutterSpiPictureRecorder* recorder,
+   if (!quality_ok || !ToDlPoint(offset, &dl_offset)) {
+     return kFlutterSpiInvalidArgument;
+   }
+-  const std::optional<DlPaint> dl_paint = ToOptionalPaint(paint);
++  std::optional<DlPaint> dl_paint;
++  const FlutterSpiResult paint_result = ToOptionalPaint(paint, &dl_paint);
++  if (paint_result != kFlutterSpiOk) {
++    return paint_result;
++  }
+   builder->DrawImage(dl_image, dl_offset, sampling,
+                      dl_paint.has_value() ? &dl_paint.value() : nullptr);
+   return kFlutterSpiOk;
+@@ -130,7 +145,11 @@ FlutterSpiResult SpiCanvasDrawImageRect(
+       !ToDlRect(*src, &dl_src) || !ToDlRect(*dst, &dl_dst)) {
+     return kFlutterSpiInvalidArgument;
+   }
+-  const std::optional<DlPaint> dl_paint = ToOptionalPaint(paint);
++  std::optional<DlPaint> dl_paint;
++  const FlutterSpiResult paint_result = ToOptionalPaint(paint, &dl_paint);
++  if (paint_result != kFlutterSpiOk) {
++    return paint_result;
++  }
+   builder->DrawImageRect(dl_image, dl_src, dl_dst, sampling,
+                          dl_paint.has_value() ? &dl_paint.value()
+                                               : nullptr,
+@@ -161,7 +180,11 @@ FlutterSpiResult SpiCanvasDrawImageNine(
+       !ToDlRect(*center, &dl_center) || !ToDlRect(*dst, &dl_dst)) {
+     return kFlutterSpiInvalidArgument;
+   }
+-  const std::optional<DlPaint> dl_paint = ToOptionalPaint(paint);
++  std::optional<DlPaint> dl_paint;
++  const FlutterSpiResult paint_result = ToOptionalPaint(paint, &dl_paint);
++  if (paint_result != kFlutterSpiOk) {
++    return paint_result;
++  }
+   builder->DrawImageNine(dl_image, DlIRect::Round(dl_center), dl_dst, filter,
+                          dl_paint.has_value() ? &dl_paint.value() : nullptr);
+   return kFlutterSpiOk;
+@@ -231,7 +254,11 @@ FlutterSpiResult SpiCanvasDrawAtlas(
+     }
+     dl_cull_rect = converted_cull_rect;
+   }
+-  const std::optional<DlPaint> dl_paint = ToOptionalPaint(paint);
++  std::optional<DlPaint> dl_paint;
++  const FlutterSpiResult paint_result = ToOptionalPaint(paint, &dl_paint);
++  if (paint_result != kFlutterSpiOk) {
++    return paint_result;
++  }
+   builder->DrawAtlas(
+       dl_image, dl_transforms.data(), dl_rects.data(),
+       colors == nullptr ? nullptr : dl_colors.data(), static_cast<int>(count),
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+index dc900e68e80..d9524f3fd58 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+@@ -115,6 +115,13 @@ FlutterSpiResult ToResult(bool succeeded) {
+   return succeeded ? kFlutterSpiOk : kFlutterSpiInvalidHandle;
+ }
+ 
++FlutterSpiResult ConvertPaint(const FlutterSpiPaint* paint, DlPaint* out_paint) {
++  if (paint == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return TryToDlPaint(*paint, out_paint);
++}
++
+ FlutterSpiResult PathCreate(FlutterSpiEngine* engine,
+                             FlutterSpiPath** out_path) {
+   if (engine == nullptr || out_path == nullptr) {
+@@ -326,7 +333,12 @@ FlutterSpiResult CanvasSaveLayer(FlutterSpiPictureRecorder* recorder,
+     dl_bounds = value;
+   }
+   if (paint != nullptr) {
+-    dl_paint = ToDlPaint(*paint);
++    DlPaint value;
++    const FlutterSpiResult paint_result = TryToDlPaint(*paint, &value);
++    if (paint_result != kFlutterSpiOk) {
++      return paint_result;
++    }
++    dl_paint = std::move(value);
+   }
+   recorder_value->builder()->SaveLayer(dl_bounds,
+                                        dl_paint.has_value() ? &*dl_paint
+@@ -514,7 +526,12 @@ FlutterSpiResult CanvasDrawPaint(FlutterSpiPictureRecorder* recorder,
+   if (paint == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+-  recorder_value->builder()->DrawPaint(ToDlPaint(*paint));
++  DlPaint dl_paint;
++  const FlutterSpiResult paint_result = ConvertPaint(paint, &dl_paint);
++  if (paint_result != kFlutterSpiOk) {
++    return paint_result;
++  }
++  recorder_value->builder()->DrawPaint(dl_paint);
+   return kFlutterSpiOk;
+ }
+ 
+@@ -532,7 +549,12 @@ FlutterSpiResult CanvasDrawLine(FlutterSpiPictureRecorder* recorder,
+       !ToDlPoint(*start, &dl_start) || !ToDlPoint(*end, &dl_end)) {
+     return kFlutterSpiInvalidArgument;
+   }
+-  recorder_value->builder()->DrawLine(dl_start, dl_end, ToDlPaint(*paint));
++  DlPaint dl_paint;
++  const FlutterSpiResult paint_result = ConvertPaint(paint, &dl_paint);
++  if (paint_result != kFlutterSpiOk) {
++    return paint_result;
++  }
++  recorder_value->builder()->DrawLine(dl_start, dl_end, dl_paint);
+   return kFlutterSpiOk;
+ }
+ 
+@@ -547,7 +569,12 @@ FlutterSpiResult CanvasDrawRect(FlutterSpiPictureRecorder* recorder,
+   if (rect == nullptr || paint == nullptr || !ToDlRect(*rect, &dl_rect)) {
+     return kFlutterSpiInvalidArgument;
+   }
+-  recorder_value->builder()->DrawRect(dl_rect, ToDlPaint(*paint));
++  DlPaint dl_paint;
++  const FlutterSpiResult paint_result = ConvertPaint(paint, &dl_paint);
++  if (paint_result != kFlutterSpiOk) {
++    return paint_result;
++  }
++  recorder_value->builder()->DrawRect(dl_rect, dl_paint);
+   return kFlutterSpiOk;
+ }
+ 
+@@ -563,7 +590,12 @@ FlutterSpiResult CanvasDrawRRect(FlutterSpiPictureRecorder* recorder,
+       !ToDlRoundRect(*rrect, &dl_rrect)) {
+     return kFlutterSpiInvalidArgument;
+   }
+-  recorder_value->builder()->DrawRoundRect(dl_rrect, ToDlPaint(*paint));
++  DlPaint dl_paint;
++  const FlutterSpiResult paint_result = ConvertPaint(paint, &dl_paint);
++  if (paint_result != kFlutterSpiOk) {
++    return paint_result;
++  }
++  recorder_value->builder()->DrawRoundRect(dl_rrect, dl_paint);
+   return kFlutterSpiOk;
+ }
+ 
+@@ -581,8 +613,12 @@ FlutterSpiResult CanvasDrawDiffRRect(FlutterSpiPictureRecorder* recorder,
+       !ToDlRoundRect(*outer, &dl_outer) || !ToDlRoundRect(*inner, &dl_inner)) {
+     return kFlutterSpiInvalidArgument;
+   }
+-  recorder_value->builder()->DrawDiffRoundRect(dl_outer, dl_inner,
+-                                               ToDlPaint(*paint));
++  DlPaint dl_paint;
++  const FlutterSpiResult paint_result = ConvertPaint(paint, &dl_paint);
++  if (paint_result != kFlutterSpiOk) {
++    return paint_result;
++  }
++  recorder_value->builder()->DrawDiffRoundRect(dl_outer, dl_inner, dl_paint);
+   return kFlutterSpiOk;
+ }
+ 
+@@ -598,7 +634,12 @@ FlutterSpiResult CanvasDrawOval(FlutterSpiPictureRecorder* recorder,
+       !ToDlRect(*bounds, &dl_bounds)) {
+     return kFlutterSpiInvalidArgument;
+   }
+-  recorder_value->builder()->DrawOval(dl_bounds, ToDlPaint(*paint));
++  DlPaint dl_paint;
++  const FlutterSpiResult paint_result = ConvertPaint(paint, &dl_paint);
++  if (paint_result != kFlutterSpiOk) {
++    return paint_result;
++  }
++  recorder_value->builder()->DrawOval(dl_bounds, dl_paint);
+   return kFlutterSpiOk;
+ }
+ 
+@@ -615,7 +656,12 @@ FlutterSpiResult CanvasDrawCircle(FlutterSpiPictureRecorder* recorder,
+       !std::isfinite(radius)) {
+     return kFlutterSpiInvalidArgument;
+   }
+-  recorder_value->builder()->DrawCircle(dl_center, radius, ToDlPaint(*paint));
++  DlPaint dl_paint;
++  const FlutterSpiResult paint_result = ConvertPaint(paint, &dl_paint);
++  if (paint_result != kFlutterSpiOk) {
++    return paint_result;
++  }
++  recorder_value->builder()->DrawCircle(dl_center, radius, dl_paint);
+   return kFlutterSpiOk;
+ }
+ 
+@@ -634,9 +680,14 @@ FlutterSpiResult CanvasDrawArc(FlutterSpiPictureRecorder* recorder,
+       !std::isfinite(start_radians) || !std::isfinite(sweep_radians)) {
+     return kFlutterSpiInvalidArgument;
+   }
++  DlPaint dl_paint;
++  const FlutterSpiResult paint_result = ConvertPaint(paint, &dl_paint);
++  if (paint_result != kFlutterSpiOk) {
++    return paint_result;
++  }
+   recorder_value->builder()->DrawArc(
+       dl_rect, start_radians * kRadiansToDegrees,
+-      sweep_radians * kRadiansToDegrees, use_center, ToDlPaint(*paint));
++      sweep_radians * kRadiansToDegrees, use_center, dl_paint);
+   return kFlutterSpiOk;
+ }
+ 
+@@ -652,7 +703,12 @@ FlutterSpiResult CanvasDrawPath(FlutterSpiPictureRecorder* recorder,
+   if (paint == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+-  recorder_value->builder()->DrawPath(path_value->path(), ToDlPaint(*paint));
++  DlPaint dl_paint;
++  const FlutterSpiResult paint_result = ConvertPaint(paint, &dl_paint);
++  if (paint_result != kFlutterSpiOk) {
++    return paint_result;
++  }
++  recorder_value->builder()->DrawPath(path_value->path(), dl_paint);
+   return kFlutterSpiOk;
+ }
+ 
+@@ -678,8 +734,13 @@ FlutterSpiResult CanvasDrawPoints(FlutterSpiPictureRecorder* recorder,
+     }
+     dl_points.push_back(point);
+   }
++  DlPaint dl_paint;
++  const FlutterSpiResult paint_result = ConvertPaint(paint, &dl_paint);
++  if (paint_result != kFlutterSpiOk) {
++    return paint_result;
++  }
+   recorder_value->builder()->DrawPoints(ToDlPointMode(point_mode), count,
+-                                        dl_points.data(), ToDlPaint(*paint));
++                                        dl_points.data(), dl_paint);
+   return kFlutterSpiOk;
+ }
+ 
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas_parity_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_canvas_parity_unittests.cc
+index b6dd40b7214..968a29efcf5 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas_parity_unittests.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas_parity_unittests.cc
+@@ -4,11 +4,17 @@
+ 
+ #include "flutter/runtime_spi/scene/spi_canvas.h"
+ 
++#include <array>
+ #include <cmath>
+ #include <memory>
+ 
+ #include "flutter/display_list/dl_builder.h"
++#include "flutter/display_list/utils/dl_receiver_utils.h"
++#include "flutter/runtime_spi/effects/spi_color_filter.h"
++#include "flutter/runtime_spi/effects/spi_image_filter.h"
++#include "flutter/runtime_spi/effects/spi_shader.h"
+ #include "flutter/runtime_spi/spi_runtime_backend.h"
++#include "flutter/runtime_spi/image/spi_image.h"
+ #include "flutter/runtime_spi/scene/spi_paint.h"
+ #include "flutter/runtime_spi/testing/c_test_runtime.h"
+ #include "flutter/testing/testing.h"
+@@ -47,6 +53,44 @@ class SpiCanvasTest : public ::testing::Test {
+   std::unique_ptr<FlutterSpiEngine> engine_;
+ };
+ 
++class PaintOpProbe final : public IgnoreAttributeDispatchHelper,
++                           public IgnoreClipDispatchHelper,
++                           public IgnoreTransformDispatchHelper,
++                           public IgnoreDrawDispatchHelper {
++ public:
++  void saveLayer(const DlRect& bounds,
++                 const SaveLayerOptions options,
++                 const DlImageFilter* backdrop,
++                 std::optional<int64_t> backdrop_id) override {
++    save_layer_count++;
++  }
++
++  void drawRect(const DlRect& rect) override { draw_rect_count++; }
++
++  int save_layer_count = 0;
++  int draw_rect_count = 0;
++};
++
++sk_sp<DisplayList> FinishPicture(const FlutterSpiSceneApi* api,
++                                 FlutterSpiPictureRecorder* recorder) {
++  FlutterSpiPicture* picture = nullptr;
++  EXPECT_EQ(api->recorder_finish(recorder, &picture), kFlutterSpiOk);
++  const DisplayList* display_list = SpiPictureDisplayListForTesting(picture);
++  EXPECT_NE(display_list, nullptr);
++  sk_sp<DisplayList> result = sk_ref_sp(display_list);
++  EXPECT_EQ(api->picture_release(picture), kFlutterSpiOk);
++  return result;
++}
++
++void ExpectPaintOperation(const DisplayList* display_list,
++                          int expected_rect_count,
++                          int expected_save_layer_count) {
++  PaintOpProbe probe;
++  display_list->Dispatch(probe);
++  EXPECT_EQ(probe.draw_rect_count, expected_rect_count);
++  EXPECT_EQ(probe.save_layer_count, expected_save_layer_count);
++}
++
+ TEST_F(SpiCanvasTest, AbiSequenceMatchesDisplayListBuilder) {
+   FlutterSpiPictureRecorder* recorder = nullptr;
+   ASSERT_EQ(api()->recorder_create(engine(), &kRect, &recorder), kFlutterSpiOk);
+@@ -139,5 +183,93 @@ TEST_F(SpiCanvasTest, SaveCountMatchesBuilder) {
+   EXPECT_EQ(api()->recorder_release(recorder), kFlutterSpiOk);
+ }
+ 
++TEST(SpiPaintEffects, SaveLayerWithImageFilterMatchesDl) {
++  FlutterSpiEngine engine = {};
++  const FlutterSpiSceneApi* api = SpiSceneApi();
++  FlutterSpiPictureRecorder* recorder = nullptr;
++  ASSERT_EQ(api->recorder_create(&engine, &kRect, &recorder), kFlutterSpiOk);
++
++  FlutterSpiImageFilter* filter = nullptr;
++  ASSERT_EQ(SpiImageFilterBlur(&engine, 2.0f, 3.0f,
++                               kFlutterSpiTileModeMirror, &filter),
++            kFlutterSpiOk);
++  FlutterSpiPaint paint = kPaint;
++  paint.image_filter = filter;
++  ASSERT_EQ(api->canvas_save_layer(recorder, &kRect, &paint), kFlutterSpiOk);
++  ASSERT_EQ(api->canvas_restore(recorder), kFlutterSpiOk);
++
++  DlPaint expected_paint = ToDlPaint(kPaint);
++  expected_paint.setImageFilter(SpiImageFilterGet(filter));
++  DisplayListBuilder expected_builder(DlRect::MakeLTRB(1, 2, 30, 40));
++  expected_builder.SaveLayer(DlRect::MakeLTRB(1, 2, 30, 40), &expected_paint);
++  expected_builder.Restore();
++  const auto expected = expected_builder.Build();
++  const auto actual = FinishPicture(api, recorder);
++
++  ASSERT_NE(actual, nullptr);
++  EXPECT_TRUE(actual->Equals(expected));
++  ExpectPaintOperation(actual.get(), 0, 1);
++  EXPECT_EQ(SpiImageFilterRelease(filter), kFlutterSpiOk);
++}
++
++TEST(SpiPaintEffects, ReleasedShaderStaysInPicture) {
++  FlutterSpiEngine engine = {};
++  const FlutterSpiSceneApi* api = SpiSceneApi();
++  FlutterSpiPictureRecorder* recorder = nullptr;
++  ASSERT_EQ(api->recorder_create(&engine, &kRect, &recorder), kFlutterSpiOk);
++
++  const std::array<FlutterSpiColor, 2> colors = {{
++      {.red = 1.0f,
++       .green = 0.0f,
++       .blue = 0.0f,
++       .alpha = 1.0f,
++       .color_space = kFlutterSpiColorSpaceSRGB},
++      {.red = 0.0f,
++       .green = 1.0f,
++       .blue = 0.0f,
++       .alpha = 1.0f,
++       .color_space = kFlutterSpiColorSpaceSRGB},
++  }};
++  FlutterSpiShader* shader = nullptr;
++  ASSERT_EQ(SpiShaderLinearGradient(&engine, {1.0f, 2.0f}, {30.0f, 40.0f},
++                                    colors.data(), nullptr, colors.size(),
++                                    kFlutterSpiTileModeClamp, nullptr,
++                                    &shader),
++            kFlutterSpiOk);
++  const auto shader_source = SpiShaderGet(shader);
++  FlutterSpiPaint paint = kPaint;
++  paint.shader = shader;
++  ASSERT_EQ(api->canvas_draw_rect(recorder, &kRect, &paint), kFlutterSpiOk);
++  ASSERT_EQ(SpiShaderRelease(shader), kFlutterSpiOk);
++
++  DlPaint expected_paint = ToDlPaint(kPaint);
++  expected_paint.setColorSource(shader_source);
++  DisplayListBuilder expected_builder(DlRect::MakeLTRB(1, 2, 30, 40));
++  expected_builder.DrawRect(DlRect::MakeLTRB(1, 2, 30, 40), expected_paint);
++  const auto expected = expected_builder.Build();
++  const auto actual = FinishPicture(api, recorder);
++
++  ASSERT_NE(actual, nullptr);
++  EXPECT_TRUE(actual->Equals(expected));
++  ExpectPaintOperation(actual.get(), 1, 0);
++}
++
++TEST(SpiPaintEffects, InvalidEffectHandleIsRejected) {
++  FlutterSpiEngine engine = {};
++  const FlutterSpiSceneApi* api = SpiSceneApi();
++  FlutterSpiPictureRecorder* recorder = nullptr;
++  ASSERT_EQ(api->recorder_create(&engine, &kRect, &recorder), kFlutterSpiOk);
++
++  FlutterSpiColorFilter* filter = nullptr;
++  ASSERT_EQ(SpiColorFilterSrgbToLinearGamma(&engine, &filter), kFlutterSpiOk);
++  FlutterSpiPaint paint = kPaint;
++  paint.shader = reinterpret_cast<FlutterSpiShader*>(filter);
++
++  EXPECT_EQ(api->canvas_draw_rect(recorder, &kRect, &paint),
++            kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiColorFilterRelease(filter), kFlutterSpiOk);
++  EXPECT_EQ(api->recorder_release(recorder), kFlutterSpiOk);
++}
++
+ }  // namespace
+ }  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_paint.cc b/engine/src/flutter/runtime_spi/scene/spi_paint.cc
+index 1fb82d7a912..bba5cc8e6fd 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_paint.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_paint.cc
+@@ -4,8 +4,15 @@
+ 
+ #include "flutter/runtime_spi/scene/spi_paint.h"
+ 
++#include <cmath>
+ #include <cstddef>
+ 
++#include "flutter/display_list/effects/color_sources/dl_image_color_source.h"
++#include "flutter/display_list/effects/dl_mask_filter.h"
++#include "flutter/runtime_spi/effects/spi_color_filter.h"
++#include "flutter/runtime_spi/effects/spi_image_filter.h"
++#include "flutter/runtime_spi/effects/spi_shader.h"
++#include "flutter/runtime_spi/include/flutter_image.h"
+ #include "flutter/runtime_spi/scene/spi_geometry.h"
+ 
+ namespace flutter {
+@@ -15,9 +22,35 @@ bool ContainsField(size_t struct_size, size_t offset, size_t field_size) {
+   return struct_size >= offset && struct_size - offset >= field_size;
+ }
+ 
++DlImageSampling SamplingFromFilterQuality(int32_t filter_quality) {
++  if (filter_quality <= kFlutterSpiFilterQualityNone) {
++    return DlImageSampling::kNearestNeighbor;
++  }
++  if (filter_quality == kFlutterSpiFilterQualityLow) {
++    return DlImageSampling::kLinear;
++  }
++  if (filter_quality == kFlutterSpiFilterQualityMedium) {
++    return DlImageSampling::kMipmapLinear;
++  }
++  return DlImageSampling::kCubic;
++}
++
++bool IsValidFilterQuality(int32_t filter_quality) {
++  return filter_quality >= kFlutterSpiFilterQualityNone &&
++         filter_quality <= kFlutterSpiFilterQualityHigh;
++}
++
++bool IsValidBlurStyle(int32_t blur_style) {
++  return blur_style >= kFlutterSpiBlurStyleNormal &&
++         blur_style <= kFlutterSpiBlurStyleInner;
++}
++
+ }  // namespace
+ 
+-DlPaint ToDlPaint(const FlutterSpiPaint& paint) {
++FlutterSpiResult TryToDlPaint(const FlutterSpiPaint& paint, DlPaint* out_paint) {
++  if (out_paint == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
+   DlPaint result;
+   if (ContainsField(paint.struct_size, offsetof(FlutterSpiPaint, color),
+                     sizeof(paint.color))) {
+@@ -51,11 +84,75 @@ DlPaint ToDlPaint(const FlutterSpiPaint& paint) {
+                     sizeof(paint.anti_alias))) {
+     result.setAntiAlias(paint.anti_alias);
+   }
++  if (ContainsField(paint.struct_size, offsetof(FlutterSpiPaint, shader),
++                    sizeof(paint.shader)) &&
++      paint.shader != nullptr) {
++    std::shared_ptr<DlColorSource> shader = SpiShaderGet(paint.shader);
++    if (shader == nullptr) {
++      return kFlutterSpiInvalidHandle;
++    }
++    const int32_t filter_quality =
++        ContainsField(paint.struct_size, offsetof(FlutterSpiPaint, filter_quality),
++                      sizeof(paint.filter_quality))
++            ? paint.filter_quality
++            : kFlutterSpiFilterQualityNone;
++    if (shader->asImage() != nullptr) {
++      if (!IsValidFilterQuality(filter_quality)) {
++        return kFlutterSpiInvalidArgument;
++      }
++      result.setColorSource(
++          shader->asImage()->WithSampling(SamplingFromFilterQuality(filter_quality)));
++    } else {
++      result.setColorSource(std::move(shader));
++    }
++  }
++  if (ContainsField(paint.struct_size, offsetof(FlutterSpiPaint, color_filter),
++                    sizeof(paint.color_filter)) &&
++      paint.color_filter != nullptr) {
++    std::shared_ptr<const DlColorFilter> color_filter =
++        SpiColorFilterGet(paint.color_filter);
++    if (color_filter == nullptr) {
++      return kFlutterSpiInvalidHandle;
++    }
++    result.setColorFilter(color_filter);
++  }
++  if (ContainsField(paint.struct_size, offsetof(FlutterSpiPaint, image_filter),
++                    sizeof(paint.image_filter)) &&
++      paint.image_filter != nullptr) {
++    std::shared_ptr<DlImageFilter> image_filter =
++        SpiImageFilterGet(paint.image_filter);
++    if (image_filter == nullptr) {
++      return kFlutterSpiInvalidHandle;
++    }
++    result.setImageFilter(image_filter);
++  }
+   if (ContainsField(paint.struct_size,
+                     offsetof(FlutterSpiPaint, invert_colors),
+                     sizeof(paint.invert_colors))) {
+     result.setInvertColors(paint.invert_colors);
+   }
++  if (ContainsField(paint.struct_size,
++                    offsetof(FlutterSpiPaint, has_mask_blur),
++                    sizeof(paint.has_mask_blur)) &&
++      paint.has_mask_blur) {
++    if (!IsValidBlurStyle(paint.mask_blur_style) ||
++        !std::isfinite(paint.mask_blur_sigma)) {
++      return kFlutterSpiInvalidArgument;
++    }
++    std::shared_ptr<DlMaskFilter> mask_filter = DlBlurMaskFilter::Make(
++        static_cast<DlBlurStyle>(paint.mask_blur_style), paint.mask_blur_sigma);
++    if (mask_filter == nullptr) {
++      return kFlutterSpiInvalidArgument;
++    }
++    result.setMaskFilter(mask_filter);
++  }
++  *out_paint = std::move(result);
++  return kFlutterSpiOk;
++}
++
++DlPaint ToDlPaint(const FlutterSpiPaint& paint) {
++  DlPaint result;
++  (void)TryToDlPaint(paint, &result);
+   return result;
+ }
+ 
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_paint.h b/engine/src/flutter/runtime_spi/scene/spi_paint.h
+index cd14e2b67da..9c521139353 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_paint.h
++++ b/engine/src/flutter/runtime_spi/scene/spi_paint.h
+@@ -10,6 +10,7 @@
+ 
+ namespace flutter {
+ 
++FlutterSpiResult TryToDlPaint(const FlutterSpiPaint& paint, DlPaint* out_paint);
+ DlPaint ToDlPaint(const FlutterSpiPaint& paint);
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_paint_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_paint_unittests.cc
+index 6d57cb5ce5e..70c106937ef 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_paint_unittests.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_paint_unittests.cc
+@@ -4,15 +4,159 @@
+ 
+ #include "flutter/runtime_spi/scene/spi_paint.h"
+ 
++#include <array>
+ #include <cstddef>
+ 
+ #include "flutter/display_list/dl_paint.h"
++#include "flutter/display_list/effects/dl_mask_filter.h"
++#include "flutter/runtime_spi/effects/spi_color_filter.h"
++#include "flutter/runtime_spi/effects/spi_image_filter.h"
++#include "flutter/runtime_spi/effects/spi_shader.h"
++#include "flutter/runtime_spi/spi_runtime_backend.h"
++#include "flutter/runtime_spi/include/flutter_image.h"
+ #include "flutter/runtime_spi/include/flutter_scene.h"
+ #include "flutter/testing/testing.h"
+ 
+ namespace flutter::testing {
+ namespace {
+ 
++FlutterSpiPaint TestPaint() {
++  return {
++      .struct_size = sizeof(FlutterSpiPaint),
++      .color = {.red = 0.1f,
++                .green = 0.2f,
++                .blue = 0.3f,
++                .alpha = 0.4f,
++                .color_space = kFlutterSpiColorSpaceSRGB},
++      .blend_mode = kFlutterSpiBlendModeSrcOver,
++      .style = kFlutterSpiPaintStyleFill,
++      .stroke_width = 1.0f,
++      .stroke_cap = kFlutterSpiStrokeCapButt,
++      .stroke_join = kFlutterSpiStrokeJoinMiter,
++      .stroke_miter = 4.0f,
++      .anti_alias = true,
++      .invert_colors = false,
++      .shader = nullptr,
++      .color_filter = nullptr,
++      .image_filter = nullptr,
++      .filter_quality = kFlutterSpiFilterQualityNone,
++      .has_mask_blur = false,
++      .mask_blur_style = kFlutterSpiBlurStyleNormal,
++      .mask_blur_sigma = 0.0f,
++  };
++}
++
++std::array<FlutterSpiColor, 2> TestGradientColors() {
++  return {{
++      {.red = 1.0f,
++       .green = 0.0f,
++       .blue = 0.0f,
++       .alpha = 1.0f,
++       .color_space = kFlutterSpiColorSpaceSRGB},
++      {.red = 0.0f,
++       .green = 1.0f,
++       .blue = 0.0f,
++       .alpha = 1.0f,
++       .color_space = kFlutterSpiColorSpaceSRGB},
++  }};
++}
++
++TEST(SpiPaintEffects, ShaderPaintMatchesDl) {
++  FlutterSpiEngine engine = {};
++  const auto colors = TestGradientColors();
++  FlutterSpiShader* shader = nullptr;
++  ASSERT_EQ(SpiShaderLinearGradient(&engine, {1.0f, 2.0f}, {30.0f, 40.0f},
++                                    colors.data(), nullptr, colors.size(),
++                                    kFlutterSpiTileModeMirror, nullptr,
++                                    &shader),
++            kFlutterSpiOk);
++
++  FlutterSpiPaint input = TestPaint();
++  input.shader = shader;
++  const DlPaint actual = ToDlPaint(input);
++
++  DlPaint expected = ToDlPaint(TestPaint());
++  expected.setColorSource(SpiShaderGet(shader));
++  EXPECT_EQ(actual, expected);
++  EXPECT_EQ(SpiShaderRelease(shader), kFlutterSpiOk);
++}
++
++TEST(SpiPaintEffects, ColorFilterPaintMatchesDl) {
++  FlutterSpiEngine engine = {};
++  FlutterSpiColorFilter* filter = nullptr;
++  ASSERT_EQ(SpiColorFilterSrgbToLinearGamma(&engine, &filter), kFlutterSpiOk);
++
++  FlutterSpiPaint input = TestPaint();
++  input.color_filter = filter;
++  const DlPaint actual = ToDlPaint(input);
++
++  DlPaint expected = ToDlPaint(TestPaint());
++  expected.setColorFilter(SpiColorFilterGet(filter));
++  EXPECT_EQ(actual, expected);
++  EXPECT_EQ(SpiColorFilterRelease(filter), kFlutterSpiOk);
++}
++
++TEST(SpiPaintEffects, ImageFilterPaintMatchesDl) {
++  FlutterSpiEngine engine = {};
++  FlutterSpiImageFilter* filter = nullptr;
++  ASSERT_EQ(SpiImageFilterBlur(&engine, 2.0f, 3.0f,
++                               kFlutterSpiTileModeClamp, &filter),
++            kFlutterSpiOk);
++
++  FlutterSpiPaint input = TestPaint();
++  input.image_filter = filter;
++  const DlPaint actual = ToDlPaint(input);
++
++  DlPaint expected = ToDlPaint(TestPaint());
++  expected.setImageFilter(SpiImageFilterGet(filter));
++  EXPECT_EQ(actual, expected);
++  EXPECT_EQ(SpiImageFilterRelease(filter), kFlutterSpiOk);
++}
++
++TEST(SpiPaintEffects, MaskBlurPaintMatchesDl) {
++  FlutterSpiPaint input = TestPaint();
++  input.has_mask_blur = true;
++  input.mask_blur_style = kFlutterSpiBlurStyleOuter;
++  input.mask_blur_sigma = 4.0f;
++
++  const DlPaint actual = ToDlPaint(input);
++  DlPaint expected = ToDlPaint(TestPaint());
++  expected.setMaskFilter(
++      DlBlurMaskFilter::Make(DlBlurStyle::kOuter, input.mask_blur_sigma));
++  EXPECT_EQ(actual, expected);
++}
++
++TEST(SpiPaintEffects, InvertColorsWithColorFilterMatchesDartUi) {
++  FlutterSpiEngine engine = {};
++  FlutterSpiColorFilter* filter = nullptr;
++  ASSERT_EQ(SpiColorFilterSrgbToLinearGamma(&engine, &filter), kFlutterSpiOk);
++
++  FlutterSpiPaint input = TestPaint();
++  input.color_filter = filter;
++  input.invert_colors = true;
++  const DlPaint actual = ToDlPaint(input);
++
++  DlPaint expected = ToDlPaint(TestPaint());
++  expected.setColorFilter(SpiColorFilterGet(filter));
++  expected.setInvertColors(true);
++  EXPECT_EQ(actual, expected);
++  EXPECT_EQ(SpiColorFilterRelease(filter), kFlutterSpiOk);
++}
++
++TEST(SpiPaintEffects, OlderPaintStructHasNoEffects) {
++  FlutterSpiPaint input = TestPaint();
++  input.struct_size = offsetof(FlutterSpiPaint, shader);
++  input.shader = reinterpret_cast<FlutterSpiShader*>(1);
++  input.color_filter = reinterpret_cast<FlutterSpiColorFilter*>(1);
++  input.image_filter = reinterpret_cast<FlutterSpiImageFilter*>(1);
++  input.has_mask_blur = true;
++  input.mask_blur_sigma = 4.0f;
++
++  const DlPaint actual = ToDlPaint(input);
++
++  EXPECT_EQ(actual, ToDlPaint(TestPaint()));
++}
++
+ TEST(SpiPaint, ConvertsEveryField) {
+   const FlutterSpiPaint input = {
+       .struct_size = sizeof(FlutterSpiPaint),
