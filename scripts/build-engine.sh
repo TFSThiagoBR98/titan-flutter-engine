@@ -543,7 +543,8 @@ run_within_cpu_budget ninja -C "$out_dir" -j "$jobs" -l "$load" \
   flutter/shell/platform/embedder:flutter_engine_library \
   flutter/shell/platform/embedder:copy_headers
 if [[ "$mode" != debug ]]; then
-  run_within_cpu_budget ninja -C "$out_dir" -j "$jobs" -l "$load" flutter/shell/common:gen_snapshot
+  run_within_cpu_budget ninja -C "$out_dir" -j "$jobs" -l "$load" \
+    flutter/lib/snapshot:generate_snapshot_bins
 fi
 
 # The bare commit name is the TitanDM bundle (x64 glibc debug); every other
@@ -568,8 +569,10 @@ for artifact in libflutter_engine.so flutter_embedder.h icudtl.dat; do
   cp -a "$out_dir/$artifact" "$stage/$artifact"
 done
 if [[ "$mode" != debug ]]; then
-  [[ -f "$out_dir/gen_snapshot" ]] || die "engine build did not produce $out_dir/gen_snapshot"
-  cp -a "$out_dir/gen_snapshot" "$stage/gen_snapshot"
+  gen_snapshot="$out_dir/gen_snapshot"
+  [[ -f "$gen_snapshot" ]] || gen_snapshot="$out_dir/clang_x64/gen_snapshot"
+  [[ -f "$gen_snapshot" ]] || die "engine build did not produce $out_dir/gen_snapshot"
+  cp -a "$gen_snapshot" "$stage/gen_snapshot"
 fi
 
 stamp="local:$flutter_commit:$patches_sha256_actual"

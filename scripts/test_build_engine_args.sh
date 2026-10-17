@@ -119,6 +119,9 @@ if [[ "${1:-}" == -C ]]; then
   : > "$output_directory/libflutter_engine.so"
   : > "$output_directory/flutter_embedder.h"
   : > "$output_directory/icudtl.dat"
+  snapshot_path=${TITAN_NINJA_GEN_SNAPSHOT_PATH:-gen_snapshot}
+  mkdir -p "$output_directory/$(dirname "$snapshot_path")"
+  : > "$output_directory/$snapshot_path"
 fi
 EOF
 chmod +x "$fake_ninja"
@@ -528,6 +531,24 @@ assert_log_contains "$python_log" 'install-sysroot.py --arch=i386'
 run_engine --mode debug --out "$temporary_directory/verified-bundle"
 [[ -f "$temporary_directory/verified-bundle/$flutter_commit/libflutter_engine.so" ]] || {
   printf 'verified bundle was not published\n' >&2
+  exit 1
+}
+
+: > "$ninja_log"
+release_bundle="$temporary_directory/release-bundle"
+run_engine --mode release --out "$release_bundle"
+assert_log_contains "$ninja_log" 'flutter/lib/snapshot:generate_snapshot_bins'
+[[ -f "$release_bundle/$flutter_commit-release-x64/gen_snapshot" ]] || {
+  printf 'native gen_snapshot was not published\n' >&2
+  exit 1
+}
+
+: > "$ninja_log"
+cross_toolchain_bundle="$temporary_directory/cross-toolchain-bundle"
+TITAN_NINJA_GEN_SNAPSHOT_PATH=clang_x64/gen_snapshot \
+  run_engine --mode release --out "$cross_toolchain_bundle"
+[[ -f "$cross_toolchain_bundle/$flutter_commit-release-x64/gen_snapshot" ]] || {
+  printf 'cross-toolchain gen_snapshot was not published\n' >&2
   exit 1
 }
 
