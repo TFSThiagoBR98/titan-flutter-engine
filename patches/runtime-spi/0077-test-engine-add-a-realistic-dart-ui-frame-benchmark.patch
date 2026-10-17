@@ -1,0 +1,170 @@
+# Why: Measure a representative dart:ui canvas frame before routing painting
+# through the runtime scene SPI. Keep the workload allocations outside the
+# benchmark loop and include scene construction and disposal in the recorded
+# frame.
+diff --git a/engine/src/flutter/lib/ui/fixtures/ui_test.dart b/engine/src/flutter/lib/ui/fixtures/ui_test.dart
+index d44ab3cef34..6d4682cd9af 100644
+--- a/engine/src/flutter/lib/ui/fixtures/ui_test.dart
++++ b/engine/src/flutter/lib/ui/fixtures/ui_test.dart
+@@ -10,6 +10,116 @@ import 'dart:ffi' hide Size;
+ 
+ void main() {}
+ 
++final List<Paint> _realisticFillPaints = <Paint>[
++  Paint()..color = const Color(0xFF2563EB),
++  Paint()..color = const Color(0xFF16A34A),
++  Paint()..color = const Color(0xFFDC2626),
++  Paint()..color = const Color(0xFFCA8A04),
++];
++
++final Paint _realisticStrokePaint = Paint()
++  ..color = const Color(0xFF111827)
++  ..style = PaintingStyle.stroke
++  ..strokeWidth = 2.0;
++
++final Shader _realisticLinearGradient = Gradient.linear(
++  const Offset(0, 0),
++  const Offset(128, 128),
++  <Color>[const Color(0xFF7C3AED), const Color(0xFFDB2777)],
++);
++
++final Paint _realisticGradientPaint = Paint()..shader = _realisticLinearGradient;
++
++final List<Path> _realisticSmallPaths = <Path>[
++  Path()
++    ..moveTo(0, 0)
++    ..lineTo(12, 4)
++    ..lineTo(8, 16)
++    ..close(),
++  Path()
++    ..moveTo(0, 8)
++    ..quadraticBezierTo(8, 0, 16, 8)
++    ..lineTo(8, 16)
++    ..close(),
++  Path()
++    ..moveTo(0, 0)
++    ..cubicTo(4, 12, 12, 4, 16, 16)
++    ..lineTo(0, 16)
++    ..close(),
++];
++
++@pragma('vm:entry-point')
++void recordRealisticFrame() {
++  const int rectangleDrawCount = 300;
++  const int lineDrawCount = 200;
++  const int pathDrawCount = 300;
++  const int circleDrawCount = 100;
++  const int gradientDrawCount = 50;
++  const int transformGroupCount = 200;
++
++  final PictureRecorder recorder = PictureRecorder();
++  final Canvas canvas = Canvas(recorder, const Rect.fromLTWH(0, 0, 1280, 800));
++
++  for (int index = 0; index < rectangleDrawCount; index++) {
++    final double x = (index % 30) * 40.0;
++    final double y = (index ~/ 30) * 25.0;
++    final Rect rectangle = Rect.fromLTWH(x, y, 32.0, 18.0);
++    final Paint paint = _realisticFillPaints[index % _realisticFillPaints.length];
++    canvas.drawRect(rectangle, paint);
++    canvas.drawRRect(RRect.fromRectAndRadius(rectangle, const Radius.circular(3.0)), paint);
++  }
++
++  for (int index = 0; index < lineDrawCount; index++) {
++    final double x = (index % 25) * 48.0;
++    final double y = (index ~/ 25) * 30.0;
++    canvas.drawLine(Offset(x, y), Offset(x + 24.0, y + 12.0), _realisticStrokePaint);
++  }
++
++  for (int index = 0; index < pathDrawCount; index++) {
++    final double x = (index % 30) * 40.0;
++    final double y = (index ~/ 30) * 25.0;
++    canvas.save();
++    canvas.translate(x, y);
++    canvas.drawPath(
++      _realisticSmallPaths[index % _realisticSmallPaths.length],
++      _realisticFillPaints[index % _realisticFillPaints.length],
++    );
++    canvas.restore();
++  }
++
++  for (int index = 0; index < circleDrawCount; index++) {
++    final double x = (index % 20) * 60.0 + 16.0;
++    final double y = (index ~/ 20) * 36.0 + 16.0;
++    canvas.drawCircle(
++      Offset(x, y),
++      8.0 + (index % 3),
++      _realisticFillPaints[index % _realisticFillPaints.length],
++    );
++  }
++
++  for (int index = 0; index < gradientDrawCount; index++) {
++    final double x = (index % 10) * 120.0;
++    final double y = (index ~/ 10) * 50.0;
++    canvas.drawRect(Rect.fromLTWH(x, y, 96.0, 36.0), _realisticGradientPaint);
++  }
++
++  for (int index = 0; index < transformGroupCount; index++) {
++    canvas.save();
++    canvas.translate((index % 20) * 60.0, (index ~/ 20) * 40.0);
++    canvas.clipRect(const Rect.fromLTWH(0, 0, 48, 32));
++    canvas.restore();
++  }
++
++  final Picture picture = recorder.endRecording();
++  final SceneBuilder sceneBuilder = SceneBuilder();
++  sceneBuilder.pushOffset(4.0, 4.0);
++  sceneBuilder.addPicture(Offset.zero, picture);
++  sceneBuilder.pop();
++  final Scene scene = sceneBuilder.build();
++  scene.dispose();
++  picture.dispose();
++}
++
+ /// Mutiple tests use this to signal to the C++ side that they are ready for
+ /// validation.
+ @pragma('vm:external-name', 'Finish')
+diff --git a/engine/src/flutter/lib/ui/ui_benchmarks.cc b/engine/src/flutter/lib/ui/ui_benchmarks.cc
+index 097fe908e9b..4dc9ca445e4 100644
+--- a/engine/src/flutter/lib/ui/ui_benchmarks.cc
++++ b/engine/src/flutter/lib/ui/ui_benchmarks.cc
+@@ -9,6 +9,7 @@
+ #include "flutter/shell/common/thread_host.h"
+ #include "flutter/testing/dart_isolate_runner.h"
+ #include "flutter/testing/fixture_test.h"
++#include "third_party/dart/runtime/include/dart_api.h"
+ 
+ #include <future>
+ 
+@@ -69,4 +70,32 @@ static void BM_PlatformMessageResponseDartComplete(benchmark::State& state) {
+ BENCHMARK(BM_PlatformMessageResponseDartComplete)
+     ->Unit(benchmark::kMicrosecond);
+ 
++static void BM_DartCanvasRecordFrame(benchmark::State& state) {
++  ThreadHost thread_host(ThreadHost::ThreadHostConfig(
++      "test", ThreadHost::Type::kPlatform | ThreadHost::Type::kRaster |
++                  ThreadHost::Type::kIo | ThreadHost::Type::kUi));
++  TaskRunners task_runners("test", thread_host.platform_thread->GetTaskRunner(),
++                           thread_host.raster_thread->GetTaskRunner(),
++                           thread_host.ui_thread->GetTaskRunner(),
++                           thread_host.io_thread->GetTaskRunner());
++  Fixture fixture;
++  auto settings = fixture.CreateSettingsForFixture();
++  auto vm_ref = DartVMRef::Create(settings);
++  auto isolate =
++      testing::RunDartCodeInIsolate(vm_ref, settings, task_runners, "main", {},
++                                    testing::GetDefaultKernelFilePath(), {});
++
++  while (state.KeepRunning()) {
++    bool successful = isolate->RunInIsolateScope([&]() -> bool {
++      Dart_Handle result = Dart_Invoke(
++          Dart_RootLibrary(), Dart_NewStringFromCString("recordRealisticFrame"),
++          0, nullptr);
++      return !Dart_IsError(result);
++    });
++    FML_CHECK(successful);
++  }
++}
++
++BENCHMARK(BM_DartCanvasRecordFrame)->Unit(benchmark::kMicrosecond);
++
+ }  // namespace flutter
