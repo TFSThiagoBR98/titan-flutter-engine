@@ -125,7 +125,7 @@ if "$ci_script" free-disk > /tmp/titan-ci-free-disk.out 2>&1; then
   exit 1
 fi
 assert_contains /tmp/titan-ci-free-disk.out 'GITHUB_ACTIONS=true'
-assert_contains "$ci_script" 'TITAN_JOBS=$(nproc)'
+assert_contains "$ci_script" 'TITAN_JOBS=$(getconf _NPROCESSORS_ONLN)'
 assert_contains "$ci_script" 'export TITAN_CPU_SCOPE=0'
 assert_contains "$ci_script" 'make-buildroot-sysroot.sh" --config "$1" --publish'
 assert_contains "$ci_script" 'expected probe hash'
@@ -151,7 +151,7 @@ printf '%s\n' '#!/usr/bin/env bash' 'printf "df %s\\n" "$*"' > "$fake_bin/df"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "rm %s\\n" "$*" >> "$TITAN_LOG"' > "$fake_bin/rm"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "docker %s\\n" "$*" >> "$TITAN_LOG"' > "$fake_bin/docker"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "apt-get %s\\n" "$*" >> "$TITAN_LOG"' > "$fake_bin/apt-get"
-printf '%s\n' '#!/usr/bin/env bash' 'printf "1000\\n"' > "$fake_bin/nproc"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "1000\\n"' > "$fake_bin/getconf"
 chmod +x "$fake_bin"/*
 
 run_ci() {
@@ -168,7 +168,7 @@ assert_contains "$temporary_directory/ci.log" 'sudo -n apt-get update'
 GITHUB_ACTIONS=true run_ci build
 assert_contains "$temporary_directory/ci.log" 'jobs=1000 scope=0'
 run_ci build
-outside_jobs=$(( $(getconf _NPROCESSORS_ONLN) / 2 ))
+outside_jobs=$(( $(PATH="$fake_bin:$PATH" getconf _NPROCESSORS_ONLN) / 2 ))
 ((outside_jobs > 0)) || outside_jobs=1
 assert_contains "$temporary_directory/ci.log" "jobs=$outside_jobs scope="
 GITHUB_ACTIONS=true run_ci free-disk > "$temporary_directory/free-disk.out"

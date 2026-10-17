@@ -301,7 +301,7 @@ jobs:
                 }
               }
             }
-          } -ArgumentList (,$progressVariants), $env:TITAN_WORK_DIR, $progressInterval
+          } -ArgumentList $progressVariants, $env:TITAN_WORK_DIR, $progressInterval
           function Invoke-LoggedBuild {
             param([string]$Variant, [string[]]$Arguments)
             $log = Join-Path $matrixDirectory "$Variant.log"
@@ -309,7 +309,7 @@ jobs:
               param([string]$ScriptPath, [string[]]$ScriptArguments, [string]$LogPath)
               & pwsh -NoProfile -File $ScriptPath @ScriptArguments *> $LogPath
               [int]$LASTEXITCODE
-            } -ArgumentList 'scripts/build-engine-windows.ps1', (,$Arguments), $log
+            } -ArgumentList 'scripts/build-engine-windows.ps1', $Arguments, $log
             try {
               do {
                 Receive-Job -Job $heartbeat | ForEach-Object { Write-Host $_ }
@@ -362,7 +362,7 @@ jobs:
                 }
               }
             }
-          } -ArgumentList (,$progressVariants), $env:TITAN_WORK_DIR, $progressInterval
+          } -ArgumentList $progressVariants, $env:TITAN_WORK_DIR, $progressInterval
           function Invoke-LoggedBuild {
             param([string]$Variant, [string[]]$Arguments)
             $log = Join-Path $matrixDirectory "$Variant.log"
@@ -370,7 +370,7 @@ jobs:
               param([string]$ScriptPath, [string[]]$ScriptArguments, [string]$LogPath)
               & pwsh -NoProfile -File $ScriptPath @ScriptArguments *> $LogPath
               [int]$LASTEXITCODE
-            } -ArgumentList 'scripts/build-engine-windows.ps1', (,$Arguments), $log
+            } -ArgumentList 'scripts/build-engine-windows.ps1', $Arguments, $log
             try {
               do {
                 Receive-Job -Job $heartbeat | ForEach-Object { Write-Host $_ }

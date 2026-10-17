@@ -3,7 +3,7 @@ set -euo pipefail
 
 if [[ "${GITHUB_ACTIONS:-}" == true ]]; then
   if [[ -z "${TITAN_JOBS+x}" ]]; then
-    TITAN_JOBS=$(nproc)
+    TITAN_JOBS=$(getconf _NPROCESSORS_ONLN)
   fi
   export TITAN_CPU_SCOPE=0
 fi
