@@ -1,0 +1,603 @@
+# Why: expose Dart-compatible vertex construction and drawing through the
+# runtime SPI paint effects API.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 1fa6d444d0c..2a0860ba629 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -130,6 +130,7 @@ source_set("effects") {
+     "effects/spi_color_filter.h",
+     "effects/spi_image_filter.h",
+     "effects/spi_shader.h",
++    "effects/spi_vertices.h",
+   ]
+   sources = [
+     "effects/spi_color_filter.cc",
+@@ -138,6 +139,8 @@ source_set("effects") {
+     "effects/spi_image_filter.h",
+     "effects/spi_shader.cc",
+     "effects/spi_shader.h",
++    "effects/spi_vertices.cc",
++    "effects/spi_vertices.h",
+   ]
+   public_deps = [
+     ":image",
+@@ -196,6 +199,7 @@ if (enable_unittests) {
+       "scene/spi_scene_builder_parity_unittests.cc",
+       "scene/spi_scene_trace_unittests.cc",
+       "effects/spi_effects_parity_unittests.cc",
++      "effects/spi_vertices_unittests.cc",
+       "image/spi_image_canvas_parity_unittests.cc",
+       "image/spi_image_unittests.cc",
+       "image/spi_image_decoding_unittests.cc",
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_vertices.cc b/engine/src/flutter/runtime_spi/effects/spi_vertices.cc
+new file mode 100644
+index 00000000000..23bd697bcb6
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/effects/spi_vertices.cc
+@@ -0,0 +1,189 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/effects/spi_vertices.h"
++
++#include <cstdint>
++#include <limits>
++#include <memory>
++#include <vector>
++
++#include "flutter/display_list/dl_builder.h"
++#include "flutter/display_list/dl_vertices.h"
++#include "flutter/runtime_spi/scene/spi_canvas.h"
++#include "flutter/runtime_spi/scene/spi_geometry.h"
++#include "flutter/runtime_spi/scene/spi_handle_table.h"
++#include "flutter/runtime_spi/scene/spi_paint.h"
++
++namespace flutter {
++namespace {
++
++template <typename Handle>
++uintptr_t HandleValue(Handle* handle) {
++  return reinterpret_cast<uintptr_t>(handle);
++}
++
++template <typename Handle>
++Handle* MakeHandle(uintptr_t value) {
++  return reinterpret_cast<Handle*>(value);
++}
++
++SpiHandleTable<DlVertices>& Vertices() {
++  static SpiHandleTable<DlVertices> vertices;
++  return vertices;
++}
++
++std::shared_ptr<DlVertices> FindVertices(FlutterSpiVertices* vertices) {
++  return Vertices().Find(HandleValue(vertices));
++}
++
++bool IsValidVertexMode(int32_t mode) {
++  return mode >= kFlutterSpiVertexModeTriangles &&
++         mode <= kFlutterSpiVertexModeTriangleFan;
++}
++
++bool IsValidBlendMode(int32_t blend_mode) {
++  return blend_mode >= kFlutterSpiBlendModeClear &&
++         blend_mode <= kFlutterSpiBlendModeLuminosity;
++}
++
++DlVertexMode ToDlVertexMode(int32_t mode) {
++  return static_cast<DlVertexMode>(mode);
++}
++
++FlutterSpiResult ConvertVertexData(
++    const FlutterSpiPoint* positions,
++    size_t vertex_count,
++    const FlutterSpiPoint* texture_coordinates,
++    const FlutterSpiColor* colors,
++    std::vector<DlPoint>* dl_positions,
++    std::vector<DlPoint>* dl_texture_coordinates,
++    std::vector<DlColor>* dl_colors) {
++  if (vertex_count > 0 && positions == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  dl_positions->reserve(vertex_count);
++  for (size_t index = 0; index < vertex_count; ++index) {
++    DlPoint point;
++    if (!ToDlPoint(positions[index], &point)) {
++      return kFlutterSpiInvalidArgument;
++    }
++    dl_positions->push_back(point);
++  }
++
++  if (texture_coordinates != nullptr) {
++    dl_texture_coordinates->reserve(vertex_count);
++    for (size_t index = 0; index < vertex_count; ++index) {
++      DlPoint point;
++      if (!ToDlPoint(texture_coordinates[index], &point)) {
++        return kFlutterSpiInvalidArgument;
++      }
++      dl_texture_coordinates->push_back(point);
++    }
++  }
++
++  if (colors != nullptr) {
++    dl_colors->reserve(vertex_count);
++    for (size_t index = 0; index < vertex_count; ++index) {
++      dl_colors->push_back(ToDlColor(colors[index]));
++    }
++  }
++  return kFlutterSpiOk;
++}
++
++}  // namespace
++
++FlutterSpiResult SpiVerticesCreate(
++    FlutterSpiEngine* engine,
++    int32_t mode,
++    const FlutterSpiPoint* positions,
++    size_t vertex_count,
++    const FlutterSpiPoint* texture_coordinates,
++    const FlutterSpiColor* colors,
++    const uint16_t* indices,
++    size_t index_count,
++    FlutterSpiVertices** out_vertices) {
++  if (out_vertices == nullptr || !IsValidVertexMode(mode) ||
++      vertex_count > static_cast<size_t>(std::numeric_limits<int>::max()) ||
++      index_count > static_cast<size_t>(std::numeric_limits<int>::max()) ||
++      (index_count > 0 && indices == nullptr) ||
++      (vertex_count == 0 && index_count > 0)) {
++    return kFlutterSpiInvalidArgument;
++  }
++
++  std::vector<DlPoint> dl_positions;
++  std::vector<DlPoint> dl_texture_coordinates;
++  std::vector<DlColor> dl_colors;
++  const FlutterSpiResult conversion_result = ConvertVertexData(
++      positions, vertex_count, texture_coordinates, colors, &dl_positions,
++      &dl_texture_coordinates, &dl_colors);
++  if (conversion_result != kFlutterSpiOk) {
++    return conversion_result;
++  }
++
++  DlVertices::Builder::Flags flags;
++  if (texture_coordinates != nullptr) {
++    flags |= DlVertices::Builder::kHasTextureCoordinates;
++  }
++  if (colors != nullptr) {
++    flags |= DlVertices::Builder::kHasColors;
++  }
++  DlVertices::Builder builder(ToDlVertexMode(mode), static_cast<int>(vertex_count),
++                              flags, static_cast<int>(index_count));
++  if (!builder.is_valid()) {
++    return kFlutterSpiInternalError;
++  }
++  builder.store_vertices(dl_positions.data());
++  if (texture_coordinates != nullptr) {
++    builder.store_texture_coordinates(dl_texture_coordinates.data());
++  }
++  if (colors != nullptr) {
++    builder.store_colors(dl_colors.data());
++  }
++  if (index_count > 0) {
++    for (size_t index = 0; index < index_count; ++index) {
++      if (indices[index] >= vertex_count) {
++        return kFlutterSpiInvalidArgument;
++      }
++    }
++    builder.store_indices(indices);
++  }
++
++  std::shared_ptr<DlVertices> vertices = builder.build();
++  if (vertices == nullptr) {
++    return kFlutterSpiInternalError;
++  }
++  *out_vertices = MakeHandle<FlutterSpiVertices>(
++      Vertices().Insert(std::move(vertices)));
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiVerticesRelease(FlutterSpiVertices* vertices) {
++  return Vertices().Release(HandleValue(vertices)) ? kFlutterSpiOk
++                                                     : kFlutterSpiInvalidHandle;
++}
++
++FlutterSpiResult CanvasDrawVertices(FlutterSpiPictureRecorder* recorder,
++                                    FlutterSpiVertices* vertices,
++                                    int32_t blend_mode,
++                                    const FlutterSpiPaint* paint) {
++  DisplayListBuilder* builder = SpiPictureRecorderBuilder(recorder);
++  const std::shared_ptr<DlVertices> vertices_value = FindVertices(vertices);
++  if (builder == nullptr || vertices_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (paint == nullptr || !IsValidBlendMode(blend_mode)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  DlPaint dl_paint;
++  const FlutterSpiResult paint_result = TryToDlPaint(*paint, &dl_paint);
++  if (paint_result != kFlutterSpiOk) {
++    return paint_result;
++  }
++  builder->DrawVertices(vertices_value, static_cast<DlBlendMode>(blend_mode),
++                        dl_paint);
++  return kFlutterSpiOk;
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_vertices.h b/engine/src/flutter/runtime_spi/effects/spi_vertices.h
+new file mode 100644
+index 00000000000..48699e604e8
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/effects/spi_vertices.h
+@@ -0,0 +1,30 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_EFFECTS_SPI_VERTICES_H_
++#define FLUTTER_RUNTIME_SPI_EFFECTS_SPI_VERTICES_H_
++
++#include "flutter/runtime_spi/include/flutter_paint_effects.h"
++
++namespace flutter {
++
++FlutterSpiResult SpiVerticesCreate(
++    FlutterSpiEngine* engine,
++    int32_t mode,
++    const FlutterSpiPoint* positions,
++    size_t vertex_count,
++    const FlutterSpiPoint* texture_coordinates,
++    const FlutterSpiColor* colors,
++    const uint16_t* indices,
++    size_t index_count,
++    FlutterSpiVertices** out_vertices);
++FlutterSpiResult SpiVerticesRelease(FlutterSpiVertices* vertices);
++FlutterSpiResult CanvasDrawVertices(FlutterSpiPictureRecorder* recorder,
++                                    FlutterSpiVertices* vertices,
++                                    int32_t blend_mode,
++                                    const FlutterSpiPaint* paint);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_EFFECTS_SPI_VERTICES_H_
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_vertices_unittests.cc b/engine/src/flutter/runtime_spi/effects/spi_vertices_unittests.cc
+new file mode 100644
+index 00000000000..f03676375c1
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/effects/spi_vertices_unittests.cc
+@@ -0,0 +1,266 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include <array>
++#include <cstdint>
++#include <memory>
++
++#include "flutter/display_list/dl_builder.h"
++#include "flutter/display_list/utils/dl_receiver_utils.h"
++#include "flutter/display_list/dl_vertices.h"
++#include "flutter/runtime_spi/include/flutter_paint_effects.h"
++#include "flutter/runtime_spi/scene/spi_canvas.h"
++#include "flutter/runtime_spi/scene/spi_geometry.h"
++#include "flutter/runtime_spi/scene/spi_paint.h"
++#include "flutter/runtime_spi/spi_engine_api.h"
++#include "flutter/runtime_spi/spi_runtime_backend.h"
++#include "flutter/testing/testing.h"
++
++namespace flutter::testing {
++namespace {
++
++constexpr FlutterSpiRect kCullRect = {
++    .left = 0.0f, .top = 0.0f, .right = 100.0f, .bottom = 100.0f};
++
++constexpr FlutterSpiPaint kPaint = {
++    .struct_size = sizeof(FlutterSpiPaint),
++    .color = {.red = 0.1f,
++              .green = 0.2f,
++              .blue = 0.3f,
++              .alpha = 0.4f,
++              .color_space = kFlutterSpiColorSpaceSRGB},
++    .blend_mode = kFlutterSpiBlendModeSrcOver,
++    .style = kFlutterSpiPaintStyleFill,
++    .stroke_width = 1.0f,
++    .stroke_cap = kFlutterSpiStrokeCapButt,
++    .stroke_join = kFlutterSpiStrokeJoinMiter,
++    .stroke_miter = 4.0f,
++    .anti_alias = true,
++    .invert_colors = false,
++    .shader = nullptr,
++    .color_filter = nullptr,
++    .image_filter = nullptr,
++    .filter_quality = kFlutterSpiFilterQualityNone,
++    .has_mask_blur = false,
++    .mask_blur_style = kFlutterSpiBlurStyleNormal,
++    .mask_blur_sigma = 0.0f,
++};
++
++sk_sp<DisplayList> FinishPicture(FlutterSpiPictureRecorder* recorder) {
++  const FlutterSpiSceneApi* scene_api = SpiSceneApi();
++  FlutterSpiPicture* picture = nullptr;
++  EXPECT_EQ(scene_api->recorder_finish(recorder, &picture), kFlutterSpiOk);
++  const DisplayList* display_list = SpiPictureDisplayListForTesting(picture);
++  EXPECT_NE(display_list, nullptr);
++  sk_sp<DisplayList> result = sk_ref_sp(display_list);
++  EXPECT_EQ(scene_api->picture_release(picture), kFlutterSpiOk);
++  return result;
++}
++
++sk_sp<DisplayList> DrawVertices(FlutterSpiEngine* engine,
++                                const FlutterSpiPaintEffectsApi* effects,
++                                FlutterSpiVertices* vertices) {
++  const FlutterSpiSceneApi* scene_api = SpiSceneApi();
++  FlutterSpiPictureRecorder* recorder = nullptr;
++  EXPECT_EQ(scene_api->recorder_create(engine, &kCullRect, &recorder),
++            kFlutterSpiOk);
++  EXPECT_EQ(effects->canvas_draw_vertices(recorder, vertices,
++                                          kFlutterSpiBlendModeSrcOver,
++                                          &kPaint),
++            kFlutterSpiOk);
++  return FinishPicture(recorder);
++}
++
++std::shared_ptr<DlVertices> ExpectedVertices(
++    DlVertexMode mode,
++    const std::array<DlPoint, 4>& positions,
++    const DlPoint* texture_coordinates,
++    const DlColor* colors,
++    const uint16_t* indices,
++    int index_count) {
++  const std::shared_ptr<DlVertices> vertices = DlVertices::Make(
++      mode, static_cast<int>(positions.size()), positions.data(),
++      texture_coordinates, colors, index_count, indices);
++  return vertices;
++}
++
++class VertexProbe final : public IgnoreAttributeDispatchHelper,
++                          public IgnoreClipDispatchHelper,
++                          public IgnoreTransformDispatchHelper,
++                          public IgnoreDrawDispatchHelper {
++ public:
++  void drawVertices(const std::shared_ptr<DlVertices>& value,
++                    DlBlendMode) override {
++    count++;
++    vertices = value;
++  }
++
++  int count = 0;
++  std::shared_ptr<DlVertices> vertices;
++};
++
++void ExpectVerticesMatch(const sk_sp<DisplayList>& actual,
++                         const std::shared_ptr<DlVertices>& expected) {
++  ASSERT_NE(actual, nullptr);
++  VertexProbe probe;
++  actual->Dispatch(probe);
++  ASSERT_EQ(probe.count, 1);
++  ASSERT_NE(probe.vertices, nullptr);
++  EXPECT_TRUE(*probe.vertices == *expected);
++}
++
++TEST(SpiVertices, TrianglesMatchDartUi) {
++  FlutterSpiEngine engine = {};
++  const FlutterSpiEngineApi engine_api = SpiEngineApi::Create();
++  ASSERT_NE(engine_api.paint_effects, nullptr);
++
++  const std::array<FlutterSpiPoint, 4> positions = {
++      FlutterSpiPoint{10.0f, 10.0f}, FlutterSpiPoint{90.0f, 10.0f},
++      FlutterSpiPoint{90.0f, 90.0f}, FlutterSpiPoint{10.0f, 90.0f}};
++  FlutterSpiVertices* vertices = nullptr;
++  ASSERT_EQ(engine_api.paint_effects->vertices_create(
++                &engine, kFlutterSpiVertexModeTriangles, positions.data(),
++                positions.size(), nullptr, nullptr, nullptr, 0, &vertices),
++            kFlutterSpiOk);
++
++  const auto actual = DrawVertices(&engine, engine_api.paint_effects, vertices);
++  const std::array<DlPoint, 4> expected_positions = {
++      DlPoint(10.0f, 10.0f), DlPoint(90.0f, 10.0f), DlPoint(90.0f, 90.0f),
++      DlPoint(10.0f, 90.0f)};
++  const auto expected = ExpectedVertices(
++      DlVertexMode::kTriangles, expected_positions, nullptr, nullptr, nullptr,
++      0);
++  ExpectVerticesMatch(actual, expected);
++  EXPECT_EQ(engine_api.paint_effects->vertices_release(vertices),
++            kFlutterSpiOk);
++}
++
++TEST(SpiVertices, StripWithColorsMatchesDartUi) {
++  FlutterSpiEngine engine = {};
++  const FlutterSpiEngineApi engine_api = SpiEngineApi::Create();
++  ASSERT_NE(engine_api.paint_effects, nullptr);
++
++  const std::array<FlutterSpiPoint, 4> positions = {
++      FlutterSpiPoint{10.0f, 10.0f}, FlutterSpiPoint{90.0f, 10.0f},
++      FlutterSpiPoint{10.0f, 90.0f}, FlutterSpiPoint{90.0f, 90.0f}};
++  const std::array<FlutterSpiColor, 4> colors = {
++      FlutterSpiColor{1.0f, 0.0f, 0.0f, 1.0f, kFlutterSpiColorSpaceSRGB},
++      FlutterSpiColor{0.0f, 1.0f, 0.0f, 1.0f, kFlutterSpiColorSpaceSRGB},
++      FlutterSpiColor{0.0f, 0.0f, 1.0f, 1.0f, kFlutterSpiColorSpaceSRGB},
++      FlutterSpiColor{1.0f, 1.0f, 0.0f, 1.0f, kFlutterSpiColorSpaceSRGB},
++  };
++  FlutterSpiVertices* vertices = nullptr;
++  ASSERT_EQ(engine_api.paint_effects->vertices_create(
++                &engine, kFlutterSpiVertexModeTriangleStrip, positions.data(),
++                positions.size(), nullptr, colors.data(), nullptr, 0,
++                &vertices),
++            kFlutterSpiOk);
++
++  const auto actual = DrawVertices(&engine, engine_api.paint_effects, vertices);
++  const std::array<DlPoint, 4> expected_positions = {
++      DlPoint(10.0f, 10.0f), DlPoint(90.0f, 10.0f), DlPoint(10.0f, 90.0f),
++      DlPoint(90.0f, 90.0f)};
++  const std::array<DlColor, 4> expected_colors = {
++      DlColor::ARGB(1.0f, 1.0f, 0.0f, 0.0f),
++      DlColor::ARGB(1.0f, 0.0f, 1.0f, 0.0f),
++      DlColor::ARGB(1.0f, 0.0f, 0.0f, 1.0f),
++      DlColor::ARGB(1.0f, 1.0f, 1.0f, 0.0f)};
++  const auto expected = ExpectedVertices(
++      DlVertexMode::kTriangleStrip, expected_positions, nullptr,
++      expected_colors.data(), nullptr, 0);
++  ExpectVerticesMatch(actual, expected);
++  EXPECT_EQ(engine_api.paint_effects->vertices_release(vertices),
++            kFlutterSpiOk);
++}
++
++TEST(SpiVertices, FanWithTexcoordsAndIndicesMatchesDartUi) {
++  FlutterSpiEngine engine = {};
++  const FlutterSpiEngineApi engine_api = SpiEngineApi::Create();
++  ASSERT_NE(engine_api.paint_effects, nullptr);
++
++  const std::array<FlutterSpiPoint, 4> positions = {
++      FlutterSpiPoint{50.0f, 10.0f}, FlutterSpiPoint{90.0f, 50.0f},
++      FlutterSpiPoint{50.0f, 90.0f}, FlutterSpiPoint{10.0f, 50.0f}};
++  const std::array<FlutterSpiPoint, 4> texture_coordinates = {
++      FlutterSpiPoint{0.5f, 0.0f}, FlutterSpiPoint{1.0f, 0.5f},
++      FlutterSpiPoint{0.5f, 1.0f}, FlutterSpiPoint{0.0f, 0.5f}};
++  const std::array<uint16_t, 6> indices = {0, 1, 2, 0, 2, 3};
++  FlutterSpiVertices* vertices = nullptr;
++  ASSERT_EQ(engine_api.paint_effects->vertices_create(
++                &engine, kFlutterSpiVertexModeTriangleFan, positions.data(),
++                positions.size(), texture_coordinates.data(), nullptr,
++                indices.data(), indices.size(), &vertices),
++            kFlutterSpiOk);
++
++  const auto actual = DrawVertices(&engine, engine_api.paint_effects, vertices);
++  const std::array<DlPoint, 4> expected_positions = {
++      DlPoint(50.0f, 10.0f), DlPoint(90.0f, 50.0f), DlPoint(50.0f, 90.0f),
++      DlPoint(10.0f, 50.0f)};
++  const std::array<DlPoint, 4> expected_texture_coordinates = {
++      DlPoint(0.5f, 0.0f), DlPoint(1.0f, 0.5f), DlPoint(0.5f, 1.0f),
++      DlPoint(0.0f, 0.5f)};
++  const auto expected = ExpectedVertices(
++      DlVertexMode::kTriangleFan, expected_positions,
++      expected_texture_coordinates.data(), nullptr, indices.data(),
++      static_cast<int>(indices.size()));
++  ExpectVerticesMatch(actual, expected);
++  EXPECT_EQ(engine_api.paint_effects->vertices_release(vertices),
++            kFlutterSpiOk);
++}
++
++TEST(SpiVertices, DrawVerticesMatchesDl) {
++  FlutterSpiEngine engine = {};
++  const FlutterSpiEngineApi engine_api = SpiEngineApi::Create();
++  ASSERT_NE(engine_api.paint_effects, nullptr);
++
++  const std::array<FlutterSpiPoint, 3> positions = {
++      FlutterSpiPoint{10.0f, 10.0f}, FlutterSpiPoint{90.0f, 10.0f},
++      FlutterSpiPoint{50.0f, 90.0f}};
++  FlutterSpiVertices* vertices = nullptr;
++  ASSERT_EQ(engine_api.paint_effects->vertices_create(
++                &engine, kFlutterSpiVertexModeTriangles, positions.data(),
++                positions.size(), nullptr, nullptr, nullptr, 0, &vertices),
++            kFlutterSpiOk);
++
++  const auto actual = DrawVertices(&engine, engine_api.paint_effects, vertices);
++  ASSERT_NE(actual, nullptr);
++  VertexProbe probe;
++  actual->Dispatch(probe);
++  EXPECT_EQ(probe.count, 1);
++  EXPECT_EQ(engine_api.paint_effects->vertices_release(vertices),
++            kFlutterSpiOk);
++}
++
++TEST(SpiVertices, RejectsOutOfRangeIndex) {
++  FlutterSpiEngine engine = {};
++  const FlutterSpiEngineApi engine_api = SpiEngineApi::Create();
++  ASSERT_NE(engine_api.paint_effects, nullptr);
++
++  const std::array<FlutterSpiPoint, 3> positions = {
++      FlutterSpiPoint{10.0f, 10.0f}, FlutterSpiPoint{90.0f, 10.0f},
++      FlutterSpiPoint{50.0f, 90.0f}};
++  const std::array<uint16_t, 3> indices = {0, 1, 3};
++  FlutterSpiVertices* vertices = nullptr;
++  EXPECT_EQ(engine_api.paint_effects->vertices_create(
++                &engine, kFlutterSpiVertexModeTriangles, positions.data(),
++                positions.size(), nullptr, nullptr, indices.data(),
++                indices.size(), &vertices),
++            kFlutterSpiInvalidArgument);
++}
++
++TEST(SpiVertices, RejectsZeroVerticesWithIndices) {
++  FlutterSpiEngine engine = {};
++  const FlutterSpiEngineApi engine_api = SpiEngineApi::Create();
++  ASSERT_NE(engine_api.paint_effects, nullptr);
++
++  const std::array<uint16_t, 1> indices = {0};
++  FlutterSpiVertices* vertices = nullptr;
++  EXPECT_EQ(engine_api.paint_effects->vertices_create(
++                &engine, kFlutterSpiVertexModeTriangles, nullptr, 0, nullptr,
++                nullptr, indices.data(), indices.size(), &vertices),
++            kFlutterSpiInvalidArgument);
++}
++
++}  // namespace
++}  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index 26fd74e2d3d..3101a146287 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -8,10 +8,14 @@
+ 
+ #include "flutter/lib/ui/text/font_collection.h"
+ #include "flutter/runtime/runtime_delegate.h"
++#include "flutter/runtime_spi/effects/spi_color_filter.h"
++#include "flutter/runtime_spi/effects/spi_image_filter.h"
++#include "flutter/runtime_spi/effects/spi_shader.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
+ #include "flutter/runtime_spi/image/spi_image_canvas.h"
+ #include "flutter/runtime_spi/image/spi_image_codec.h"
+ #include "flutter/runtime_spi/image/spi_image_readback.h"
++#include "flutter/runtime_spi/effects/spi_vertices.h"
+ #include "flutter/runtime_spi/scene/spi_canvas.h"
+ #include "flutter/runtime_spi/spi_runtime_backend.h"
+ #include "flutter/runtime_spi/spi_scene.h"
+@@ -61,6 +65,31 @@ const FlutterSpiTextApi kTextApi = {
+     .canvas_draw_paragraph = CanvasDrawParagraph,
+ };
+ 
++const FlutterSpiPaintEffectsApi kPaintEffectsApi = {
++    .struct_size = sizeof(FlutterSpiPaintEffectsApi),
++    .shader_linear_gradient = SpiShaderLinearGradient,
++    .shader_radial_gradient = SpiShaderRadialGradient,
++    .shader_conical_gradient = SpiShaderConicalGradient,
++    .shader_sweep_gradient = SpiShaderSweepGradient,
++    .shader_image = SpiShaderImage,
++    .shader_release = SpiShaderRelease,
++    .color_filter_mode = SpiColorFilterMode,
++    .color_filter_matrix = SpiColorFilterMatrix,
++    .color_filter_linear_to_srgb_gamma = SpiColorFilterLinearToSrgbGamma,
++    .color_filter_srgb_to_linear_gamma = SpiColorFilterSrgbToLinearGamma,
++    .color_filter_release = SpiColorFilterRelease,
++    .image_filter_blur = SpiImageFilterBlur,
++    .image_filter_dilate = SpiImageFilterDilate,
++    .image_filter_erode = SpiImageFilterErode,
++    .image_filter_matrix = SpiImageFilterMatrix,
++    .image_filter_from_color_filter = SpiImageFilterFromColorFilter,
++    .image_filter_compose = SpiImageFilterCompose,
++    .image_filter_release = SpiImageFilterRelease,
++    .vertices_create = SpiVerticesCreate,
++    .vertices_release = SpiVerticesRelease,
++    .canvas_draw_vertices = CanvasDrawVertices,
++};
++
+ }  // namespace
+ 
+ FlutterSpiEngineApi SpiEngineApi::Create() {
+@@ -107,7 +136,7 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+                       kFlutterSpiCapSemantics | kFlutterSpiCapViewFocus |
+                       kFlutterSpiCapEmptyScene | kFlutterSpiCapScene |
+                       kFlutterSpiCapText | kFlutterSpiCapImage |
+-                      kFlutterSpiCapImageOutput,
++                      kFlutterSpiCapImageOutput | kFlutterSpiCapPaintEffects,
+       .request_frame = RequestFrame,
+       .scene_create_empty = SceneCreateEmpty,
+       .scene_release = SceneRelease,
+@@ -122,7 +151,7 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+       .scene = SpiSceneApi(),
+       .text = &kTextApi,
+       .image = &image_api,
+-      .paint_effects = nullptr,
++      .paint_effects = &kPaintEffectsApi,
+   };
+ }
+ 
