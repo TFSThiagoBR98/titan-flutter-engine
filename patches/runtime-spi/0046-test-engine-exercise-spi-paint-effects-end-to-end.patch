@@ -1,0 +1,202 @@
+# Why: cover capability advertisement and frame-level conformance for shader,
+# mask blur, and vertices paint effects through the C runtime.
+diff --git a/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+index 17012b7c97f..ecd18287f3b 100644
+--- a/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+@@ -338,6 +338,37 @@ TEST_F(SpiConformance, ImageOutputAnnouncedByCapability) {
+   EXPECT_NE(runtime_->engine_api->image->image_to_bytes, nullptr);
+ }
+ 
++TEST_F(SpiConformance, PaintEffectsAnnouncedByCapability) {
++  StartShell();
++
++  ASSERT_NE(runtime_->engine_api, nullptr);
++  ASSERT_NE(runtime_->engine_api->paint_effects, nullptr);
++  EXPECT_NE(runtime_->engine_api->capabilities & kFlutterSpiCapPaintEffects,
++            0u);
++}
++
++TEST_F(SpiConformance, PaintEffectsFrameRoundTrip) {
++  runtime_->draw_effects_on_begin_frame = true;
++  StartShell();
++
++  PumpOneFrame(shell_.get());
++  PostSync(shell_->GetTaskRunners().GetRasterTaskRunner(), [&] {
++    auto* layer_tree =
++        shell_->GetRasterizer()->GetLastLayerTree(kImplicitViewId);
++    ASSERT_NE(layer_tree, nullptr);
++    EXPECT_EQ(SceneTrace(*layer_tree),
++              "scene 1x1\n"
++              "container\n"
++              "  picture 0 0\n"
++              "    op setColorSource\n"
++              "    drawRect 0 0 16 16\n"
++              "    op setColorSource\n"
++              "    op setMaskFilter\n"
++              "    drawRect 20 0 36 16\n"
++              "    op drawVertices\n");
++  });
++}
++
+ TEST_F(SpiConformance, SnapshotRoundTrip) {
+   runtime_->snapshot_on_begin_frame = true;
+   StartShell();
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.c b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+index 52e1c1daee8..93040fd104f 100644
+--- a/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+@@ -67,6 +67,9 @@ static void copy_pointer_events(CTestRuntime* runtime,
+ static void test_runtime_submit_drawn_scene(
+     CTestRuntime* runtime,
+     const FlutterSpiFrameInfo* frame_info);
++static void test_runtime_submit_effects_scene(
++    CTestRuntime* runtime,
++    const FlutterSpiFrameInfo* frame_info);
+ static void test_runtime_submit_text_scene(
+     CTestRuntime* runtime,
+     const FlutterSpiFrameInfo* frame_info);
+@@ -154,6 +157,7 @@ static void test_runtime_begin_frame(void* user_data,
+     runtime->has_last_frame_info = true;
+   }
+   if ((!runtime->submit_on_begin_frame && !runtime->draw_scene_on_begin_frame &&
++       !runtime->draw_effects_on_begin_frame &&
+        !runtime->draw_text_on_begin_frame &&
+        !runtime->draw_image_on_begin_frame &&
+        !runtime->snapshot_on_begin_frame) ||
+@@ -190,6 +194,10 @@ static void test_runtime_begin_frame(void* user_data,
+     test_runtime_submit_text_scene(runtime, frame_info);
+     return;
+   }
++  if (runtime->draw_effects_on_begin_frame) {
++    test_runtime_submit_effects_scene(runtime, frame_info);
++    return;
++  }
+   if (runtime->draw_scene_on_begin_frame) {
+     test_runtime_submit_drawn_scene(runtime, frame_info);
+     return;
+@@ -510,6 +518,112 @@ static void test_runtime_submit_drawn_scene(
+       runtime->last_view_metrics.device_pixel_ratio);
+ }
+ 
++static bool test_runtime_create_effects_picture(
++    CTestRuntime* runtime,
++    FlutterSpiPicture** out_picture) {
++  const FlutterSpiSceneApi* scene_api = runtime->engine_api->scene;
++  const FlutterSpiPaintEffectsApi* effects_api =
++      runtime->engine_api->paint_effects;
++  const FlutterSpiRect gradient_rect = {
++      .left = 0.0f, .top = 0.0f, .right = 16.0f, .bottom = 16.0f};
++  const FlutterSpiRect mask_blur_rect = {
++      .left = 20.0f, .top = 0.0f, .right = 36.0f, .bottom = 16.0f};
++  const FlutterSpiColor gradient_colors[] = {
++      {.red = 1.0f,
++       .alpha = 1.0f,
++       .color_space = kFlutterSpiColorSpaceSRGB},
++      {.blue = 1.0f,
++       .alpha = 1.0f,
++       .color_space = kFlutterSpiColorSpaceSRGB},
++  };
++  const FlutterSpiPoint triangle_positions[] = {
++      {.x = 40.0f, .y = 0.0f},
++      {.x = 56.0f, .y = 0.0f},
++      {.x = 48.0f, .y = 16.0f},
++  };
++  FlutterSpiPictureRecorder* recorder = NULL;
++  FlutterSpiShader* shader = NULL;
++  FlutterSpiVertices* vertices = NULL;
++  FlutterSpiPaint gradient_paint = k_scene_paint;
++  FlutterSpiPaint mask_blur_paint = k_scene_paint;
++
++  if (scene_api == NULL || effects_api == NULL ||
++      scene_api->recorder_create(runtime->engine, NULL, &recorder) !=
++          kFlutterSpiOk ||
++      effects_api->shader_linear_gradient(
++          runtime->engine, (FlutterSpiPoint){.x = 0.0f, .y = 0.0f},
++          (FlutterSpiPoint){.x = 16.0f, .y = 0.0f}, gradient_colors, NULL, 2,
++          kFlutterSpiTileModeClamp, NULL, &shader) != kFlutterSpiOk) {
++    if (recorder != NULL) {
++      scene_api->recorder_release(recorder);
++    }
++    return false;
++  }
++
++  gradient_paint.shader = shader;
++  if (scene_api->canvas_draw_rect(recorder, &gradient_rect,
++                                  &gradient_paint) != kFlutterSpiOk) {
++    effects_api->shader_release(shader);
++    scene_api->recorder_release(recorder);
++    return false;
++  }
++  effects_api->shader_release(shader);
++
++  mask_blur_paint.has_mask_blur = true;
++  mask_blur_paint.mask_blur_style = kFlutterSpiBlurStyleNormal;
++  mask_blur_paint.mask_blur_sigma = 2.0f;
++  if (scene_api->canvas_draw_rect(recorder, &mask_blur_rect,
++                                  &mask_blur_paint) != kFlutterSpiOk ||
++      effects_api->vertices_create(
++          runtime->engine, kFlutterSpiVertexModeTriangles, triangle_positions,
++          3, NULL, NULL, NULL, 0, &vertices) != kFlutterSpiOk ||
++      effects_api->canvas_draw_vertices(recorder, vertices,
++                                        kFlutterSpiBlendModeSrcOver,
++                                        &k_scene_paint) != kFlutterSpiOk ||
++      scene_api->recorder_finish(recorder, out_picture) != kFlutterSpiOk) {
++    if (vertices != NULL) {
++      effects_api->vertices_release(vertices);
++    }
++    scene_api->recorder_release(recorder);
++    return false;
++  }
++
++  effects_api->vertices_release(vertices);
++  return true;
++}
++
++static void test_runtime_submit_effects_scene(
++    CTestRuntime* runtime,
++    const FlutterSpiFrameInfo* frame_info) {
++  const FlutterSpiSceneApi* api = runtime->engine_api->scene;
++  FlutterSpiPicture* picture = NULL;
++  FlutterSpiSceneBuilder* builder = NULL;
++  FlutterSpiScene* scene = NULL;
++
++  if (!test_runtime_create_effects_picture(runtime, &picture) ||
++      api->scene_builder_create(runtime->engine, &builder) != kFlutterSpiOk ||
++      api->scene_add_picture(builder, 0.0f, 0.0f, picture, false, false) !=
++          kFlutterSpiOk ||
++      api->scene_build(
++          builder, (int64_t)runtime->last_view_metrics.physical_width,
++          (int64_t)runtime->last_view_metrics.physical_height,
++          &scene) != kFlutterSpiOk) {
++    if (builder != NULL) {
++      api->scene_builder_release(builder);
++    }
++    if (picture != NULL) {
++      api->picture_release(picture);
++    }
++    return;
++  }
++
++  api->picture_release(picture);
++  runtime->engine_api->submit_frame(
++      runtime->engine, runtime->last_view_metrics.view_id,
++      frame_info->frame_token, scene,
++      runtime->last_view_metrics.device_pixel_ratio);
++}
++
+ static bool test_runtime_create_image_picture(CTestRuntime* runtime,
+                                               FlutterSpiPicture** out_picture) {
+   const FlutterSpiSceneApi* scene_api = runtime->engine_api->scene;
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.h b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+index a77f226f25e..0820f0004fc 100644
+--- a/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+@@ -45,6 +45,7 @@ typedef struct CTestRuntime {
+   bool respond_to_messages;
+   bool submit_on_begin_frame;
+   bool draw_scene_on_begin_frame;
++  bool draw_effects_on_begin_frame;
+   bool draw_text_on_begin_frame;
+   const uint8_t* draw_text_font_data;
+   size_t draw_text_font_size;
