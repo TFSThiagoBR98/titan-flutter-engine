@@ -1,0 +1,933 @@
+# Why: expose the remaining filter, shader-mask, and superellipse SceneBuilder
+# layers through the runtime SPI while preserving dart:ui layer and trace
+# parity.
+diff --git a/engine/src/flutter/flow/layers/backdrop_filter_layer.h b/engine/src/flutter/flow/layers/backdrop_filter_layer.h
+index 76c61975e98..21b66bf0229 100644
+--- a/engine/src/flutter/flow/layers/backdrop_filter_layer.h
++++ b/engine/src/flutter/flow/layers/backdrop_filter_layer.h
+@@ -21,6 +21,13 @@ class BackdropFilterLayer : public ContainerLayer {
+ 
+   void Paint(PaintContext& context) const override;
+ 
++  const BackdropFilterLayer* as_backdrop_filter_layer() const override {
++    return this;
++  }
++  const std::shared_ptr<DlImageFilter>& filter() const { return filter_; }
++  DlBlendMode blend_mode() const { return blend_mode_; }
++  std::optional<int64_t> backdrop_id() const { return backdrop_id_; }
++
+  private:
+   std::shared_ptr<DlImageFilter> filter_;
+   DlBlendMode blend_mode_;
+diff --git a/engine/src/flutter/flow/layers/clip_rsuperellipse_layer.h b/engine/src/flutter/flow/layers/clip_rsuperellipse_layer.h
+index 47577930b45..76e4a7db539 100644
+--- a/engine/src/flutter/flow/layers/clip_rsuperellipse_layer.h
++++ b/engine/src/flutter/flow/layers/clip_rsuperellipse_layer.h
+@@ -14,6 +14,10 @@ class ClipRSuperellipseLayer : public ClipShapeLayer<DlRoundSuperellipse> {
+   ClipRSuperellipseLayer(const DlRoundSuperellipse& clip_rsuperellipse,
+                          Clip clip_behavior);
+ 
++  const ClipRSuperellipseLayer* as_clip_rsuperellipse_layer() const override {
++    return this;
++  }
++
+  protected:
+   const DlRect clip_shape_bounds() const override;
+ 
+diff --git a/engine/src/flutter/flow/layers/color_filter_layer.h b/engine/src/flutter/flow/layers/color_filter_layer.h
+index ee456cd93eb..e3e886d1af3 100644
+--- a/engine/src/flutter/flow/layers/color_filter_layer.h
++++ b/engine/src/flutter/flow/layers/color_filter_layer.h
+@@ -21,6 +21,11 @@ class ColorFilterLayer : public CacheableContainerLayer {
+ 
+   void Paint(PaintContext& context) const override;
+ 
++  const ColorFilterLayer* as_color_filter_layer() const override {
++    return this;
++  }
++  const std::shared_ptr<const DlColorFilter>& filter() const { return filter_; }
++
+  private:
+   std::shared_ptr<const DlColorFilter> filter_;
+ 
+diff --git a/engine/src/flutter/flow/layers/image_filter_layer.h b/engine/src/flutter/flow/layers/image_filter_layer.h
+index bca1c62c979..9c3111289c3 100644
+--- a/engine/src/flutter/flow/layers/image_filter_layer.h
++++ b/engine/src/flutter/flow/layers/image_filter_layer.h
+@@ -21,6 +21,12 @@ class ImageFilterLayer : public CacheableContainerLayer {
+ 
+   void Paint(PaintContext& context) const override;
+ 
++  const ImageFilterLayer* as_image_filter_layer() const override {
++    return this;
++  }
++  const DlPoint& offset() const { return offset_; }
++  const std::shared_ptr<DlImageFilter>& filter() const { return filter_; }
++
+  private:
+   DlPoint offset_;
+   const std::shared_ptr<DlImageFilter> filter_;
+diff --git a/engine/src/flutter/flow/layers/layer.h b/engine/src/flutter/flow/layers/layer.h
+index 37946277c5b..30d94120af8 100644
+--- a/engine/src/flutter/flow/layers/layer.h
++++ b/engine/src/flutter/flow/layers/layer.h
+@@ -35,9 +35,14 @@ class ContainerLayer;
+ class ClipPathLayer;
+ class ClipRectLayer;
+ class ClipRRectLayer;
++class ClipRSuperellipseLayer;
++class ColorFilterLayer;
+ class DisplayListLayer;
++class ImageFilterLayer;
+ class OpacityLayer;
+ class PerformanceOverlayLayer;
++class BackdropFilterLayer;
++class ShaderMaskLayer;
+ class TextureLayer;
+ class TransformLayer;
+ class RasterCacheItem;
+@@ -250,13 +255,26 @@ class Layer {
+   virtual const TransformLayer* as_transform_layer() const { return nullptr; }
+   virtual const OpacityLayer* as_opacity_layer() const { return nullptr; }
+   virtual const ClipRectLayer* as_clip_rect_layer() const { return nullptr; }
+-  virtual const ClipRRectLayer* as_clip_rrect_layer() const {
++  virtual const ClipRRectLayer* as_clip_rrect_layer() const { return nullptr; }
++  virtual const ClipPathLayer* as_clip_path_layer() const { return nullptr; }
++  virtual const ClipRSuperellipseLayer* as_clip_rsuperellipse_layer() const {
++    return nullptr;
++  }
++  virtual const ColorFilterLayer* as_color_filter_layer() const {
+     return nullptr;
+   }
+-  virtual const ClipPathLayer* as_clip_path_layer() const { return nullptr; }
+   virtual const DisplayListLayer* as_display_list_layer() const {
+     return nullptr;
+   }
++  virtual const ImageFilterLayer* as_image_filter_layer() const {
++    return nullptr;
++  }
++  virtual const BackdropFilterLayer* as_backdrop_filter_layer() const {
++    return nullptr;
++  }
++  virtual const ShaderMaskLayer* as_shader_mask_layer() const {
++    return nullptr;
++  }
+   virtual const TextureLayer* as_texture_layer() const { return nullptr; }
+   virtual const PerformanceOverlayLayer* as_performance_overlay_layer() const {
+     return nullptr;
+diff --git a/engine/src/flutter/flow/layers/shader_mask_layer.h b/engine/src/flutter/flow/layers/shader_mask_layer.h
+index 6100ba504d8..ab5ed13f605 100644
+--- a/engine/src/flutter/flow/layers/shader_mask_layer.h
++++ b/engine/src/flutter/flow/layers/shader_mask_layer.h
+@@ -22,6 +22,13 @@ class ShaderMaskLayer : public CacheableContainerLayer {
+ 
+   void Paint(PaintContext& context) const override;
+ 
++  const ShaderMaskLayer* as_shader_mask_layer() const override { return this; }
++  const std::shared_ptr<DlColorSource>& color_source() const {
++    return color_source_;
++  }
++  const DlRect& mask_rect() const { return mask_rect_; }
++  DlBlendMode blend_mode() const { return blend_mode_; }
++
+  private:
+   std::shared_ptr<DlColorSource> color_source_;
+   DlRect mask_rect_;
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 2a0860ba629..8fba5f85846 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -197,6 +197,7 @@ if (enable_unittests) {
+       "scene/spi_path_unittests.cc",
+       "scene/spi_paint_unittests.cc",
+       "scene/spi_scene_builder_parity_unittests.cc",
++      "scene/spi_scene_layers_parity_unittests.cc",
+       "scene/spi_scene_trace_unittests.cc",
+       "effects/spi_effects_parity_unittests.cc",
+       "effects/spi_vertices_unittests.cc",
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+index 87ec5fbc131..1138435547e 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+@@ -881,6 +881,11 @@ const FlutterSpiSceneApi kSceneApi = {
+     .scene_builder_release = SpiSceneBuilderRelease,
+     .scene_trace = SpiSceneTrace,
+     .trace_free = SpiTraceFree,
++    .scene_push_clip_rsuperellipse = SpiScenePushClipRSuperellipse,
++    .scene_push_color_filter = SpiScenePushColorFilter,
++    .scene_push_image_filter = SpiScenePushImageFilter,
++    .scene_push_backdrop_filter = SpiScenePushBackdropFilter,
++    .scene_push_shader_mask = SpiScenePushShaderMask,
+ };
+ 
+ }  // namespace
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
+index e0174866df6..3882a067f17 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
+@@ -9,13 +9,22 @@
+ #include <utility>
+ #include <vector>
+ 
++#include "flutter/display_list/effects/color_sources/dl_image_color_source.h"
++#include "flutter/flow/layers/backdrop_filter_layer.h"
+ #include "flutter/flow/layers/clip_path_layer.h"
+ #include "flutter/flow/layers/clip_rect_layer.h"
+ #include "flutter/flow/layers/clip_rrect_layer.h"
++#include "flutter/flow/layers/clip_rsuperellipse_layer.h"
++#include "flutter/flow/layers/color_filter_layer.h"
+ #include "flutter/flow/layers/container_layer.h"
+ #include "flutter/flow/layers/display_list_layer.h"
++#include "flutter/flow/layers/image_filter_layer.h"
+ #include "flutter/flow/layers/opacity_layer.h"
++#include "flutter/flow/layers/shader_mask_layer.h"
+ #include "flutter/flow/layers/transform_layer.h"
++#include "flutter/runtime_spi/effects/spi_color_filter.h"
++#include "flutter/runtime_spi/effects/spi_image_filter.h"
++#include "flutter/runtime_spi/effects/spi_shader.h"
+ #include "flutter/runtime_spi/scene/spi_canvas.h"
+ #include "flutter/runtime_spi/scene/spi_geometry.h"
+ #include "flutter/runtime_spi/scene/spi_handle_table.h"
+@@ -74,6 +83,48 @@ void PushLayer(const std::shared_ptr<ContainerLayer>& layer,
+   builder->layer_stack.push_back(layer);
+ }
+ 
++bool IsFinite(const FlutterSpiRRect& shape) {
++  return std::isfinite(shape.rect.left) && std::isfinite(shape.rect.top) &&
++         std::isfinite(shape.rect.right) && std::isfinite(shape.rect.bottom) &&
++         std::isfinite(shape.radii[0].x) && std::isfinite(shape.radii[0].y) &&
++         std::isfinite(shape.radii[1].x) && std::isfinite(shape.radii[1].y) &&
++         std::isfinite(shape.radii[2].x) && std::isfinite(shape.radii[2].y) &&
++         std::isfinite(shape.radii[3].x) && std::isfinite(shape.radii[3].y);
++}
++
++DlRoundSuperellipse ToDlRoundSuperellipse(const FlutterSpiRRect& shape) {
++  return DlRoundSuperellipse::MakeRectRadii(
++      DlRect::MakeLTRB(shape.rect.left, shape.rect.top, shape.rect.right,
++                       shape.rect.bottom)
++          .GetPositive(),
++      {.top_left = {shape.radii[0].x, shape.radii[0].y},
++       .top_right = {shape.radii[1].x, shape.radii[1].y},
++       .bottom_left = {shape.radii[3].x, shape.radii[3].y},
++       .bottom_right = {shape.radii[2].x, shape.radii[2].y}});
++}
++
++bool IsValidBlendMode(int32_t blend_mode) {
++  return blend_mode >= kFlutterSpiBlendModeClear &&
++         blend_mode <= kFlutterSpiBlendModeLuminosity;
++}
++
++bool IsValidFilterQuality(int32_t filter_quality) {
++  return filter_quality >= -1 && filter_quality <= 3;
++}
++
++DlImageSampling SamplingFromFilterQuality(int32_t filter_quality) {
++  if (filter_quality <= 0) {
++    return DlImageSampling::kNearestNeighbor;
++  }
++  if (filter_quality == 1) {
++    return DlImageSampling::kLinear;
++  }
++  if (filter_quality == 2) {
++    return DlImageSampling::kMipmapLinear;
++  }
++  return DlImageSampling::kCubic;
++}
++
+ }  // namespace
+ 
+ FlutterSpiResult SpiSceneBuilderCreate(FlutterSpiEngine* engine,
+@@ -111,9 +162,9 @@ FlutterSpiResult SpiScenePushOffset(FlutterSpiSceneBuilder* builder,
+   if (!std::isfinite(dx) || !std::isfinite(dy)) {
+     return kFlutterSpiInvalidArgument;
+   }
+-  PushLayer(std::make_shared<TransformLayer>(
+-                DlMatrix::MakeTranslation({dx, dy})),
+-            builder_value);
++  PushLayer(
++      std::make_shared<TransformLayer>(DlMatrix::MakeTranslation({dx, dy})),
++      builder_value);
+   return kFlutterSpiOk;
+ }
+ 
+@@ -176,12 +227,114 @@ FlutterSpiResult SpiScenePushOpacity(FlutterSpiSceneBuilder* builder,
+   if (builder_value == nullptr) {
+     return kFlutterSpiInvalidHandle;
+   }
+-  if (alpha < 0 || alpha > 255 || !std::isfinite(dx) ||
+-      !std::isfinite(dy)) {
++  if (alpha < 0 || alpha > 255 || !std::isfinite(dx) || !std::isfinite(dy)) {
+     return kFlutterSpiInvalidArgument;
+   }
+-  PushLayer(std::make_shared<OpacityLayer>(
+-                static_cast<uint8_t>(alpha), DlPoint(dx, dy)),
++  PushLayer(std::make_shared<OpacityLayer>(static_cast<uint8_t>(alpha),
++                                           DlPoint(dx, dy)),
++            builder_value);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiScenePushClipRSuperellipse(FlutterSpiSceneBuilder* builder,
++                                               const FlutterSpiRRect* shape,
++                                               int32_t clip_behavior) {
++  const auto builder_value = FindBuilder(builder);
++  if (builder_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (shape == nullptr || !IsFinite(*shape) ||
++      !IsValidClipBehavior(clip_behavior)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  PushLayer(std::make_shared<ClipRSuperellipseLayer>(
++                ToDlRoundSuperellipse(*shape), ToClip(clip_behavior)),
++            builder_value);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiScenePushColorFilter(FlutterSpiSceneBuilder* builder,
++                                         FlutterSpiColorFilter* filter) {
++  const auto builder_value = FindBuilder(builder);
++  const auto filter_value = SpiColorFilterGet(filter);
++  if (builder_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (filter_value == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  PushLayer(std::make_shared<ColorFilterLayer>(filter_value), builder_value);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiScenePushImageFilter(FlutterSpiSceneBuilder* builder,
++                                         FlutterSpiImageFilter* filter,
++                                         float dx,
++                                         float dy) {
++  const auto builder_value = FindBuilder(builder);
++  if (builder_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!std::isfinite(dx) || !std::isfinite(dy)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const auto filter_value = SpiImageFilterResolve(filter, DlTileMode::kDecal);
++  if (filter_value == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  PushLayer(std::make_shared<ImageFilterLayer>(filter_value, DlPoint(dx, dy)),
++            builder_value);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiScenePushBackdropFilter(FlutterSpiSceneBuilder* builder,
++                                            FlutterSpiImageFilter* filter,
++                                            int32_t blend_mode,
++                                            bool has_backdrop_id,
++                                            int64_t backdrop_id) {
++  const auto builder_value = FindBuilder(builder);
++  if (builder_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!IsValidBlendMode(blend_mode)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const auto filter_value = SpiImageFilterResolve(filter, DlTileMode::kMirror);
++  if (filter_value == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  PushLayer(
++      std::make_shared<BackdropFilterLayer>(
++          filter_value, static_cast<DlBlendMode>(blend_mode),
++          has_backdrop_id ? std::optional<int64_t>(backdrop_id) : std::nullopt),
++      builder_value);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiScenePushShaderMask(FlutterSpiSceneBuilder* builder,
++                                        FlutterSpiShader* shader,
++                                        const FlutterSpiRect* mask_rect,
++                                        int32_t blend_mode,
++                                        int32_t filter_quality) {
++  const auto builder_value = FindBuilder(builder);
++  DlRect dl_rect;
++  if (builder_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (mask_rect == nullptr || !ToDlRect(*mask_rect, &dl_rect) ||
++      !IsValidBlendMode(blend_mode)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  auto shader_value = SpiShaderGet(shader);
++  if (shader_value == nullptr || !IsValidFilterQuality(filter_quality)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (shader_value->asImage() != nullptr) {
++    shader_value = shader_value->asImage()->WithSampling(
++        SamplingFromFilterQuality(filter_quality));
++  }
++  PushLayer(std::make_shared<ShaderMaskLayer>(
++                shader_value, dl_rect, static_cast<DlBlendMode>(blend_mode)),
+             builder_value);
+   return kFlutterSpiOk;
+ }
+@@ -212,10 +365,10 @@ FlutterSpiResult SpiSceneAddPicture(FlutterSpiSceneBuilder* builder,
+   if (!std::isfinite(dx) || !std::isfinite(dy)) {
+     return kFlutterSpiInvalidArgument;
+   }
+-  AddLayer(std::make_shared<DisplayListLayer>(
+-                DlPoint(dx, dy), sk_ref_sp(display_list), is_complex,
+-                will_change),
+-            builder_value);
++  AddLayer(
++      std::make_shared<DisplayListLayer>(
++          DlPoint(dx, dy), sk_ref_sp(display_list), is_complex, will_change),
++      builder_value);
+   return kFlutterSpiOk;
+ }
+ 
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.h b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.h
+index e6028d5c8b1..9d01a058f83 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.h
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.h
+@@ -29,6 +29,25 @@ FlutterSpiResult SpiScenePushOpacity(FlutterSpiSceneBuilder* builder,
+                                      int32_t alpha,
+                                      float dx,
+                                      float dy);
++FlutterSpiResult SpiScenePushClipRSuperellipse(FlutterSpiSceneBuilder* builder,
++                                               const FlutterSpiRRect* shape,
++                                               int32_t clip_behavior);
++FlutterSpiResult SpiScenePushColorFilter(FlutterSpiSceneBuilder* builder,
++                                         FlutterSpiColorFilter* filter);
++FlutterSpiResult SpiScenePushImageFilter(FlutterSpiSceneBuilder* builder,
++                                         FlutterSpiImageFilter* filter,
++                                         float dx,
++                                         float dy);
++FlutterSpiResult SpiScenePushBackdropFilter(FlutterSpiSceneBuilder* builder,
++                                            FlutterSpiImageFilter* filter,
++                                            int32_t blend_mode,
++                                            bool has_backdrop_id,
++                                            int64_t backdrop_id);
++FlutterSpiResult SpiScenePushShaderMask(FlutterSpiSceneBuilder* builder,
++                                        FlutterSpiShader* shader,
++                                        const FlutterSpiRect* mask_rect,
++                                        int32_t blend_mode,
++                                        int32_t filter_quality);
+ FlutterSpiResult SpiScenePop(FlutterSpiSceneBuilder* builder);
+ FlutterSpiResult SpiSceneAddPicture(FlutterSpiSceneBuilder* builder,
+                                     float dx,
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_layers_parity_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_scene_layers_parity_unittests.cc
+new file mode 100644
+index 00000000000..66bfec2a2c1
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_layers_parity_unittests.cc
+@@ -0,0 +1,255 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/spi_scene.h"
++
++#include <memory>
++
++#include "flutter/display_list/dl_builder.h"
++#include "flutter/display_list/effects/dl_color_filter.h"
++#include "flutter/display_list/effects/image_filters/dl_blur_image_filter.h"
++#include "flutter/display_list/geometry/dl_geometry_types.h"
++#include "flutter/flow/layers/backdrop_filter_layer.h"
++#include "flutter/flow/layers/clip_rsuperellipse_layer.h"
++#include "flutter/flow/layers/color_filter_layer.h"
++#include "flutter/flow/layers/container_layer.h"
++#include "flutter/flow/layers/display_list_layer.h"
++#include "flutter/flow/layers/image_filter_layer.h"
++#include "flutter/flow/layers/layer_tree.h"
++#include "flutter/flow/layers/shader_mask_layer.h"
++#include "flutter/runtime_spi/effects/spi_color_filter.h"
++#include "flutter/runtime_spi/effects/spi_image_filter.h"
++#include "flutter/runtime_spi/effects/spi_shader.h"
++#include "flutter/runtime_spi/include/flutter_scene.h"
++#include "flutter/runtime_spi/scene/spi_canvas.h"
++#include "flutter/runtime_spi/scene/spi_paint.h"
++#include "flutter/runtime_spi/scene/spi_scene_builder.h"
++#include "flutter/runtime_spi/scene/spi_scene_trace.h"
++#include "flutter/runtime_spi/spi_runtime_backend.h"
++#include "flutter/testing/testing.h"
++
++namespace flutter::testing {
++namespace {
++
++constexpr FlutterSpiRect kPictureRect = {.left = 10.0f,
++                                         .top = 11.0f,
++                                         .right = 30.0f,
++                                         .bottom = 31.0f};
++constexpr FlutterSpiPaint kPaint = {
++    .struct_size = sizeof(FlutterSpiPaint),
++    .color = {.red = 0.1f,
++              .green = 0.2f,
++              .blue = 0.3f,
++              .alpha = 1.0f,
++              .color_space = kFlutterSpiColorSpaceSRGB},
++    .blend_mode = kFlutterSpiBlendModeSrcOver,
++    .style = kFlutterSpiPaintStyleFill,
++    .stroke_width = 1.0f,
++    .stroke_cap = kFlutterSpiStrokeCapButt,
++    .stroke_join = kFlutterSpiStrokeJoinMiter,
++    .stroke_miter = 4.0f,
++    .anti_alias = true,
++    .invert_colors = false,
++};
++
++sk_sp<DisplayList> MakePicture() {
++  DisplayListBuilder builder(DisplayListBuilder::kMaxCullRect);
++  builder.DrawRect(DlRect::MakeLTRB(10.0f, 11.0f, 30.0f, 31.0f),
++                   ToDlPaint(kPaint));
++  return builder.Build();
++}
++
++void AddPicture(const std::shared_ptr<ContainerLayer>& parent) {
++  parent->Add(std::make_shared<DisplayListLayer>(DlPoint(1.0f, 2.0f),
++                                                 MakePicture(), true, true));
++}
++
++std::shared_ptr<LayerTree> MakeExpectedTree(
++    const std::shared_ptr<ContainerLayer>& layer) {
++  auto root = std::make_shared<ContainerLayer>();
++  root->Add(layer);
++  return std::make_shared<LayerTree>(root, DlISize(100, 80));
++}
++
++class SpiSceneLayersTest : public ::testing::Test {
++ protected:
++  const FlutterSpiSceneApi* api() const { return SpiSceneApi(); }
++
++  FlutterSpiEngine* engine() { return &engine_; }
++
++  FlutterSpiPicture* MakeSpiPicture() {
++    FlutterSpiPictureRecorder* recorder = nullptr;
++    EXPECT_EQ(api()->recorder_create(engine(), nullptr, &recorder),
++              kFlutterSpiOk);
++    EXPECT_EQ(api()->canvas_draw_rect(recorder, &kPictureRect, &kPaint),
++              kFlutterSpiOk);
++    FlutterSpiPicture* picture = nullptr;
++    EXPECT_EQ(api()->recorder_finish(recorder, &picture), kFlutterSpiOk);
++    return picture;
++  }
++
++  FlutterSpiScene* BuildScene(FlutterSpiSceneBuilder* builder,
++                              FlutterSpiPicture* picture) {
++    EXPECT_EQ(
++        api()->scene_add_picture(builder, 1.0f, 2.0f, picture, true, true),
++        kFlutterSpiOk);
++    FlutterSpiScene* scene = nullptr;
++    EXPECT_EQ(api()->scene_build(builder, 100, 80, &scene), kFlutterSpiOk);
++    EXPECT_EQ(api()->picture_release(picture), kFlutterSpiOk);
++    return scene;
++  }
++
++ private:
++  FlutterSpiEngine engine_{};
++};
++
++TEST_F(SpiSceneLayersTest, ColorFilterMatchesDartUi) {
++  ASSERT_NE(api()->scene_push_color_filter, nullptr);
++  FlutterSpiColorFilter* filter = nullptr;
++  ASSERT_EQ(SpiColorFilterMode(engine(),
++                               {.red = 0.2f,
++                                .green = 0.3f,
++                                .blue = 0.4f,
++                                .alpha = 1.0f,
++                                .color_space = kFlutterSpiColorSpaceSRGB},
++                               kFlutterSpiBlendModeScreen, &filter),
++            kFlutterSpiOk);
++  FlutterSpiSceneBuilder* builder = nullptr;
++  ASSERT_EQ(api()->scene_builder_create(engine(), &builder), kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_push_color_filter(builder, filter), kFlutterSpiOk);
++  FlutterSpiScene* scene = BuildScene(builder, MakeSpiPicture());
++
++  auto layer = std::make_shared<ColorFilterLayer>(SpiColorFilterGet(filter));
++  AddPicture(layer);
++  EXPECT_EQ(SceneTrace(*scene->layer_tree),
++            SceneTrace(*MakeExpectedTree(std::move(layer))));
++  EXPECT_EQ(SceneTrace(*scene->layer_tree),
++            "scene 100x80\n"
++            "container\n"
++            "  color_filter type 0 color 4281552230 mode 14\n"
++            "    picture 1 2\n"
++            "      op setColor\n"
++            "      drawRect 10 11 30 31\n");
++  EXPECT_EQ(api()->scene_trace(scene, nullptr), kFlutterSpiInvalidArgument);
++  EXPECT_EQ(SpiColorFilterRelease(filter), kFlutterSpiOk);
++  EXPECT_EQ(SpiSceneRelease(scene), kFlutterSpiOk);
++}
++
++TEST_F(SpiSceneLayersTest, ImageFilterMatchesDartUi) {
++  ASSERT_NE(api()->scene_push_image_filter, nullptr);
++  FlutterSpiImageFilter* filter = nullptr;
++  ASSERT_EQ(SpiImageFilterBlur(engine(), 2.0f, 3.0f, -1, &filter),
++            kFlutterSpiOk);
++  FlutterSpiSceneBuilder* builder = nullptr;
++  ASSERT_EQ(api()->scene_builder_create(engine(), &builder), kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_push_image_filter(builder, filter, 4.0f, 5.0f),
++            kFlutterSpiOk);
++  FlutterSpiScene* scene = BuildScene(builder, MakeSpiPicture());
++
++  auto layer = std::make_shared<ImageFilterLayer>(
++      DlBlurImageFilter::Make(2.0f, 3.0f, DlTileMode::kDecal),
++      DlPoint(4.0f, 5.0f));
++  AddPicture(layer);
++  EXPECT_EQ(SceneTrace(*scene->layer_tree),
++            SceneTrace(*MakeExpectedTree(std::move(layer))));
++  EXPECT_EQ(SpiImageFilterRelease(filter), kFlutterSpiOk);
++  EXPECT_EQ(SpiSceneRelease(scene), kFlutterSpiOk);
++}
++
++TEST_F(SpiSceneLayersTest, BackdropFilterMatchesDartUi) {
++  ASSERT_NE(api()->scene_push_backdrop_filter, nullptr);
++  for (const auto [has_id, backdrop_id] :
++       {std::pair{false, int64_t{0}}, std::pair{true, int64_t{42}}}) {
++    FlutterSpiImageFilter* filter = nullptr;
++    ASSERT_EQ(SpiImageFilterBlur(engine(), 2.0f, 3.0f, -1, &filter),
++              kFlutterSpiOk);
++    FlutterSpiSceneBuilder* builder = nullptr;
++    ASSERT_EQ(api()->scene_builder_create(engine(), &builder), kFlutterSpiOk);
++    ASSERT_EQ(
++        api()->scene_push_backdrop_filter(
++            builder, filter, kFlutterSpiBlendModeScreen, has_id, backdrop_id),
++        kFlutterSpiOk);
++    FlutterSpiScene* scene = BuildScene(builder, MakeSpiPicture());
++
++    auto layer = std::make_shared<BackdropFilterLayer>(
++        DlBlurImageFilter::Make(2.0f, 3.0f, DlTileMode::kMirror),
++        DlBlendMode::kScreen,
++        has_id ? std::optional<int64_t>(backdrop_id) : std::nullopt);
++    AddPicture(layer);
++    EXPECT_EQ(SceneTrace(*scene->layer_tree),
++              SceneTrace(*MakeExpectedTree(std::move(layer))));
++    EXPECT_EQ(SpiImageFilterRelease(filter), kFlutterSpiOk);
++    EXPECT_EQ(SpiSceneRelease(scene), kFlutterSpiOk);
++  }
++}
++
++TEST_F(SpiSceneLayersTest, ShaderMaskMatchesDartUi) {
++  ASSERT_NE(api()->scene_push_shader_mask, nullptr);
++  constexpr FlutterSpiColor colors[] = {
++      {.red = 1.0f,
++       .green = 0.0f,
++       .blue = 0.0f,
++       .alpha = 1.0f,
++       .color_space = kFlutterSpiColorSpaceSRGB},
++      {.red = 0.0f,
++       .green = 0.0f,
++       .blue = 1.0f,
++       .alpha = 1.0f,
++       .color_space = kFlutterSpiColorSpaceSRGB}};
++  constexpr float stops[] = {0.0f, 1.0f};
++  FlutterSpiShader* shader = nullptr;
++  ASSERT_EQ(SpiShaderLinearGradient(engine(), {1.0f, 2.0f}, {30.0f, 40.0f},
++                                    colors, stops, 2, kFlutterSpiTileModeClamp,
++                                    nullptr, &shader),
++            kFlutterSpiOk);
++  const FlutterSpiRect mask_rect = {
++      .left = 3.0f, .top = 4.0f, .right = 50.0f, .bottom = 60.0f};
++  FlutterSpiSceneBuilder* builder = nullptr;
++  ASSERT_EQ(api()->scene_builder_create(engine(), &builder), kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_push_shader_mask(builder, shader, &mask_rect,
++                                          kFlutterSpiBlendModeMultiply, 1),
++            kFlutterSpiOk);
++  FlutterSpiScene* scene = BuildScene(builder, MakeSpiPicture());
++
++  auto layer = std::make_shared<ShaderMaskLayer>(
++      SpiShaderGet(shader), DlRect::MakeLTRB(3.0f, 4.0f, 50.0f, 60.0f),
++      DlBlendMode::kMultiply);
++  AddPicture(layer);
++  EXPECT_EQ(SceneTrace(*scene->layer_tree),
++            SceneTrace(*MakeExpectedTree(std::move(layer))));
++  EXPECT_EQ(SpiShaderRelease(shader), kFlutterSpiOk);
++  EXPECT_EQ(SpiSceneRelease(scene), kFlutterSpiOk);
++}
++
++TEST_F(SpiSceneLayersTest, ClipRSuperellipseMatchesDartUi) {
++  ASSERT_NE(api()->scene_push_clip_rsuperellipse, nullptr);
++  constexpr FlutterSpiRRect shape = {
++      .rect = {.left = 2.0f, .top = 3.0f, .right = 50.0f, .bottom = 60.0f},
++      .radii = {{.x = 4.0f, .y = 5.0f},
++                {.x = 6.0f, .y = 7.0f},
++                {.x = 8.0f, .y = 9.0f},
++                {.x = 10.0f, .y = 11.0f}}};
++  FlutterSpiSceneBuilder* builder = nullptr;
++  ASSERT_EQ(api()->scene_builder_create(engine(), &builder), kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_push_clip_rsuperellipse(builder, &shape,
++                                                 kFlutterSpiClipAntiAlias),
++            kFlutterSpiOk);
++  FlutterSpiScene* scene = BuildScene(builder, MakeSpiPicture());
++
++  auto layer = std::make_shared<ClipRSuperellipseLayer>(
++      DlRoundSuperellipse::MakeRectRadii(
++          DlRect::MakeLTRB(2.0f, 3.0f, 50.0f, 60.0f),
++          {.top_left = {4.0f, 5.0f},
++           .top_right = {6.0f, 7.0f},
++           .bottom_left = {10.0f, 11.0f},
++           .bottom_right = {8.0f, 9.0f}}),
++      Clip::kAntiAlias);
++  AddPicture(layer);
++  EXPECT_EQ(SceneTrace(*scene->layer_tree),
++            SceneTrace(*MakeExpectedTree(std::move(layer))));
++  EXPECT_EQ(SpiSceneRelease(scene), kFlutterSpiOk);
++}
++
++}  // namespace
++}  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_trace.cc b/engine/src/flutter/runtime_spi/scene/spi_scene_trace.cc
+index fcfc1fd4fa1..76f237c5c0b 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_scene_trace.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_trace.cc
+@@ -10,17 +10,25 @@
+ #include <cstring>
+ #include <string>
+ 
+-#include "flutter/display_list/dl_op_receiver.h"
+ #include "flutter/display_list/display_list.h"
++#include "flutter/display_list/dl_op_receiver.h"
++#include "flutter/display_list/effects/color_filters/dl_blend_color_filter.h"
++#include "flutter/display_list/effects/color_sources/dl_linear_gradient_color_source.h"
++#include "flutter/display_list/effects/image_filters/dl_blur_image_filter.h"
+ #include "flutter/display_list/geometry/dl_path.h"
+ #include "flutter/display_list/utils/dl_receiver_utils.h"
++#include "flutter/flow/layers/backdrop_filter_layer.h"
+ #include "flutter/flow/layers/clip_path_layer.h"
+ #include "flutter/flow/layers/clip_rect_layer.h"
+ #include "flutter/flow/layers/clip_rrect_layer.h"
++#include "flutter/flow/layers/clip_rsuperellipse_layer.h"
++#include "flutter/flow/layers/color_filter_layer.h"
+ #include "flutter/flow/layers/container_layer.h"
+ #include "flutter/flow/layers/display_list_layer.h"
++#include "flutter/flow/layers/image_filter_layer.h"
+ #include "flutter/flow/layers/layer_tree.h"
+ #include "flutter/flow/layers/opacity_layer.h"
++#include "flutter/flow/layers/shader_mask_layer.h"
+ #include "flutter/flow/layers/transform_layer.h"
+ #include "flutter/runtime_spi/spi_scene.h"
+ 
+@@ -39,6 +47,12 @@ void AppendNumber(std::string* output, float value) {
+   output->append(buffer.data());
+ }
+ 
++void AppendUnsigned(std::string* output, uint32_t value) {
++  std::array<char, 32> buffer = {};
++  std::snprintf(buffer.data(), buffer.size(), "%u", value);
++  output->append(buffer.data());
++}
++
+ void AppendRect(std::string* output, const DlRect& rect) {
+   AppendNumber(output, rect.GetLeft());
+   output->push_back(' ');
+@@ -66,9 +80,7 @@ class PathTraceReceiver final : public impeller::PathReceiver {
+     }
+   }
+ 
+-  void LineTo(const impeller::Point& point) override {
+-    Append("line ", point);
+-  }
++  void LineTo(const impeller::Point& point) override { Append("line ", point); }
+ 
+   void QuadTo(const impeller::Point& control_point,
+               const impeller::Point& point) override {
+@@ -113,8 +125,8 @@ class PathTraceReceiver final : public impeller::PathReceiver {
+ };
+ 
+ void AppendPath(std::string* output, const DlPath& path) {
+-  output->append(path.GetFillType() == DlPathFillType::kOdd ? "odd" :
+-                                                                  "nonzero");
++  output->append(path.GetFillType() == DlPathFillType::kOdd ? "odd"
++                                                            : "nonzero");
+   output->push_back(' ');
+   PathTraceReceiver receiver(output);
+   path.Dispatch(receiver);
+@@ -141,11 +153,73 @@ void AppendRRect(std::string* output, const DlRoundRect& rrect) {
+   AppendNumber(output, radii.bottom_left.height);
+ }
+ 
+-class DisplayListTraceReceiver final
+-    : public IgnoreAttributeDispatchHelper,
+-      public IgnoreClipDispatchHelper,
+-      public IgnoreTransformDispatchHelper,
+-      public IgnoreDrawDispatchHelper {
++void AppendRSuperellipse(std::string* output,
++                         const DlRoundSuperellipse& rsuperellipse) {
++  AppendRect(output, rsuperellipse.GetBounds());
++  const auto& radii = rsuperellipse.GetRadii();
++  output->push_back(' ');
++  AppendNumber(output, radii.top_left.width);
++  output->push_back(' ');
++  AppendNumber(output, radii.top_left.height);
++  output->push_back(' ');
++  AppendNumber(output, radii.top_right.width);
++  output->push_back(' ');
++  AppendNumber(output, radii.top_right.height);
++  output->push_back(' ');
++  AppendNumber(output, radii.bottom_right.width);
++  output->push_back(' ');
++  AppendNumber(output, radii.bottom_right.height);
++  output->push_back(' ');
++  AppendNumber(output, radii.bottom_left.width);
++  output->push_back(' ');
++  AppendNumber(output, radii.bottom_left.height);
++}
++
++void AppendColorFilter(std::string* output, const DlColorFilter& filter) {
++  output->append("type ");
++  AppendNumber(output, static_cast<float>(filter.type()));
++  if (const auto* blend = filter.asBlend(); blend != nullptr) {
++    output->append(" color ");
++    AppendUnsigned(output, blend->color().argb());
++    output->append(" mode ");
++    AppendNumber(output, static_cast<float>(blend->mode()));
++  }
++}
++
++void AppendImageFilter(std::string* output, const DlImageFilter& filter) {
++  output->append("type ");
++  AppendNumber(output, static_cast<float>(filter.type()));
++  if (const auto* blur = filter.asBlur(); blur != nullptr) {
++    output->append(" sigma ");
++    AppendNumber(output, blur->sigma_x());
++    output->push_back(' ');
++    AppendNumber(output, blur->sigma_y());
++    output->append(" tile ");
++    AppendNumber(output, static_cast<float>(blur->tile_mode()));
++    if (const auto bounds = blur->bounds(); bounds.has_value()) {
++      output->append(" bounds ");
++      AppendRect(output, *bounds);
++    }
++  }
++}
++
++void AppendColorSource(std::string* output, const DlColorSource& source) {
++  output->append("type ");
++  AppendNumber(output, static_cast<float>(source.type()));
++  if (const auto* linear = source.asLinearGradient(); linear != nullptr) {
++    output->append(" start ");
++    AppendPoint(output, linear->start_point());
++    output->append(" end ");
++    AppendPoint(output, linear->end_point());
++    output->append(" tile ");
++    AppendNumber(output, static_cast<float>(linear->tile_mode()));
++  }
++}
++
++class DisplayListTraceReceiver final : public IgnoreAttributeDispatchHelper,
++                                       public IgnoreClipDispatchHelper,
++                                       public IgnoreTransformDispatchHelper,
++                                       public IgnoreDrawDispatchHelper {
+  public:
+   DisplayListTraceReceiver(std::string* output, int depth)
+       : output_(output), indent_(Indent(depth)) {}
+@@ -214,9 +288,7 @@ class DisplayListTraceReceiver final
+     AppendRect(output_, rect);
+     output_->push_back('\n');
+   }
+-  void drawOval(const DlRect& bounds) override {
+-    AppendOperation("drawOval");
+-  }
++  void drawOval(const DlRect& bounds) override { AppendOperation("drawOval"); }
+   void drawCircle(const DlPoint& center, DlScalar radius) override {
+     output_->append(indent_);
+     output_->append("drawCircle ");
+@@ -319,9 +391,7 @@ void TraceDisplayList(const DisplayList& display_list,
+   display_list.Dispatch(receiver);
+ }
+ 
+-void TraceChildren(const ContainerLayer& layer,
+-                   std::string* output,
+-                   int depth);
++void TraceChildren(const ContainerLayer& layer, std::string* output, int depth);
+ 
+ void TraceLayer(const Layer& layer, std::string* output, int depth) {
+   const std::string indent = Indent(depth);
+@@ -333,7 +403,8 @@ void TraceLayer(const Layer& layer, std::string* output, int depth) {
+     TraceDisplayList(*picture->display_list(), output, depth + 1);
+     return;
+   }
+-  if (const auto* transform = layer.as_transform_layer(); transform != nullptr) {
++  if (const auto* transform = layer.as_transform_layer();
++      transform != nullptr) {
+     output->append(indent);
+     output->append("transform [");
+     for (size_t index = 0; index < 16; ++index) {
+@@ -368,7 +439,8 @@ void TraceLayer(const Layer& layer, std::string* output, int depth) {
+     TraceChildren(*clip_rrect, output, depth + 1);
+     return;
+   }
+-  if (const auto* clip_path = layer.as_clip_path_layer(); clip_path != nullptr) {
++  if (const auto* clip_path = layer.as_clip_path_layer();
++      clip_path != nullptr) {
+     output->append(indent);
+     output->append("clip_path ");
+     AppendPath(output, clip_path->clip_shape());
+@@ -388,6 +460,68 @@ void TraceLayer(const Layer& layer, std::string* output, int depth) {
+     TraceChildren(*opacity, output, depth + 1);
+     return;
+   }
++  if (const auto* clip_rsuperellipse = layer.as_clip_rsuperellipse_layer();
++      clip_rsuperellipse != nullptr) {
++    output->append(indent);
++    output->append("clip_rsuperellipse ");
++    AppendRSuperellipse(output, clip_rsuperellipse->clip_shape());
++    output->push_back(' ');
++    AppendNumber(output,
++                 static_cast<float>(clip_rsuperellipse->clip_behavior()));
++    output->push_back('\n');
++    TraceChildren(*clip_rsuperellipse, output, depth + 1);
++    return;
++  }
++  if (const auto* color_filter = layer.as_color_filter_layer();
++      color_filter != nullptr) {
++    output->append(indent);
++    output->append("color_filter ");
++    AppendColorFilter(output, *color_filter->filter());
++    output->push_back('\n');
++    TraceChildren(*color_filter, output, depth + 1);
++    return;
++  }
++  if (const auto* image_filter = layer.as_image_filter_layer();
++      image_filter != nullptr) {
++    output->append(indent);
++    output->append("image_filter ");
++    AppendImageFilter(output, *image_filter->filter());
++    output->append(" offset ");
++    AppendPoint(output, image_filter->offset());
++    output->push_back('\n');
++    TraceChildren(*image_filter, output, depth + 1);
++    return;
++  }
++  if (const auto* backdrop_filter = layer.as_backdrop_filter_layer();
++      backdrop_filter != nullptr) {
++    output->append(indent);
++    output->append("backdrop_filter ");
++    AppendImageFilter(output, *backdrop_filter->filter());
++    output->append(" blend ");
++    AppendNumber(output, static_cast<float>(backdrop_filter->blend_mode()));
++    output->append(" id ");
++    if (const auto id = backdrop_filter->backdrop_id(); id.has_value()) {
++      AppendNumber(output, static_cast<float>(*id));
++    } else {
++      output->append("none");
++    }
++    output->push_back('\n');
++    TraceChildren(*backdrop_filter, output, depth + 1);
++    return;
++  }
++  if (const auto* shader_mask = layer.as_shader_mask_layer();
++      shader_mask != nullptr) {
++    output->append(indent);
++    output->append("shader_mask ");
++    AppendColorSource(output, *shader_mask->color_source());
++    output->append(" rect ");
++    AppendRect(output, shader_mask->mask_rect());
++    output->append(" blend ");
++    AppendNumber(output, static_cast<float>(shader_mask->blend_mode()));
++    output->push_back('\n');
++    TraceChildren(*shader_mask, output, depth + 1);
++    return;
++  }
+   if (layer.as_container_layer() != nullptr) {
+     output->append(indent);
+     output->append("container\n");
