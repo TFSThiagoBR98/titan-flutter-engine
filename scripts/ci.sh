@@ -76,7 +76,7 @@ run_deps() {
   "${root_prefix[@]}" apt-get update
   "${root_prefix[@]}" apt-get install -y --no-install-recommends \
     git python3 curl ca-certificates xz-utils unzip zip binutils ccache file rsync bc cpio patch perl wget make \
-    gcc g++ bzip2 qemu-user-static pkg-config libglib2.0-dev
+    gcc g++ bzip2 zstd qemu-user-static pkg-config libglib2.0-dev
 }
 
 run_free_disk() {
@@ -121,7 +121,43 @@ run_sysroots() {
 
 run_sysroot() {
   (($# == 1)) || die "sysroot requires a defconfig"
-  "$scripts_root/make-buildroot-sysroot.sh" --config "$1" --publish
+  "$scripts_root/make-buildroot-sysroot.sh" --config "$1"
+}
+
+sysroot_archive_path() {
+  (($# == 1)) || return 2
+  printf '%s/sysroot-%s.tar.zst\n' "$TITAN_WORK_DIR" "$(basename "$1")"
+}
+
+run_sysroot_package() {
+  (($# == 1)) || die "sysroot-package requires a defconfig"
+  source "$scripts_root/sysroot-cache.sh"
+  local config_name=$(basename "$1")
+  local sysroot_name archive sysroot_directory
+  sysroot_name=$(sysroot_cache_name "$config_name") || die "unsupported sysroot defconfig: $config_name"
+  sysroot_directory="$TITAN_WORK_DIR/sysroots/$sysroot_name"
+  archive=$(sysroot_archive_path "$config_name")
+  [[ -d "$sysroot_directory" ]] || die "sysroot directory is missing: $sysroot_directory"
+  command -v zstd >/dev/null 2>&1 || die "zstd is required to package the sysroot"
+  tar --sort=name --owner=0 --group=0 --mtime=@0 -I zstd \
+    -cf "$archive" -C "$sysroot_directory" .
+  printf 'sysroot archive: %s\n' "$archive"
+}
+
+run_sysroot_extract() {
+  (($# == 1)) || die "sysroot-extract requires a defconfig"
+  source "$scripts_root/sysroot-cache.sh"
+  local config_name=$(basename "$1")
+  local sysroot_name archive sysroot_directory
+  sysroot_name=$(sysroot_cache_name "$config_name") || die "unsupported sysroot defconfig: $config_name"
+  sysroot_directory="$TITAN_WORK_DIR/sysroots/$sysroot_name"
+  archive=$(sysroot_archive_path "$config_name")
+  [[ -f "$archive" ]] || die "sysroot archive is missing: $archive"
+  command -v zstd >/dev/null 2>&1 || die "zstd is required to extract the sysroot"
+  mkdir -p "$sysroot_directory"
+  tar -I zstd -xf "$archive" -C "$sysroot_directory"
+  sysroot_cache_link "$sysroot_name" "$sysroot_directory"
+  printf 'sysroot extracted: %s\n' "$sysroot_directory"
 }
 
 # Prints "<variant>: <done>/<total> (<pct>%), <min> min, ~<min> min left" from
@@ -356,12 +392,20 @@ case "$stage" in
     (($# == 2)) || die "sysroot requires exactly one defconfig"
     run_sysroot "$2"
     ;;
+  sysroot-package)
+    (($# == 2)) || die "sysroot-package requires exactly one defconfig"
+    run_sysroot_package "$2"
+    ;;
+  sysroot-extract)
+    (($# == 2)) || die "sysroot-extract requires exactly one defconfig"
+    run_sysroot_extract "$2"
+    ;;
   with-progress)
     (($# >= 3)) || die "with-progress requires variants and a command"
     shift
     run_with_progress "$@"
     ;;
   *)
-    die "usage: scripts/ci.sh deps|free-disk|sysroot|sysroots|build|probe|package|assemble|release|all|with-progress"
+    die "usage: scripts/ci.sh deps|free-disk|sysroot|sysroot-package|sysroot-extract|sysroots|build|probe|package|assemble|release|all|with-progress"
     ;;
 esac

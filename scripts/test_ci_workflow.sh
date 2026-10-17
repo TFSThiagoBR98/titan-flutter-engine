@@ -50,13 +50,14 @@ raise 'self-hosted runner is forbidden' if File.read(ARGV.fetch(0)).include?('se
 raise 'workflow must define global read permission' unless workflow['permissions'] == {'contents' => 'read'}
 jobs = workflow.fetch('jobs')
 build = jobs.fetch('build')
+sysroot = jobs.fetch('sysroot')
 linux_platform = jobs.fetch('linux_platform')
 macos = jobs.fetch('macos')
 windows = jobs.fetch('windows')
 release = jobs.fetch('release')
-expected_jobs = %w[build linux_platform macos windows release]
+expected_jobs = %w[build sysroot linux_platform macos windows release]
 raise "unexpected jobs: #{jobs.keys.inspect}" unless jobs.keys.sort == expected_jobs.sort
-%w[build linux_platform macos windows].each do |job_name|
+%w[build sysroot linux_platform macos windows].each do |job_name|
   build_job = jobs.fetch(job_name)
   log_upload = build_job.fetch('steps').find do |step|
     step['uses'] == 'actions/upload-artifact@v4' &&
@@ -66,6 +67,7 @@ raise "unexpected jobs: #{jobs.keys.inspect}" unless jobs.keys.sort == expected_
   raise "#{job_name} build logs must upload on every outcome" unless log_upload['if'] == 'always()'
 end
 raise 'build must use the hosted runner' unless build['runs-on'] == 'ubuntu-24.04'
+raise 'sysroot job must use the hosted runner' unless sysroot['runs-on'] == 'ubuntu-24.04'
 raise 'Linux platform job must use the hosted runner' unless linux_platform['runs-on'] == 'ubuntu-24.04'
 raise 'macOS job must use the hosted runner' unless macos['runs-on'] == 'macos-15'
 raise 'Windows job must use the hosted runner' unless windows['runs-on'] == 'windows-2025'
@@ -74,6 +76,20 @@ raise 'build must have a six-hour timeout' unless build['timeout-minutes'] == 36
 raise 'release must publish contents' unless release.dig('permissions', 'contents') == 'write'
 raise 'build must not use a container' if build.key?('container')
 raise 'build matrix must not fail fast' unless build.dig('strategy', 'fail-fast') == false
+
+sysroot_defconfigs = %w[
+  titan_x64_musl_defconfig
+  titan_arm64_glibc_defconfig
+  titan_arm64_musl_defconfig
+  titan_armv7a_hf_glibc_defconfig
+  titan_armv7a_hf_musl_defconfig
+  titan_armv7a_softfp_glibc_defconfig
+  titan_armv7a_softfp_musl_defconfig
+  titan_riscv64_glibc_defconfig
+  titan_riscv64_musl_defconfig
+]
+raise 'sysroot matrix must have the nine Buildroot defconfigs' unless sysroot.dig('strategy', 'matrix', 'defconfig') == sysroot_defconfigs
+raise 'build must wait for the shared sysroots' unless build['needs'] == 'sysroot'
 
 targets = %w[x64 x64-musl arm64 arm64-musl arm-hard arm-hard-musl arm-softfp arm-softfp-musl riscv64-glibc riscv64-musl]
 modes = %w[debug profile release]
@@ -99,7 +115,7 @@ save = steps.find { |step| step['uses'] == 'actions/cache/save@v4' }
 raise 'ccache must be saved even when the job fails' unless save['if'].to_s.include?('always()')
 raise 'ccache must not be saved when the build was cancelled' unless save['if'].to_s.include?("steps.build.outcome == 'failure'") && !save['if'].to_s.include?('cancelled')
 raise 'artifact upload is missing' unless uses.include?('actions/upload-artifact@v4')
-raise 'checkout cache must not be configured' unless uses.count { |use| use.start_with?('actions/cache') } == 3
+raise 'checkout cache must not be configured' unless uses.count { |use| use.start_with?('actions/cache') } == 2
 cache = steps.find { |step| step['uses'] == 'actions/cache/restore@v4' }.fetch('with')
 raise 'wrong ccache path' unless cache['path'] == '/mnt/titan/work/ccache'
 raise 'cache key must include the target and mode' unless cache['key'].include?('${{ matrix.target }}') && cache['key'].include?('${{ matrix.mode }}')
@@ -118,9 +134,21 @@ raise 'Linux SDK build must use the matrix builder' unless sdk_step.fetch('run')
 sdk_upload = steps.find { |step| step['uses'] == 'actions/upload-artifact@v4' && step.dig('with', 'name') == 'flutter-build-${{ matrix.target }}-${{ matrix.mode }}' }
 raise 'Linux engine and SDK upload is missing' unless sdk_upload
 raise 'Linux engine and SDK upload must include both archive roots' unless sdk_upload.dig('with', 'path').to_s.include?('/mnt/titan/bundles/dist/*.zip') && sdk_upload.dig('with', 'path').to_s.include?('/mnt/titan/work/flutter/engine/src/out/*/zip_archives/**')
-sysroot_step = steps.find { |step| step['run']&.include?('scripts/ci.sh sysroot') }
-raise 'sysroot step is missing' unless sysroot_step
-raise 'sysroot step must be conditional' unless sysroot_step['if'] == "matrix.defconfig != ''"
+build_runs = steps.filter_map { |step| step['run'] }
+if build_runs.any? { |run| run.match?(/scripts\/ci\.sh sysroot(?:\s|[\"'])/) || run.include?('make-buildroot-sysroot.sh') }
+  raise 'build cells must not build sysroots'
+end
+sysroot_build_runs = sysroot.fetch('steps').filter_map { |step| step['run'] }.join("\n")
+raise 'sysroot job must invoke the sysroot subcommand' unless sysroot_build_runs.include?('scripts/ci.sh sysroot "$1"') && sysroot_build_runs.include?('${{ matrix.defconfig }}')
+raise 'sysroot job must build through the progress wrapper' unless sysroot_build_runs.include?('scripts/ci.sh with-progress')
+sysroot_upload = sysroot.fetch('steps').find { |step| step['uses'] == 'actions/upload-artifact@v4' && step.dig('with', 'name').to_s.start_with?('sysroot-') }
+raise 'sysroot archive upload is missing' unless sysroot_upload
+raise 'sysroot artifacts must be retained for three days' unless sysroot_upload.dig('with', 'retention-days') == 3
+raise 'sysroot archive must be compressed as tar.zst' unless sysroot_upload.dig('with', 'path').to_s.end_with?('.tar.zst')
+sysroot_download = steps.find { |step| step['uses'] == 'actions/download-artifact@v4' && step.dig('with', 'name').to_s.start_with?('sysroot-') }
+raise 'sysroot artifact download is missing' unless sysroot_download
+raise 'sysroot artifact names must match between jobs' unless sysroot_upload.dig('with', 'name') == sysroot_download.dig('with', 'name')
+raise 'sysroot extraction step is missing' unless build_runs.any? { |run| run.include?('scripts/ci.sh sysroot-extract') }
 platform_matrix = linux_platform.fetch('strategy').fetch('matrix')
 raise 'Android platform matrix CPUs are incomplete' unless platform_matrix['android_cpu'] == %w[arm arm64 x64]
 raise 'Android platform matrix modes are incomplete' unless platform_matrix['mode'] == %w[debug profile release]
@@ -157,7 +185,7 @@ raise 'Windows build must use a background heartbeat' unless windows_build.inclu
 raise 'Windows build must centralize argument construction' unless windows_build.include?('function Get-BuildArguments') && windows_build.include?('function Invoke-LoggedBuild')
 raise 'Windows build must not use array-unwrapping ArgumentList syntax' if windows_build.include?('(,$')
 raise 'Windows job must build host and Android artifacts from one step' unless windows_build.include?("Get-BuildArguments 'host'") && windows_build.include?("Get-BuildArguments 'android'")
-raise 'sysroot cache must be keyed per defconfig' unless build.fetch('steps').any? { |step| step['uses'] == 'actions/cache@v4' && step.dig('with', 'key').to_s.include?('${{ matrix.defconfig }}') && step.dig('with', 'key').to_s.include?('hashFiles(format(') }
+raise 'sysroot cache must not be configured in engine cells' if build.fetch('steps').any? { |step| step['uses'] == 'actions/cache@v4' }
 raise 'download-artifact must merge matrix artifacts' unless release['steps'].any? do |step|
   step['uses'] == 'actions/download-artifact@v4' && step.dig('with', 'merge-multiple') == true
 end
@@ -175,7 +203,7 @@ fi
 assert_contains /tmp/titan-ci-free-disk.out 'GITHUB_ACTIONS=true'
 assert_contains "$ci_script" 'TITAN_JOBS=$(getconf _NPROCESSORS_ONLN)'
 assert_contains "$ci_script" 'export TITAN_CPU_SCOPE=0'
-assert_contains "$ci_script" 'make-buildroot-sysroot.sh" --config "$1" --publish'
+assert_contains "$ci_script" 'make-buildroot-sysroot.sh" --config "$1"'
 assert_contains "$ci_script" 'expected probe hash'
 assert_contains "$ci_script" 'probe hash mismatch for'
 
@@ -186,6 +214,8 @@ fake_bin="$temporary_directory/bin"
 mkdir -p "$fixture_root/scripts/lib" "$fixture_root/tests/qemu" "$fake_bin" "$temporary_directory/bundles/dist"
 cp "$ci_script" "$fixture_root/scripts/ci.sh"
 cp "$repository_root/scripts/lib/paths.sh" "$fixture_root/scripts/lib/paths.sh"
+cp "$repository_root/scripts/lib/sysroot.sh" "$fixture_root/scripts/lib/sysroot.sh"
+cp "$repository_root/scripts/sysroot-cache.sh" "$fixture_root/scripts/sysroot-cache.sh"
 printf '%s\n' 8dca0036f583054a > "$fixture_root/tests/qemu/expected-frame-hash"
 printf 'flutter_commit=test-commit\n' > "$fixture_root/flutter.lock"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "jobs=%s scope=%s args=%s\\n" "$TITAN_JOBS" "${TITAN_CPU_SCOPE-}" "$*" >> "$TITAN_LOG"' > "$fixture_root/scripts/build-matrix.sh"
@@ -224,7 +254,24 @@ assert_contains "$temporary_directory/free-disk.out" 'df -h / /mnt'
 assert_contains "$temporary_directory/ci.log" 'rm -rf /usr/share/dotnet'
 assert_contains "$temporary_directory/ci.log" 'docker image prune -af'
 GITHUB_ACTIONS=true run_ci sysroot titan_arm64_glibc_defconfig
-assert_contains "$temporary_directory/ci.log" 'titan_arm64_glibc_defconfig --publish'
+assert_contains "$temporary_directory/ci.log" 'titan_arm64_glibc_defconfig'
+sysroot_fixture="$temporary_directory/work/sysroots/titan_arm64_glibc"
+mkdir -p "$sysroot_fixture"
+printf '%s\n' fixture > "$sysroot_fixture/fixture.txt"
+run_ci sysroot-package titan_arm64_glibc_defconfig
+sysroot_archive="$temporary_directory/work/sysroot-titan_arm64_glibc_defconfig.tar.zst"
+[[ -f "$sysroot_archive" ]] || {
+  printf 'sysroot package archive is missing\n' >&2
+  exit 1
+}
+rm -rf "$sysroot_fixture"
+run_ci sysroot-extract titan_arm64_glibc_defconfig
+assert_contains "$sysroot_fixture/fixture.txt" fixture
+sysroot_link="$temporary_directory/work/flutter/engine/src/build/linux/titan_arm64_glibc-sysroot"
+[[ -L "$sysroot_link" && "$(readlink "$sysroot_link")" == "$sysroot_fixture" ]] || {
+  printf 'sysroot extraction did not recreate the engine link\n' >&2
+  exit 1
+}
 run_ci probe
 : > "$temporary_directory/bundles/dist/flutter-engine-test-commit.zip"
 : > "$temporary_directory/bundles/dist/flutter-engine-other.zip"

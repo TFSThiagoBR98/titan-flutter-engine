@@ -14,8 +14,52 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  sysroot:
+    name: Build sysroot (${{ matrix.defconfig }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        defconfig: [titan_x64_musl_defconfig, titan_arm64_glibc_defconfig, titan_arm64_musl_defconfig, titan_armv7a_hf_glibc_defconfig, titan_armv7a_hf_musl_defconfig, titan_armv7a_softfp_glibc_defconfig, titan_armv7a_softfp_musl_defconfig, titan_riscv64_glibc_defconfig, titan_riscv64_musl_defconfig]
+    env:
+      TITAN_WORK_DIR: /mnt/titan/work
+      TITAN_BUNDLE_DIR: /mnt/titan/bundles
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare workspace
+        run: |
+          sudo mkdir -p /mnt/titan
+          sudo chown "$USER" /mnt/titan
+      - name: Install dependencies
+        run: scripts/ci.sh deps
+      - name: Build sysroot
+        run: |
+          variant="sysroot-${{ matrix.defconfig }}"
+          mkdir -p "$TITAN_WORK_DIR/matrix"
+          scripts/ci.sh with-progress "$variant" -- bash -c '
+            scripts/ci.sh sysroot "$1" >"$TITAN_WORK_DIR/matrix/$2.log" 2>&1
+          ' bash "${{ matrix.defconfig }}" "$variant"
+      - name: Package sysroot
+        run: scripts/ci.sh sysroot-package "${{ matrix.defconfig }}"
+      - name: Upload sysroot build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-sysroot-${{ matrix.defconfig }}
+          path: /mnt/titan/work/matrix/
+          if-no-files-found: ignore
+      - name: Upload sysroot
+        uses: actions/upload-artifact@v4
+        with:
+          name: sysroot-${{ matrix.defconfig }}
+          path: /mnt/titan/work/sysroot-${{ matrix.defconfig }}.tar.zst
+          retention-days: 3
+          if-no-files-found: error
+
   build:
     name: Build Linux engine (${{ matrix.target }}-${{ matrix.mode }})
+    needs: sysroot
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     strategy:
@@ -67,15 +111,15 @@ jobs:
           restore-keys: |
             ccache-${{ matrix.target }}-${{ matrix.mode }}-
             ccache-${{ matrix.target }}-
-      - name: Restore sysroot
+      - name: Download sysroot
         if: matrix.defconfig != ''
-        uses: actions/cache@v4
+        uses: actions/download-artifact@v4
         with:
-          path: /mnt/titan/work/sysroots
-          key: sysroot-${{ matrix.defconfig }}-${{ hashFiles(format('buildroot/configs/{0}', matrix.defconfig)) }}
-      - name: Build sysroot
+          name: sysroot-${{ matrix.defconfig }}
+          path: /mnt/titan/work
+      - name: Extract sysroot
         if: matrix.defconfig != ''
-        run: CI=true scripts/ci.sh sysroot "${{ matrix.defconfig }}"
+        run: scripts/ci.sh sysroot-extract "${{ matrix.defconfig }}"
       - name: Build engine
         id: build
         run: scripts/ci.sh build
