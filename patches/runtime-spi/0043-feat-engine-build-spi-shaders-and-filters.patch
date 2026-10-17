@@ -1,0 +1,1232 @@
+# Why: expose dart:ui-compatible shader, color-filter and image-filter
+# constructors through typed Runtime SPI handles, including the resolved
+# gradient stop validation.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 534103867bf..0a7a89ac54e 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -125,6 +125,35 @@ source_set("image") {
+   ]
+ }
+ 
++source_set("effects") {
++  public = [
++    "effects/spi_color_filter.h",
++    "effects/spi_image_filter.h",
++    "effects/spi_shader.h",
++  ]
++  sources = [
++    "effects/spi_color_filter.cc",
++    "effects/spi_color_filter.h",
++    "effects/spi_image_filter.cc",
++    "effects/spi_image_filter.h",
++    "effects/spi_shader.cc",
++    "effects/spi_shader.h",
++  ]
++  public_deps = [
++    ":image",
++    ":runtime_spi_c_api",
++    ":scene",
++    "//flutter/display_list",
++  ]
++  assert_no_deps = [
++    "//flutter/third_party/dart/*",
++    "//flutter/third_party/tonic/*",
++    "//flutter/runtime:runtime",
++    "//flutter/runtime:libdart",
++    "//flutter/lib/ui:ui",
++  ]
++}
++
+ source_set("text") {
+   public = [
+     "text/spi_font.h",
+@@ -166,6 +195,7 @@ if (enable_unittests) {
+       "scene/spi_paint_unittests.cc",
+       "scene/spi_scene_builder_parity_unittests.cc",
+       "scene/spi_scene_trace_unittests.cc",
++      "effects/spi_effects_parity_unittests.cc",
+       "image/spi_image_canvas_parity_unittests.cc",
+       "image/spi_image_unittests.cc",
+       "image/spi_image_decoding_unittests.cc",
+@@ -181,6 +211,7 @@ if (enable_unittests) {
+     ]
+     deps = [
+       ":c_test_runtime",
++      ":effects",
+       ":runtime_spi_c_api",
+       ":scene",
+       ":image",
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_color_filter.cc b/engine/src/flutter/runtime_spi/effects/spi_color_filter.cc
+new file mode 100644
+index 00000000000..fd38a0dac39
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/effects/spi_color_filter.cc
+@@ -0,0 +1,131 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/effects/spi_color_filter.h"
++
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <memory>
++
++#include "flutter/display_list/dl_blend_mode.h"
++#include "flutter/runtime_spi/scene/spi_geometry.h"
++#include "flutter/runtime_spi/scene/spi_handle_table.h"
++
++namespace flutter {
++namespace {
++
++template <typename Handle>
++uintptr_t HandleValue(Handle* handle) {
++  return reinterpret_cast<uintptr_t>(handle);
++}
++
++template <typename Handle>
++Handle* MakeHandle(uintptr_t value) {
++  return reinterpret_cast<Handle*>(value);
++}
++
++class SpiColorFilter final {
++ public:
++  explicit SpiColorFilter(std::shared_ptr<const DlColorFilter> filter)
++      : filter_(std::move(filter)) {}
++
++  const std::shared_ptr<const DlColorFilter>& filter() const { return filter_; }
++
++ private:
++  std::shared_ptr<const DlColorFilter> filter_;
++};
++
++SpiHandleTable<SpiColorFilter>& ColorFilters() {
++  static SpiHandleTable<SpiColorFilter> filters;
++  return filters;
++}
++
++std::shared_ptr<SpiColorFilter> FindColorFilter(FlutterSpiColorFilter* filter) {
++  return ColorFilters().Find(HandleValue(filter));
++}
++
++bool IsValidBlendMode(int32_t blend_mode) {
++  return blend_mode >= kFlutterSpiBlendModeClear &&
++         blend_mode <= kFlutterSpiBlendModeLuminosity;
++}
++
++FlutterSpiResult StoreColorFilter(
++    std::shared_ptr<const DlColorFilter> filter,
++    FlutterSpiColorFilter** out_filter) {
++  if (filter == nullptr) {
++    return kFlutterSpiInternalError;
++  }
++  *out_filter = MakeHandle<FlutterSpiColorFilter>(ColorFilters().Insert(
++      std::make_shared<SpiColorFilter>(std::move(filter))));
++  return kFlutterSpiOk;
++}
++
++}  // namespace
++
++FlutterSpiResult SpiColorFilterMode(FlutterSpiEngine* engine,
++                                    FlutterSpiColor color,
++                                    int32_t blend_mode,
++                                    FlutterSpiColorFilter** out_filter) {
++  if (out_filter == nullptr || !IsValidBlendMode(blend_mode)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return StoreColorFilter(
++      DlColorFilter::MakeBlend(ToDlColor(color),
++                               static_cast<DlBlendMode>(blend_mode)),
++      out_filter);
++}
++
++FlutterSpiResult SpiColorFilterMatrix(FlutterSpiEngine* engine,
++                                      const float matrix[20],
++                                      FlutterSpiColorFilter** out_filter) {
++  if (matrix == nullptr || out_filter == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  float normalized_matrix[20];
++  std::copy(matrix, matrix + 20, normalized_matrix);
++  for (size_t index = 0; index < 20; index++) {
++    if (!std::isfinite(normalized_matrix[index])) {
++      return kFlutterSpiInvalidArgument;
++    }
++  }
++  normalized_matrix[4] /= 255.0f;
++  normalized_matrix[9] /= 255.0f;
++  normalized_matrix[14] /= 255.0f;
++  normalized_matrix[19] /= 255.0f;
++  return StoreColorFilter(DlColorFilter::MakeMatrix(normalized_matrix),
++                          out_filter);
++}
++
++FlutterSpiResult SpiColorFilterLinearToSrgbGamma(
++    FlutterSpiEngine* engine,
++    FlutterSpiColorFilter** out_filter) {
++  if (out_filter == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return StoreColorFilter(DlColorFilter::MakeLinearToSrgbGamma(), out_filter);
++}
++
++FlutterSpiResult SpiColorFilterSrgbToLinearGamma(
++    FlutterSpiEngine* engine,
++    FlutterSpiColorFilter** out_filter) {
++  if (out_filter == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return StoreColorFilter(DlColorFilter::MakeSrgbToLinearGamma(), out_filter);
++}
++
++FlutterSpiResult SpiColorFilterRelease(FlutterSpiColorFilter* filter) {
++  return ColorFilters().Release(HandleValue(filter)) ? kFlutterSpiOk
++                                                      : kFlutterSpiInvalidHandle;
++}
++
++std::shared_ptr<const DlColorFilter> SpiColorFilterGet(
++    FlutterSpiColorFilter* filter) {
++  const auto filter_value = FindColorFilter(filter);
++  return filter_value == nullptr ? nullptr : filter_value->filter();
++}
++
++}  // namespace flutter
++
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_color_filter.h b/engine/src/flutter/runtime_spi/effects/spi_color_filter.h
+new file mode 100644
+index 00000000000..cf498579531
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/effects/spi_color_filter.h
+@@ -0,0 +1,36 @@
++
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_EFFECTS_SPI_COLOR_FILTER_H_
++#define FLUTTER_RUNTIME_SPI_EFFECTS_SPI_COLOR_FILTER_H_
++
++#include <memory>
++
++#include "flutter/display_list/effects/dl_color_filter.h"
++#include "flutter/runtime_spi/include/flutter_paint_effects.h"
++
++namespace flutter {
++
++FlutterSpiResult SpiColorFilterMode(FlutterSpiEngine* engine,
++                                    FlutterSpiColor color,
++                                    int32_t blend_mode,
++                                    FlutterSpiColorFilter** out_filter);
++FlutterSpiResult SpiColorFilterMatrix(FlutterSpiEngine* engine,
++                                      const float matrix[20],
++                                      FlutterSpiColorFilter** out_filter);
++FlutterSpiResult SpiColorFilterLinearToSrgbGamma(
++    FlutterSpiEngine* engine,
++    FlutterSpiColorFilter** out_filter);
++FlutterSpiResult SpiColorFilterSrgbToLinearGamma(
++    FlutterSpiEngine* engine,
++    FlutterSpiColorFilter** out_filter);
++FlutterSpiResult SpiColorFilterRelease(FlutterSpiColorFilter* filter);
++std::shared_ptr<const DlColorFilter> SpiColorFilterGet(
++    FlutterSpiColorFilter* filter);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_EFFECTS_SPI_COLOR_FILTER_H_
++
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_effects_parity_unittests.cc b/engine/src/flutter/runtime_spi/effects/spi_effects_parity_unittests.cc
+new file mode 100644
+index 00000000000..0d5df7d2922
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/effects/spi_effects_parity_unittests.cc
+@@ -0,0 +1,373 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/effects/spi_color_filter.h"
++#include "flutter/runtime_spi/effects/spi_image_filter.h"
++#include "flutter/runtime_spi/effects/spi_shader.h"
++
++#include <algorithm>
++#include <array>
++#include <cmath>
++#include <cstdint>
++#include <memory>
++
++#include "flutter/display_list/dl_sampling_options.h"
++#include "flutter/display_list/effects/dl_color_filter.h"
++#include "flutter/display_list/effects/dl_color_source.h"
++#include "flutter/display_list/effects/dl_image_filter.h"
++#include "flutter/display_list/image/dl_image_skia.h"
++#include "flutter/runtime_spi/image/spi_image.h"
++#include "flutter/runtime_spi/spi_runtime_backend.h"
++#include "flutter/runtime_spi/scene/spi_geometry.h"
++#include "flutter/testing/testing.h"
++#include "third_party/skia/include/core/SkBitmap.h"
++#include "third_party/skia/include/core/SkImage.h"
++
++namespace flutter::testing {
++namespace {
++
++FlutterSpiEngine TestEngine() {
++  return {};
++}
++
++std::array<FlutterSpiColor, 3> TestColors() {
++  return {{
++      {.red = 1.0f, .green = 0.0f, .blue = 0.0f, .alpha = 1.0f,
++       .color_space = kFlutterSpiColorSpaceSRGB},
++      {.red = 0.0f, .green = 1.0f, .blue = 0.0f, .alpha = 1.0f,
++       .color_space = kFlutterSpiColorSpaceSRGB},
++      {.red = 0.0f, .green = 0.0f, .blue = 1.0f, .alpha = 1.0f,
++       .color_space = kFlutterSpiColorSpaceSRGB},
++  }};
++}
++
++std::array<float, 3> TestStops() {
++  return {0.0f, 0.35f, 1.0f};
++}
++
++FlutterSpiMatrix TestMatrix() {
++  FlutterSpiMatrix matrix = {};
++  for (size_t index = 0; index < 16; index++) {
++    matrix.m[index] = static_cast<float>(index + 1);
++  }
++  return matrix;
++}
++
++std::array<DlColor, 3> ToDlColors(
++    const std::array<FlutterSpiColor, 3>& colors) {
++  return {ToDlColor(colors[0]), ToDlColor(colors[1]), ToDlColor(colors[2])};
++}
++
++sk_sp<DlImage> MakeTestImage() {
++  SkBitmap bitmap;
++  if (!bitmap.tryAllocPixels(SkImageInfo::MakeN32Premul(4, 3))) {
++    return nullptr;
++  }
++  bitmap.eraseColor(SK_ColorBLUE);
++  bitmap.setImmutable();
++  return DlImageSkia::Make(SkImages::RasterFromBitmap(bitmap));
++}
++
++TEST(SpiShader, LinearMatchesDartUi) {
++  FlutterSpiEngine engine = TestEngine();
++  const auto colors = TestColors();
++  const auto stops = TestStops();
++  const auto dl_colors = ToDlColors(colors);
++  const FlutterSpiPoint from = {.x = 1.0f, .y = 2.0f};
++  const FlutterSpiPoint to = {.x = 30.0f, .y = 40.0f};
++  const FlutterSpiMatrix matrix = TestMatrix();
++
++  for (int32_t tile_mode = kFlutterSpiTileModeClamp;
++       tile_mode <= kFlutterSpiTileModeDecal; tile_mode++) {
++    for (const FlutterSpiMatrix* matrix_ptr :
++         std::array<const FlutterSpiMatrix*, 2>{nullptr, &matrix}) {
++      FlutterSpiShader* shader = nullptr;
++      ASSERT_EQ(SpiShaderLinearGradient(
++                    &engine, from, to, colors.data(), stops.data(),
++                    colors.size(), tile_mode, matrix_ptr, &shader),
++                kFlutterSpiOk);
++      ASSERT_NE(shader, nullptr);
++
++      DlMatrix dl_matrix;
++      ASSERT_TRUE(matrix_ptr == nullptr || ToDlMatrix(*matrix_ptr, &dl_matrix));
++      const auto expected = DlColorSource::MakeLinear(
++          {from.x, from.y}, {to.x, to.y}, dl_colors.size(), dl_colors.data(),
++          stops.data(), static_cast<DlTileMode>(tile_mode),
++          matrix_ptr == nullptr ? nullptr : &dl_matrix);
++      ASSERT_NE(SpiShaderGet(shader), nullptr);
++      EXPECT_EQ(*SpiShaderGet(shader), *expected);
++      EXPECT_EQ(SpiShaderRelease(shader), kFlutterSpiOk);
++    }
++  }
++}
++
++TEST(SpiShader, RadialMatchesDartUi) {
++  FlutterSpiEngine engine = TestEngine();
++  const auto colors = TestColors();
++  const auto stops = TestStops();
++  const auto dl_colors = ToDlColors(colors);
++  const FlutterSpiPoint center = {.x = 5.0f, .y = 6.0f};
++  const FlutterSpiMatrix matrix = TestMatrix();
++
++  for (int32_t tile_mode = kFlutterSpiTileModeClamp;
++       tile_mode <= kFlutterSpiTileModeDecal; tile_mode++) {
++    FlutterSpiShader* shader = nullptr;
++    ASSERT_EQ(SpiShaderRadialGradient(
++                  &engine, center, 12.0f, colors.data(), stops.data(),
++                  colors.size(), tile_mode, &matrix, &shader),
++              kFlutterSpiOk);
++
++    DlMatrix dl_matrix;
++    ASSERT_TRUE(ToDlMatrix(matrix, &dl_matrix));
++    const auto expected = DlColorSource::MakeRadial(
++        {center.x, center.y}, 12.0f, dl_colors.size(), dl_colors.data(),
++        stops.data(), static_cast<DlTileMode>(tile_mode), &dl_matrix);
++    EXPECT_EQ(*SpiShaderGet(shader), *expected);
++    EXPECT_EQ(SpiShaderRelease(shader), kFlutterSpiOk);
++  }
++}
++
++TEST(SpiShader, ConicalMatchesDartUi) {
++  FlutterSpiEngine engine = TestEngine();
++  const auto colors = TestColors();
++  const auto stops = TestStops();
++  const auto dl_colors = ToDlColors(colors);
++
++  FlutterSpiShader* shader = nullptr;
++  ASSERT_EQ(SpiShaderConicalGradient(
++                &engine, {.x = 1.0f, .y = 2.0f}, 3.0f,
++                {.x = 10.0f, .y = 20.0f}, 6.0f, colors.data(), stops.data(),
++                colors.size(), kFlutterSpiTileModeMirror, nullptr, &shader),
++            kFlutterSpiOk);
++
++  const auto expected = DlColorSource::MakeConical(
++      {1.0f, 2.0f}, 3.0f, {10.0f, 20.0f}, 6.0f, dl_colors.size(),
++      dl_colors.data(), stops.data(), DlTileMode::kMirror);
++  EXPECT_EQ(*SpiShaderGet(shader), *expected);
++  EXPECT_EQ(SpiShaderRelease(shader), kFlutterSpiOk);
++}
++
++TEST(SpiShader, SweepMatchesDartUi) {
++  FlutterSpiEngine engine = TestEngine();
++  const auto colors = TestColors();
++  const auto stops = TestStops();
++  const auto dl_colors = ToDlColors(colors);
++
++  FlutterSpiShader* shader = nullptr;
++  ASSERT_EQ(SpiShaderSweepGradient(
++                &engine, {.x = 5.0f, .y = 6.0f}, 0.25f, 2.5f,
++                colors.data(), stops.data(), colors.size(),
++                kFlutterSpiTileModeRepeated, nullptr, &shader),
++            kFlutterSpiOk);
++
++  const auto expected = DlColorSource::MakeSweep(
++      {5.0f, 6.0f}, 0.25f * 180.0f / static_cast<float>(M_PI),
++      2.5f * 180.0f / static_cast<float>(M_PI), dl_colors.size(),
++      dl_colors.data(), stops.data(), DlTileMode::kRepeat);
++  EXPECT_EQ(*SpiShaderGet(shader), *expected);
++  EXPECT_EQ(SpiShaderRelease(shader), kFlutterSpiOk);
++}
++
++TEST(SpiShader, ImageShaderMatchesDartUi) {
++  FlutterSpiEngine engine = TestEngine();
++  FlutterSpiImage* image = nullptr;
++  ASSERT_EQ(SpiImageWrap(MakeTestImage(), &image), kFlutterSpiOk);
++  const FlutterSpiMatrix matrix = TestMatrix();
++
++  FlutterSpiShader* shader = nullptr;
++  ASSERT_EQ(SpiShaderImage(
++                &engine, image, kFlutterSpiTileModeMirror,
++                kFlutterSpiTileModeRepeated, -1, &matrix, &shader),
++            kFlutterSpiOk);
++  DlMatrix dl_matrix;
++  ASSERT_TRUE(ToDlMatrix(matrix, &dl_matrix));
++  const auto expected = DlColorSource::MakeImage(
++      SpiImageGet(image), DlTileMode::kMirror, DlTileMode::kRepeat,
++      DlImageSampling::kLinear, &dl_matrix);
++  EXPECT_EQ(*SpiShaderGet(shader), *expected);
++  EXPECT_EQ(SpiShaderRelease(shader), kFlutterSpiOk);
++  EXPECT_EQ(SpiImageRelease(image), kFlutterSpiOk);
++}
++
++TEST(SpiColorFilter, ModeMatchesDartUi) {
++  FlutterSpiEngine engine = TestEngine();
++  const FlutterSpiColor color = {
++      .red = 0.2f, .green = 0.4f, .blue = 0.6f, .alpha = 0.8f,
++      .color_space = kFlutterSpiColorSpaceSRGB};
++  FlutterSpiColorFilter* filter = nullptr;
++
++  ASSERT_EQ(SpiColorFilterMode(&engine, color, kFlutterSpiBlendModeScreen,
++                               &filter),
++            kFlutterSpiOk);
++  const auto expected = DlColorFilter::MakeBlend(
++      ToDlColor(color), DlBlendMode::kScreen);
++  ASSERT_NE(SpiColorFilterGet(filter), nullptr);
++  EXPECT_EQ(*SpiColorFilterGet(filter), *expected);
++  EXPECT_EQ(SpiColorFilterRelease(filter), kFlutterSpiOk);
++}
++
++TEST(SpiColorFilter, MatrixMatchesDartUi) {
++  FlutterSpiEngine engine = TestEngine();
++  const float matrix[20] = {
++      1.0f, 0.0f, 0.0f, 0.0f, 32.0f, 0.0f, 1.0f, 0.0f, 0.0f, 64.0f,
++      0.0f, 0.0f, 1.0f, 0.0f, 96.0f, 0.0f, 0.0f, 0.0f, 1.0f, 128.0f,
++  };
++  FlutterSpiColorFilter* filter = nullptr;
++
++  ASSERT_EQ(SpiColorFilterMatrix(&engine, matrix, &filter), kFlutterSpiOk);
++  float expected_matrix[20];
++  std::copy(std::begin(matrix), std::end(matrix), std::begin(expected_matrix));
++  expected_matrix[4] /= 255.0f;
++  expected_matrix[9] /= 255.0f;
++  expected_matrix[14] /= 255.0f;
++  expected_matrix[19] /= 255.0f;
++  const auto expected = DlColorFilter::MakeMatrix(expected_matrix);
++  EXPECT_EQ(*SpiColorFilterGet(filter), *expected);
++  EXPECT_EQ(SpiColorFilterRelease(filter), kFlutterSpiOk);
++}
++
++TEST(SpiColorFilter, LinearToSrgbMatchesDartUi) {
++  FlutterSpiEngine engine = TestEngine();
++  FlutterSpiColorFilter* filter = nullptr;
++
++  ASSERT_EQ(SpiColorFilterLinearToSrgbGamma(&engine, &filter), kFlutterSpiOk);
++  EXPECT_EQ(*SpiColorFilterGet(filter), *DlColorFilter::MakeLinearToSrgbGamma());
++  EXPECT_EQ(SpiColorFilterRelease(filter), kFlutterSpiOk);
++}
++
++TEST(SpiColorFilter, SrgbToLinearMatchesDartUi) {
++  FlutterSpiEngine engine = TestEngine();
++  FlutterSpiColorFilter* filter = nullptr;
++
++  ASSERT_EQ(SpiColorFilterSrgbToLinearGamma(&engine, &filter), kFlutterSpiOk);
++  EXPECT_EQ(*SpiColorFilterGet(filter), *DlColorFilter::MakeSrgbToLinearGamma());
++  EXPECT_EQ(SpiColorFilterRelease(filter), kFlutterSpiOk);
++}
++
++TEST(SpiImageFilter, BlurMatchesDartUi) {
++  FlutterSpiEngine engine = TestEngine();
++  FlutterSpiImageFilter* filter = nullptr;
++
++  ASSERT_EQ(SpiImageFilterBlur(&engine, 2.0f, 3.0f,
++                               kFlutterSpiTileModeDecal, &filter),
++            kFlutterSpiOk);
++  EXPECT_EQ(*SpiImageFilterGet(filter),
++            *DlImageFilter::MakeBlur(2.0f, 3.0f, DlTileMode::kDecal));
++  EXPECT_EQ(SpiImageFilterRelease(filter), kFlutterSpiOk);
++}
++
++TEST(SpiImageFilter, DilateMatchesDartUi) {
++  FlutterSpiEngine engine = TestEngine();
++  FlutterSpiImageFilter* filter = nullptr;
++
++  ASSERT_EQ(SpiImageFilterDilate(&engine, 2.0f, 3.0f, &filter),
++            kFlutterSpiOk);
++  EXPECT_EQ(*SpiImageFilterGet(filter), *DlImageFilter::MakeDilate(2.0f, 3.0f));
++  EXPECT_EQ(SpiImageFilterRelease(filter), kFlutterSpiOk);
++}
++
++TEST(SpiImageFilter, ErodeMatchesDartUi) {
++  FlutterSpiEngine engine = TestEngine();
++  FlutterSpiImageFilter* filter = nullptr;
++
++  ASSERT_EQ(SpiImageFilterErode(&engine, 2.0f, 3.0f, &filter),
++            kFlutterSpiOk);
++  EXPECT_EQ(*SpiImageFilterGet(filter), *DlImageFilter::MakeErode(2.0f, 3.0f));
++  EXPECT_EQ(SpiImageFilterRelease(filter), kFlutterSpiOk);
++}
++
++TEST(SpiImageFilter, MatrixMatchesDartUi) {
++  FlutterSpiEngine engine = TestEngine();
++  const FlutterSpiMatrix matrix = TestMatrix();
++  FlutterSpiImageFilter* filter = nullptr;
++
++  ASSERT_EQ(SpiImageFilterMatrix(&engine, &matrix,
++                                 kFlutterSpiFilterQualityHigh, &filter),
++            kFlutterSpiOk);
++  DlMatrix dl_matrix;
++  ASSERT_TRUE(ToDlMatrix(matrix, &dl_matrix));
++  EXPECT_EQ(*SpiImageFilterGet(filter),
++            *DlImageFilter::MakeMatrix(dl_matrix, DlImageSampling::kCubic));
++  EXPECT_EQ(SpiImageFilterRelease(filter), kFlutterSpiOk);
++}
++
++TEST(SpiImageFilter, FromColorFilterMatchesDartUi) {
++  FlutterSpiEngine engine = TestEngine();
++  FlutterSpiColorFilter* color_filter = nullptr;
++  ASSERT_EQ(SpiColorFilterSrgbToLinearGamma(&engine, &color_filter),
++            kFlutterSpiOk);
++  FlutterSpiImageFilter* image_filter = nullptr;
++
++  ASSERT_EQ(SpiImageFilterFromColorFilter(&engine, color_filter, &image_filter),
++            kFlutterSpiOk);
++  EXPECT_EQ(*SpiImageFilterGet(image_filter),
++            *DlImageFilter::MakeColorFilter(SpiColorFilterGet(color_filter)));
++  EXPECT_EQ(SpiImageFilterRelease(image_filter), kFlutterSpiOk);
++  EXPECT_EQ(SpiColorFilterRelease(color_filter), kFlutterSpiOk);
++}
++
++TEST(SpiImageFilter, ComposeMatchesDartUi) {
++  FlutterSpiEngine engine = TestEngine();
++  FlutterSpiImageFilter* outer = nullptr;
++  FlutterSpiImageFilter* inner = nullptr;
++  ASSERT_EQ(SpiImageFilterBlur(&engine, 2.0f, 3.0f,
++                               kFlutterSpiTileModeClamp, &outer),
++            kFlutterSpiOk);
++  ASSERT_EQ(SpiImageFilterDilate(&engine, 4.0f, 5.0f, &inner), kFlutterSpiOk);
++  FlutterSpiImageFilter* composed = nullptr;
++
++  ASSERT_EQ(SpiImageFilterCompose(&engine, outer, inner, &composed),
++            kFlutterSpiOk);
++  EXPECT_EQ(*SpiImageFilterGet(composed),
++            *DlImageFilter::MakeCompose(SpiImageFilterGet(outer),
++                                         SpiImageFilterGet(inner)));
++  EXPECT_EQ(SpiImageFilterRelease(composed), kFlutterSpiOk);
++  EXPECT_EQ(SpiImageFilterRelease(inner), kFlutterSpiOk);
++  EXPECT_EQ(SpiImageFilterRelease(outer), kFlutterSpiOk);
++}
++
++TEST(SpiShader, RejectsMismatchedStops) {
++  FlutterSpiEngine engine = TestEngine();
++  const auto colors = TestColors();
++  FlutterSpiShader* shader = nullptr;
++
++  EXPECT_EQ(SpiShaderLinearGradient(
++                &engine, {0.0f, 0.0f}, {1.0f, 1.0f}, colors.data(), nullptr,
++                3, kFlutterSpiTileModeClamp, nullptr, &shader),
++            kFlutterSpiInvalidArgument);
++}
++
++TEST(SpiImageFilter, RejectsNonFiniteMatrix) {
++  FlutterSpiEngine engine = TestEngine();
++  FlutterSpiMatrix matrix = TestMatrix();
++  matrix.m[4] = NAN;
++  FlutterSpiImageFilter* filter = nullptr;
++
++  EXPECT_EQ(SpiImageFilterMatrix(&engine, &matrix,
++                                 kFlutterSpiFilterQualityMedium, &filter),
++            kFlutterSpiInvalidArgument);
++}
++
++TEST(SpiImageFilter, RejectsNegativeBlurSigma) {
++  FlutterSpiEngine engine = TestEngine();
++  FlutterSpiImageFilter* filter = nullptr;
++
++  EXPECT_EQ(SpiImageFilterBlur(&engine, -1.0f, 2.0f,
++                               kFlutterSpiTileModeClamp, &filter),
++            kFlutterSpiInvalidArgument);
++}
++
++TEST(SpiEffects, RejectsHandleOfAnotherType) {
++  FlutterSpiEngine engine = TestEngine();
++  FlutterSpiColorFilter* color_filter = nullptr;
++  ASSERT_EQ(SpiColorFilterSrgbToLinearGamma(&engine, &color_filter),
++            kFlutterSpiOk);
++
++  EXPECT_EQ(SpiShaderGet(reinterpret_cast<FlutterSpiShader*>(color_filter)),
++            nullptr);
++  EXPECT_EQ(SpiColorFilterRelease(color_filter), kFlutterSpiOk);
++}
++
++}  // namespace
++}  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_image_filter.cc b/engine/src/flutter/runtime_spi/effects/spi_image_filter.cc
+new file mode 100644
+index 00000000000..665e16a8c25
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/effects/spi_image_filter.cc
+@@ -0,0 +1,180 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/effects/spi_image_filter.h"
++
++#include <cmath>
++#include <cstdint>
++#include <memory>
++
++#include "flutter/display_list/dl_sampling_options.h"
++#include "flutter/display_list/dl_tile_mode.h"
++#include "flutter/runtime_spi/effects/spi_color_filter.h"
++#include "flutter/runtime_spi/scene/spi_geometry.h"
++#include "flutter/runtime_spi/scene/spi_handle_table.h"
++
++namespace flutter {
++namespace {
++
++template <typename Handle>
++uintptr_t HandleValue(Handle* handle) {
++  return reinterpret_cast<uintptr_t>(handle);
++}
++
++template <typename Handle>
++Handle* MakeHandle(uintptr_t value) {
++  return reinterpret_cast<Handle*>(value);
++}
++
++class SpiImageFilter final {
++ public:
++  explicit SpiImageFilter(std::shared_ptr<DlImageFilter> filter)
++      : filter_(std::move(filter)) {}
++
++  const std::shared_ptr<DlImageFilter>& filter() const { return filter_; }
++
++ private:
++  std::shared_ptr<DlImageFilter> filter_;
++};
++
++SpiHandleTable<SpiImageFilter>& ImageFilters() {
++  static SpiHandleTable<SpiImageFilter> filters;
++  return filters;
++}
++
++std::shared_ptr<SpiImageFilter> FindImageFilter(FlutterSpiImageFilter* filter) {
++  return ImageFilters().Find(HandleValue(filter));
++}
++
++bool IsValidTileMode(int32_t tile_mode) {
++  return tile_mode >= kFlutterSpiTileModeClamp &&
++         tile_mode <= kFlutterSpiTileModeDecal;
++}
++
++bool IsFinite(float value) {
++  return std::isfinite(value);
++}
++
++DlImageSampling SamplingFromIndex(int32_t filter_quality) {
++  if (filter_quality <= kFlutterSpiFilterQualityNone) {
++    return DlImageSampling::kNearestNeighbor;
++  }
++  if (filter_quality == kFlutterSpiFilterQualityLow) {
++    return DlImageSampling::kLinear;
++  }
++  if (filter_quality == kFlutterSpiFilterQualityMedium) {
++    return DlImageSampling::kMipmapLinear;
++  }
++  return DlImageSampling::kCubic;
++}
++
++FlutterSpiResult StoreImageFilter(std::shared_ptr<DlImageFilter> filter,
++                                  FlutterSpiImageFilter** out_filter) {
++  if (filter == nullptr) {
++    return kFlutterSpiInternalError;
++  }
++  *out_filter = MakeHandle<FlutterSpiImageFilter>(ImageFilters().Insert(
++      std::make_shared<SpiImageFilter>(std::move(filter))));
++  return kFlutterSpiOk;
++}
++
++}  // namespace
++
++FlutterSpiResult SpiImageFilterBlur(FlutterSpiEngine* engine,
++                                    float sigma_x,
++                                    float sigma_y,
++                                    int32_t tile_mode,
++                                    FlutterSpiImageFilter** out_filter) {
++  if (out_filter == nullptr || !IsFinite(sigma_x) || !IsFinite(sigma_y) ||
++      sigma_x < 0.0f || sigma_y < 0.0f || !IsValidTileMode(tile_mode)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return StoreImageFilter(
++      DlImageFilter::MakeBlur(sigma_x, sigma_y,
++                              static_cast<DlTileMode>(tile_mode)),
++      out_filter);
++}
++
++FlutterSpiResult SpiImageFilterDilate(FlutterSpiEngine* engine,
++                                      float radius_x,
++                                      float radius_y,
++                                      FlutterSpiImageFilter** out_filter) {
++  if (out_filter == nullptr || !IsFinite(radius_x) || !IsFinite(radius_y) ||
++      radius_x < 0.0f || radius_y < 0.0f) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return StoreImageFilter(DlImageFilter::MakeDilate(radius_x, radius_y),
++                          out_filter);
++}
++
++FlutterSpiResult SpiImageFilterErode(FlutterSpiEngine* engine,
++                                     float radius_x,
++                                     float radius_y,
++                                     FlutterSpiImageFilter** out_filter) {
++  if (out_filter == nullptr || !IsFinite(radius_x) || !IsFinite(radius_y) ||
++      radius_x < 0.0f || radius_y < 0.0f) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return StoreImageFilter(DlImageFilter::MakeErode(radius_x, radius_y),
++                          out_filter);
++}
++
++FlutterSpiResult SpiImageFilterMatrix(FlutterSpiEngine* engine,
++                                      const FlutterSpiMatrix* matrix,
++                                      int32_t filter_quality,
++                                      FlutterSpiImageFilter** out_filter) {
++  if (matrix == nullptr || out_filter == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  DlMatrix dl_matrix;
++  if (!ToDlMatrix(*matrix, &dl_matrix)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return StoreImageFilter(
++      DlImageFilter::MakeMatrix(dl_matrix, SamplingFromIndex(filter_quality)),
++      out_filter);
++}
++
++FlutterSpiResult SpiImageFilterFromColorFilter(
++    FlutterSpiEngine* engine,
++    FlutterSpiColorFilter* color_filter,
++    FlutterSpiImageFilter** out_filter) {
++  if (out_filter == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const auto dl_filter = SpiColorFilterGet(color_filter);
++  if (dl_filter == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  return StoreImageFilter(DlImageFilter::MakeColorFilter(dl_filter), out_filter);
++}
++
++FlutterSpiResult SpiImageFilterCompose(FlutterSpiEngine* engine,
++                                       FlutterSpiImageFilter* outer,
++                                       FlutterSpiImageFilter* inner,
++                                       FlutterSpiImageFilter** out_filter) {
++  if (out_filter == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const auto outer_filter = SpiImageFilterGet(outer);
++  const auto inner_filter = SpiImageFilterGet(inner);
++  if (outer_filter == nullptr || inner_filter == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  return StoreImageFilter(
++      DlImageFilter::MakeCompose(outer_filter, inner_filter), out_filter);
++}
++
++FlutterSpiResult SpiImageFilterRelease(FlutterSpiImageFilter* filter) {
++  return ImageFilters().Release(HandleValue(filter)) ? kFlutterSpiOk
++                                                       : kFlutterSpiInvalidHandle;
++}
++
++std::shared_ptr<DlImageFilter> SpiImageFilterGet(FlutterSpiImageFilter* filter) {
++  const auto filter_value = FindImageFilter(filter);
++  return filter_value == nullptr ? nullptr : filter_value->filter();
++}
++
++}  // namespace flutter
++
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_image_filter.h b/engine/src/flutter/runtime_spi/effects/spi_image_filter.h
+new file mode 100644
+index 00000000000..b6d037c146d
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/effects/spi_image_filter.h
+@@ -0,0 +1,47 @@
++
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_EFFECTS_SPI_IMAGE_FILTER_H_
++#define FLUTTER_RUNTIME_SPI_EFFECTS_SPI_IMAGE_FILTER_H_
++
++#include <memory>
++
++#include "flutter/display_list/effects/dl_image_filter.h"
++#include "flutter/runtime_spi/include/flutter_paint_effects.h"
++
++namespace flutter {
++
++FlutterSpiResult SpiImageFilterBlur(FlutterSpiEngine* engine,
++                                    float sigma_x,
++                                    float sigma_y,
++                                    int32_t tile_mode,
++                                    FlutterSpiImageFilter** out_filter);
++FlutterSpiResult SpiImageFilterDilate(FlutterSpiEngine* engine,
++                                      float radius_x,
++                                      float radius_y,
++                                      FlutterSpiImageFilter** out_filter);
++FlutterSpiResult SpiImageFilterErode(FlutterSpiEngine* engine,
++                                     float radius_x,
++                                     float radius_y,
++                                     FlutterSpiImageFilter** out_filter);
++FlutterSpiResult SpiImageFilterMatrix(FlutterSpiEngine* engine,
++                                       const FlutterSpiMatrix* matrix,
++                                       int32_t filter_quality,
++                                       FlutterSpiImageFilter** out_filter);
++FlutterSpiResult SpiImageFilterFromColorFilter(
++    FlutterSpiEngine* engine,
++    FlutterSpiColorFilter* color_filter,
++    FlutterSpiImageFilter** out_filter);
++FlutterSpiResult SpiImageFilterCompose(FlutterSpiEngine* engine,
++                                       FlutterSpiImageFilter* outer,
++                                       FlutterSpiImageFilter* inner,
++                                       FlutterSpiImageFilter** out_filter);
++FlutterSpiResult SpiImageFilterRelease(FlutterSpiImageFilter* filter);
++std::shared_ptr<DlImageFilter> SpiImageFilterGet(FlutterSpiImageFilter* filter);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_EFFECTS_SPI_IMAGE_FILTER_H_
++
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_shader.cc b/engine/src/flutter/runtime_spi/effects/spi_shader.cc
+new file mode 100644
+index 00000000000..08bbba083b6
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/effects/spi_shader.cc
+@@ -0,0 +1,292 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/effects/spi_shader.h"
++
++#include <cmath>
++#include <cstdint>
++#include <memory>
++#include <vector>
++
++#include "flutter/display_list/dl_sampling_options.h"
++#include "flutter/display_list/dl_tile_mode.h"
++#include "flutter/runtime_spi/image/spi_image.h"
++#include "flutter/runtime_spi/scene/spi_geometry.h"
++#include "flutter/runtime_spi/scene/spi_handle_table.h"
++
++namespace flutter {
++namespace {
++
++template <typename Handle>
++uintptr_t HandleValue(Handle* handle) {
++  return reinterpret_cast<uintptr_t>(handle);
++}
++
++template <typename Handle>
++Handle* MakeHandle(uintptr_t value) {
++  return reinterpret_cast<Handle*>(value);
++}
++
++class SpiShader final {
++ public:
++  explicit SpiShader(std::shared_ptr<DlColorSource> shader)
++      : shader_(std::move(shader)) {}
++
++  const std::shared_ptr<DlColorSource>& shader() const { return shader_; }
++
++ private:
++  std::shared_ptr<DlColorSource> shader_;
++};
++
++SpiHandleTable<SpiShader>& Shaders() {
++  static SpiHandleTable<SpiShader> shaders;
++  return shaders;
++}
++
++std::shared_ptr<SpiShader> FindShader(FlutterSpiShader* shader) {
++  return Shaders().Find(HandleValue(shader));
++}
++
++bool IsValidTileMode(int32_t tile_mode) {
++  return tile_mode >= kFlutterSpiTileModeClamp &&
++         tile_mode <= kFlutterSpiTileModeDecal;
++}
++
++bool IsFinite(const FlutterSpiPoint& point) {
++  return std::isfinite(point.x) && std::isfinite(point.y);
++}
++
++bool IsFinite(float value) {
++  return std::isfinite(value);
++}
++
++FlutterSpiResult PrepareGradient(
++    const FlutterSpiColor* colors,
++    const float* stops,
++    size_t count,
++    int32_t tile_mode,
++    std::vector<DlColor>* dl_colors,
++    DlTileMode* dl_tile_mode) {
++  if (colors == nullptr || count < 2 || count > UINT32_MAX ||
++      (stops == nullptr && count != 2) ||
++      (stops != nullptr && !std::isfinite(stops[0]))) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (!IsValidTileMode(tile_mode)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (stops != nullptr) {
++    for (size_t index = 1; index < count; index++) {
++      if (!std::isfinite(stops[index])) {
++        return kFlutterSpiInvalidArgument;
++      }
++    }
++  }
++  dl_colors->reserve(count);
++  for (size_t index = 0; index < count; index++) {
++    dl_colors->push_back(ToDlColor(colors[index]));
++  }
++  *dl_tile_mode = static_cast<DlTileMode>(tile_mode);
++  return kFlutterSpiOk;
++}
++
++DlImageSampling SamplingFromIndex(int32_t filter_quality) {
++  if (filter_quality <= kFlutterSpiFilterQualityNone) {
++    return DlImageSampling::kNearestNeighbor;
++  }
++  if (filter_quality == kFlutterSpiFilterQualityLow) {
++    return DlImageSampling::kLinear;
++  }
++  if (filter_quality == kFlutterSpiFilterQualityMedium) {
++    return DlImageSampling::kMipmapLinear;
++  }
++  return DlImageSampling::kCubic;
++}
++
++FlutterSpiResult StoreShader(std::shared_ptr<DlColorSource> shader,
++                             FlutterSpiShader** out_shader) {
++  if (shader == nullptr) {
++    return kFlutterSpiInternalError;
++  }
++  *out_shader = MakeHandle<FlutterSpiShader>(
++      Shaders().Insert(std::make_shared<SpiShader>(std::move(shader))));
++  return kFlutterSpiOk;
++}
++
++}  // namespace
++
++FlutterSpiResult SpiShaderLinearGradient(
++    FlutterSpiEngine* engine,
++    FlutterSpiPoint from,
++    FlutterSpiPoint to,
++    const FlutterSpiColor* colors,
++    const float* stops,
++    size_t count,
++    int32_t tile_mode,
++    const FlutterSpiMatrix* matrix,
++    FlutterSpiShader** out_shader) {
++  if (out_shader == nullptr || !IsFinite(from) || !IsFinite(to)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  std::vector<DlColor> dl_colors;
++  DlTileMode dl_tile_mode;
++  const FlutterSpiResult result = PrepareGradient(
++      colors, stops, count, tile_mode, &dl_colors, &dl_tile_mode);
++  if (result != kFlutterSpiOk) {
++    return result;
++  }
++  DlMatrix dl_matrix;
++  if (matrix != nullptr && !ToDlMatrix(*matrix, &dl_matrix)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return StoreShader(
++      DlColorSource::MakeLinear(
++          {from.x, from.y}, {to.x, to.y}, count, dl_colors.data(), stops,
++          dl_tile_mode, matrix == nullptr ? nullptr : &dl_matrix),
++      out_shader);
++}
++
++FlutterSpiResult SpiShaderRadialGradient(
++    FlutterSpiEngine* engine,
++    FlutterSpiPoint center,
++    float radius,
++    const FlutterSpiColor* colors,
++    const float* stops,
++    size_t count,
++    int32_t tile_mode,
++    const FlutterSpiMatrix* matrix,
++    FlutterSpiShader** out_shader) {
++  if (out_shader == nullptr || !IsFinite(center) || !IsFinite(radius)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  std::vector<DlColor> dl_colors;
++  DlTileMode dl_tile_mode;
++  const FlutterSpiResult result = PrepareGradient(
++      colors, stops, count, tile_mode, &dl_colors, &dl_tile_mode);
++  if (result != kFlutterSpiOk) {
++    return result;
++  }
++  DlMatrix dl_matrix;
++  if (matrix != nullptr && !ToDlMatrix(*matrix, &dl_matrix)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return StoreShader(
++      DlColorSource::MakeRadial(
++          {center.x, center.y}, radius, count, dl_colors.data(), stops,
++          dl_tile_mode, matrix == nullptr ? nullptr : &dl_matrix),
++      out_shader);
++}
++
++FlutterSpiResult SpiShaderConicalGradient(
++    FlutterSpiEngine* engine,
++    FlutterSpiPoint start,
++    float start_radius,
++    FlutterSpiPoint end,
++    float end_radius,
++    const FlutterSpiColor* colors,
++    const float* stops,
++    size_t count,
++    int32_t tile_mode,
++    const FlutterSpiMatrix* matrix,
++    FlutterSpiShader** out_shader) {
++  if (out_shader == nullptr || !IsFinite(start) || !IsFinite(end) ||
++      !IsFinite(start_radius) || !IsFinite(end_radius)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  std::vector<DlColor> dl_colors;
++  DlTileMode dl_tile_mode;
++  const FlutterSpiResult result = PrepareGradient(
++      colors, stops, count, tile_mode, &dl_colors, &dl_tile_mode);
++  if (result != kFlutterSpiOk) {
++    return result;
++  }
++  DlMatrix dl_matrix;
++  if (matrix != nullptr && !ToDlMatrix(*matrix, &dl_matrix)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return StoreShader(
++      DlColorSource::MakeConical(
++          {start.x, start.y}, start_radius, {end.x, end.y}, end_radius, count,
++          dl_colors.data(), stops, dl_tile_mode,
++          matrix == nullptr ? nullptr : &dl_matrix),
++      out_shader);
++}
++
++FlutterSpiResult SpiShaderSweepGradient(
++    FlutterSpiEngine* engine,
++    FlutterSpiPoint center,
++    float start_angle,
++    float end_angle,
++    const FlutterSpiColor* colors,
++    const float* stops,
++    size_t count,
++    int32_t tile_mode,
++    const FlutterSpiMatrix* matrix,
++    FlutterSpiShader** out_shader) {
++  if (out_shader == nullptr || !IsFinite(center) || !IsFinite(start_angle) ||
++      !IsFinite(end_angle)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  std::vector<DlColor> dl_colors;
++  DlTileMode dl_tile_mode;
++  const FlutterSpiResult result = PrepareGradient(
++      colors, stops, count, tile_mode, &dl_colors, &dl_tile_mode);
++  if (result != kFlutterSpiOk) {
++    return result;
++  }
++  DlMatrix dl_matrix;
++  if (matrix != nullptr && !ToDlMatrix(*matrix, &dl_matrix)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return StoreShader(
++      DlColorSource::MakeSweep(
++          {center.x, center.y},
++          start_angle * 180.0f / static_cast<float>(M_PI),
++          end_angle * 180.0f / static_cast<float>(M_PI), count, dl_colors.data(),
++          stops, dl_tile_mode, matrix == nullptr ? nullptr : &dl_matrix),
++      out_shader);
++}
++
++FlutterSpiResult SpiShaderImage(FlutterSpiEngine* engine,
++                                FlutterSpiImage* image,
++                                int32_t tile_mode_x,
++                                int32_t tile_mode_y,
++                                int32_t filter_quality,
++                                const FlutterSpiMatrix* matrix,
++                                FlutterSpiShader** out_shader) {
++  if (out_shader == nullptr || image == nullptr || matrix == nullptr ||
++      filter_quality < -1 || !IsValidTileMode(tile_mode_x) ||
++      !IsValidTileMode(tile_mode_y)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const sk_sp<DlImage> dl_image = SpiImageGet(image);
++  if (dl_image == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  DlMatrix dl_matrix;
++  if (!ToDlMatrix(*matrix, &dl_matrix)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const DlImageSampling sampling = filter_quality == -1
++                                       ? DlImageSampling::kLinear
++                                       : SamplingFromIndex(filter_quality);
++  return StoreShader(
++      DlColorSource::MakeImage(
++          dl_image, static_cast<DlTileMode>(tile_mode_x),
++          static_cast<DlTileMode>(tile_mode_y), sampling, &dl_matrix),
++      out_shader);
++}
++
++FlutterSpiResult SpiShaderRelease(FlutterSpiShader* shader) {
++  return Shaders().Release(HandleValue(shader)) ? kFlutterSpiOk
++                                                 : kFlutterSpiInvalidHandle;
++}
++
++std::shared_ptr<DlColorSource> SpiShaderGet(FlutterSpiShader* shader) {
++  const auto shader_value = FindShader(shader);
++  return shader_value == nullptr ? nullptr : shader_value->shader();
++}
++
++}  // namespace flutter
++
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_shader.h b/engine/src/flutter/runtime_spi/effects/spi_shader.h
+new file mode 100644
+index 00000000000..cc6c91960b1
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/effects/spi_shader.h
+@@ -0,0 +1,72 @@
++
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_EFFECTS_SPI_SHADER_H_
++#define FLUTTER_RUNTIME_SPI_EFFECTS_SPI_SHADER_H_
++
++#include <memory>
++
++#include "flutter/display_list/effects/dl_color_source.h"
++#include "flutter/runtime_spi/include/flutter_paint_effects.h"
++
++namespace flutter {
++
++FlutterSpiResult SpiShaderLinearGradient(
++    FlutterSpiEngine* engine,
++    FlutterSpiPoint from,
++    FlutterSpiPoint to,
++    const FlutterSpiColor* colors,
++    const float* stops,
++    size_t count,
++    int32_t tile_mode,
++    const FlutterSpiMatrix* matrix,
++    FlutterSpiShader** out_shader);
++FlutterSpiResult SpiShaderRadialGradient(
++    FlutterSpiEngine* engine,
++    FlutterSpiPoint center,
++    float radius,
++    const FlutterSpiColor* colors,
++    const float* stops,
++    size_t count,
++    int32_t tile_mode,
++    const FlutterSpiMatrix* matrix,
++    FlutterSpiShader** out_shader);
++FlutterSpiResult SpiShaderConicalGradient(
++    FlutterSpiEngine* engine,
++    FlutterSpiPoint start,
++    float start_radius,
++    FlutterSpiPoint end,
++    float end_radius,
++    const FlutterSpiColor* colors,
++    const float* stops,
++    size_t count,
++    int32_t tile_mode,
++    const FlutterSpiMatrix* matrix,
++    FlutterSpiShader** out_shader);
++FlutterSpiResult SpiShaderSweepGradient(
++    FlutterSpiEngine* engine,
++    FlutterSpiPoint center,
++    float start_angle,
++    float end_angle,
++    const FlutterSpiColor* colors,
++    const float* stops,
++    size_t count,
++    int32_t tile_mode,
++    const FlutterSpiMatrix* matrix,
++    FlutterSpiShader** out_shader);
++FlutterSpiResult SpiShaderImage(FlutterSpiEngine* engine,
++                                FlutterSpiImage* image,
++                                int32_t tile_mode_x,
++                                int32_t tile_mode_y,
++                                int32_t filter_quality,
++                                const FlutterSpiMatrix* matrix,
++                                FlutterSpiShader** out_shader);
++FlutterSpiResult SpiShaderRelease(FlutterSpiShader* shader);
++std::shared_ptr<DlColorSource> SpiShaderGet(FlutterSpiShader* shader);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_EFFECTS_SPI_SHADER_H_
++
