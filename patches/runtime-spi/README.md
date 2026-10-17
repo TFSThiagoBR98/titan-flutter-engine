@@ -71,6 +71,10 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0061-feat-engine-add-the-runtime-spi-extensions-header.patch` | Adicionar a ABI C11 0.10 para as extensões opcionais do runtime. | |
 | `0062-refactor-engine-call-dart-only-engine-features-through-the-spi-extensions-table.patch` | Chamar pelo SPI as funções do engine que só existem com Dart, preservando o core sem Dart. | |
 | `0063-test-engine-exercise-the-spi-runtime-extensions-end-to-end.patch` | Exercitar as extensões do runtime pela suíte de conformidade ponta a ponta. | |
+| `0064-feat-engine-add-service-handlers-to-the-runtime-spi-extensions.patch` | Adicionar handlers do service protocol à ABI C11 0.11 das extensões do runtime. | |
+| `0065-refactor-engine-expose-the-shell-service-protocol-handlers-as-a-c-handler.patch` | Expor os handlers do service protocol do Shell no core, sem depender da VM do Dart. | |
+| `0066-feat-engine-serve-the-core-service-handlers-through-the-dart-vm-service.patch` | Servir os handlers do core pelo transporte do VM service do Dart. | |
+| `0067-refactor-engine-move-the-remaining-dart-code-out-of-the-shell.patch` | Mover os pontos restantes de Dart para fora do Shell comum. | |
 
 O fluxo é:
 

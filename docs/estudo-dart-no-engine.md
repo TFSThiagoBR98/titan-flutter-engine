@@ -364,6 +364,14 @@ O `DartRuntimeBackend` preenche uma tabela estática de *thunks* para seus membr
 
 O checkpoint confirmou **1242 PASS** e **0 FAIL** no `check-runtime-spi.sh`, contra 1236 PASS na S3b-5, além do hash `9afdbcd18abd9b35` do probe em x64 e arm64-musl sob QEMU, a configuração `--gn-only` dos dez alvos, o alvo `runtime_spi_c_api` em arm-hard e `tools/ci.sh engine`. A série limpa contém **78 patches** do repositório do Flutter, dos quais **63** pertencem a `runtime-spi`; o `engine.lock` registra `patches_sha256=644a727099bb6ab1018ae5d2de2cad44b9ae255a1a7f73fa036e57dd681bec1b`. Os benchmarks e seus critérios estão em [runtime-spi-s4a.md](medidas/runtime-spi-s4a.md).
 
+## S4b: Shell sem Dart
+
+A S4b separa os handlers do service protocol do transporte: o core expõe um `FlutterSpiServiceHandler` estável, e o runtime registra esse handler no VM service pela tabela de extensões ABI 0.11. A resolução do método, a troca para o runner correto e a espera pela resposta continuam no core, porque o `fml::TaskRunner` não atravessa a fronteira C; o transporte apenas adapta a chamada para o VM service. Assim, um runtime sem transporte não impede o Shell de subir, e o handler pode rejeitar chamadas depois da destruição do Shell sem acessar um objeto inválido.
+
+Os pontos que ainda dependiam de Dart no `shell.cc` foram para `shell_dart.cc`: a inferência dos dados de inicialização da VM, as sobrecargas de `Shell::Create` que criam a VM e o `tonic::SetLogHandler`. O `Spawn` fica para a S4c, enquanto a retirada definitiva do embrulho Dart para uma biblioteca separada fica para a S5.
+
+O checkpoint confirmou **1250 PASS** e **0 FAIL** no `check-runtime-spi.sh`, o probe `9afdbcd18abd9b35` em x64 e arm64-musl sob QEMU, a configuração `--gn-only` dos dez alvos, o alvo `runtime_spi_c_api` em arm-hard e `tools/ci.sh engine`. A série limpa contém **82 patches** do repositório do Flutter, dos quais **67** pertencem a `runtime-spi`; o `engine.lock` registra `patches_sha256=4d4caa68c747fa9e2c341454c7f97cef15ebfe8ab941e9322fa4fbeccabeca57`. Os benchmarks estão em [runtime-spi-s4b.md](medidas/runtime-spi-s4b.md); `BM_ShellInitialization` ficou inconclusivo, e o A/B controlado entre as duas revisões compiladas permanece pendente para a S5.5.
+
 ## Ciclo de vida e falhas
 
 O host cria, inicia, encerra e libera o backend. Uma falha recuperável encerra o runtime ativo e limpa os recursos;

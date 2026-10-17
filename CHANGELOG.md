@@ -81,6 +81,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Runtime SPI S4b: o Shell deixa de depender da VM do Dart; os handlers do service
+  protocol ficam no core e são servidos pelo VM service através da tabela de extensões (ABI 0.11).
 - Runtime SPI S4a: o engine chama as funções que só existem com Dart (microtasks, deferred libraries, código de retorno,
   service ID, platform isolates) por uma tabela C opcional de extensões do runtime (ABI 0.10), e não mais por uma
   interface C++.
