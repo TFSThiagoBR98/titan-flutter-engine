@@ -1,0 +1,397 @@
+# Why: expose the remaining SceneBuilder leaf layers through the runtime SPI
+# with stable trace metadata matching dart:ui.
+diff --git a/engine/src/flutter/flow/layers/layer.h b/engine/src/flutter/flow/layers/layer.h
+index 30d94120af8..734ae09f05b 100644
+--- a/engine/src/flutter/flow/layers/layer.h
++++ b/engine/src/flutter/flow/layers/layer.h
+@@ -41,6 +41,7 @@ class DisplayListLayer;
+ class ImageFilterLayer;
+ class OpacityLayer;
+ class PerformanceOverlayLayer;
++class PlatformViewLayer;
+ class BackdropFilterLayer;
+ class ShaderMaskLayer;
+ class TextureLayer;
+@@ -276,6 +277,9 @@ class Layer {
+     return nullptr;
+   }
+   virtual const TextureLayer* as_texture_layer() const { return nullptr; }
++  virtual const PlatformViewLayer* as_platform_view_layer() const {
++    return nullptr;
++  }
+   virtual const PerformanceOverlayLayer* as_performance_overlay_layer() const {
+     return nullptr;
+   }
+diff --git a/engine/src/flutter/flow/layers/performance_overlay_layer.h b/engine/src/flutter/flow/layers/performance_overlay_layer.h
+index fa99a995850..d650d4e1d53 100644
+--- a/engine/src/flutter/flow/layers/performance_overlay_layer.h
++++ b/engine/src/flutter/flow/layers/performance_overlay_layer.h
+@@ -38,6 +38,10 @@ class PerformanceOverlayLayer : public Layer {
+     return this;
+   }
+ 
++  uint64_t enabled_options() const {
++    return static_cast<uint64_t>(options_);
++  }
++
+   explicit PerformanceOverlayLayer(uint64_t options,
+                                    const char* font_path = nullptr);
+ 
+diff --git a/engine/src/flutter/flow/layers/platform_view_layer.h b/engine/src/flutter/flow/layers/platform_view_layer.h
+index 89f8ab576ea..0a562ebe296 100644
+--- a/engine/src/flutter/flow/layers/platform_view_layer.h
++++ b/engine/src/flutter/flow/layers/platform_view_layer.h
+@@ -14,6 +14,13 @@ class PlatformViewLayer : public Layer {
+  public:
+   PlatformViewLayer(const DlPoint& offset, const DlSize& size, int64_t view_id);
+ 
++  const PlatformViewLayer* as_platform_view_layer() const override {
++    return this;
++  }
++  const DlPoint& offset() const { return offset_; }
++  const DlSize& size() const { return size_; }
++  int64_t view_id() const { return view_id_; }
++
+   void Preroll(PrerollContext* context) override;
+   void Paint(PaintContext& context) const override;
+ 
+diff --git a/engine/src/flutter/flow/layers/texture_layer.h b/engine/src/flutter/flow/layers/texture_layer.h
+index 22e75e3acc7..474b6dbae78 100644
+--- a/engine/src/flutter/flow/layers/texture_layer.h
++++ b/engine/src/flutter/flow/layers/texture_layer.h
+@@ -25,6 +25,12 @@ class TextureLayer : public Layer {
+ 
+   const TextureLayer* as_texture_layer() const override { return this; }
+ 
++  const DlPoint& offset() const { return offset_; }
++  const DlSize& size() const { return size_; }
++  int64_t texture_id() const { return texture_id_; }
++  bool freeze() const { return freeze_; }
++  DlImageSampling sampling() const { return sampling_; }
++
+   void Preroll(PrerollContext* context) override;
+   void Paint(PaintContext& context) const override;
+ 
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+index 1138435547e..b5121c60ff8 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+@@ -886,6 +886,9 @@ const FlutterSpiSceneApi kSceneApi = {
+     .scene_push_image_filter = SpiScenePushImageFilter,
+     .scene_push_backdrop_filter = SpiScenePushBackdropFilter,
+     .scene_push_shader_mask = SpiScenePushShaderMask,
++    .scene_add_texture = SpiSceneAddTexture,
++    .scene_add_platform_view = SpiSceneAddPlatformView,
++    .scene_add_performance_overlay = SpiSceneAddPerformanceOverlay,
+ };
+ 
+ }  // namespace
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
+index 3882a067f17..b7b2d2fe82c 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
+@@ -20,7 +20,10 @@
+ #include "flutter/flow/layers/display_list_layer.h"
+ #include "flutter/flow/layers/image_filter_layer.h"
+ #include "flutter/flow/layers/opacity_layer.h"
++#include "flutter/flow/layers/performance_overlay_layer.h"
++#include "flutter/flow/layers/platform_view_layer.h"
+ #include "flutter/flow/layers/shader_mask_layer.h"
++#include "flutter/flow/layers/texture_layer.h"
+ #include "flutter/flow/layers/transform_layer.h"
+ #include "flutter/runtime_spi/effects/spi_color_filter.h"
+ #include "flutter/runtime_spi/effects/spi_image_filter.h"
+@@ -339,6 +342,67 @@ FlutterSpiResult SpiScenePushShaderMask(FlutterSpiSceneBuilder* builder,
+   return kFlutterSpiOk;
+ }
+ 
++FlutterSpiResult SpiSceneAddTexture(FlutterSpiSceneBuilder* builder,
++                                    float dx,
++                                    float dy,
++                                    float width,
++                                    float height,
++                                    int64_t texture_id,
++                                    bool freeze,
++                                    int32_t filter_quality) {
++  const auto builder_value = FindBuilder(builder);
++  if (builder_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!std::isfinite(dx) || !std::isfinite(dy) || !std::isfinite(width) ||
++      !std::isfinite(height) || !IsValidFilterQuality(filter_quality)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  AddLayer(std::make_shared<TextureLayer>(
++                DlPoint(dx, dy), DlSize(width, height), texture_id, freeze,
++                SamplingFromFilterQuality(filter_quality)),
++            builder_value);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiSceneAddPlatformView(FlutterSpiSceneBuilder* builder,
++                                         float dx,
++                                         float dy,
++                                         float width,
++                                         float height,
++                                         int64_t view_id) {
++  const auto builder_value = FindBuilder(builder);
++  if (builder_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!std::isfinite(dx) || !std::isfinite(dy) || !std::isfinite(width) ||
++      !std::isfinite(height)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  AddLayer(std::make_shared<PlatformViewLayer>(
++                DlPoint(dx, dy), DlSize(width, height), view_id),
++            builder_value);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiSceneAddPerformanceOverlay(
++    FlutterSpiSceneBuilder* builder,
++    uint64_t enabled_options,
++    const FlutterSpiRect* bounds) {
++  const auto builder_value = FindBuilder(builder);
++  DlRect dl_bounds;
++  if (builder_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (bounds == nullptr || !ToDlRect(*bounds, &dl_bounds)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  auto layer = std::make_shared<PerformanceOverlayLayer>(enabled_options);
++  layer->set_paint_bounds(dl_bounds);
++  AddLayer(layer, builder_value);
++  return kFlutterSpiOk;
++}
++
+ FlutterSpiResult SpiScenePop(FlutterSpiSceneBuilder* builder) {
+   const auto builder_value = FindBuilder(builder);
+   if (builder_value == nullptr) {
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.h b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.h
+index 9d01a058f83..9bffc2b4bcd 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.h
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.h
+@@ -48,6 +48,24 @@ FlutterSpiResult SpiScenePushShaderMask(FlutterSpiSceneBuilder* builder,
+                                         const FlutterSpiRect* mask_rect,
+                                         int32_t blend_mode,
+                                         int32_t filter_quality);
++FlutterSpiResult SpiSceneAddTexture(FlutterSpiSceneBuilder* builder,
++                                    float dx,
++                                    float dy,
++                                    float width,
++                                    float height,
++                                    int64_t texture_id,
++                                    bool freeze,
++                                    int32_t filter_quality);
++FlutterSpiResult SpiSceneAddPlatformView(FlutterSpiSceneBuilder* builder,
++                                         float dx,
++                                         float dy,
++                                         float width,
++                                         float height,
++                                         int64_t view_id);
++FlutterSpiResult SpiSceneAddPerformanceOverlay(
++    FlutterSpiSceneBuilder* builder,
++    uint64_t enabled_options,
++    const FlutterSpiRect* bounds);
+ FlutterSpiResult SpiScenePop(FlutterSpiSceneBuilder* builder);
+ FlutterSpiResult SpiSceneAddPicture(FlutterSpiSceneBuilder* builder,
+                                     float dx,
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_layers_parity_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_scene_layers_parity_unittests.cc
+index 66bfec2a2c1..db4ee9214cd 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_scene_layers_parity_unittests.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_layers_parity_unittests.cc
+@@ -18,6 +18,9 @@
+ #include "flutter/flow/layers/image_filter_layer.h"
+ #include "flutter/flow/layers/layer_tree.h"
+ #include "flutter/flow/layers/shader_mask_layer.h"
++#include "flutter/flow/layers/performance_overlay_layer.h"
++#include "flutter/flow/layers/platform_view_layer.h"
++#include "flutter/flow/layers/texture_layer.h"
+ #include "flutter/runtime_spi/effects/spi_color_filter.h"
+ #include "flutter/runtime_spi/effects/spi_image_filter.h"
+ #include "flutter/runtime_spi/effects/spi_shader.h"
+@@ -72,6 +75,15 @@ std::shared_ptr<LayerTree> MakeExpectedTree(
+   return std::make_shared<LayerTree>(root, DlISize(100, 80));
+ }
+ 
++std::shared_ptr<LayerTree> MakeExpectedLeafTree(
++    const std::shared_ptr<Layer>& layer) {
++  auto root = std::make_shared<ContainerLayer>();
++  root->Add(layer);
++  root->Add(std::make_shared<DisplayListLayer>(DlPoint(1.0f, 2.0f),
++                                               MakePicture(), true, true));
++  return std::make_shared<LayerTree>(root, DlISize(100, 80));
++}
++
+ class SpiSceneLayersTest : public ::testing::Test {
+  protected:
+   const FlutterSpiSceneApi* api() const { return SpiSceneApi(); }
+@@ -251,5 +263,79 @@ TEST_F(SpiSceneLayersTest, ClipRSuperellipseMatchesDartUi) {
+   EXPECT_EQ(SpiSceneRelease(scene), kFlutterSpiOk);
+ }
+ 
++TEST_F(SpiSceneLayersTest, TextureMatchesDartUi) {
++  ASSERT_NE(api()->scene_add_texture, nullptr);
++  FlutterSpiSceneBuilder* builder = nullptr;
++  ASSERT_EQ(api()->scene_builder_create(engine(), &builder), kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_add_texture(builder, 4.0f, 5.0f, 30.0f, 40.0f, 42,
++                                     true, kFlutterSpiFilterQualityMedium),
++            kFlutterSpiOk);
++  FlutterSpiScene* scene = BuildScene(builder, MakeSpiPicture());
++
++  auto layer = std::make_shared<TextureLayer>(
++      DlPoint(4.0f, 5.0f), DlSize(30.0f, 40.0f), 42, true,
++      DlImageSampling::kMipmapLinear);
++  EXPECT_EQ(SceneTrace(*scene->layer_tree),
++            SceneTrace(*MakeExpectedLeafTree(std::move(layer))));
++  EXPECT_EQ(SceneTrace(*scene->layer_tree),
++            "scene 100x80\n"
++            "container\n"
++            "  texture offset 4 5 size 30 40 id 42 freeze 1 sampling 2\n"
++            "  picture 1 2\n"
++            "    op setColor\n"
++            "    drawRect 10 11 30 31\n");
++  EXPECT_EQ(SpiSceneRelease(scene), kFlutterSpiOk);
++}
++
++TEST_F(SpiSceneLayersTest, PlatformViewMatchesDartUi) {
++  ASSERT_NE(api()->scene_add_platform_view, nullptr);
++  FlutterSpiSceneBuilder* builder = nullptr;
++  ASSERT_EQ(api()->scene_builder_create(engine(), &builder), kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_add_platform_view(builder, 6.0f, 7.0f, 31.0f, 32.0f,
++                                           43),
++            kFlutterSpiOk);
++  FlutterSpiScene* scene = BuildScene(builder, MakeSpiPicture());
++
++  auto layer = std::make_shared<PlatformViewLayer>(
++      DlPoint(6.0f, 7.0f), DlSize(31.0f, 32.0f), 43);
++  EXPECT_EQ(SceneTrace(*scene->layer_tree),
++            SceneTrace(*MakeExpectedLeafTree(std::move(layer))));
++  EXPECT_EQ(SceneTrace(*scene->layer_tree),
++            "scene 100x80\n"
++            "container\n"
++            "  platform_view offset 6 7 size 31 32 id 43\n"
++            "  picture 1 2\n"
++            "    op setColor\n"
++            "    drawRect 10 11 30 31\n");
++  EXPECT_EQ(SpiSceneRelease(scene), kFlutterSpiOk);
++}
++
++TEST_F(SpiSceneLayersTest, PerformanceOverlayMatchesDartUi) {
++  ASSERT_NE(api()->scene_add_performance_overlay, nullptr);
++  constexpr uint64_t kEnabledOptions = kDisplayRasterizerStatistics |
++                                        kDisplayEngineStatistics;
++  constexpr FlutterSpiRect kOverlayBounds = {
++      .left = 1.0f, .top = 2.0f, .right = 70.0f, .bottom = 80.0f};
++  FlutterSpiSceneBuilder* builder = nullptr;
++  ASSERT_EQ(api()->scene_builder_create(engine(), &builder), kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_add_performance_overlay(builder, kEnabledOptions,
++                                                 &kOverlayBounds),
++            kFlutterSpiOk);
++  FlutterSpiScene* scene = BuildScene(builder, MakeSpiPicture());
++
++  auto layer = std::make_shared<PerformanceOverlayLayer>(kEnabledOptions);
++  layer->set_paint_bounds(DlRect::MakeLTRB(1.0f, 2.0f, 70.0f, 80.0f));
++  EXPECT_EQ(SceneTrace(*scene->layer_tree),
++            SceneTrace(*MakeExpectedLeafTree(std::move(layer))));
++  EXPECT_EQ(SceneTrace(*scene->layer_tree),
++            "scene 100x80\n"
++            "container\n"
++            "  performance_overlay options 5 bounds 1 2 70 80\n"
++            "  picture 1 2\n"
++            "    op setColor\n"
++            "    drawRect 10 11 30 31\n");
++  EXPECT_EQ(SpiSceneRelease(scene), kFlutterSpiOk);
++}
++
+ }  // namespace
+ }  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_trace.cc b/engine/src/flutter/runtime_spi/scene/spi_scene_trace.cc
+index 76f237c5c0b..9875ada354c 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_scene_trace.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_trace.cc
+@@ -28,7 +28,10 @@
+ #include "flutter/flow/layers/image_filter_layer.h"
+ #include "flutter/flow/layers/layer_tree.h"
+ #include "flutter/flow/layers/opacity_layer.h"
++#include "flutter/flow/layers/performance_overlay_layer.h"
++#include "flutter/flow/layers/platform_view_layer.h"
+ #include "flutter/flow/layers/shader_mask_layer.h"
++#include "flutter/flow/layers/texture_layer.h"
+ #include "flutter/flow/layers/transform_layer.h"
+ #include "flutter/runtime_spi/spi_scene.h"
+ 
+@@ -69,6 +72,26 @@ void AppendPoint(std::string* output, const DlPoint& point) {
+   AppendNumber(output, point.y);
+ }
+ 
++void AppendSize(std::string* output, const DlSize& size) {
++  AppendNumber(output, size.width);
++  output->push_back(' ');
++  AppendNumber(output, size.height);
++}
++
++void AppendInt64(std::string* output, int64_t value) {
++  std::array<char, 64> buffer = {};
++  std::snprintf(buffer.data(), buffer.size(), "%lld",
++                static_cast<long long>(value));
++  output->append(buffer.data());
++}
++
++void AppendUint64(std::string* output, uint64_t value) {
++  std::array<char, 64> buffer = {};
++  std::snprintf(buffer.data(), buffer.size(), "%llu",
++                static_cast<unsigned long long>(value));
++  output->append(buffer.data());
++}
++
+ class PathTraceReceiver final : public impeller::PathReceiver {
+  public:
+   explicit PathTraceReceiver(std::string* output) : output_(output) {}
+@@ -522,6 +545,44 @@ void TraceLayer(const Layer& layer, std::string* output, int depth) {
+     TraceChildren(*shader_mask, output, depth + 1);
+     return;
+   }
++  if (const auto* texture = layer.as_texture_layer(); texture != nullptr) {
++    output->append(indent);
++    output->append("texture offset ");
++    AppendPoint(output, texture->offset());
++    output->append(" size ");
++    AppendSize(output, texture->size());
++    output->append(" id ");
++    AppendInt64(output, texture->texture_id());
++    output->append(" freeze ");
++    AppendNumber(output, texture->freeze() ? 1.0f : 0.0f);
++    output->append(" sampling ");
++    AppendNumber(output, static_cast<float>(texture->sampling()));
++    output->push_back('\n');
++    return;
++  }
++  if (const auto* platform_view = layer.as_platform_view_layer();
++      platform_view != nullptr) {
++    output->append(indent);
++    output->append("platform_view offset ");
++    AppendPoint(output, platform_view->offset());
++    output->append(" size ");
++    AppendSize(output, platform_view->size());
++    output->append(" id ");
++    AppendInt64(output, platform_view->view_id());
++    output->push_back('\n');
++    return;
++  }
++  if (const auto* performance_overlay =
++          layer.as_performance_overlay_layer();
++      performance_overlay != nullptr) {
++    output->append(indent);
++    output->append("performance_overlay options ");
++    AppendUint64(output, performance_overlay->enabled_options());
++    output->append(" bounds ");
++    AppendRect(output, performance_overlay->paint_bounds());
++    output->push_back('\n');
++    return;
++  }
+   if (layer.as_container_layer() != nullptr) {
+     output->append(indent);
+     output->append("container\n");
