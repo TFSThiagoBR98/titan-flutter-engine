@@ -290,6 +290,42 @@ dez alvos, o layout arm-hard de `runtime_spi_c_api` e
 Os números e a identificação do engine estão em
 [runtime-spi-s3b3.md](medidas/runtime-spi-s3b3.md).
 
+## S3b-4a: efeitos de pintura
+
+A S3b-4a amplia o Runtime SPI para os efeitos de pintura que o `dart:ui`
+aplica ao `Paint`: shaders de gradiente e de imagem, filtros de cor, filtros
+de imagem, máscara de blur e vertices. A ABI 0.6 adiciona
+`FlutterSpiPaintEffectsApi` e a capacidade `kFlutterSpiCapPaintEffects`; o
+`FlutterSpiPaint` mantém compatibilidade estrutural porque os novos campos
+ficam no fim da struct.
+
+Shaders, filtros e vertices são handles opacos por engine sobre os objetos
+`Dl*` correspondentes. As fábricas reproduzem as conversões e validações do
+`dart:ui`, incluindo modos de tile, stops de gradiente, matrizes finitas,
+sigmas não negativos e índices de vertices dentro do intervalo. O paint
+resolve os handles no momento da gravação, e a picture retém os objetos
+necessários: liberar um shader depois de pintar não altera a picture já
+registrada. A comparação de paridade usa a igualdade por conteúdo dos
+atributos `Dl*`, inclusive para o shader de imagem que compartilha o mesmo
+`DlImage`.
+
+As operações de cena continuam restritas ao UI runner e erros de handle,
+argumento ou thread retornam resultados explícitos pela ABI. Um `Paint` criado
+com o tamanho da S3a não possui efeitos, e o alvo sem Dart mantém apenas a
+implementação nativa do engine. Vertices seguem o builder e as flags de
+`Vertices::init`; `canvas_draw_vertices` registra a mesma operação que
+`Canvas.drawVertices`.
+
+O checkpoint confirmou o hash `9afdbcd18abd9b35` do probe em x64 e
+arm64-musl, 1180 testes aprovados e nenhum teste falho no checker, além de
+160 testes da suíte `runtime_spi_unittests` e um teste pulado. A série limpa
+contém 62 patches do repositório do Flutter, dos quais 47 pertencem a
+`runtime-spi`. A configuração `--gn-only` dos dez alvos, o layout arm-hard de
+`runtime_spi_c_api` e `tools/ci.sh engine` também passaram.
+
+Os números, o hash do engine e as correções do layout de 32 bits estão em
+[runtime-spi-s3b4a.md](medidas/runtime-spi-s3b4a.md).
+
 ## Ciclo de vida e falhas
 
 O host cria, inicia, encerra e libera o backend. Uma falha recuperável encerra o runtime ativo e limpa os recursos;

@@ -32,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime SPI S3b-3: API ABI 0.5 para transformar pictures e cenas em imagens,
   ler pixels e PNGs, decodificar codecs quadro a quadro e validar o caminho de
   saída de imagens ponta a ponta.
+- Runtime SPI S3b-4a: ABI 0.6 para shaders, filtros de cor e imagem, máscara de
+  blur e vertices, com pintura e conformidade ponta a ponta sem Dart.
 
 ### Fixed
 

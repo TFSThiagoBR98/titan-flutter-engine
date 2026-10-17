@@ -49,6 +49,12 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0039-fix-engine-preserve-infinite-spi-codec-repetition.patch` | Preservar a repetição infinita dos codecs animados no Runtime SPI. | |
 | `0040-test-engine-cover-spi-image-output-conformance.patch` | Cobrir a saída de imagens na suíte de conformidade do Runtime SPI. | |
 | `0041-test-engine-exercise-spi-image-output-end-to-end.patch` | Exercitar snapshots, leitura de pixels e desenho de imagens ponta a ponta. | |
+| `0042-feat-engine-add-the-runtime-spi-paint-effects-header.patch` | Adicionar a ABI 0.6 para shaders, filtros, máscara de blur e vertices. | |
+| `0043-feat-engine-build-spi-shaders-and-filters.patch` | Construir shaders, filtros de cor e filtros de imagem Dart-free com handles imutáveis. | |
+| `0044-feat-engine-paint-with-spi-shaders-filters-and-mask-blur.patch` | Aplicar efeitos da ABI ao paint e preservar a paridade com `dart:ui`. | |
+| `0045-feat-engine-draw-spi-vertices.patch` | Expor a criação e o desenho de vertices pela API de cena. | |
+| `0046-test-engine-exercise-spi-paint-effects-end-to-end.patch` | Exercitar efeitos de pintura e vertices pela suíte de conformidade ponta a ponta. | |
+| `0047-fix-engine-freeze-the-32-bit-size-of-the-spi-engine-api-at-abi-0-6.patch` | Congelar o tamanho correto da tabela ABI em 32 bits depois da inclusão de `paint_effects`. | |
 
 O fluxo é:
 
