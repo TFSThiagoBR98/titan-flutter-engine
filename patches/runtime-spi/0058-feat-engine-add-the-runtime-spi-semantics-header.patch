@@ -1,0 +1,406 @@
+# Why: expose ABI 0.9 semantics builders, freeze their C layouts, and
+# advertise the semantics update API without introducing Dart dependencies.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 4aa9da6a9f1..5d4834a9843 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -55,6 +55,7 @@ source_set("runtime_spi_c_api") {
+     "include/flutter_text.h",
+     "include/flutter_image.h",
+     "include/flutter_paint_effects.h",
++    "include/flutter_semantics.h",
+   ]
+   sources = [ "abi_layout_check.c" ]
+ }
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 6d66b96cd45..7d4334b7620 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -113,6 +113,86 @@ SPI_EXPECT_OFFSET(FlutterSpiPlatformMessage, response,
+                   sizeof(void*) == 8 ? 32 : 16);
+ SPI_EXPECT_SIZE(FlutterSpiPlatformMessage, sizeof(void*) == 8 ? 40 : 20);
+ 
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsFlags, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsFlags, is_checked,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsFlags, is_selected,
++                  sizeof(void*) == 8 ? 12 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsFlags, is_focused,
++                  sizeof(void*) == 8 ? 32 : 28);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsFlags, is_button,
++                  sizeof(void*) == 8 ? 36 : 32);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsFlags,
++                  is_accessibility_focus_blocked,
++                  sizeof(void*) == 8 ? 52 : 48);
++SPI_EXPECT_SIZE(FlutterSpiSemanticsFlags, sizeof(void*) == 8 ? 56 : 52);
++
++SPI_EXPECT_OFFSET(FlutterSpiStringAttribute, start, 0);
++SPI_EXPECT_OFFSET(FlutterSpiStringAttribute, end, 4);
++SPI_EXPECT_OFFSET(FlutterSpiStringAttribute, type, 8);
++SPI_EXPECT_OFFSET(FlutterSpiStringAttribute, locale,
++                  sizeof(void*) == 8 ? 16 : 12);
++SPI_EXPECT_SIZE(FlutterSpiStringAttribute, sizeof(void*) == 8 ? 24 : 16);
++
++SPI_EXPECT_OFFSET(FlutterSpiAttributedString, text, 0);
++SPI_EXPECT_OFFSET(FlutterSpiAttributedString, attributes,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiAttributedString, attribute_count,
++                  sizeof(void*) == 8 ? 16 : 8);
++SPI_EXPECT_SIZE(FlutterSpiAttributedString,
++                sizeof(void*) == 8 ? 24 : 12);
++
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, id,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, flags,
++                  sizeof(void*) == 8 ? 16 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, actions,
++                  sizeof(void*) == 8 ? 72 : 60);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, scroll_position,
++                  sizeof(void*) == 8 ? 112 : 96);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, rect,
++                  sizeof(void*) == 8 ? 136 : 120);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, label,
++                  sizeof(void*) == 8 ? 160 : 140);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, transform,
++                  sizeof(void*) == 8 ? 292 : 208);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, children_in_traversal_order,
++                  sizeof(void*) == 8 ? 424 : 336);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, heading_level,
++                  sizeof(void*) == 8 ? 472 : 360);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, locale,
++                  sizeof(void*) == 8 ? 496 : 376);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, max_value,
++                  sizeof(void*) == 8 ? 512 : 384);
++SPI_EXPECT_SIZE(FlutterSpiSemanticsNode,
++                sizeof(void*) == 8 ? 520 : 392);
++
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsCustomAction, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsCustomAction, id,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsCustomAction, override_id,
++                  sizeof(void*) == 8 ? 12 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsCustomAction, label,
++                  sizeof(void*) == 8 ? 16 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsCustomAction, hint,
++                  sizeof(void*) == 8 ? 24 : 16);
++SPI_EXPECT_SIZE(FlutterSpiSemanticsCustomAction,
++                sizeof(void*) == 8 ? 32 : 20);
++
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsApi, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsApi, update_builder_create,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsApi, update_node,
++                  sizeof(void*) == 8 ? 16 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsApi, update_custom_action,
++                  sizeof(void*) == 8 ? 24 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsApi, update_submit,
++                  sizeof(void*) == 8 ? 32 : 16);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsApi, update_builder_release,
++                  sizeof(void*) == 8 ? 40 : 20);
++SPI_EXPECT_SIZE(FlutterSpiSemanticsApi, sizeof(void*) == 8 ? 48 : 24);
++
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, version_major,
+                   sizeof(void*) == 8 ? 8 : 4);
+@@ -248,7 +328,17 @@ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, report_error,
+                   sizeof(void*) == 8 ? 104 : 64);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, scene,
+                   sizeof(void*) == 8 ? 112 : 68);
+-SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 152 : 88);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, text,
++                  sizeof(void*) == 8 ? 120 : 72);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, image,
++                  sizeof(void*) == 8 ? 128 : 76);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, paint_effects,
++                  sizeof(void*) == 8 ? 136 : 80);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, fragment,
++                  sizeof(void*) == 8 ? 144 : 84);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, semantics,
++                  sizeof(void*) == 8 ? 152 : 88);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 160 : 96);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, color, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, offset, 20);
+@@ -405,7 +495,9 @@ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, paint_effects,
+                   sizeof(void*) == 8 ? 136 : 80);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, fragment,
+                   sizeof(void*) == 8 ? 144 : 84);
+-SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 152 : 88);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, semantics,
++                  sizeof(void*) == 8 ? 152 : 88);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 160 : 96);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, name,
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index 48af7fdb653..1957c5c54d9 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 8
++#define FLUTTER_SPI_VERSION_MINOR 9
+ 
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+@@ -29,6 +29,7 @@ enum {
+   kFlutterSpiCapPaintEffects = 1ULL << 11,
+   kFlutterSpiCapSceneLayers = 1ULL << 12,
+   kFlutterSpiCapFragmentPrograms = 1ULL << 13,
++  kFlutterSpiCapSemanticsUpdate = 1ULL << 14,
+ };
+ 
+ typedef struct FlutterSpiEngine FlutterSpiEngine;
+@@ -41,6 +42,7 @@ typedef struct FlutterSpiEngineApi FlutterSpiEngineApi;
+ #include "flutter_image.h"
+ #include "flutter_paint_effects.h"
+ #include "flutter_fragment.h"
++#include "flutter_semantics.h"
+ 
+ typedef struct {
+   size_t struct_size;
+@@ -221,6 +223,7 @@ struct FlutterSpiEngineApi {
+   const FlutterSpiImageApi* image;
+   const FlutterSpiPaintEffectsApi* paint_effects;
+   const FlutterSpiFragmentApi* fragment;
++  const FlutterSpiSemanticsApi* semantics;
+ };
+ 
+ /*
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_semantics.h b/engine/src/flutter/runtime_spi/include/flutter_semantics.h
+new file mode 100644
+index 00000000000..1c02f26f065
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/include/flutter_semantics.h
+@@ -0,0 +1,103 @@
++#ifndef FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_SEMANTICS_H_
++#define FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_SEMANTICS_H_
++
++typedef struct FlutterSpiSemanticsUpdateBuilder FlutterSpiSemanticsUpdateBuilder;
++
++typedef enum {
++  kFlutterSpiTristateNone = 0,
++  kFlutterSpiTristateTrue = 1,
++  kFlutterSpiTristateFalse = 2,
++} FlutterSpiTristate;
++
++typedef enum {
++  kFlutterSpiCheckStateNone = 0,
++  kFlutterSpiCheckStateTrue = 1,
++  kFlutterSpiCheckStateFalse = 2,
++  kFlutterSpiCheckStateMixed = 3,
++} FlutterSpiCheckState;
++
++typedef enum {
++  kFlutterSpiStringAttributeSpellOut = 0,
++  kFlutterSpiStringAttributeLocale = 1,
++} FlutterSpiStringAttributeType;
++
++typedef struct {
++  size_t struct_size;
++  int32_t is_checked; /* FlutterSpiCheckState */
++  int32_t is_selected, is_enabled, is_toggled, is_expanded, is_required,
++      is_focused; /* FlutterSpiTristate */
++  bool is_button, is_text_field, is_in_mutually_exclusive_group, is_header,
++      is_obscured, scopes_route, names_route, is_hidden, is_image,
++      is_live_region, has_implicit_scrolling, is_multiline, is_read_only,
++      is_link, is_slider, is_keyboard_key, is_accessibility_focus_blocked;
++} FlutterSpiSemanticsFlags; /* = flutter::SemanticsFlags, na mesma ordem */
++
++typedef struct {
++  int32_t start;
++  int32_t end;
++  int32_t type; /* FlutterSpiStringAttributeType */
++  const char* locale; /* só para kFlutterSpiStringAttributeLocale */
++} FlutterSpiStringAttribute;
++
++typedef struct {
++  const char* text; /* UTF-8; NULL = "" */
++  const FlutterSpiStringAttribute* attributes;
++  size_t attribute_count;
++} FlutterSpiAttributedString;
++
++typedef struct {
++  size_t struct_size;
++  int32_t id;
++  FlutterSpiSemanticsFlags flags;
++  int32_t actions;
++  int32_t max_value_length, current_value_length, text_selection_base,
++      text_selection_extent, platform_view_id, scroll_children, scroll_index,
++      traversal_parent;
++  double scroll_position, scroll_extent_max, scroll_extent_min;
++  FlutterSpiRect rect;
++  const char* identifier;
++  FlutterSpiAttributedString label, value, increased_value, decreased_value,
++      hint;
++  const char* tooltip;
++  int32_t text_direction;
++  FlutterSpiMatrix transform; /* coluna-major, como o FlutterSpiMatrix da S3a */
++  FlutterSpiMatrix hit_test_transform;
++  const int32_t* children_in_traversal_order;
++  size_t children_in_traversal_order_count;
++  const int32_t* children_in_hit_test_order;
++  size_t children_in_hit_test_order_count;
++  const int32_t* custom_actions;
++  size_t custom_action_count;
++  int32_t heading_level;
++  const char* link_url;
++  int32_t role; /* = flutter::SemanticsRole */
++  int32_t validation_result; /* = flutter::SemanticsValidationResult */
++  const char* locale;
++  const char* min_value;
++  const char* max_value;
++} FlutterSpiSemanticsNode;
++
++typedef struct {
++  size_t struct_size;
++  int32_t id;
++  int32_t override_id;
++  const char* label;
++  const char* hint;
++} FlutterSpiSemanticsCustomAction;
++
++typedef struct FlutterSpiSemanticsApi {
++  size_t struct_size;
++  FlutterSpiResult (*update_builder_create)(
++      FlutterSpiEngine* engine, FlutterSpiSemanticsUpdateBuilder** out_builder);
++  FlutterSpiResult (*update_node)(FlutterSpiSemanticsUpdateBuilder* builder,
++                                  const FlutterSpiSemanticsNode* node);
++  FlutterSpiResult (*update_custom_action)(
++      FlutterSpiSemanticsUpdateBuilder* builder,
++      const FlutterSpiSemanticsCustomAction* action);
++  FlutterSpiResult (*update_submit)(FlutterSpiSemanticsUpdateBuilder* builder,
++                                    int64_t view_id); /* consome */
++  FlutterSpiResult (*update_builder_release)(
++      FlutterSpiSemanticsUpdateBuilder* builder);
++} FlutterSpiSemanticsApi;
++
++#endif  // FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_SEMANTICS_H_
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index e5ff1bd7f9c..22636618dd6 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -11,6 +11,7 @@
+ #include "flutter/runtime_spi/include/flutter_fragment.h"
+ #include "flutter/runtime_spi/include/flutter_paint_effects.h"
+ #include "flutter/runtime_spi/include/flutter_text.h"
++#include "flutter/lib/ui/semantics/semantics_node.h"
+ #include "flutter/txt/src/txt/font_style.h"
+ #include "flutter/txt/src/txt/paragraph_style.h"
+ #include "flutter/txt/src/txt/text_baseline.h"
+@@ -51,6 +52,28 @@ TEST(SpiAbi, CapabilityValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiCapPaintEffects, 1ULL << 11);
+   EXPECT_EQ(kFlutterSpiCapSceneLayers, 1ULL << 12);
+   EXPECT_EQ(kFlutterSpiCapFragmentPrograms, 1ULL << 13);
++  EXPECT_EQ(kFlutterSpiCapSemanticsUpdate, 1ULL << 14);
++}
++
++TEST(SpiAbi, SemanticsEnumValuesMatchCore) {
++  static_assert(kFlutterSpiTristateNone ==
++                static_cast<int32_t>(SemanticsTristate::kNone));
++  static_assert(kFlutterSpiTristateTrue ==
++                static_cast<int32_t>(SemanticsTristate::kTrue));
++  static_assert(kFlutterSpiTristateFalse ==
++                static_cast<int32_t>(SemanticsTristate::kFalse));
++  static_assert(kFlutterSpiCheckStateNone ==
++                static_cast<int32_t>(SemanticsCheckState::kNone));
++  static_assert(kFlutterSpiCheckStateTrue ==
++                static_cast<int32_t>(SemanticsCheckState::kTrue));
++  static_assert(kFlutterSpiCheckStateFalse ==
++                static_cast<int32_t>(SemanticsCheckState::kFalse));
++  static_assert(kFlutterSpiCheckStateMixed ==
++                static_cast<int32_t>(SemanticsCheckState::kMixed));
++  static_assert(kFlutterSpiStringAttributeSpellOut ==
++                static_cast<int32_t>(StringAttributeType::kSpellOut));
++  static_assert(kFlutterSpiStringAttributeLocale ==
++                static_cast<int32_t>(StringAttributeType::kLocale));
+ }
+ 
+ TEST(SpiAbi, ImageEnumValuesAreFrozen) {
+@@ -67,7 +90,60 @@ TEST(SpiAbi, ImageEnumValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawUnmodified, 2);
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawExtendedRGBA128, 3);
+   EXPECT_EQ(kFlutterSpiImageByteFormatPNG, 4);
+-  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 8);
++  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 9);
++}
++
++TEST(SpiAbi, SemanticsLayoutIsFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsFlags, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsFlags, is_checked, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsFlags, is_selected, 12, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsFlags, is_focused, 32, 28);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsFlags, is_button, 36, 32);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsFlags, is_accessibility_focus_blocked,
++                    52, 48);
++  EXPECT_EQ(sizeof(FlutterSpiSemanticsFlags), 56u);
++
++  EXPECT_SPI_OFFSET(FlutterSpiStringAttribute, start, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiStringAttribute, end, 4, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiStringAttribute, type, 8, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiStringAttribute, locale, 16, 12);
++  EXPECT_EQ(sizeof(FlutterSpiStringAttribute), sizeof(void*) == 8 ? 24u : 16u);
++
++  EXPECT_SPI_OFFSET(FlutterSpiAttributedString, text, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiAttributedString, attributes, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiAttributedString, attribute_count, 16, 8);
++  EXPECT_EQ(sizeof(FlutterSpiAttributedString), sizeof(void*) == 8 ? 24u : 12u);
++
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsNode, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsNode, id, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsNode, flags, 16, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsNode, actions, 72, 64);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsNode, scroll_position, 112, 104);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsNode, rect, 136, 128);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsNode, label, 160, 148);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsNode, transform, 292, 216);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsNode, children_in_traversal_order,
++                    424, 344);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsNode, heading_level, 472, 368);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsNode, locale, 496, 384);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsNode, max_value, 512, 392);
++  EXPECT_EQ(sizeof(FlutterSpiSemanticsNode), sizeof(void*) == 8 ? 520u : 400u);
++
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsCustomAction, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsCustomAction, id, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsCustomAction, override_id, 12, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsCustomAction, label, 16, 12);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsCustomAction, hint, 24, 16);
++  EXPECT_EQ(sizeof(FlutterSpiSemanticsCustomAction),
++            sizeof(void*) == 8 ? 32u : 20u);
++
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsApi, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsApi, update_builder_create, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsApi, update_node, 16, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsApi, update_custom_action, 24, 12);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsApi, update_submit, 32, 16);
++  EXPECT_SPI_OFFSET(FlutterSpiSemanticsApi, update_builder_release, 40, 20);
++  EXPECT_EQ(sizeof(FlutterSpiSemanticsApi), sizeof(void*) == 8 ? 48u : 24u);
+ }
+ 
+ TEST(SpiAbi, FragmentUniformEnumValuesAreFrozen) {
+@@ -354,7 +430,8 @@ TEST(SpiAbi, EngineApiLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, image, 128, 76);
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, paint_effects, 136, 80);
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, fragment, 144, 84);
+-  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 152u : 88u);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, semantics, 152, 88);
++  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 160u : 92u);
+ }
+ 
+ TEST(SpiAbi, FragmentUniformInfoLayoutIsFrozen) {
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index f994e80ff98..9dfae23aa5b 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -157,6 +157,7 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+       .image = &image_api,
+       .paint_effects = &kPaintEffectsApi,
+       .fragment = SpiFragment::Api(),
++      .semantics = nullptr,
+   };
+ }
+ 
