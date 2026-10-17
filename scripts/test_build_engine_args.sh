@@ -18,6 +18,8 @@ mkdir -p "$standalone_repository/scripts/lib" "$standalone_repository/patches/te
   "$flutter_directory/engine/src/flutter/tools" "$fake_bin"
 # An already bootstrapped depot_tools has this marker.
 : > "$temporary_directory/work/depot_tools/python3_bin_reldir.txt"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$temporary_directory/work/depot_tools/gclient"
+chmod +x "$temporary_directory/work/depot_tools/gclient"
 cp "$repository_root/scripts/build-engine.sh" "$standalone_repository/scripts/build-engine.sh"
 cp "$repository_root/scripts/patch_series.py" "$standalone_repository/scripts/patch_series.py"
 cp "$repository_root/scripts/lib/paths.sh" "$standalone_repository/scripts/lib/paths.sh"
@@ -150,6 +152,88 @@ run_engine() {
   FVM_ROOT="$temporary_directory/fvm" \
   PATH="$fake_bin:$PATH" \
     "$standalone_repository/scripts/build-engine.sh" "$@"
+}
+
+gclient_workspace="$temporary_directory/gclient-workspace"
+gclient_function_source() {
+  awk '/^write_gclient\(\) \{/{capture=1} capture { print } /^\} # write_gclient$/{ exit }' \
+    "$repository_root/scripts/build-engine.sh"
+}
+
+run_gclient_generation() {
+  local target=$1
+  rm -rf "$gclient_workspace"
+  mkdir -p "$gclient_workspace/flutter"
+  bash -c "$(gclient_function_source)
+write_gclient '$gclient_workspace/flutter' '$target'"
+}
+
+read_gclient_var() {
+  local gclient_path=$1
+  local variable_name=$2
+  python3 - "$gclient_path" "$variable_name" <<'PY'
+import sys
+
+namespace = {}
+with open(sys.argv[1], encoding="utf-8") as gclient_file:
+    exec(gclient_file.read(), {}, namespace)
+print(namespace["solutions"][0]["custom_vars"][sys.argv[2]])
+PY
+}
+
+assert_gclient_var() {
+  local target=$1
+  local variable_name=$2
+  local expected_value=$3
+  local actual_value
+  actual_value=$(read_gclient_var "$gclient_workspace/flutter/.gclient" "$variable_name")
+  [[ "$actual_value" == "$expected_value" ]] || {
+    printf 'unexpected %s for %s: %s\n' "$variable_name" "$target" "$actual_value" >&2
+    exit 1
+  }
+}
+
+run_gclient_generation linux
+assert_gclient_var linux download_android_deps False
+assert_gclient_var linux download_fuchsia_deps False
+assert_gclient_var linux download_esbuild False
+
+run_gclient_generation android
+assert_gclient_var android download_android_deps True
+assert_gclient_var android download_fuchsia_deps False
+
+run_gclient_generation web
+assert_gclient_var web download_android_deps False
+assert_gclient_var web download_emsdk True
+assert_gclient_var web download_esbuild True
+assert_gclient_var web download_fuchsia_deps False
+
+cat > "$gclient_workspace/flutter/.gclient" <<'EOF'
+solutions = [
+  {
+    "name": ".",
+    "custom_vars": {
+      "preserve_this_variable": "yes",
+      "download_android_deps": False,
+    },
+  },
+]
+EOF
+target=android
+bash -c "$(gclient_function_source)
+write_gclient '$gclient_workspace/flutter' '$target'"
+assert_gclient_var android download_android_deps True
+[[ "$(python3 - "$gclient_workspace/flutter/.gclient" <<'PY'
+import sys
+
+namespace = {}
+with open(sys.argv[1], encoding="utf-8") as gclient_file:
+    exec(gclient_file.read(), {}, namespace)
+print(namespace["solutions"][0]["custom_vars"]["preserve_this_variable"])
+PY
+)" == yes ]] || {
+  printf 'existing .gclient custom_vars were not preserved\n' >&2
+  exit 1
 }
 
 start_lock_holder() {

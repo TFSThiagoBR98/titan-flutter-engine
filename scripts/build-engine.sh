@@ -390,6 +390,96 @@ lock="$repository_root/flutter.lock"
 
 value() { sed -n "s/^$1=//p" "$lock"; }
 
+write_gclient() {
+  local flutter_dir=$1
+  local target_os=$2
+  local gclient_path="$flutter_dir/.gclient"
+  local temporary_gclient
+
+  temporary_gclient=$(mktemp "$flutter_dir/.gclient.XXXXXX")
+  if ! python3 - "$gclient_path" "$target_os" > "$temporary_gclient" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+gclient_path = Path(sys.argv[1])
+target_os = sys.argv[2]
+target_custom_vars = {
+    "linux": {
+        "download_android_deps": False,
+        "download_emsdk": False,
+        "download_esbuild": False,
+        "download_fuchsia_deps": False,
+        "setup_githooks": False,
+    },
+    "fuchsia": {
+        "download_android_deps": False,
+        "download_emsdk": False,
+        "download_esbuild": False,
+        "download_fuchsia_deps": False,
+        "setup_githooks": False,
+    },
+    "android": {
+        "download_android_deps": True,
+        "download_emsdk": False,
+        "download_esbuild": False,
+        "download_fuchsia_deps": False,
+        "setup_githooks": False,
+    },
+    "web": {
+        "download_android_deps": False,
+        "download_emsdk": True,
+        "download_esbuild": True,
+        "download_fuchsia_deps": False,
+        "setup_githooks": False,
+    },
+}
+
+try:
+    custom_vars = target_custom_vars[target_os]
+except KeyError as error:
+    raise SystemExit(f"unsupported gclient target: {target_os}") from error
+
+if gclient_path.exists():
+    namespace = {}
+    exec(gclient_path.read_text(encoding="utf-8"), {}, namespace)
+    solutions = namespace.get("solutions")
+    if not isinstance(solutions, list) or not solutions:
+        raise SystemExit(f"invalid gclient solutions: {gclient_path}")
+else:
+    solutions = [
+        {
+            "custom_deps": {},
+            "deps_file": "DEPS",
+            "managed": False,
+            "name": ".",
+            "safesync_url": "",
+            "url": "https://github.com/flutter/flutter.git",
+        }
+    ]
+
+solution = solutions[0]
+solution.setdefault("custom_vars", {}).update(custom_vars)
+serialized_solutions = json.dumps(solutions, indent=2)
+serialized_solutions = re.sub(r"\btrue\b", "True", serialized_solutions)
+serialized_solutions = re.sub(r"\bfalse\b", "False", serialized_solutions)
+serialized_solutions = re.sub(r"\bnull\b", "None", serialized_solutions)
+print("solutions = " + serialized_solutions)
+PY
+  then
+    rm -f "$temporary_gclient"
+    return 2
+  fi
+
+  if [[ -f "$gclient_path" ]] && cmp -s "$temporary_gclient" "$gclient_path"; then
+    rm -f "$temporary_gclient"
+    return 1
+  fi
+  mv "$temporary_gclient" "$gclient_path"
+  return 0
+} # write_gclient
+
 flutter_commit=$(value flutter_commit)
 [[ -n "$flutter_commit" ]] || die "flutter.lock is missing flutter_commit"
 
@@ -459,30 +549,12 @@ if [[ ! -d "$flutter_dir/.git" && ! -f "$flutter_dir/.git" ]]; then
   flutter_checkout_new=1
 fi
 
+gclient_needs_sync=0
+if write_gclient "$flutter_dir" "$target_os"; then
+  gclient_needs_sync=1
+fi
+
 if ((bootstrap)); then
-  # The Flutter monorepo is its own gclient solution ("name": "."), with the
-  # .gclient file at the root of the checkout, as in Flutter's
-  # engine/scripts/standard.gclient. Options go in custom_vars.
-  if [[ ! -f "$flutter_dir/.gclient" ]]; then
-    cat > "$flutter_dir/.gclient" <<'EOF'
-solutions = [
-  {
-    "custom_deps": {},
-    "deps_file": "DEPS",
-    "managed": False,
-    "name": ".",
-    "safesync_url": "",
-    "url": "https://github.com/flutter/flutter.git",
-    "custom_vars": {
-      "download_android_deps": False,
-      "download_fuchsia_deps": False,
-      "download_esbuild": False,
-      "setup_githooks": False,
-    },
-  },
-]
-EOF
-  fi
   if ((flutter_checkout_new)); then
     git -C "$flutter_dir" fetch --depth 1 origin "$flutter_commit"
     git -C "$flutter_dir" checkout --detach FETCH_HEAD
@@ -490,6 +562,8 @@ EOF
     git -C "$flutter_dir" fetch origin "$flutter_commit"
     git -C "$flutter_dir" checkout --detach "$flutter_commit"
   fi
+fi
+if ((bootstrap || gclient_needs_sync)); then
   (cd "$flutter_dir" && gclient sync -D --no-history)
 fi
 
