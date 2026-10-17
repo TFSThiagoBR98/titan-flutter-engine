@@ -1,0 +1,453 @@
+# Why: Add the ABI extension, warm-up frame semantics, opaque root-isolate
+# launch, and the internal bridges required by the Dart runtime migration.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 1c62041aad5..dc255d469ea 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -28,6 +28,7 @@ source_set("spi_backend") {
+   public = [
+     "spi_runtime_backend.h",
+     "spi_runtime_backend_factory.h",
++    "internal/spi_internal_bridges.h",
+   ]
+   sources = [
+     "spi_engine_api.cc",
+@@ -36,6 +37,8 @@ source_set("spi_backend") {
+     "spi_runtime_backend.h",
+     "spi_runtime_backend_factory.cc",
+     "spi_runtime_backend_factory.h",
++    "internal/spi_internal_bridges.cc",
++    "internal/spi_internal_bridges.h",
+     "spi_scene.cc",
+     "spi_scene.h",
+   ]
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 351f7d61c93..4e2a81b3b08 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -269,8 +269,10 @@ SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, notify_low_memory,
+                   sizeof(void*) == 8 ? 144 : 72);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, is_running_runtime_code,
+                   sizeof(void*) == 8 ? 152 : 76);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, launch_root_isolate,
++                  sizeof(void*) == 8 ? 160 : 80);
+ SPI_EXPECT_SIZE(FlutterSpiRuntimeExtensions,
+-                sizeof(void*) == 8 ? 160 : 80);
++                sizeof(void*) == 8 ? 168 : 84);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, version_major,
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_extensions.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_extensions.h
+index a275cc52fad..c412da09817 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_extensions.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_extensions.h
+@@ -88,6 +88,7 @@ typedef struct FlutterSpiRuntimeExtensions {
+       void* user_data, const FlutterSpiServiceHandler* handler);
+   void (*notify_low_memory)(void* user_data);
+   bool (*is_running_runtime_code)(void* user_data);
++  bool (*launch_root_isolate)(void* user_data, void* run_configuration);
+ } FlutterSpiRuntimeExtensions;
+ 
+ #ifdef __cplusplus
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index a6e04f2f290..cac388c1a00 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 12
++#define FLUTTER_SPI_VERSION_MINOR 13
+ 
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+@@ -214,6 +214,8 @@ struct FlutterSpiEngineApi {
+   FlutterSpiResult (*scene_release)(FlutterSpiScene* scene);
+   FlutterSpiResult (*submit_frame)(FlutterSpiEngine* engine,
+                                    int64_t view_id,
++                                   // A frame_token of zero submits a warm-up
++                                   // frame outside begin_frame.
+                                    uint64_t frame_token,
+                                    FlutterSpiScene* scene,
+                                    double device_pixel_ratio);
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
+new file mode 100644
+index 00000000000..1a10d68ff52
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
+@@ -0,0 +1,53 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
++
++#include <utility>
++
++#include "flutter/assets/asset_manager.h"
++#include "flutter/flow/layers/layer_tree.h"
++#include "flutter/lib/ui/text/font_collection.h"
++#include "flutter/runtime/runtime_delegate.h"
++#include "flutter/runtime_spi/spi_runtime_backend.h"
++#include "flutter/runtime_spi/spi_scene.h"
++
++namespace flutter {
++
++FlutterSpiResult SpiSceneFromLayerTree(std::unique_ptr<LayerTree> layer_tree,
++                                       FlutterSpiScene** out) {
++  if (out == nullptr || layer_tree == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++
++  auto scene = std::make_unique<FlutterSpiScene>();
++  scene->width_px = layer_tree->frame_size().width;
++  scene->height_px = layer_tree->frame_size().height;
++  scene->layer_tree = std::move(layer_tree);
++  *out = scene.release();
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiSubmitSemantics(
++    FlutterSpiEngine* engine,
++    int64_t view_id,
++    SemanticsNodeUpdates nodes,
++    CustomAccessibilityActionUpdates actions) {
++  if (engine == nullptr || engine->backend == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  engine->backend->runtime_delegate_.UpdateSemantics(
++      view_id, std::move(nodes), std::move(actions));
++  return kFlutterSpiOk;
++}
++
++FontCollection& SpiEngineFontCollection(FlutterSpiEngine* engine) {
++  return engine->backend->runtime_delegate_.GetFontCollection();
++}
++
++std::shared_ptr<AssetManager> SpiEngineAssetManager(FlutterSpiEngine* engine) {
++  return engine->backend->runtime_delegate_.GetAssetManager();
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+new file mode 100644
+index 00000000000..be5461a2df9
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+@@ -0,0 +1,39 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_INTERNAL_SPI_INTERNAL_BRIDGES_H_
++#define FLUTTER_RUNTIME_SPI_INTERNAL_SPI_INTERNAL_BRIDGES_H_
++
++#include <memory>
++
++#include "flutter/lib/ui/semantics/custom_accessibility_action.h"
++#include "flutter/lib/ui/semantics/semantics_node.h"
++#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
++
++namespace flutter {
++
++class AssetManager;
++class FontCollection;
++class LayerTree;
++
++// Temporary bridge until S4d moves LayerTree conversion behind dart:ui SPI.
++FlutterSpiResult SpiSceneFromLayerTree(std::unique_ptr<LayerTree> layer_tree,
++                                       FlutterSpiScene** out);
++
++// Temporary bridge until S4e moves semantics submission behind dart:ui SPI.
++FlutterSpiResult SpiSubmitSemantics(
++    FlutterSpiEngine* engine,
++    int64_t view_id,
++    SemanticsNodeUpdates nodes,
++    CustomAccessibilityActionUpdates actions);
++
++// Temporary bridge until S4f moves font access behind dart:ui SPI.
++FontCollection& SpiEngineFontCollection(FlutterSpiEngine* engine);
++
++// Temporary bridge until S4g moves asset access behind dart:ui SPI.
++std::shared_ptr<AssetManager> SpiEngineAssetManager(FlutterSpiEngine* engine);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_INTERNAL_SPI_INTERNAL_BRIDGES_H_
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index 08f2853f009..73f04bad123 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -93,7 +93,7 @@ TEST(SpiAbi, ImageEnumValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawUnmodified, 2);
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawExtendedRGBA128, 3);
+   EXPECT_EQ(kFlutterSpiImageByteFormatPNG, 4);
+-  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 12);
++  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 13);
+ }
+ 
+ TEST(SpiAbi, SemanticsLayoutIsFrozen) {
+@@ -466,8 +466,9 @@ TEST(SpiAbi, RuntimeExtensionsEnumAndLayoutsAreFrozen) {
+                     shutdown_platform_isolates, 104, 52);
+   EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions,
+                     set_root_isolate_owner_to_current_thread, 112, 56);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions, launch_root_isolate, 160, 80);
+   EXPECT_EQ(sizeof(FlutterSpiRuntimeExtensions),
+-            sizeof(void*) == 8 ? 160u : 80u);
++            sizeof(void*) == 8 ? 168u : 84u);
+ }
+ 
+ TEST(SpiServiceProtocol, MethodNamesMatchTheVmService) {
+@@ -519,8 +520,9 @@ TEST(SpiAbi, ServiceHandlerLayoutIsFrozen) {
+                     is_running_runtime_code,
+                     152,
+                     76);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions, launch_root_isolate, 160, 80);
+   EXPECT_EQ(sizeof(FlutterSpiRuntimeExtensions),
+-            sizeof(void*) == 8 ? 160u : 80u);
++            sizeof(void*) == 8 ? 168u : 84u);
+ }
+ 
+ TEST(SpiAbi, EngineApiLayoutIsFrozen) {
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+index 459b093b818..f946726185e 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+@@ -174,6 +174,18 @@ bool SpiRuntimeBackend::Launch(
+   running_ = started_;
+   stop_requested_ = false;
+   stop_called_ = false;
++  if (started_) {
++    const FlutterSpiRuntimeExtensions* extensions = GetExtensions();
++    if (extensions != nullptr &&
++        IsCallbackAvailable(
++            offsetof(FlutterSpiRuntimeExtensions, launch_root_isolate),
++            sizeof(extensions->launch_root_isolate)) &&
++        extensions->launch_root_isolate != nullptr) {
++      running_ = extensions->launch_root_isolate(extensions->user_data,
++                                                 &configuration);
++      started_ = running_;
++    }
++  }
+   return started_;
+ }
+ 
+@@ -258,6 +270,7 @@ bool SpiRuntimeBackend::BeginFrame(fml::TimePoint frame_time,
+       .deadline_ns = frame_time.ToEpochDelta().ToNanoseconds(),
+   };
+   current_frame_deadline_ns_ = frame_info.deadline_ns;
++  frame_in_progress_ = true;
+   table_.begin_frame(table_.user_data, &frame_info);
+   return true;
+ }
+@@ -586,7 +599,10 @@ FlutterSpiResult SpiRuntimeBackend::SubmitFrame(int64_t view_id,
+   if (!HasUiThread()) {
+     return kFlutterSpiWrongThread;
+   }
+-  if (scene == nullptr || frame_token != current_frame_token_ ||
++  const bool is_warm_up_frame = frame_token == 0 && !frame_in_progress_;
++  const bool is_current_frame = frame_in_progress_ &&
++                                frame_token == current_frame_token_;
++  if (scene == nullptr || (!is_warm_up_frame && !is_current_frame) ||
+       views_.find(view_id) == views_.end()) {
+     SpiSceneRelease(scene);
+     return kFlutterSpiStaleFrame;
+@@ -628,6 +644,7 @@ FlutterSpiResult SpiRuntimeBackend::FramesDone() {
+     return kFlutterSpiWrongThread;
+   }
+   runtime_delegate_.OnAllViewsRendered();
++  frame_in_progress_ = false;
+   return kFlutterSpiOk;
+ }
+ 
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.h b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+index fb192d0b472..a9eedadbbbe 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.h
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+@@ -15,6 +15,7 @@
+ 
+ #include "flutter/common/task_runners.h"
+ #include "flutter/fml/time/time_point.h"
++#include "flutter/lib/ui/semantics/custom_accessibility_action.h"
+ #include "flutter/lib/ui/window/platform_message_response.h"
+ #include "flutter/runtime_spi/include/flutter_runtime_spi.h"
+ #include "flutter/runtime_spi/image/spi_image_snapshot.h"
+@@ -24,6 +25,7 @@
+ namespace flutter {
+ 
+ class AssetManager;
++class FontCollection;
+ class RuntimeDelegate;
+ class SpiRuntimeBackend;
+ class SpiFragment;
+@@ -154,6 +156,14 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+  private:
+   friend class SpiEngineApi;
+   friend class SpiFragment;
++  friend FlutterSpiResult SpiSubmitSemantics(
++      FlutterSpiEngine* engine,
++      int64_t view_id,
++      SemanticsNodeUpdates nodes,
++      CustomAccessibilityActionUpdates actions);
++  friend FontCollection& SpiEngineFontCollection(FlutterSpiEngine* engine);
++  friend std::shared_ptr<AssetManager> SpiEngineAssetManager(
++      FlutterSpiEngine* engine);
+ 
+   bool HasUiThread() const;
+   bool HasCapability(FlutterSpiCapabilities capability) const;
+@@ -181,6 +191,7 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+   std::unordered_set<FlutterSpiResponseHandle*> response_handles_;
+   uint64_t current_frame_token_ = 0;
+   int64_t current_frame_deadline_ns_ = 0;
++  bool frame_in_progress_ = false;
+   bool running_ = false;
+   bool started_ = false;
+   bool stop_requested_ = false;
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
+index 67c601649c0..db77a159c16 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
+@@ -23,7 +23,11 @@
+ #include "flutter/lib/ui/semantics/semantics_node.h"
+ #include "flutter/lib/ui/text/font_collection.h"
+ #include "flutter/runtime/runtime_delegate.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
++#include "flutter/runtime_spi/spi_scene.h"
+ #include "flutter/runtime_spi/testing/c_test_runtime.h"
++#include "flutter/flow/layers/container_layer.h"
++#include "flutter/flow/layers/layer_tree.h"
+ #include "flutter/shell/common/display.h"
+ #include "flutter/shell/common/run_configuration.h"
+ #include "flutter/testing/testing.h"
+@@ -170,6 +174,18 @@ struct RuntimeCallbackCapture {
+   bool hit_test_result = false;
+ };
+ 
++struct LaunchRootIsolateCapture {
++  void* run_configuration = nullptr;
++  size_t call_count = 0;
++};
++
++bool CaptureLaunchRootIsolate(void* user_data, void* run_configuration) {
++  auto* capture = static_cast<LaunchRootIsolateCapture*>(user_data);
++  capture->run_configuration = run_configuration;
++  capture->call_count++;
++  return true;
++}
++
+ void CaptureDisplays(void* user_data,
+                      const FlutterSpiDisplay* displays,
+                      size_t count) {
+@@ -381,6 +397,111 @@ TEST_F(SpiRuntimeBackendTest, SubmitWithStaleTokenIsRejectedAndReleasesScene) {
+             kFlutterSpiStaleFrame);
+ }
+ 
++TEST_F(SpiRuntimeBackendTest, WarmUpFrameUsesTokenZero) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++  backend->AddView(1, ViewportMetrics(), {});
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  ASSERT_NE(runtime->engine_api->scene_create_empty, nullptr);
++  ASSERT_NE(runtime->engine_api->submit_frame, nullptr);
++  ASSERT_NE(runtime->engine_api->frames_done, nullptr);
++  FlutterSpiScene* scene = nullptr;
++  ASSERT_EQ(runtime->engine_api->scene_create_empty(runtime->engine, 10, 10,
++                                                     &scene),
++            kFlutterSpiOk);
++
++  EXPECT_EQ(runtime->engine_api->submit_frame(runtime->engine, 1, 0, scene,
++                                               1.0),
++            kFlutterSpiOk);
++  EXPECT_EQ(delegate.render_count, 1u);
++  EXPECT_EQ(runtime->engine_api->frames_done(runtime->engine), kFlutterSpiOk);
++  EXPECT_EQ(delegate.all_views_rendered_count, 1u);
++}
++
++TEST_F(SpiRuntimeBackendTest, TokenZeroDuringFrameIsStale) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++  backend->AddView(1, ViewportMetrics(), {});
++  ASSERT_TRUE(backend->BeginFrame(fml::TimePoint::FromTicks(100), 7));
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  ASSERT_NE(runtime->engine_api->scene_create_empty, nullptr);
++  ASSERT_NE(runtime->engine_api->submit_frame, nullptr);
++  FlutterSpiScene* scene = nullptr;
++  ASSERT_EQ(runtime->engine_api->scene_create_empty(runtime->engine, 10, 10,
++                                                     &scene),
++            kFlutterSpiOk);
++
++  EXPECT_EQ(runtime->engine_api->submit_frame(runtime->engine, 1, 0, scene,
++                                               1.0),
++            kFlutterSpiStaleFrame);
++}
++
++TEST_F(SpiRuntimeBackendTest, LaunchUsesTheRuntimeExtension) {
++  auto table = c_test_runtime_table(runtime);
++  LaunchRootIsolateCapture capture;
++  FlutterSpiRuntimeExtensions extensions = *table.extensions;
++  extensions.user_data = &capture;
++  extensions.launch_root_isolate = CaptureLaunchRootIsolate;
++  table.extensions = &extensions;
++  auto backend = CreateBackend(table);
++
++  ASSERT_NE(backend->GetExtensions(), nullptr);
++  ASSERT_NE(backend->GetExtensions()->launch_root_isolate, nullptr);
++  Settings settings;
++  EXPECT_TRUE(backend->Launch(RunConfiguration(nullptr), settings, {}, 1));
++  EXPECT_EQ(capture.call_count, 1u);
++  EXPECT_NE(capture.run_configuration, nullptr);
++}
++
++TEST_F(SpiRuntimeBackendTest, InternalBridgeConvertsLayerTreeToScene) {
++  auto layer_tree = std::make_unique<LayerTree>(
++      std::make_shared<ContainerLayer>(), DlISize(12, 8));
++  LayerTree* expected_layer_tree = layer_tree.get();
++  FlutterSpiScene* scene = nullptr;
++
++  EXPECT_EQ(SpiSceneFromLayerTree(std::move(layer_tree), &scene),
++            kFlutterSpiOk);
++  ASSERT_NE(scene, nullptr);
++  EXPECT_EQ(scene->layer_tree.get(), expected_layer_tree);
++  EXPECT_EQ(scene->width_px, 12);
++  EXPECT_EQ(scene->height_px, 8);
++  EXPECT_EQ(SpiSceneRelease(scene), kFlutterSpiOk);
++}
++
++TEST_F(SpiRuntimeBackendTest, InternalBridgeSubmitsSemantics) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  SemanticsNode node;
++  node.id = 7;
++  node.label = "bridge";
++  SemanticsNodeUpdates nodes;
++  nodes.emplace(node.id, node);
++  CustomAccessibilityActionUpdates actions;
++
++  EXPECT_EQ(SpiSubmitSemantics(backend->engine_handle(), 42, std::move(nodes),
++                               std::move(actions)),
++            kFlutterSpiOk);
++  EXPECT_EQ(delegate.semantics_update_count, 1u);
++  ASSERT_EQ(delegate.last_semantics_nodes.size(), 1u);
++  EXPECT_EQ(delegate.last_semantics_nodes.at(7).label, "bridge");
++}
++
++TEST_F(SpiRuntimeBackendTest, InternalBridgeReturnsFontCollection) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++
++  EXPECT_EQ(&SpiEngineFontCollection(backend->engine_handle()),
++            &delegate.GetFontCollection());
++}
++
++TEST_F(SpiRuntimeBackendTest, InternalBridgeReturnsAssetManager) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  delegate.asset_manager = std::make_shared<AssetManager>();
++
++  EXPECT_EQ(SpiEngineAssetManager(backend->engine_handle()),
++            delegate.asset_manager);
++}
++
+ TEST_F(SpiRuntimeBackendTest, SemanticsSubmitReachesDelegate) {
+   auto backend = CreateBackend(c_test_runtime_table(runtime));
+   LaunchBackend(backend.get());
