@@ -1,0 +1,244 @@
+# Why: expose the optional runtime-owned C extensions table and freeze ABI
+# 0.10 layouts for 64-bit and 32-bit targets.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 00db0e70cf9..1c62041aad5 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -50,6 +50,7 @@ source_set("spi_backend") {
+ source_set("runtime_spi_c_api") {
+   public = [
+     "include/flutter_runtime_spi.h",
++    "include/flutter_runtime_extensions.h",
+     "include/flutter_fragment.h",
+     "include/flutter_scene.h",
+     "include/flutter_text.h",
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 7d4334b7620..710b7e2fc17 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -193,6 +193,47 @@ SPI_EXPECT_OFFSET(FlutterSpiSemanticsApi, update_builder_release,
+                   sizeof(void*) == 8 ? 40 : 20);
+ SPI_EXPECT_SIZE(FlutterSpiSemanticsApi, sizeof(void*) == 8 ? 48 : 24);
+ 
++SPI_EXPECT_OFFSET(FlutterSpiMapping, data, 0);
++SPI_EXPECT_OFFSET(FlutterSpiMapping, size, sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiMapping, release_user_data,
++                  sizeof(void*) == 8 ? 16 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiMapping, release,
++                  sizeof(void*) == 8 ? 24 : 12);
++SPI_EXPECT_SIZE(FlutterSpiMapping, sizeof(void*) == 8 ? 32 : 16);
++
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, user_data,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, free_string,
++                  sizeof(void*) == 8 ? 16 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, get_main_port,
++                  sizeof(void*) == 8 ? 24 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, get_root_isolate_service_id,
++                  sizeof(void*) == 8 ? 32 : 16);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, get_root_isolate_return_code,
++                  sizeof(void*) == 8 ? 40 : 20);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, get_isolate_name,
++                  sizeof(void*) == 8 ? 48 : 24);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, get_last_error,
++                  sizeof(void*) == 8 ? 56 : 28);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, has_live_ports,
++                  sizeof(void*) == 8 ? 64 : 32);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, has_pending_microtasks,
++                  sizeof(void*) == 8 ? 72 : 36);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, flush_microtask_queue,
++                  sizeof(void*) == 8 ? 80 : 40);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, load_deferred_library,
++                  sizeof(void*) == 8 ? 88 : 44);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, load_deferred_library_error,
++                  sizeof(void*) == 8 ? 96 : 48);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, shutdown_platform_isolates,
++                  sizeof(void*) == 8 ? 104 : 52);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions,
++                  set_root_isolate_owner_to_current_thread,
++                  sizeof(void*) == 8 ? 112 : 56);
++SPI_EXPECT_SIZE(FlutterSpiRuntimeExtensions,
++                sizeof(void*) == 8 ? 120 : 60);
++
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, version_major,
+                   sizeof(void*) == 8 ? 8 : 4);
+@@ -238,7 +279,9 @@ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, view_focus,
+                   sizeof(void*) == 8 ? 160 : 92);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, notify_idle,
+                   sizeof(void*) == 8 ? 168 : 96);
+-SPI_EXPECT_SIZE(FlutterSpiRuntimeTable, sizeof(void*) == 8 ? 176 : 104);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, extensions,
++                  sizeof(void*) == 8 ? 176 : 100);
++SPI_EXPECT_SIZE(FlutterSpiRuntimeTable, sizeof(void*) == 8 ? 184 : 104);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiColor, red, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiColor, green, 4);
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_extensions.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_extensions.h
+new file mode 100644
+index 00000000000..26594694218
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_extensions.h
+@@ -0,0 +1,58 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_RUNTIME_EXTENSIONS_H_
++#define FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_RUNTIME_EXTENSIONS_H_
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef struct {
++  const uint8_t* data;
++  size_t size;
++  void* release_user_data;
++  void (*release)(void* release_user_data);
++} FlutterSpiMapping;
++
++typedef enum {
++  kFlutterSpiRuntimeErrorNone = 0,
++  kFlutterSpiRuntimeErrorUnknown = 1,
++  kFlutterSpiRuntimeErrorApi = 2,
++  kFlutterSpiRuntimeErrorCompilation = 3,
++} FlutterSpiRuntimeErrorType;
++
++typedef struct FlutterSpiRuntimeExtensions {
++  size_t struct_size;
++  void* user_data;
++  void (*free_string)(void* user_data, char* string);
++  int64_t (*get_main_port)(void* user_data);
++  bool (*get_root_isolate_service_id)(void* user_data, char** out_utf8);
++  bool (*get_root_isolate_return_code)(void* user_data, uint32_t* out_code);
++  char* (*get_isolate_name)(void* user_data);
++  int32_t (*get_last_error)(void* user_data);
++  bool (*has_live_ports)(void* user_data);
++  bool (*has_pending_microtasks)(void* user_data);
++  void (*flush_microtask_queue)(void* user_data);
++  void (*load_deferred_library)(void* user_data,
++                                int64_t loading_unit_id,
++                                FlutterSpiMapping snapshot_data,
++                                FlutterSpiMapping snapshot_instructions);
++  void (*load_deferred_library_error)(void* user_data,
++                                      int64_t loading_unit_id,
++                                      const char* error_message,
++                                      bool transient);
++  void (*shutdown_platform_isolates)(void* user_data);
++  void (*set_root_isolate_owner_to_current_thread)(void* user_data);
++} FlutterSpiRuntimeExtensions;
++
++#ifdef __cplusplus
++}  // extern "C"
++#endif
++
++#endif  // FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_RUNTIME_EXTENSIONS_H_
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index 1957c5c54d9..9428e3c8968 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 9
++#define FLUTTER_SPI_VERSION_MINOR 10
+ 
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+@@ -43,6 +43,7 @@ typedef struct FlutterSpiEngineApi FlutterSpiEngineApi;
+ #include "flutter_paint_effects.h"
+ #include "flutter_fragment.h"
+ #include "flutter_semantics.h"
++#include "flutter_runtime_extensions.h"
+ 
+ typedef struct {
+   size_t struct_size;
+@@ -178,6 +179,7 @@ typedef struct {
+                      int32_t state,
+                      int32_t direction);
+   void (*notify_idle)(void* user_data, int64_t deadline_ns);
++  const FlutterSpiRuntimeExtensions* extensions;
+ } FlutterSpiRuntimeTable;
+ 
+ struct FlutterSpiEngineApi {
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index 22636618dd6..ec0197c9044 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -12,6 +12,7 @@
+ #include "flutter/runtime_spi/include/flutter_paint_effects.h"
+ #include "flutter/runtime_spi/include/flutter_text.h"
+ #include "flutter/lib/ui/semantics/semantics_node.h"
++#include "flutter/third_party/tonic/logging/dart_error.h"
+ #include "flutter/txt/src/txt/font_style.h"
+ #include "flutter/txt/src/txt/paragraph_style.h"
+ #include "flutter/txt/src/txt/text_baseline.h"
+@@ -90,7 +91,7 @@ TEST(SpiAbi, ImageEnumValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawUnmodified, 2);
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawExtendedRGBA128, 3);
+   EXPECT_EQ(kFlutterSpiImageByteFormatPNG, 4);
+-  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 9);
++  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 10);
+ }
+ 
+ TEST(SpiAbi, SemanticsLayoutIsFrozen) {
+@@ -406,7 +407,51 @@ TEST(SpiAbi, RuntimeTableLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, set_lifecycle_state, 152, 88);
+   EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, view_focus, 160, 92);
+   EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, notify_idle, 168, 96);
+-  EXPECT_EQ(sizeof(FlutterSpiRuntimeTable), sizeof(void*) == 8 ? 176u : 104u);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, extensions, 176, 100);
++  EXPECT_EQ(sizeof(FlutterSpiRuntimeTable), sizeof(void*) == 8 ? 184u : 104u);
++}
++
++TEST(SpiAbi, RuntimeExtensionsEnumAndLayoutsAreFrozen) {
++  static_assert(kFlutterSpiRuntimeErrorNone ==
++                static_cast<int32_t>(tonic::kNoError));
++  static_assert(kFlutterSpiRuntimeErrorUnknown ==
++                static_cast<int32_t>(tonic::kUnknownErrorType));
++  static_assert(kFlutterSpiRuntimeErrorApi ==
++                static_cast<int32_t>(tonic::kApiErrorType));
++  static_assert(kFlutterSpiRuntimeErrorCompilation ==
++                static_cast<int32_t>(tonic::kCompilationErrorType));
++
++  EXPECT_SPI_OFFSET(FlutterSpiMapping, data, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiMapping, size, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiMapping, release_user_data, 16, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiMapping, release, 24, 12);
++  EXPECT_EQ(sizeof(FlutterSpiMapping), sizeof(void*) == 8 ? 32u : 16u);
++
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions, user_data, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions, free_string, 16, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions, get_main_port, 24, 12);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions,
++                    get_root_isolate_service_id, 32, 16);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions,
++                    get_root_isolate_return_code, 40, 20);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions, get_isolate_name, 48, 24);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions, get_last_error, 56, 28);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions, has_live_ports, 64, 32);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions, has_pending_microtasks, 72,
++                    36);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions, flush_microtask_queue, 80,
++                    40);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions, load_deferred_library, 88,
++                    44);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions,
++                    load_deferred_library_error, 96, 48);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions,
++                    shutdown_platform_isolates, 104, 52);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions,
++                    set_root_isolate_owner_to_current_thread, 112, 56);
++  EXPECT_EQ(sizeof(FlutterSpiRuntimeExtensions),
++            sizeof(void*) == 8 ? 120u : 60u);
+ }
+ 
+ TEST(SpiAbi, EngineApiLayoutIsFrozen) {
