@@ -1,0 +1,689 @@
+# Why: move frame decoding, disposal state, durations, and wraparound into a
+# Dart-free IO-thread component while preserving the codec callback contract.
+diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
+index 2a155164c01..41cbc68edbb 100644
+--- a/engine/src/flutter/lib/ui/BUILD.gn
++++ b/engine/src/flutter/lib/ui/BUILD.gn
+@@ -119,6 +119,8 @@ source_set("ui_image_output") {
+   sources = [
+     "painting/display_list_deferred_image_gpu_skia.cc",
+     "painting/display_list_deferred_image_gpu_skia.h",
++    "painting/animated_image_frames.cc",
++    "painting/animated_image_frames.h",
+     "painting/image_encoding_impl.h",
+     "painting/image_encoding_skia.cc",
+     "painting/image_encoding_skia.h",
+diff --git a/engine/src/flutter/lib/ui/painting/animated_image_frames.cc b/engine/src/flutter/lib/ui/painting/animated_image_frames.cc
+new file mode 100644
+index 00000000000..0e72f098be9
+--- /dev/null
++++ b/engine/src/flutter/lib/ui/painting/animated_image_frames.cc
+@@ -0,0 +1,174 @@
++// Copyright 2013 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/lib/ui/painting/animated_image_frames.h"
++
++#include <format>
++#include <sstream>
++#include <utility>
++
++#include "flutter/fml/logging.h"
++#include "flutter/lib/ui/painting/display_list_image_gpu.h"
++#if IMPELLER_SUPPORTS_RENDERING
++#include "flutter/lib/ui/painting/image_decoder_impeller.h"
++#include "impeller/renderer/context.h"
++#endif  // IMPELLER_SUPPORTS_RENDERING
++#include "third_party/skia/include/codec/SkCodecAnimation.h"
++#include "third_party/skia/include/core/SkPixelRef.h"
++#include "third_party/skia/include/gpu/ganesh/SkImageGanesh.h"
++
++namespace flutter {
++
++AnimatedImageFrames::AnimatedImageFrames(
++    std::shared_ptr<ImageGenerator> generator,
++    bool impeller_enabled)
++    : generator_(std::move(generator)),
++      frame_count_(generator_->GetFrameCount()),
++      repetition_count_(generator_->GetPlayCount() ==
++                                ImageGenerator::kInfinitePlayCount
++                            ? -1
++                            : generator_->GetPlayCount() - 1),
++      impeller_enabled_(impeller_enabled) {}
++
++std::pair<sk_sp<DlImage>, std::string> AnimatedImageFrames::DecodeFrame(
++    const AnimatedImageFramesContext& context,
++    int frame_index) {
++  SkBitmap bitmap;
++  SkImageInfo info = generator_->GetInfo().makeColorType(kN32_SkColorType);
++  if (info.alphaType() == kUnpremul_SkAlphaType) {
++    info = info.makeAlphaType(kPremul_SkAlphaType);
++  }
++  if (!bitmap.tryAllocPixels(info)) {
++    std::ostringstream error;
++    error << "Failed to allocate memory for bitmap of size "
++          << info.computeMinByteSize() << "B";
++    FML_LOG(ERROR) << error.str();
++    return {nullptr, error.str()};
++  }
++
++  ImageGenerator::FrameInfo frame_info =
++      generator_->GetFrameInfo(frame_index);
++  const int required_frame_index =
++      frame_info.required_frame.value_or(SkCodec::kNoFrame);
++  if (required_frame_index != SkCodec::kNoFrame) {
++    if (!last_required_frame_.has_value()) {
++      FML_DLOG(INFO) << "Frame " << frame_index << " depends on frame "
++                     << required_frame_index
++                     << " and no required frames are cached. Using blank slate "
++                        "instead.";
++    } else {
++      bitmap.writePixels(last_required_frame_->pixmap());
++      if (restore_bg_color_rect_.has_value()) {
++        bitmap.erase(SK_ColorTRANSPARENT, restore_bg_color_rect_.value());
++      }
++    }
++  }
++
++  if (!generator_->GetPixels(info, bitmap.getPixels(), bitmap.rowBytes(),
++                             frame_index, required_frame_index)) {
++    std::ostringstream error;
++    error << "Could not getPixels for frame " << frame_index;
++    FML_LOG(ERROR) << error.str();
++    return {nullptr, error.str()};
++  }
++
++  const bool keep_current_frame =
++      frame_info.disposal_method == SkCodecAnimation::DisposalMethod::kKeep;
++  const bool restore_previous_frame =
++      frame_info.disposal_method ==
++      SkCodecAnimation::DisposalMethod::kRestorePrevious;
++  const bool previous_frame_available = last_required_frame_.has_value();
++  if (keep_current_frame ||
++      (previous_frame_available && !restore_previous_frame)) {
++    last_required_frame_ = bitmap;
++    last_required_frame_index_ = frame_index;
++  }
++
++  if (frame_info.disposal_method ==
++      SkCodecAnimation::DisposalMethod::kRestoreBGColor) {
++    restore_bg_color_rect_ = frame_info.disposal_rect;
++  } else {
++    restore_bg_color_rect_.reset();
++  }
++
++#if IMPELLER_SUPPORTS_RENDERING
++  if (impeller_enabled_) {
++#ifdef FML_OS_IOS
++    return ImageDecoderImpeller::UploadTextureToStorage(
++        context.impeller_context, std::make_shared<SkBitmap>(bitmap));
++#else
++    sk_sp<DlImage> dl_image;
++    std::string error_message;
++    auto mapping = std::make_unique<fml::NonOwnedMapping>(
++        reinterpret_cast<const uint8_t*>(bitmap.getAddr(0, 0)),
++        bitmap.dimensions().area() * info.bytesPerPixel(),
++        [bitmap](auto, auto) mutable { bitmap.reset(); });
++    std::shared_ptr<impeller::DeviceBuffer> device_buffer =
++        context.impeller_context->GetResourceAllocator()->CreateBufferWithCopy(
++            *mapping);
++    if (!device_buffer) {
++      return {nullptr, "Failed to allocate staging buffer."};
++    }
++
++    const auto pixel_format = ImageDecoderImpeller::ToPixelFormat(info.colorType());
++    if (!pixel_format.has_value()) {
++      std::string decode_error(
++          std::format("Unsupported pixel format (SkColorType={})",
++                      static_cast<int>(info.colorType())));
++      FML_DLOG(ERROR) << decode_error;
++      return {nullptr, decode_error};
++    }
++    ImageDecoderImpeller::ImageInfo image_info = {
++        .size = impeller::ISize(info.width(), info.height()),
++        .format = pixel_format.value()};
++    ImageDecoderImpeller::UploadTextureToPrivate(
++        [&](sk_sp<DlImage> image, std::string message) {
++          dl_image = std::move(image);
++          error_message = std::move(message);
++        },
++        context.impeller_context, device_buffer, image_info, std::nullopt,
++        context.gpu_disabled_sync_switch);
++    return {dl_image, error_message};
++#endif
++  }
++#endif  // IMPELLER_SUPPORTS_RENDERING
++
++#if !SLIMPELLER
++  sk_sp<SkImage> sk_image;
++  context.gpu_disabled_sync_switch->Execute(
++      fml::SyncSwitch::Handlers()
++          .SetIfTrue([&sk_image, &bitmap] {
++            sk_image = SkImages::RasterFromBitmap(bitmap);
++          })
++          .SetIfFalse([&sk_image, &context, &bitmap] {
++            if (context.resource_context) {
++              SkPixmap pixmap(bitmap.info(), bitmap.pixelRef()->pixels(),
++                              bitmap.pixelRef()->rowBytes());
++              sk_image = SkImages::CrossContextTextureFromPixmap(
++                  context.resource_context.get(), pixmap, true);
++            } else {
++              sk_image = SkImages::RasterFromBitmap(bitmap);
++            }
++          }));
++  return {DlImageGPU::Make({sk_image, context.unref_queue}), {}};
++#else
++  return {nullptr, "Unsupported backend."};
++#endif
++}
++
++AnimatedImageFrames::Frame AnimatedImageFrames::DecodeNextFrame(
++    const AnimatedImageFramesContext& context) {
++  auto [image, error] = DecodeFrame(context, next_frame_index_);
++  int duration_ms = 0;
++  if (image) {
++    duration_ms = static_cast<int>(
++        generator_->GetFrameInfo(next_frame_index_).duration);
++  }
++  if (frame_count_ > 0) {
++    next_frame_index_ = (next_frame_index_ + 1) % frame_count_;
++  }
++  return {std::move(image), std::move(error), duration_ms};
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/animated_image_frames.h b/engine/src/flutter/lib/ui/painting/animated_image_frames.h
+new file mode 100644
+index 00000000000..f98ddf3122d
+--- /dev/null
++++ b/engine/src/flutter/lib/ui/painting/animated_image_frames.h
+@@ -0,0 +1,65 @@
++// Copyright 2013 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_LIB_UI_PAINTING_ANIMATED_IMAGE_FRAMES_H_
++#define FLUTTER_LIB_UI_PAINTING_ANIMATED_IMAGE_FRAMES_H_
++
++#include <memory>
++#include <string>
++
++#include "flutter/display_list/image/dl_image.h"
++#include "flutter/flow/skia_gpu_object.h"
++#include "flutter/fml/memory/weak_ptr.h"
++#include "flutter/fml/synchronization/sync_switch.h"
++#include "flutter/lib/ui/painting/image_generator.h"
++#include "third_party/skia/include/core/SkBitmap.h"
++
++namespace impeller {
++class Context;
++}  // namespace impeller
++
++namespace flutter {
++
++struct AnimatedImageFramesContext {
++  fml::WeakPtr<GrDirectContext> resource_context;
++  std::shared_ptr<const fml::SyncSwitch> gpu_disabled_sync_switch;
++  std::shared_ptr<impeller::Context> impeller_context;
++  fml::RefPtr<SkiaUnrefQueue> unref_queue;
++};
++
++class AnimatedImageFrames {
++ public:
++  AnimatedImageFrames(std::shared_ptr<ImageGenerator> generator,
++                      bool impeller_enabled);
++
++  int frame_count() const { return frame_count_; }
++  int repetition_count() const { return repetition_count_; }
++
++  struct Frame {
++    sk_sp<DlImage> image;
++    std::string error;
++    int duration_ms;
++  };
++
++  Frame DecodeNextFrame(const AnimatedImageFramesContext& context);
++
++ private:
++  std::pair<sk_sp<DlImage>, std::string> DecodeFrame(
++      const AnimatedImageFramesContext& context,
++      int frame_index);
++
++  const std::shared_ptr<ImageGenerator> generator_;
++  const int frame_count_;
++  const int repetition_count_;
++  const bool impeller_enabled_;
++
++  int next_frame_index_ = 0;
++  std::optional<SkBitmap> last_required_frame_;
++  int last_required_frame_index_ = -1;
++  std::optional<SkIRect> restore_bg_color_rect_;
++};
++
++}  // namespace flutter
++
++#endif  // FLUTTER_LIB_UI_PAINTING_ANIMATED_IMAGE_FRAMES_H_
+diff --git a/engine/src/flutter/lib/ui/painting/multi_frame_codec.cc b/engine/src/flutter/lib/ui/painting/multi_frame_codec.cc
+index 4010af4f77f..894b22c9d24 100644
+--- a/engine/src/flutter/lib/ui/painting/multi_frame_codec.cc
++++ b/engine/src/flutter/lib/ui/painting/multi_frame_codec.cc
+@@ -6,38 +6,18 @@
+ 
+ #include <utility>
+ 
+-#include "display_list/image/dl_image.h"
+ #include "flutter/fml/make_copyable.h"
+-#include "flutter/lib/ui/painting/display_list_image_gpu.h"
++#include "flutter/fml/logging.h"
++#include "flutter/lib/ui/io_manager.h"
+ #include "flutter/lib/ui/painting/image.h"
+-#if IMPELLER_SUPPORTS_RENDERING
+-#include "flutter/impeller/renderer/context.h"
+-#include "flutter/lib/ui/painting/image_decoder_impeller.h"
+-#endif  // IMPELLER_SUPPORTS_RENDERING
++#include "flutter/lib/ui/ui_dart_state.h"
+ #include "third_party/dart/runtime/include/dart_api.h"
+-#include "third_party/skia/include/codec/SkCodecAnimation.h"
+-#include "third_party/skia/include/core/SkImage.h"
+-#include "third_party/skia/include/core/SkPixelRef.h"
+-#include "third_party/skia/include/gpu/ganesh/SkImageGanesh.h"
+ #include "third_party/tonic/logging/dart_invoke.h"
+ 
+ namespace flutter {
++namespace {
+ 
+-MultiFrameCodec::MultiFrameCodec(std::shared_ptr<ImageGenerator> generator)
+-    : state_(new State(std::move(generator))) {}
+-
+-MultiFrameCodec::~MultiFrameCodec() = default;
+-
+-MultiFrameCodec::State::State(std::shared_ptr<ImageGenerator> generator)
+-    : generator_(std::move(generator)),
+-      frameCount_(generator_->GetFrameCount()),
+-      repetitionCount_(generator_->GetPlayCount() ==
+-                               ImageGenerator::kInfinitePlayCount
+-                           ? -1
+-                           : generator_->GetPlayCount() - 1),
+-      is_impeller_enabled_(UIDartState::Current()->IsImpellerEnabled()) {}
+-
+-static void InvokeNextFrameCallback(
++void InvokeNextFrameCallback(
+     const fml::RefPtr<CanvasImage>& image,
+     int duration,
+     const std::string& decode_error,
+@@ -55,184 +35,14 @@ static void InvokeNextFrameCallback(
+                      tonic::ToDart(decode_error)});
+ }
+ 
+-std::pair<sk_sp<DlImage>, std::string>
+-MultiFrameCodec::State::GetNextFrameImage(
+-    const fml::WeakPtr<GrDirectContext>& resourceContext,
+-    const std::shared_ptr<const fml::SyncSwitch>& gpu_disable_sync_switch,
+-    const std::shared_ptr<impeller::Context>& impeller_context,
+-    const fml::RefPtr<flutter::SkiaUnrefQueue>& unref_queue) {
+-  SkBitmap bitmap = SkBitmap();
+-  SkImageInfo info = generator_->GetInfo().makeColorType(kN32_SkColorType);
+-  if (info.alphaType() == kUnpremul_SkAlphaType) {
+-    SkImageInfo updated = info.makeAlphaType(kPremul_SkAlphaType);
+-    info = updated;
+-  }
+-  if (!bitmap.tryAllocPixels(info)) {
+-    std::ostringstream ostr;
+-    ostr << "Failed to allocate memory for bitmap of size "
+-         << info.computeMinByteSize() << "B";
+-    std::string decode_error = ostr.str();
+-    FML_LOG(ERROR) << decode_error;
+-    return std::make_pair(nullptr, decode_error);
+-  }
+-
+-  ImageGenerator::FrameInfo frameInfo =
+-      generator_->GetFrameInfo(nextFrameIndex_);
+-
+-  const int requiredFrameIndex =
+-      frameInfo.required_frame.value_or(SkCodec::kNoFrame);
+-
+-  if (requiredFrameIndex != SkCodec::kNoFrame) {
+-    // We are here when the frame said |disposal_method| is
+-    // `DisposalMethod::kKeep` or `DisposalMethod::kRestorePrevious` and
+-    // |requiredFrameIndex| is set to ex-frame or ex-ex-frame.
+-    if (!lastRequiredFrame_.has_value()) {
+-      FML_DLOG(INFO)
+-          << "Frame " << nextFrameIndex_ << " depends on frame "
+-          << requiredFrameIndex
+-          << " and no required frames are cached. Using blank slate instead.";
+-    } else {
+-      // Copy the previous frame's output buffer into the current frame as the
+-      // starting point.
+-      bitmap.writePixels(lastRequiredFrame_->pixmap());
+-      if (restoreBGColorRect_.has_value()) {
+-        bitmap.erase(SK_ColorTRANSPARENT, restoreBGColorRect_.value());
+-      }
+-    }
+-  }
+-
+-  // Write the new frame to the output buffer. The bitmap pixels as supplied
+-  // are already set in accordance with the previous frame's disposal policy.
+-  if (!generator_->GetPixels(info, bitmap.getPixels(), bitmap.rowBytes(),
+-                             nextFrameIndex_, requiredFrameIndex)) {
+-    std::ostringstream ostr;
+-    ostr << "Could not getPixels for frame " << nextFrameIndex_;
+-    std::string decode_error = ostr.str();
+-    FML_LOG(ERROR) << decode_error;
+-    return std::make_pair(nullptr, decode_error);
+-  }
+-
+-  const bool keep_current_frame =
+-      frameInfo.disposal_method == SkCodecAnimation::DisposalMethod::kKeep;
+-  const bool restore_previous_frame =
+-      frameInfo.disposal_method ==
+-      SkCodecAnimation::DisposalMethod::kRestorePrevious;
+-  const bool previous_frame_available = lastRequiredFrame_.has_value();
+-
+-  // Store the current frame in `lastRequiredFrame_` if the frame's disposal
+-  // method indicates we should do so.
+-  // * When the disposal method is "Keep", the stored frame should always be
+-  //   overwritten with the new frame we just crafted.
+-  // * When the disposal method is "RestorePrevious", the previously stored
+-  //   frame should be retained and used as the backdrop for the next frame
+-  //   again. If there isn't already a stored frame, that means we haven't
+-  //   rendered any frames yet! When this happens, we just fall back to "Keep"
+-  //   behavior and store the current frame as the backdrop of the next frame.
+-
+-  if (keep_current_frame ||
+-      (previous_frame_available && !restore_previous_frame)) {
+-    // Replace the stored frame. The `lastRequiredFrame_` will get used as the
+-    // starting backdrop for the next frame.
+-    lastRequiredFrame_ = bitmap;
+-    lastRequiredFrameIndex_ = nextFrameIndex_;
+-  }
+-
+-  if (frameInfo.disposal_method ==
+-      SkCodecAnimation::DisposalMethod::kRestoreBGColor) {
+-    restoreBGColorRect_ = frameInfo.disposal_rect;
+-  } else {
+-    restoreBGColorRect_.reset();
+-  }
+-
+-#if IMPELLER_SUPPORTS_RENDERING
+-  if (is_impeller_enabled_) {
+-#ifdef FML_OS_IOS
+-    // This is safe regardless of whether the GPU is available or not because
+-    // without mipmap creation there is no command buffer encoding done.
+-    return ImageDecoderImpeller::UploadTextureToStorage(
+-        impeller_context, std::make_shared<SkBitmap>(bitmap));
+-#else
+-    sk_sp<DlImage> dl_image;
+-    std::string error_message;
+-    auto mapping = std::make_unique<fml::NonOwnedMapping>(
+-        reinterpret_cast<const uint8_t*>(bitmap.getAddr(0, 0)),  // data
+-        bitmap.dimensions().area() * info.bytesPerPixel(),       // size
+-        [bitmap](auto, auto) mutable { bitmap.reset(); }         // proc
+-    );
+-    std::shared_ptr<impeller::DeviceBuffer> device_buffer =
+-        impeller_context->GetResourceAllocator()->CreateBufferWithCopy(
+-            *mapping);
+-    if (!device_buffer) {
+-      return std::make_pair(nullptr, "Failed to allocate staging buffer.");
+-    }
+-
+-    const auto pixel_format =
+-        ImageDecoderImpeller::ToPixelFormat(info.colorType());
+-    if (!pixel_format.has_value()) {
+-      std::string decode_error(
+-          std::format("Unsupported pixel format (SkColorType={})",
+-                      static_cast<int>(info.colorType())));
+-      FML_DLOG(ERROR) << decode_error;
+-      return std::make_pair(nullptr, decode_error);
+-    }
+-    ImageDecoderImpeller::ImageInfo image_info = {
+-        .size = impeller::ISize(info.width(), info.height()),
+-        .format = pixel_format.value()};
+-
+-    ImageDecoderImpeller::UploadTextureToPrivate(
+-        [&](sk_sp<DlImage> image, std::string message) {
+-          dl_image = std::move(image);
+-          error_message = std::move(message);
+-        },
+-        impeller_context, device_buffer, image_info, std::nullopt,
+-        gpu_disable_sync_switch);
+-    return std::make_pair(dl_image, error_message);
+-#endif
+-  }
+-#endif  // IMPELLER_SUPPORTS_RENDERING
+-
+-#if !SLIMPELLER
+-  sk_sp<SkImage> skImage;
+-  gpu_disable_sync_switch->Execute(
+-      fml::SyncSwitch::Handlers()
+-          .SetIfTrue([&skImage, &bitmap] {
+-            // Defer decoding until time of draw later on the raster thread.
+-            // Can happen when GL operations are currently forbidden such as
+-            // in the background on iOS.
+-            skImage = SkImages::RasterFromBitmap(bitmap);
+-          })
+-          .SetIfFalse([&skImage, &resourceContext, &bitmap] {
+-            if (resourceContext) {
+-              SkPixmap pixmap(bitmap.info(), bitmap.pixelRef()->pixels(),
+-                              bitmap.pixelRef()->rowBytes());
+-              skImage = SkImages::CrossContextTextureFromPixmap(
+-                  resourceContext.get(), pixmap, true);
+-            } else {
+-              // Defer decoding until time of draw later on the raster thread.
+-              // Can happen when GL operations are currently forbidden such as
+-              // in the background on iOS.
+-              skImage = SkImages::RasterFromBitmap(bitmap);
+-            }
+-          }));
+-
+-  return std::make_pair(DlImageGPU::Make({skImage, unref_queue}),
+-                        std::string());
+-#else   //  !SLIMPELLER
+-  return std::make_pair(nullptr, "Unsupported backend.");
+-#endif  //  !SLIMPELLER
+-}
+-
+-void MultiFrameCodec::State::GetNextFrameAndInvokeCallback(
++void GetNextFrameAndInvokeCallback(
++    std::weak_ptr<AnimatedImageFrames> weak_frames,
+     std::unique_ptr<tonic::DartPersistentValue> callback,
+     const fml::RefPtr<fml::TaskRunner>& ui_task_runner,
+-    const fml::WeakPtr<GrDirectContext>& resourceContext,
+-    const fml::RefPtr<flutter::SkiaUnrefQueue>& unref_queue,
+-    const std::shared_ptr<const fml::SyncSwitch>& gpu_disable_sync_switch,
+-    size_t trace_id,
+-    const std::shared_ptr<impeller::Context>& impeller_context) {
++    AnimatedImageFramesContext context,
++    size_t trace_id) {
+ #if FML_OS_IOS_SIMULATOR
+-  // Noop backend.
+-  if (!resourceContext && !impeller_context) {
++  if (!context.resource_context && !context.impeller_context) {
+     ui_task_runner->PostTask(
+         fml::MakeCopyable([callback = std::move(callback)]() {
+           // must be destroyed on UI thread.
+@@ -241,31 +51,37 @@ void MultiFrameCodec::State::GetNextFrameAndInvokeCallback(
+   }
+ #endif  // FML_OS_IOS_SIMULATOR
+ 
++  auto frames = weak_frames.lock();
++  if (!frames) {
++    ui_task_runner->PostTask(fml::MakeCopyable(
++        [callback = std::move(callback)]() { callback->Clear(); }));
++    return;
++  }
++
++  AnimatedImageFrames::Frame frame = frames->DecodeNextFrame(context);
+   fml::RefPtr<CanvasImage> image = nullptr;
+-  int duration = 0;
+-  sk_sp<DlImage> dlImage;
+-  std::string decode_error;
+-  std::tie(dlImage, decode_error) = GetNextFrameImage(
+-      resourceContext, gpu_disable_sync_switch, impeller_context, unref_queue);
+-  if (dlImage) {
++  if (frame.image) {
+     image = CanvasImage::Create();
+-    image->set_image(dlImage);
+-    ImageGenerator::FrameInfo frameInfo =
+-        generator_->GetFrameInfo(nextFrameIndex_);
+-    duration = frameInfo.duration;
++    image->set_image(frame.image);
+   }
+-  nextFrameIndex_ = (nextFrameIndex_ + 1) % frameCount_;
+ 
+-  // The static leak checker gets confused by the use of fml::MakeCopyable.
+-  // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
+   ui_task_runner->PostTask(fml::MakeCopyable(
+       [callback = std::move(callback), image = std::move(image),
+-       decode_error = std::move(decode_error), duration, trace_id]() mutable {
++       decode_error = std::move(frame.error), duration = frame.duration_ms,
++       trace_id]() mutable {
+         InvokeNextFrameCallback(image, duration, decode_error,
+                                 std::move(callback), trace_id);
+       }));
+ }
+ 
++}  // namespace
++
++MultiFrameCodec::MultiFrameCodec(std::shared_ptr<ImageGenerator> generator)
++    : frames_(std::make_shared<AnimatedImageFrames>(
++          std::move(generator), UIDartState::Current()->IsImpellerEnabled())) {}
++
++MultiFrameCodec::~MultiFrameCodec() = default;
++
+ Dart_Handle MultiFrameCodec::getNextFrame(Dart_Handle callback_handle) {
+   static size_t trace_counter = 1;
+   const size_t trace_id = trace_counter++;
+@@ -275,10 +91,9 @@ Dart_Handle MultiFrameCodec::getNextFrame(Dart_Handle callback_handle) {
+   }
+ 
+   auto* dart_state = UIDartState::Current();
+-
+   const auto& task_runners = dart_state->GetTaskRunners();
+ 
+-  if (state_->frameCount_ == 0) {
++  if (frames_->frame_count() == 0) {
+     std::string decode_error("Could not provide any frame.");
+     FML_LOG(ERROR) << decode_error;
+     task_runners.GetUITaskRunner()->PostTask(fml::MakeCopyable(
+@@ -294,34 +109,32 @@ Dart_Handle MultiFrameCodec::getNextFrame(Dart_Handle callback_handle) {
+   task_runners.GetIOTaskRunner()->PostTask(fml::MakeCopyable(
+       [callback = std::make_unique<tonic::DartPersistentValue>(
+            tonic::DartState::Current(), callback_handle),
+-       weak_state = std::weak_ptr<MultiFrameCodec::State>(state_), trace_id,
++       weak_frames = std::weak_ptr<AnimatedImageFrames>(frames_), trace_id,
+        ui_task_runner = task_runners.GetUITaskRunner(),
+        io_manager = dart_state->GetIOManager()]() mutable {
+-        auto state = weak_state.lock();
+-        if (!state) {
+-          ui_task_runner->PostTask(fml::MakeCopyable(
+-              [callback = std::move(callback)]() { callback->Clear(); }));
+-          return;
+-        }
+-        state->GetNextFrameAndInvokeCallback(
+-            std::move(callback), ui_task_runner,
+-            io_manager->GetResourceContext(), io_manager->GetSkiaUnrefQueue(),
+-            io_manager->GetIsGpuDisabledSyncSwitch(), trace_id,
+-            io_manager->GetImpellerContext());
++        AnimatedImageFramesContext context{
++            io_manager->GetResourceContext(),
++            io_manager->GetIsGpuDisabledSyncSwitch(),
++            io_manager->GetImpellerContext(),
++            io_manager->GetSkiaUnrefQueue(),
++        };
++        GetNextFrameAndInvokeCallback(std::move(weak_frames),
++                                      std::move(callback), ui_task_runner,
++                                      std::move(context), trace_id);
+       }));
+ 
+   return Dart_Null();
+-  // The static leak checker gets confused by the control flow, unique
+-  // pointers and closures in this function.
++  // The static leak checker is confused by the control flow, unique pointers,
++  // and closures in this function.
+   // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
+ }
+ 
+ int MultiFrameCodec::frameCount() const {
+-  return state_->frameCount_;
++  return frames_->frame_count();
+ }
+ 
+ int MultiFrameCodec::repetitionCount() const {
+-  return state_->repetitionCount_;
++  return frames_->repetition_count();
+ }
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/multi_frame_codec.h b/engine/src/flutter/lib/ui/painting/multi_frame_codec.h
+index 413574a7c5f..e046c3fb2ee 100644
+--- a/engine/src/flutter/lib/ui/painting/multi_frame_codec.h
++++ b/engine/src/flutter/lib/ui/painting/multi_frame_codec.h
+@@ -6,10 +6,8 @@
+ #define FLUTTER_LIB_UI_PAINTING_MULTI_FRAME_CODEC_H_
+ 
+ #include "flutter/fml/macros.h"
++#include "flutter/lib/ui/painting/animated_image_frames.h"
+ #include "flutter/lib/ui/painting/codec.h"
+-#include "flutter/lib/ui/painting/image_generator.h"
+-
+-#include <utility>
+ 
+ namespace flutter {
+ 
+@@ -29,54 +27,7 @@ class MultiFrameCodec : public Codec {
+   Dart_Handle getNextFrame(Dart_Handle args) override;
+ 
+  private:
+-  // Captures the state shared between the IO and UI task runners.
+-  //
+-  // The state is initialized on the UI task runner when the Dart object is
+-  // created. Decoding occurs on the IO task runner. Since it is possible for
+-  // the UI object to be collected independently of the IO task runner work,
+-  // it is not safe for this state to live directly on the MultiFrameCodec.
+-  // Instead, the MultiFrameCodec creates this object when it is constructed,
+-  // shares it with the IO task runner's decoding work, and sets the live_
+-  // member to false when it is destructed.
+-  struct State {
+-    explicit State(std::shared_ptr<ImageGenerator> generator);
+-
+-    const std::shared_ptr<ImageGenerator> generator_;
+-    const int frameCount_;
+-    const int repetitionCount_;
+-    bool is_impeller_enabled_ = false;
+-
+-    // The non-const members and functions below here are only read or written
+-    // to on the IO thread. They are not safe to access or write on the UI
+-    // thread.
+-    int nextFrameIndex_ = 0;
+-    // The last decoded frame that's required to decode any subsequent frames.
+-    std::optional<SkBitmap> lastRequiredFrame_;
+-    // The index of the last decoded required frame.
+-    int lastRequiredFrameIndex_ = -1;
+-
+-    // The rectangle that should be cleared if the previous frame's disposal
+-    // method was kRestoreBGColor.
+-    std::optional<SkIRect> restoreBGColorRect_;
+-
+-    std::pair<sk_sp<DlImage>, std::string> GetNextFrameImage(
+-        const fml::WeakPtr<GrDirectContext>& resourceContext,
+-        const std::shared_ptr<const fml::SyncSwitch>& gpu_disable_sync_switch,
+-        const std::shared_ptr<impeller::Context>& impeller_context,
+-        const fml::RefPtr<flutter::SkiaUnrefQueue>& unref_queue);
+-
+-    void GetNextFrameAndInvokeCallback(
+-        std::unique_ptr<tonic::DartPersistentValue> callback,
+-        const fml::RefPtr<fml::TaskRunner>& ui_task_runner,
+-        const fml::WeakPtr<GrDirectContext>& resourceContext,
+-        const fml::RefPtr<flutter::SkiaUnrefQueue>& unref_queue,
+-        const std::shared_ptr<const fml::SyncSwitch>& gpu_disable_sync_switch,
+-        size_t trace_id,
+-        const std::shared_ptr<impeller::Context>& impeller_context);
+-  };
+-
+-  // Shared across the UI and IO task runners.
+-  std::shared_ptr<State> state_;
++  std::shared_ptr<AnimatedImageFrames> frames_;
+ 
+   FML_FRIEND_MAKE_REF_COUNTED(MultiFrameCodec);
+   FML_FRIEND_REF_COUNTED_THREAD_SAFE(MultiFrameCodec);
