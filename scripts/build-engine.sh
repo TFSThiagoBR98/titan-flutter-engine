@@ -19,6 +19,11 @@ Options:
   --arm-float-abi hard|softfp|soft  ARM float ABI (only with --cpu arm)
   --libc glibc|musl                 Target libc (default: glibc)
   --target-sysroot <dir>             Target sysroot for cross-compilation
+  --android                          Build Android artifacts
+  --android-cpu arm|arm64|x64        Android target CPU
+  --web                              Build the web SDK
+  --fuchsia                          Build Fuchsia artifacts
+  --fuchsia-cpu arm64|x64            Fuchsia target CPU
   --gn-only                          Configure GN without running Ninja
   --unittests                        Enable engine unit tests and benchmarks
   --jobs N                           Ninja parallel jobs (default: TITAN_JOBS, half the cores)
@@ -113,6 +118,9 @@ mode=debug
 cpu=x64
 arm_float_abi=
 libc=glibc
+target_os=linux
+android_cpu=
+fuchsia_cpu=
 target_sysroot=
 out_dir_arg=
 zip_output=0
@@ -162,6 +170,36 @@ while (($# > 0)); do
       ;;
     --libc=*)
       libc=${1#*=}
+      shift
+      ;;
+    --android)
+      target_os=android
+      shift
+      ;;
+    --android-cpu)
+      (($# >= 2)) || die "--android-cpu requires a value"
+      android_cpu=$2
+      shift 2
+      ;;
+    --android-cpu=*)
+      android_cpu=${1#*=}
+      shift
+      ;;
+    --web)
+      target_os=web
+      shift
+      ;;
+    --fuchsia)
+      target_os=fuchsia
+      shift
+      ;;
+    --fuchsia-cpu)
+      (($# >= 2)) || die "--fuchsia-cpu requires a value"
+      fuchsia_cpu=$2
+      shift 2
+      ;;
+    --fuchsia-cpu=*)
+      fuchsia_cpu=${1#*=}
       shift
       ;;
     --target-sysroot)
@@ -272,20 +310,56 @@ esac
 if [[ -n "$arm_float_abi" && "$cpu" != arm ]]; then
   die "--arm-float-abi is only valid with --cpu arm"
 fi
+case "$target_os" in
+  linux)
+    ;;
+  android)
+    case "$android_cpu" in
+      arm|arm64|x64) ;;
+      *) die "invalid Android CPU: ${android_cpu:-missing} (expected arm, arm64 or x64)" ;;
+    esac
+    ;;
+  web)
+    [[ -z "$android_cpu" && -z "$fuchsia_cpu" ]] || die "--web cannot be combined with a platform CPU"
+    ;;
+  fuchsia)
+    case "$fuchsia_cpu" in
+      arm64|x64) ;;
+      *) die "invalid Fuchsia CPU: ${fuchsia_cpu:-missing} (expected arm64 or x64)" ;;
+    esac
+    ;;
+  *) die "invalid target platform: $target_os" ;;
+esac
+if [[ "$target_os" != linux && ${#ninja_targets[@]} -eq 0 && "$gn_only" != 1 ]]; then
+  die "non-Linux builds require at least one --ninja-target"
+fi
 [[ -z "$jobs_arg" || "$jobs_arg" =~ ^[1-9][0-9]*$ ]] || die "--jobs must be a positive integer"
 [[ -z "$load_arg" || "$load_arg" =~ ^[1-9][0-9]*$ ]] || die "--load must be a positive integer"
 jobs=${jobs_arg:-$TITAN_JOBS}
 load=${load_arg:-$jobs}
 
-if [[ "$cpu" == x64 && "$libc" == glibc ]]; then
-  out_name="host_$mode"
-else
-  out_name="linux_${mode}_${cpu}"
-  if [[ "$cpu" == arm && -n "$arm_float_abi" ]]; then
-    out_name+="_$arm_float_abi"
-  fi
-  out_name+="_$libc"
-fi
+case "$target_os" in
+  linux)
+    if [[ "$cpu" == x64 && "$libc" == glibc ]]; then
+      out_name="host_$mode"
+    else
+      out_name="linux_${mode}_${cpu}"
+      if [[ "$cpu" == arm && -n "$arm_float_abi" ]]; then
+        out_name+="_$arm_float_abi"
+      fi
+      out_name+="_$libc"
+    fi
+    ;;
+  android)
+    out_name="android_${mode}_${android_cpu}"
+    ;;
+  web)
+    out_name="web_${mode}"
+    ;;
+  fuchsia)
+    out_name="fuchsia_${mode}_${fuchsia_cpu}"
+    ;;
+esac
 if [[ -n "$out_name_arg" ]]; then
   out_name=$out_name_arg
 fi
@@ -545,7 +619,9 @@ elif [[ "$(readlink -f "$fvm_sdk")" != "$(readlink -f "$flutter_dir")" ]]; then
   die "FVM custom_titan does not point to $flutter_dir: $fvm_sdk"
 fi
 
-ensure_host_sysroot_for_target
+if [[ "$target_os" == linux ]]; then
+  ensure_host_sysroot_for_target
+fi
 
 gn_args=(
   --runtime-mode "$mode"
@@ -555,35 +631,51 @@ gn_args=(
   --no-goma
   --no-build-glfw-shell
   --no-build-embedder-examples
-  --gn-args
-  "build_linux_gtk_shell=$([[ "$gtk_shell" == 1 ]] && printf true || printf false) titan_target_libc=\"$libc\""
 )
+if [[ "$target_os" == linux ]]; then
+  gn_args+=(
+    --gn-args
+    "build_linux_gtk_shell=$([[ "$gtk_shell" == 1 ]] && printf true || printf false) titan_target_libc=\"$libc\""
+  )
+else
+  case "$target_os" in
+    android)
+      gn_args+=(--android "--android-cpu=$android_cpu")
+      ;;
+    web)
+      gn_args+=(--web)
+      ;;
+    fuchsia)
+      gn_args+=(--fuchsia "--fuchsia-cpu=$fuchsia_cpu")
+      ;;
+  esac
+fi
 if ((!enable_unittests)); then
   gn_args+=(--no-enable-unittests)
 fi
-if ((enable_fontconfig)); then
+if [[ "$target_os" == linux && $enable_fontconfig == 1 ]]; then
   gn_args+=(--enable-fontconfig)
 fi
-if ((!gtk_shell)); then
+if [[ "$target_os" == linux && $gtk_shell == 0 ]]; then
   # The GTK shell needs its pkg-config deps, which minimal Linux drops.
   gn_args+=(--enable-minimal-linux)
 fi
-if [[ "$libc" == musl ]]; then
+if [[ "$target_os" == linux && "$libc" == musl ]]; then
   # fml's backtrace needs glibc's execinfo.h; musl uses fml's stub.
   gn_args+=(--no-backtrace)
 fi
-if [[ "$cpu" != x64 ]]; then
+if [[ "$target_os" == linux && "$cpu" != x64 ]]; then
   gn_args+=(--linux --linux-cpu "$cpu")
 fi
-if [[ -n "$arm_float_abi" ]]; then
+if [[ "$target_os" == linux && -n "$arm_float_abi" ]]; then
   gn_args+=(--arm-float-abi "$arm_float_abi")
 fi
-if [[ -n "$target_sysroot" ]]; then
+if [[ "$target_os" == linux && -n "$target_sysroot" ]]; then
   [[ -d "$target_sysroot" ]] || die "target sysroot does not exist: $target_sysroot"
   target_sysroot=$(cd "$target_sysroot" && pwd -P)
   gn_args+=(--target-sysroot "$target_sysroot")
 fi
-if [[ "$libc" == musl || ("$cpu" == arm && "$arm_float_abi" != hard) || "$cpu" == riscv32 ]]; then
+if [[ "$target_os" == linux && ("$libc" == musl || ("$cpu" == arm && "$arm_float_abi" != hard) || "$cpu" == riscv32) ]]; then
   # These targets link the GCC runtime from their sysroot; the bundled
   # compiler-rt/libunwind does not cover their ABI or libc.
   gcc_triple=

@@ -115,6 +115,29 @@ variant_specs[sdk-host-debug]='--mode debug --out-name sdk_host_debug --ninja-ta
 variant_specs[sdk-host-release]='--mode release --out-name sdk_host_release --ninja-target flutter/build/archives:flutter_patched_sdk'
 variant_specs[sdk-host-arm64-debug]='--mode debug --cpu arm64 --out-name sdk_host_arm64_debug --ninja-target flutter/build/archives:artifacts --ninja-target flutter/tools/font_subset --ninja-target flutter/build/archives:embedder --ninja-target flutter/impeller/toolkit/interop:sdk --ninja-target flutter/build/archives:dart_sdk_archive'
 
+android_debug_arm_targets='--ninja-target flutter --ninja-target flutter/sky/dist:zip_old_location --ninja-target flutter/lib/gpu/dist:zip_old_location --ninja-target flutter/shell/platform/android:embedding_jars --ninja-target flutter/shell/platform/android:abi_jars --ninja-target flutter/shell/platform/embedder:embedder-archive --ninja-target flutter/impeller/toolkit/interop:sdk'
+android_debug_targets='--ninja-target flutter --ninja-target flutter/shell/platform/android:abi_jars --ninja-target flutter/shell/platform/embedder:embedder-archive --ninja-target flutter/impeller/toolkit/interop:sdk'
+android_aot_arm_targets='--ninja-target default --ninja-target clang_x64/gen_snapshot --ninja-target flutter/shell/platform/android:embedding_jars --ninja-target flutter/shell/platform/android:abi_jars'
+android_aot_targets='--ninja-target default --ninja-target clang_x64/gen_snapshot --ninja-target flutter/shell/platform/android:abi_jars --ninja-target flutter/shell/platform/android:analyze_snapshot'
+for android_cpu in arm arm64 x64; do
+  debug_targets=$android_debug_targets
+  aot_targets=$android_aot_targets
+  if [[ "$android_cpu" == arm ]]; then
+    debug_targets=$android_debug_arm_targets
+    aot_targets=$android_aot_arm_targets
+  fi
+  variant_specs["android-debug-$android_cpu"]="--mode debug --android --android-cpu=$android_cpu --out-name android_debug_$android_cpu $debug_targets"
+  variant_specs["android-profile-$android_cpu"]="--mode profile --android --android-cpu=$android_cpu --out-name android_profile_$android_cpu $aot_targets"
+  variant_specs["android-release-$android_cpu"]="--mode release --android --android-cpu=$android_cpu --out-name android_release_$android_cpu $aot_targets"
+done
+
+variant_specs[web-release]='--mode release --web --out-name web_release --ninja-target flutter/web_sdk:flutter_web_sdk_archive'
+for fuchsia_cpu in arm64 x64; do
+  for mode in debug profile release; do
+    variant_specs["fuchsia-$mode-$fuchsia_cpu"]="--mode $mode --fuchsia --fuchsia-cpu=$fuchsia_cpu --out-name fuchsia_${mode}_$fuchsia_cpu --ninja-target flutter/shell/platform/fuchsia:fuchsia"
+  done
+done
+
 # riscv32 builds and passes QEMU but is a niche target: request it by name
 # (riscv32-glibc-debug, riscv32-musl-debug).
 variant_specs[riscv32-glibc-debug]="--mode debug --cpu riscv32 --target-sysroot $work_root/sysroots/titan_riscv32_glibc"

@@ -385,6 +385,25 @@ assert_log_contains "$gn_log" '--target-dir host_profile'
 assert_log_contains "$gn_log" 'build_linux_gtk_shell=true titan_target_libc="glibc"'
 assert_log_contains "$gn_log" '--enable-fontconfig'
 
+: > "$gn_log"
+run_engine --mode profile --android --android-cpu=arm64 --gn-only
+assert_log_contains "$gn_log" '--android --android-cpu=arm64'
+assert_log_contains "$gn_log" '--runtime-mode profile'
+assert_log_not_contains "$gn_log" '--linux'
+assert_log_not_contains "$gn_log" 'build_linux_gtk_shell='
+
+: > "$gn_log"
+run_engine --mode release --web --gn-only
+assert_log_contains "$gn_log" '--web'
+assert_log_contains "$gn_log" '--runtime-mode release'
+assert_log_not_contains "$gn_log" '--linux'
+
+: > "$gn_log"
+run_engine --mode debug --fuchsia --fuchsia-cpu=x64 --gn-only
+assert_log_contains "$gn_log" '--fuchsia --fuchsia-cpu=x64'
+assert_log_contains "$gn_log" '--runtime-mode debug'
+assert_log_not_contains "$gn_log" '--linux'
+
 riscv32_sysroot="$temporary_directory/riscv32-sysroot"
 mkdir -p "$riscv32_sysroot/usr/lib/gcc/riscv32-linux-gnu/14"
 : > "$riscv32_sysroot/usr/lib/gcc/riscv32-linux-gnu/14/libgcc_eh.a"
@@ -562,6 +581,30 @@ assert_log_contains "$matrix_log" '--ninja-target flutter/tools/font_subset'
 assert_log_contains "$matrix_log" '--ninja-target flutter/build/archives:embedder'
 assert_log_contains "$matrix_log" '--ninja-target flutter/impeller/toolkit/interop:sdk'
 assert_log_contains "$matrix_log" '--ninja-target flutter/build/archives:dart_sdk_archive'
+
+matrix_log="$temporary_directory/non-linux-matrix.log"
+non_linux_variants=(
+  android-debug-arm android-debug-arm64 android-debug-x64
+  android-profile-arm android-profile-arm64 android-profile-x64
+  android-release-arm android-release-arm64 android-release-x64
+  web-release
+  fuchsia-debug-arm64 fuchsia-profile-arm64 fuchsia-release-arm64
+  fuchsia-debug-x64 fuchsia-profile-x64 fuchsia-release-x64
+)
+TITAN_WORK_DIR="$temporary_directory/non-linux-matrix-work" \
+TITAN_MATRIX_ARGS_LOG="$matrix_log" \
+TITAN_CPU_SCOPE=0 \
+  bash "$matrix_repository/scripts/build-matrix.sh" --parallel 3 "${non_linux_variants[@]}"
+[[ "$(wc -l < "$matrix_log")" -eq 16 ]] || {
+  printf 'expected 16 Android, web, and Fuchsia variants\n' >&2
+  exit 1
+}
+assert_log_contains "$matrix_log" '--mode debug --android --android-cpu=arm'
+assert_log_contains "$matrix_log" '--mode profile --android --android-cpu=arm64'
+assert_log_contains "$matrix_log" '--mode release --android --android-cpu=x64'
+assert_log_contains "$matrix_log" '--mode release --web'
+assert_log_contains "$matrix_log" '--mode debug --fuchsia --fuchsia-cpu=arm64'
+assert_log_contains "$matrix_log" '--mode profile --fuchsia --fuchsia-cpu=x64'
 
 matrix_log="$temporary_directory/platform-matrix.log"
 matrix_variants=(
