@@ -6,6 +6,7 @@ set -euo pipefail
 source "$(dirname "$0")/lib/paths.sh"
 source "$(dirname "$0")/lib/cpu-budget.sh"
 source "$(dirname "$0")/lib/sysroot.sh"
+source "$(dirname "$0")/lib/flutter-checkout.sh"
 
 usage() {
   cat <<'EOF'
@@ -380,201 +381,22 @@ fi
 work_root="$TITAN_WORK_DIR"
 artifact_root="$TITAN_BUNDLE_DIR"
 
-depot_tools="$work_root/depot_tools"
-flutter_dir="$work_root/flutter"
-engine_src="$flutter_dir/engine/src"
 ccache_dir="$work_root/ccache"
-patch_dir="$repository_root/patches"
-series_file="$patch_dir/series"
 lock="$repository_root/flutter.lock"
 
 value() { sed -n "s/^$1=//p" "$lock"; }
 
-write_gclient() {
-  local flutter_dir=$1
-  local target_os=$2
-  local gclient_path="$flutter_dir/.gclient"
-  local temporary_gclient
-
-  temporary_gclient=$(mktemp "$flutter_dir/.gclient.XXXXXX")
-  if ! python3 - "$gclient_path" "$target_os" > "$temporary_gclient" <<'PY'
-import json
-import re
-import sys
-from pathlib import Path
-
-gclient_path = Path(sys.argv[1])
-target_os = sys.argv[2]
-target_custom_vars = {
-    "linux": {
-        "download_android_deps": False,
-        "download_emsdk": False,
-        "download_esbuild": False,
-        "download_fuchsia_deps": False,
-        "setup_githooks": False,
-    },
-    "fuchsia": {
-        "download_android_deps": False,
-        "download_emsdk": False,
-        "download_esbuild": False,
-        "download_fuchsia_deps": False,
-        "setup_githooks": False,
-    },
-    "android": {
-        "download_android_deps": True,
-        "download_emsdk": False,
-        "download_esbuild": False,
-        "download_fuchsia_deps": False,
-        "setup_githooks": False,
-    },
-    "web": {
-        "download_android_deps": False,
-        "download_emsdk": True,
-        "download_esbuild": True,
-        "download_fuchsia_deps": False,
-        "setup_githooks": False,
-    },
-}
-
-try:
-    custom_vars = target_custom_vars[target_os]
-except KeyError as error:
-    raise SystemExit(f"unsupported gclient target: {target_os}") from error
-
-if gclient_path.exists():
-    namespace = {}
-    exec(gclient_path.read_text(encoding="utf-8"), {}, namespace)
-    solutions = namespace.get("solutions")
-    if not isinstance(solutions, list) or not solutions:
-        raise SystemExit(f"invalid gclient solutions: {gclient_path}")
-else:
-    solutions = [
-        {
-            "custom_deps": {},
-            "deps_file": "DEPS",
-            "managed": False,
-            "name": ".",
-            "safesync_url": "",
-            "url": "https://github.com/flutter/flutter.git",
-        }
-    ]
-
-solution = solutions[0]
-solution.setdefault("custom_vars", {}).update(custom_vars)
-serialized_solutions = json.dumps(solutions, indent=2)
-serialized_solutions = re.sub(r"\btrue\b", "True", serialized_solutions)
-serialized_solutions = re.sub(r"\bfalse\b", "False", serialized_solutions)
-serialized_solutions = re.sub(r"\bnull\b", "None", serialized_solutions)
-print("solutions = " + serialized_solutions)
-PY
-  then
-    rm -f "$temporary_gclient"
-    return 2
-  fi
-
-  if [[ -f "$gclient_path" ]] && cmp -s "$temporary_gclient" "$gclient_path"; then
-    rm -f "$temporary_gclient"
-    return 1
-  fi
-  mv "$temporary_gclient" "$gclient_path"
-  return 0
-} # write_gclient
-
 flutter_commit=$(value flutter_commit)
 [[ -n "$flutter_commit" ]] || die "flutter.lock is missing flutter_commit"
-
-[[ -f "$series_file" ]] || die "patch series is missing: $series_file"
-
-patch_folders=()
-while IFS= read -r folder; do
-  [[ -n "$folder" ]] || continue
-  patch_folders+=("$patch_dir/$folder")
-done < <(python3 "$repository_root/scripts/patch_series.py" --series "$series_file" --all)
-
-patches=()
-for folder in "${patch_folders[@]}"; do
-  [[ -d "$folder" ]] || die "patch folder does not exist: $folder"
-  while IFS= read -r patch; do
-    patches+=("$patch")
-  done < <(find "$folder" -maxdepth 1 -type f -name '*.patch' -print | LC_ALL=C sort)
-done
-
-all_patch_paths=()
-all_patch_repositories=()
-while IFS=$'\t' read -r repo path; do
-  [[ -n "$repo" && -n "$path" ]] || continue
-  all_patch_repositories+=("$repo")
-  all_patch_paths+=("$path")
-done < <(python3 "$repository_root/scripts/patch_series.py" --patch-root "$patch_dir" --paths)
-
-patches_sha256() {
-  if ((${#patches[@]} == 0)); then
-    printf '' | sha256sum | cut -d' ' -f1
-  else
-    {
-      cat "$series_file"
-      cat "${patches[@]}"
-    } | sha256sum | cut -d' ' -f1
-  fi
-}
-
-patches_sha256_actual=$(patches_sha256)
 
 mkdir -p "$work_root" "$ccache_dir" "$artifact_root"
 export CCACHE_DIR="$ccache_dir"
 export VPYTHON_VIRTUALENV_ROOT="$work_root/vpython-root"
 export CIPD_CACHE_DIR="$work_root/cipd-cache"
-export DEPOT_TOOLS_UPDATE=0
-export DEPOT_TOOLS_METRICS=0
-export PATH="$depot_tools:$PATH"
-
-bootstrap=0
-flutter_checkout_new=0
-if [[ ! -d "$depot_tools" ]]; then
-  printf 'bootstrapping depot_tools in %s\n' "$depot_tools"
-  git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "$depot_tools"
-  bootstrap=1
-fi
-# A fresh clone is not usable yet: its python3 and ninja wrappers need the
-# bootstrap that creates python3_bin_reldir.txt (gclient alone may skip it).
-if [[ ! -f "$depot_tools/python3_bin_reldir.txt" ]]; then
-  "$depot_tools/ensure_bootstrap"
-fi
-
-if [[ ! -d "$flutter_dir/.git" && ! -f "$flutter_dir/.git" ]]; then
-  printf 'bootstrapping Flutter in %s\n' "$flutter_dir"
-  git init "$flutter_dir"
-  git -C "$flutter_dir" remote add origin https://github.com/flutter/flutter.git
-  bootstrap=1
-  flutter_checkout_new=1
-fi
-
-gclient_needs_sync=0
-if write_gclient "$flutter_dir" "$target_os"; then
-  gclient_needs_sync=1
-fi
-
-if ((bootstrap)); then
-  if ((flutter_checkout_new)); then
-    git -C "$flutter_dir" fetch --depth 1 origin "$flutter_commit"
-    git -C "$flutter_dir" checkout --detach FETCH_HEAD
-  else
-    git -C "$flutter_dir" fetch origin "$flutter_commit"
-    git -C "$flutter_dir" checkout --detach "$flutter_commit"
-  fi
-fi
-if ((bootstrap || gclient_needs_sync)); then
-  (cd "$flutter_dir" && gclient sync -D --no-history)
-fi
-
-actual_commit=$(git -C "$flutter_dir" rev-parse HEAD)
-if [[ "$actual_commit" != "$flutter_commit" ]]; then
-  [[ -z "$(git -C "$flutter_dir" status --porcelain)" ]] || \
-    die "Flutter checkout has local changes and is at $actual_commit, expected $flutter_commit"
-  git -C "$flutter_dir" fetch origin "$flutter_commit"
-  git -C "$flutter_dir" checkout --detach "$flutter_commit"
-fi
-[[ -d "$engine_src/flutter" ]] || die "Flutter engine source is missing: $engine_src"
+flutter_checkout "$repository_root" "$work_root" "$target_os" "$flutter_commit"
+flutter_dir=$FLUTTER_CHECKOUT_DIR
+engine_src=$FLUTTER_ENGINE_SOURCE_DIR
+patches_sha256_actual=$FLUTTER_PATCHES_SHA256
 
 ensure_host_sysroot_for_target() {
   if [[ "$cpu" != riscv32 ]]; then
@@ -591,98 +413,6 @@ ensure_host_sysroot_for_target() {
   printf 'installing host sysroot for riscv32: %s\n' "$sysroot"
   python3 "$engine_src/build/linux/sysroot_scripts/install-sysroot.py" --arch=i386
 }
-
-restore_patch_paths() {
-  local repo repo_root revision path target index restored_count=0
-  local -a tracked_paths=()
-  local -a created_paths=()
-  local -a repositories=()
-  declare -A seen_repositories=()
-
-  for repo in "${all_patch_repositories[@]}"; do
-    if [[ -z "${seen_repositories[$repo]+present}" ]]; then
-      seen_repositories["$repo"]=1
-      repositories+=("$repo")
-    fi
-  done
-
-  for repo in "${repositories[@]}"; do
-    if [[ "$repo" == . ]]; then
-      repo_root=$flutter_dir
-      revision=$flutter_commit
-    else
-      repo_root="$flutter_dir/$repo"
-      revision=HEAD
-    fi
-    [[ -d "$repo_root" ]] || die "patch repository does not exist: $repo"
-
-    tracked_paths=()
-    created_paths=()
-    for index in "${!all_patch_paths[@]}"; do
-      [[ "${all_patch_repositories[index]}" == "$repo" ]] || continue
-      path=${all_patch_paths[index]}
-      if git -C "$repo_root" cat-file -e "$revision:$path" 2>/dev/null; then
-        tracked_paths+=("$path")
-      else
-        created_paths+=("$path")
-      fi
-    done
-
-    for path in "${created_paths[@]}"; do
-      target="$repo_root/$path"
-      if [[ -e "$target" || -L "$target" ]]; then
-        [[ -f "$target" || -L "$target" ]] || die "patch-created path is not a file: $repo/$path"
-        rm -f -- "$target"
-      fi
-    done
-
-    if ((${#tracked_paths[@]} > 0)); then
-      git -C "$repo_root" checkout "$revision" -- "${tracked_paths[@]}"
-    fi
-    restored_count=$((restored_count + ${#tracked_paths[@]} + ${#created_paths[@]}))
-  done
-  printf 'restored %d patch paths across %d repositories\n' "$restored_count" "${#repositories[@]}"
-}
-
-patch_repository() {
-  local patch=$1 first_line repo=.
-  IFS= read -r first_line < "$patch" || true
-  if [[ "$first_line" == '# Repo: '* ]]; then
-    repo=${first_line#'# Repo: '}
-  fi
-  printf '%s\n' "$repo"
-}
-
-patch_checkout() {
-  local repo=$1
-  if [[ "$repo" == . ]]; then
-    printf '%s\n' "$flutter_dir"
-  else
-    [[ -d "$flutter_dir/$repo" ]] || die "patch repository does not exist: $repo"
-    printf '%s\n' "$flutter_dir/$repo"
-  fi
-}
-
-patch_lock="$work_root/.titan-patches.lock"
-patch_state="$flutter_dir/.titan-patches.sha256"
-
-(
-  flock 9
-  if [[ -f "$patch_state" && "$(<"$patch_state")" == "$patches_sha256_actual" ]]; then
-    printf 'patch series already applied: %s\n' "$patches_sha256_actual"
-  else
-    restore_patch_paths
-
-    for patch in "${patches[@]}"; do
-      patch_repo=$(patch_repository "$patch")
-      patch_root=$(patch_checkout "$patch_repo")
-      printf 'applying %s\n' "$patch"
-      git -C "$patch_root" apply "$patch"
-    done
-    printf '%s\n' "$patches_sha256_actual" > "$patch_state"
-    printf 'applied patch series: %s\n' "$patches_sha256_actual"
-  fi
-) 9>"$patch_lock"
 
 fvm_root=${FVM_ROOT:-${HOME}/fvm}
 fvm_sdk="$fvm_root/versions/custom_titan"

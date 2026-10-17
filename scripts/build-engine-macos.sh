@@ -27,6 +27,8 @@ die() {
   exit 1
 }
 
+source "$(dirname "$0")/lib/flutter-checkout.sh"
+
 repository_root=$(cd "$(dirname "$0")/.." && pwd -P)
 kind=host
 mode=debug
@@ -128,37 +130,11 @@ load=${load:-$jobs}
 [[ "$load" =~ ^[1-9][0-9]*$ ]] || die "--load must be a positive integer"
 
 work_root=${work_dir_arg:-$repository_root/.build_flutter}
-flutter_dir="$work_root/flutter"
-engine_root="$flutter_dir/engine/src"
-patch_root="$repository_root/patches"
-series_file="$patch_root/series"
 flutter_commit=$(sed -n 's/^flutter_commit=//p' "$repository_root/flutter.lock")
 [[ -n "$flutter_commit" ]] || die "flutter.lock is missing flutter_commit"
-[[ -d "$flutter_dir/.git" || -f "$flutter_dir/.git" ]] || die "Flutter checkout is missing: $flutter_dir"
-
-apply_patch_series() {
-  local patch_folder patch_path first_line patch_repository patch_checkout
-  while IFS= read -r patch_folder; do
-    while IFS= read -r patch_path; do
-      first_line=
-      IFS= read -r first_line < "$patch_path" || true
-      patch_repository=.
-      if [[ "$first_line" == '# Repo: '* ]]; then
-        patch_repository=${first_line#'# Repo: '}
-      fi
-      patch_checkout="$flutter_dir"
-      [[ "$patch_repository" == . ]] || patch_checkout="$flutter_dir/$patch_repository"
-      [[ -d "$patch_checkout" ]] || die "patch repository is missing: $patch_repository"
-      git -C "$patch_checkout" apply "$patch_path"
-    done < <(find "$patch_root/$patch_folder" -maxdepth 1 -type f -name '*.patch' -print | LC_ALL=C sort)
-  done < <(python3 "$repository_root/scripts/patch_series.py" --series "$series_file" --all)
-}
-
-if [[ -z "$(git -C "$flutter_dir" status --porcelain)" ]]; then
-  apply_patch_series
-else
-  die "Flutter checkout has local changes: $flutter_dir"
-fi
+flutter_checkout "$repository_root" "$work_root" macos "$flutter_commit"
+flutter_dir=$FLUTTER_CHECKOUT_DIR
+engine_root=$FLUTTER_ENGINE_SOURCE_DIR
 
 if [[ -z "$out_name" ]]; then
   cpu_suffix=

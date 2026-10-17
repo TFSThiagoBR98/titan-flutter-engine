@@ -5,6 +5,19 @@ repository_root=$(cd "$(dirname "$0")/.." && pwd -P)
 temporary_directory=$(mktemp -d)
 trap 'rm -rf "$temporary_directory"' EXIT
 
+[[ -f "$repository_root/scripts/lib/flutter-checkout.sh" ]] || {
+  printf 'shared Flutter checkout helper is missing\n' >&2
+  exit 1
+}
+grep -Fq 'flutter-checkout.sh' "$repository_root/scripts/build-engine.sh" || {
+  printf 'build-engine.sh does not use the shared Flutter checkout helper\n' >&2
+  exit 1
+}
+grep -Fq 'flutter-checkout.sh' "$repository_root/scripts/build-engine-macos.sh" || {
+  printf 'build-engine-macos.sh does not use the shared Flutter checkout helper\n' >&2
+  exit 1
+}
+
 standalone_repository="$temporary_directory/titan-flutter-engine"
 flutter_directory="$temporary_directory/work/flutter"
 fake_bin="$temporary_directory/bin"
@@ -25,6 +38,7 @@ cp "$repository_root/scripts/patch_series.py" "$standalone_repository/scripts/pa
 cp "$repository_root/scripts/lib/paths.sh" "$standalone_repository/scripts/lib/paths.sh"
 cp "$repository_root/scripts/lib/cpu-budget.sh" "$standalone_repository/scripts/lib/cpu-budget.sh"
 cp "$repository_root/scripts/lib/sysroot.sh" "$standalone_repository/scripts/lib/sysroot.sh"
+cp "$repository_root/scripts/lib/flutter-checkout.sh" "$standalone_repository/scripts/lib/flutter-checkout.sh"
 printf '%s\n' test-patches > "$standalone_repository/patches/series"
 
 git init --quiet "$flutter_directory"
@@ -157,7 +171,7 @@ run_engine() {
 gclient_workspace="$temporary_directory/gclient-workspace"
 gclient_function_source() {
   awk '/^write_gclient\(\) \{/{capture=1} capture { print } /^\} # write_gclient$/{ exit }' \
-    "$repository_root/scripts/build-engine.sh"
+    "$repository_root/scripts/lib/flutter-checkout.sh"
 }
 
 run_gclient_generation() {
@@ -271,6 +285,7 @@ cp "$repository_root/scripts/patch_series.py" "$bootstrap_repository/scripts/pat
 cp "$repository_root/scripts/lib/paths.sh" "$bootstrap_repository/scripts/lib/paths.sh"
 cp "$repository_root/scripts/lib/cpu-budget.sh" "$bootstrap_repository/scripts/lib/cpu-budget.sh"
 cp "$repository_root/scripts/lib/sysroot.sh" "$bootstrap_repository/scripts/lib/sysroot.sh"
+cp "$repository_root/scripts/lib/flutter-checkout.sh" "$bootstrap_repository/scripts/lib/flutter-checkout.sh"
 : > "$bootstrap_repository/patches/series"
 
 git init --quiet "$bootstrap_remote"
