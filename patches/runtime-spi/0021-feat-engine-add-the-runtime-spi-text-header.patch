@@ -1,0 +1,644 @@
+# Why: Why: expose the ABI 0.3 text declarations, freeze their C and C++
+layouts, and publish the text capability for paragraph and font operations.
+The 32-bit expectations use the compiler-verified arm-hard layout for the new
+structs.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index a27e43c58c7..a67a311a880 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -51,6 +51,7 @@ source_set("runtime_spi_c_api") {
+   public = [
+     "include/flutter_runtime_spi.h",
+     "include/flutter_scene.h",
++    "include/flutter_text.h",
+   ]
+   sources = [ "abi_layout_check.c" ]
+ }
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index fa4b6973ebb..e6defe2310d 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -4,6 +4,7 @@
+ 
+ #include <stddef.h>
+ 
++#include "flutter/runtime_spi/include/flutter_text.h"
+ #include "flutter/runtime_spi/include/flutter_runtime_spi.h"
+ 
+ _Static_assert(sizeof(FlutterSpiResult) == 4, "FlutterSpiResult must be 4 bytes");
+@@ -230,4 +231,155 @@ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, report_error,
+                   sizeof(void*) == 8 ? 104 : 64);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, scene,
+                   sizeof(void*) == 8 ? 112 : 68);
+-SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 120 : 72);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 128 : 80);
++
++SPI_EXPECT_OFFSET(FlutterSpiTextShadow, color, 0);
++SPI_EXPECT_OFFSET(FlutterSpiTextShadow, offset, 20);
++SPI_EXPECT_OFFSET(FlutterSpiTextShadow, blur_sigma, 28);
++SPI_EXPECT_SIZE(FlutterSpiTextShadow, 32);
++
++SPI_EXPECT_OFFSET(FlutterSpiFontFeature, tag, 0);
++SPI_EXPECT_OFFSET(FlutterSpiFontFeature, value, 4);
++SPI_EXPECT_SIZE(FlutterSpiFontFeature, 8);
++
++SPI_EXPECT_OFFSET(FlutterSpiFontVariation, axis, 0);
++SPI_EXPECT_OFFSET(FlutterSpiFontVariation, value, 4);
++SPI_EXPECT_SIZE(FlutterSpiFontVariation, 8);
++
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, color,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, decoration,
++                  sizeof(void*) == 8 ? 28 : 24);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, decoration_color,
++                  sizeof(void*) == 8 ? 32 : 28);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, decoration_style,
++                  sizeof(void*) == 8 ? 52 : 48);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, decoration_thickness,
++                  sizeof(void*) == 8 ? 56 : 52);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, font_weight,
++                  sizeof(void*) == 8 ? 60 : 56);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, font_style,
++                  sizeof(void*) == 8 ? 64 : 60);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, text_baseline,
++                  sizeof(void*) == 8 ? 68 : 64);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, half_leading,
++                  sizeof(void*) == 8 ? 72 : 68);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, font_families,
++                  sizeof(void*) == 8 ? 80 : 72);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, font_family_count,
++                  sizeof(void*) == 8 ? 88 : 76);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, font_size,
++                  sizeof(void*) == 8 ? 96 : 80);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, letter_spacing,
++                  sizeof(void*) == 8 ? 100 : 84);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, word_spacing,
++                  sizeof(void*) == 8 ? 104 : 88);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, height,
++                  sizeof(void*) == 8 ? 108 : 92);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, locale,
++                  sizeof(void*) == 8 ? 112 : 96);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, foreground,
++                  sizeof(void*) == 8 ? 120 : 100);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, background,
++                  sizeof(void*) == 8 ? 128 : 104);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, shadows,
++                  sizeof(void*) == 8 ? 136 : 108);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, shadow_count,
++                  sizeof(void*) == 8 ? 144 : 112);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, features,
++                  sizeof(void*) == 8 ? 152 : 116);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, feature_count,
++                  sizeof(void*) == 8 ? 160 : 120);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, variations,
++                  sizeof(void*) == 8 ? 168 : 124);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, variation_count,
++                  sizeof(void*) == 8 ? 176 : 128);
++SPI_EXPECT_SIZE(FlutterSpiTextStyle, sizeof(void*) == 8 ? 184 : 132);
++
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, text_align,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, text_direction,
++                  sizeof(void*) == 8 ? 12 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, max_lines,
++                  sizeof(void*) == 8 ? 16 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, font_family,
++                  sizeof(void*) == 8 ? 24 : 16);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, font_size,
++                  sizeof(void*) == 8 ? 32 : 20);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, height,
++                  sizeof(void*) == 8 ? 36 : 24);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, text_height_behavior,
++                  sizeof(void*) == 8 ? 40 : 28);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, font_weight,
++                  sizeof(void*) == 8 ? 44 : 32);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, font_style,
++                  sizeof(void*) == 8 ? 48 : 36);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, strut_enabled,
++                  sizeof(void*) == 8 ? 52 : 40);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, strut_font_families,
++                  sizeof(void*) == 8 ? 56 : 44);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, strut_font_family_count,
++                  sizeof(void*) == 8 ? 64 : 48);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, strut_font_size,
++                  sizeof(void*) == 8 ? 72 : 52);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, strut_height,
++                  sizeof(void*) == 8 ? 76 : 56);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, strut_leading,
++                  sizeof(void*) == 8 ? 80 : 60);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, strut_force_height,
++                  sizeof(void*) == 8 ? 84 : 64);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, ellipsis,
++                  sizeof(void*) == 8 ? 88 : 68);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, locale,
++                  sizeof(void*) == 8 ? 96 : 72);
++SPI_EXPECT_SIZE(FlutterSpiParagraphStyle, sizeof(void*) == 8 ? 104 : 76);
++
++SPI_EXPECT_OFFSET(FlutterSpiParagraphMetrics, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphMetrics, width, 8);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphMetrics, height, 16);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphMetrics, longest_line, 24);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphMetrics, min_intrinsic_width, 32);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphMetrics, max_intrinsic_width, 40);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphMetrics, alphabetic_baseline, 48);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphMetrics, ideographic_baseline, 56);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphMetrics, did_exceed_max_lines, 64);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphMetrics, line_count,
++                  sizeof(void*) == 8 ? 72 : 68);
++SPI_EXPECT_SIZE(FlutterSpiParagraphMetrics, sizeof(void*) == 8 ? 80 : 72);
++
++SPI_EXPECT_OFFSET(FlutterSpiTextBox, rect, 0);
++SPI_EXPECT_OFFSET(FlutterSpiTextBox, direction, 16);
++SPI_EXPECT_SIZE(FlutterSpiTextBox, 20);
++
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, start_index, 0);
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, end_index,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, end_excluding_whitespace,
++                  sizeof(void*) == 8 ? 16 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, end_including_newline,
++                  sizeof(void*) == 8 ? 24 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, hard_break,
++                  sizeof(void*) == 8 ? 32 : 16);
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, ascent,
++                  sizeof(void*) == 8 ? 40 : 24);
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, descent,
++                  sizeof(void*) == 8 ? 48 : 32);
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, unscaled_ascent,
++                  sizeof(void*) == 8 ? 56 : 40);
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, height,
++                  sizeof(void*) == 8 ? 64 : 48);
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, width,
++                  sizeof(void*) == 8 ? 72 : 56);
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, left,
++                  sizeof(void*) == 8 ? 80 : 64);
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, baseline,
++                  sizeof(void*) == 8 ? 88 : 72);
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, line_number,
++                  sizeof(void*) == 8 ? 96 : 80);
++SPI_EXPECT_SIZE(FlutterSpiLineMetrics, sizeof(void*) == 8 ? 104 : 88);
++
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, text,
++                  sizeof(void*) == 8 ? 120 : 72);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 128 : 80);
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index 7383a4f9d99..83664fd6d8b 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 2
++#define FLUTTER_SPI_VERSION_MINOR 3
+ 
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+@@ -23,6 +23,7 @@ enum {
+   kFlutterSpiCapViewFocus = 1ULL << 5,
+   kFlutterSpiCapEmptyScene = 1ULL << 6,
+   kFlutterSpiCapScene = 1ULL << 7,
++  kFlutterSpiCapText = 1ULL << 8,
+ };
+ 
+ typedef struct FlutterSpiEngine FlutterSpiEngine;
+@@ -31,6 +32,7 @@ typedef struct FlutterSpiResponseHandle FlutterSpiResponseHandle;
+ typedef struct FlutterSpiEngineApi FlutterSpiEngineApi;
+ 
+ #include "flutter_scene.h"
++#include "flutter_text.h"
+ 
+ typedef struct {
+   size_t struct_size;
+@@ -207,6 +209,7 @@ struct FlutterSpiEngineApi {
+   FlutterSpiResult (*report_error)(FlutterSpiEngine* engine,
+                                    const char* message);
+   const FlutterSpiSceneApi* scene;
++  const FlutterSpiTextApi* text;
+ };
+ 
+ /*
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_text.h b/engine/src/flutter/runtime_spi/include/flutter_text.h
+new file mode 100644
+index 00000000000..9f4fb218e8f
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/include/flutter_text.h
+@@ -0,0 +1,241 @@
++#ifndef FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_TEXT_H_
++#define FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_TEXT_H_
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#include "flutter_scene.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef struct FlutterSpiParagraphBuilder FlutterSpiParagraphBuilder;
++typedef struct FlutterSpiParagraph FlutterSpiParagraph;
++typedef struct FlutterSpiTextApi FlutterSpiTextApi;
++
++typedef enum {
++  kFlutterSpiTextDecorationNone = 0,
++  kFlutterSpiTextDecorationUnderline = 1,
++  kFlutterSpiTextDecorationOverline = 2,
++  kFlutterSpiTextDecorationLineThrough = 4,
++} FlutterSpiTextDecoration;
++
++typedef enum {
++  kFlutterSpiTextDecorationStyleSolid = 0,
++  kFlutterSpiTextDecorationStyleDouble,
++  kFlutterSpiTextDecorationStyleDotted,
++  kFlutterSpiTextDecorationStyleDashed,
++  kFlutterSpiTextDecorationStyleWavy,
++} FlutterSpiTextDecorationStyle;
++
++typedef enum {
++  kFlutterSpiFontStyleNormal = 0,
++  kFlutterSpiFontStyleItalic,
++} FlutterSpiFontStyle;
++
++typedef enum {
++  kFlutterSpiTextBaselineAlphabetic = 0,
++  kFlutterSpiTextBaselineIdeographic,
++} FlutterSpiTextBaseline;
++
++typedef enum {
++  kFlutterSpiTextAlignLeft = 0,
++  kFlutterSpiTextAlignRight,
++  kFlutterSpiTextAlignCenter,
++  kFlutterSpiTextAlignJustify,
++  kFlutterSpiTextAlignStart,
++  kFlutterSpiTextAlignEnd,
++} FlutterSpiTextAlign;
++
++typedef enum {
++  kFlutterSpiTextDirectionRtl = 0,
++  kFlutterSpiTextDirectionLtr,
++} FlutterSpiTextDirection;
++
++typedef enum {
++  kFlutterSpiTextHeightBehaviorAll = 0,
++  kFlutterSpiTextHeightBehaviorDisableFirstAscent = 1,
++  kFlutterSpiTextHeightBehaviorDisableLastDescent = 2,
++  kFlutterSpiTextHeightBehaviorDisableAll = 3,
++} FlutterSpiTextHeightBehavior;
++
++typedef struct {
++  FlutterSpiColor color;
++  FlutterSpiPoint offset;
++  float blur_sigma;
++} FlutterSpiTextShadow;
++
++typedef struct {
++  char tag[4];
++  int32_t value;
++} FlutterSpiFontFeature;
++
++typedef struct {
++  char axis[4];
++  float value;
++} FlutterSpiFontVariation;
++
++typedef struct {
++  size_t struct_size;
++  FlutterSpiColor color;
++  int32_t decoration;
++  FlutterSpiColor decoration_color;
++  int32_t decoration_style;
++  float decoration_thickness;
++  int32_t font_weight;
++  int32_t font_style;
++  int32_t text_baseline;
++  bool half_leading;
++  const char* const* font_families;
++  size_t font_family_count;
++  float font_size;
++  float letter_spacing;
++  float word_spacing;
++  float height;
++  const char* locale;
++  const FlutterSpiPaint* foreground;
++  const FlutterSpiPaint* background;
++  const FlutterSpiTextShadow* shadows;
++  size_t shadow_count;
++  const FlutterSpiFontFeature* features;
++  size_t feature_count;
++  const FlutterSpiFontVariation* variations;
++  size_t variation_count;
++} FlutterSpiTextStyle;
++
++typedef struct {
++  size_t struct_size;
++  int32_t text_align;
++  int32_t text_direction;
++  size_t max_lines;
++  const char* font_family;
++  float font_size;
++  float height;
++  int32_t text_height_behavior;
++  int32_t font_weight;
++  int32_t font_style;
++  bool strut_enabled;
++  const char* const* strut_font_families;
++  size_t strut_font_family_count;
++  float strut_font_size;
++  float strut_height;
++  float strut_leading;
++  bool strut_force_height;
++  const char* ellipsis;
++  const char* locale;
++} FlutterSpiParagraphStyle;
++
++typedef struct {
++  size_t struct_size;
++  double width;
++  double height;
++  double longest_line;
++  double min_intrinsic_width;
++  double max_intrinsic_width;
++  double alphabetic_baseline;
++  double ideographic_baseline;
++  bool did_exceed_max_lines;
++  size_t line_count;
++} FlutterSpiParagraphMetrics;
++
++typedef struct {
++  FlutterSpiRect rect;
++  int32_t direction;
++} FlutterSpiTextBox;
++
++typedef struct {
++  size_t start_index;
++  size_t end_index;
++  size_t end_excluding_whitespace;
++  size_t end_including_newline;
++  bool hard_break;
++  double ascent;
++  double descent;
++  double unscaled_ascent;
++  double height;
++  double width;
++  double left;
++  double baseline;
++  size_t line_number;
++} FlutterSpiLineMetrics;
++
++struct FlutterSpiTextApi {
++  size_t struct_size;
++
++  FlutterSpiResult (*font_load)(FlutterSpiEngine* engine,
++                                const uint8_t* data,
++                                size_t size,
++                                const char* family_alias);
++  FlutterSpiResult (*paragraph_builder_create)(
++      FlutterSpiEngine* engine,
++      const FlutterSpiParagraphStyle* style,
++      FlutterSpiParagraphBuilder** out_builder);
++  FlutterSpiResult (*paragraph_builder_push_style)(
++      FlutterSpiParagraphBuilder* builder,
++      const FlutterSpiTextStyle* style);
++  FlutterSpiResult (*paragraph_builder_pop)(FlutterSpiParagraphBuilder* builder);
++  FlutterSpiResult (*paragraph_builder_add_text)(
++      FlutterSpiParagraphBuilder* builder,
++      const char* utf8,
++      size_t size);
++  FlutterSpiResult (*paragraph_builder_add_placeholder)(
++      FlutterSpiParagraphBuilder* builder,
++      float width,
++      float height,
++      int32_t alignment,
++      float baseline_offset,
++      int32_t baseline);
++  FlutterSpiResult (*paragraph_builder_build)(
++      FlutterSpiParagraphBuilder* builder,
++      FlutterSpiParagraph** out_paragraph);
++  FlutterSpiResult (*paragraph_builder_release)(
++      FlutterSpiParagraphBuilder* builder);
++
++  FlutterSpiResult (*paragraph_layout)(FlutterSpiParagraph* paragraph,
++                                       double width);
++  FlutterSpiResult (*paragraph_get_metrics)(
++      FlutterSpiParagraph* paragraph,
++      FlutterSpiParagraphMetrics* out_metrics);
++  FlutterSpiResult (*paragraph_get_rects_for_range)(
++      FlutterSpiParagraph* paragraph,
++      size_t start,
++      size_t end,
++      int32_t height_style,
++      int32_t width_style,
++      FlutterSpiTextBox* out,
++      size_t capacity,
++      size_t* count);
++  FlutterSpiResult (*paragraph_get_rects_for_placeholders)(
++      FlutterSpiParagraph* paragraph,
++      FlutterSpiTextBox* out,
++      size_t capacity,
++      size_t* count);
++  FlutterSpiResult (*paragraph_get_glyph_position_at)(
++      FlutterSpiParagraph* paragraph,
++      double dx,
++      double dy,
++      size_t* offset,
++      int32_t* affinity);
++  FlutterSpiResult (*paragraph_get_word_boundary)(FlutterSpiParagraph* paragraph,
++                                                  size_t offset,
++                                                  size_t* start,
++                                                  size_t* end);
++  FlutterSpiResult (*paragraph_get_line_metrics)(FlutterSpiParagraph* paragraph,
++                                                 FlutterSpiLineMetrics* out,
++                                                 size_t capacity,
++                                                 size_t* count);
++  FlutterSpiResult (*paragraph_retain)(FlutterSpiParagraph* paragraph);
++  FlutterSpiResult (*paragraph_release)(FlutterSpiParagraph* paragraph);
++  FlutterSpiResult (*canvas_draw_paragraph)(FlutterSpiPictureRecorder* recorder,
++                                            FlutterSpiParagraph* paragraph,
++                                            float x,
++                                            float y);
++};
++
++#ifdef __cplusplus
++}  // extern "C"
++#endif
++
++#endif  // FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_TEXT_H_
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index 3b27a2fee29..bf35037671b 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -6,7 +6,12 @@
+ 
+ #include "flutter/display_list/dl_color.h"
+ #include "flutter/display_list/dl_paint.h"
++#include "flutter/runtime_spi/include/flutter_text.h"
+ #include "flutter/runtime_spi/include/flutter_runtime_spi.h"
++#include "flutter/txt/src/txt/font_style.h"
++#include "flutter/txt/src/txt/paragraph_style.h"
++#include "flutter/txt/src/txt/text_baseline.h"
++#include "flutter/txt/src/txt/text_decoration.h"
+ #include "flutter/testing/testing.h"
+ 
+ namespace flutter {
+@@ -37,6 +42,52 @@ TEST(SpiAbi, CapabilityValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiCapViewFocus, 1u << 5);
+   EXPECT_EQ(kFlutterSpiCapEmptyScene, 1u << 6);
+   EXPECT_EQ(kFlutterSpiCapScene, 1u << 7);
++  EXPECT_EQ(kFlutterSpiCapText, 1u << 8);
++}
++
++TEST(SpiAbi, TextEnumValuesMatchTxt) {
++  static_assert(kFlutterSpiTextDecorationStyleSolid ==
++                static_cast<int32_t>(txt::TextDecorationStyle::kSolid));
++  static_assert(kFlutterSpiTextDecorationStyleDouble ==
++                static_cast<int32_t>(txt::TextDecorationStyle::kDouble));
++  static_assert(kFlutterSpiTextDecorationStyleDotted ==
++                static_cast<int32_t>(txt::TextDecorationStyle::kDotted));
++  static_assert(kFlutterSpiTextDecorationStyleDashed ==
++                static_cast<int32_t>(txt::TextDecorationStyle::kDashed));
++  static_assert(kFlutterSpiTextDecorationStyleWavy ==
++                static_cast<int32_t>(txt::TextDecorationStyle::kWavy));
++  static_assert(kFlutterSpiFontStyleNormal ==
++                static_cast<int32_t>(txt::FontStyle::normal));
++  static_assert(kFlutterSpiFontStyleItalic ==
++                static_cast<int32_t>(txt::FontStyle::italic));
++  static_assert(kFlutterSpiTextBaselineAlphabetic ==
++                static_cast<int32_t>(txt::TextBaseline::kAlphabetic));
++  static_assert(kFlutterSpiTextBaselineIdeographic ==
++                static_cast<int32_t>(txt::TextBaseline::kIdeographic));
++  static_assert(kFlutterSpiTextAlignLeft ==
++                static_cast<int32_t>(txt::TextAlign::left));
++  static_assert(kFlutterSpiTextAlignRight ==
++                static_cast<int32_t>(txt::TextAlign::right));
++  static_assert(kFlutterSpiTextAlignCenter ==
++                static_cast<int32_t>(txt::TextAlign::center));
++  static_assert(kFlutterSpiTextAlignJustify ==
++                static_cast<int32_t>(txt::TextAlign::justify));
++  static_assert(kFlutterSpiTextAlignStart ==
++                static_cast<int32_t>(txt::TextAlign::start));
++  static_assert(kFlutterSpiTextAlignEnd ==
++                static_cast<int32_t>(txt::TextAlign::end));
++  static_assert(kFlutterSpiTextDirectionRtl ==
++                static_cast<int32_t>(txt::TextDirection::rtl));
++  static_assert(kFlutterSpiTextDirectionLtr ==
++                static_cast<int32_t>(txt::TextDirection::ltr));
++  static_assert(static_cast<int>(kFlutterSpiTextHeightBehaviorAll) ==
++                static_cast<int>(txt::kAll));
++  static_assert(static_cast<int>(kFlutterSpiTextHeightBehaviorDisableFirstAscent) ==
++                static_cast<int>(txt::kDisableFirstAscent));
++  static_assert(static_cast<int>(kFlutterSpiTextHeightBehaviorDisableLastDescent) ==
++                static_cast<int>(txt::kDisableLastDescent));
++  static_assert(static_cast<int>(kFlutterSpiTextHeightBehaviorDisableAll) ==
++                static_cast<int>(txt::kDisableAll));
+ }
+ 
+ TEST(SpiAbi, SceneEnumValuesMatchDisplayList) {
+@@ -247,7 +298,103 @@ TEST(SpiAbi, EngineApiLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, log, 96, 60);
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, report_error, 104, 64);
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, scene, 112, 68);
+-  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 120u : 72u);
++  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 128u : 80u);
++}
++
++TEST(SpiAbi, TextLayoutIsFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiTextShadow, color, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiTextShadow, offset, 20, 20);
++  EXPECT_SPI_OFFSET(FlutterSpiTextShadow, blur_sigma, 28, 28);
++  EXPECT_EQ(sizeof(FlutterSpiTextShadow), 32u);
++
++  EXPECT_SPI_OFFSET(FlutterSpiFontFeature, tag, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiFontFeature, value, 4, 4);
++  EXPECT_EQ(sizeof(FlutterSpiFontFeature), 8u);
++
++  EXPECT_SPI_OFFSET(FlutterSpiFontVariation, axis, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiFontVariation, value, 4, 4);
++  EXPECT_EQ(sizeof(FlutterSpiFontVariation), 8u);
++
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, color, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, decoration, 28, 24);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, decoration_color, 32, 28);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, decoration_style, 52, 48);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, decoration_thickness, 56, 52);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, font_weight, 60, 56);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, font_style, 64, 60);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, text_baseline, 68, 64);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, half_leading, 72, 68);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, font_families, 80, 72);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, font_family_count, 88, 76);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, font_size, 96, 80);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, letter_spacing, 100, 84);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, word_spacing, 104, 88);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, height, 108, 92);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, locale, 112, 96);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, foreground, 120, 100);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, background, 128, 104);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, shadows, 136, 108);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, shadow_count, 144, 112);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, features, 152, 116);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, feature_count, 160, 120);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, variations, 168, 124);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, variation_count, 176, 128);
++  EXPECT_EQ(sizeof(FlutterSpiTextStyle), sizeof(void*) == 8 ? 184u : 132u);
++
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, text_align, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, text_direction, 12, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, max_lines, 16, 12);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, font_family, 24, 16);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, font_size, 32, 20);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, height, 36, 24);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, text_height_behavior, 40, 28);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, font_weight, 44, 32);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, font_style, 48, 36);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, strut_enabled, 52, 40);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, strut_font_families, 56, 44);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, strut_font_family_count, 64, 48);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, strut_font_size, 72, 52);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, strut_height, 76, 56);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, strut_leading, 80, 60);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, strut_force_height, 84, 64);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, ellipsis, 88, 68);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, locale, 96, 72);
++  EXPECT_EQ(sizeof(FlutterSpiParagraphStyle),
++            sizeof(void*) == 8 ? 104u : 76u);
++
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphMetrics, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphMetrics, width, 8, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphMetrics, height, 16, 16);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphMetrics, longest_line, 24, 24);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphMetrics, min_intrinsic_width, 32, 32);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphMetrics, max_intrinsic_width, 40, 40);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphMetrics, alphabetic_baseline, 48, 48);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphMetrics, ideographic_baseline, 56, 56);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphMetrics, did_exceed_max_lines, 64, 64);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphMetrics, line_count, 72, 68);
++  EXPECT_EQ(sizeof(FlutterSpiParagraphMetrics),
++            sizeof(void*) == 8 ? 80u : 72u);
++
++  EXPECT_SPI_OFFSET(FlutterSpiTextBox, rect, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiTextBox, direction, 16, 16);
++  EXPECT_EQ(sizeof(FlutterSpiTextBox), 20u);
++
++  EXPECT_SPI_OFFSET(FlutterSpiLineMetrics, start_index, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiLineMetrics, end_index, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiLineMetrics, end_excluding_whitespace, 16, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiLineMetrics, end_including_newline, 24, 12);
++  EXPECT_SPI_OFFSET(FlutterSpiLineMetrics, hard_break, 32, 16);
++  EXPECT_SPI_OFFSET(FlutterSpiLineMetrics, ascent, 40, 24);
++  EXPECT_SPI_OFFSET(FlutterSpiLineMetrics, descent, 48, 32);
++  EXPECT_SPI_OFFSET(FlutterSpiLineMetrics, unscaled_ascent, 56, 40);
++  EXPECT_SPI_OFFSET(FlutterSpiLineMetrics, height, 64, 48);
++  EXPECT_SPI_OFFSET(FlutterSpiLineMetrics, width, 72, 56);
++  EXPECT_SPI_OFFSET(FlutterSpiLineMetrics, left, 80, 64);
++  EXPECT_SPI_OFFSET(FlutterSpiLineMetrics, baseline, 88, 72);
++  EXPECT_SPI_OFFSET(FlutterSpiLineMetrics, line_number, 96, 80);
++  EXPECT_EQ(sizeof(FlutterSpiLineMetrics), sizeof(void*) == 8 ? 104u : 88u);
+ }
+ 
+ TEST(SpiAbi, HeaderIsPureC) {
