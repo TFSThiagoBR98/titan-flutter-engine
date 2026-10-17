@@ -1,5 +1,5 @@
-# Why: Why: connect the versioned C runtime SPI to the RuntimeBackend seam
-while keeping production SPI targets free of Dart dependencies.
+# Why: connect the versioned C runtime SPI to the RuntimeBackend seam while
+# keeping production SPI targets free of Dart dependencies.
 diff --git a/engine/src/flutter/runtime/BUILD.gn b/engine/src/flutter/runtime/BUILD.gn
 index 1444b60a6ab..43077d070be 100644
 --- a/engine/src/flutter/runtime/BUILD.gn

@@ -1,5 +1,5 @@
-# Why: Why: expose the runtime SPI text style conversions and dynamic font
-loading required by the ABI while keeping the implementation Dart-free.
+# Why: expose the runtime SPI text style conversions and dynamic font loading
+# required by the ABI while keeping the implementation Dart-free.
 diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
 index a67a311a880..8b30b332145 100644
 --- a/engine/src/flutter/runtime_spi/BUILD.gn

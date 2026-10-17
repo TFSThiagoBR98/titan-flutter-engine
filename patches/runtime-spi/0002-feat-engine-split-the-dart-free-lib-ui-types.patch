@@ -1,5 +1,5 @@
 # Why: split the Dart-free data types of lib/ui into their own target so the
-engine core can use them without the Dart VM
+# engine core can use them without the Dart VM
 diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
 index 20ffebaaef5..0ddf322fc61 100644
 --- a/engine/src/flutter/lib/ui/BUILD.gn

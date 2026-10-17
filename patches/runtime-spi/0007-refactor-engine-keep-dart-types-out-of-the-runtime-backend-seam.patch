@@ -1,7 +1,7 @@
 # Why: Review fixes for the S1 seams: a checked GN target for the SPI headers,
-Dart-only operations moved to DartRuntimeExtensions, a DartRuntimeBackend
-adapter so RuntimeController stays upstream, and Dart-free
-platform_data/display targets.
+# Dart-only operations moved to DartRuntimeExtensions, a DartRuntimeBackend
+# adapter so RuntimeController stays upstream, and Dart-free
+# platform_data/display targets.
 diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
 index 0ddf322fc61..6b06582c680 100644
 --- a/engine/src/flutter/lib/ui/BUILD.gn

@@ -1,5 +1,5 @@
 # Why: the runtime SPI scene API must build layer trees and describe them
-canonically for parity checks
+# canonically for parity checks
 diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
 index 4e2f6d0f784..603c89ed8f3 100644
 --- a/engine/src/flutter/runtime_spi/BUILD.gn

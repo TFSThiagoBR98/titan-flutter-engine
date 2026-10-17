@@ -1,5 +1,5 @@
 # Why: 32-bit targets align 64-bit fields to 8 bytes; the frozen offsets
-assumed pointer-size alignment
+# assumed pointer-size alignment
 diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
 index 761fa19fa03..e000949e5d2 100644
 --- a/engine/src/flutter/runtime_spi/abi_layout_check.c

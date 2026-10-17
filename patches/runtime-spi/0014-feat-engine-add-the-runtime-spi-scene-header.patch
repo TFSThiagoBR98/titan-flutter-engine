@@ -1,5 +1,5 @@
 # Why: Expose the versioned scene ABI and freeze its value and engine API
-layouts while keeping the existing S2 engine implementation scene-disabled.
+# layouts while keeping the existing S2 engine implementation scene-disabled.
 diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
 index ecf698a01cb..48ccb91f1a4 100644
 --- a/engine/src/flutter/runtime_spi/BUILD.gn

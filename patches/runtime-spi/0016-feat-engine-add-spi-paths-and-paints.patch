@@ -1,5 +1,5 @@
-# Why: Why: expose validated path, geometry, and paint primitives for the
-Runtime SPI scene API.
+# Why: expose validated path, geometry, and paint primitives for the Runtime
+# SPI scene API.
 diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
 index 3bed01fa742..5cab935c901 100644
 --- a/engine/src/flutter/runtime_spi/BUILD.gn

@@ -1,5 +1,5 @@
 # Why: the runtime SPI scene trace reads layer properties to compare SPI-built
-and C++-built layer trees
+# and C++-built layer trees
 diff --git a/engine/src/flutter/flow/layers/clip_path_layer.h b/engine/src/flutter/flow/layers/clip_path_layer.h
 index 30f6225cd3a..6acc7a88aa7 100644
 --- a/engine/src/flutter/flow/layers/clip_path_layer.h

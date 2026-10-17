@@ -1,7 +1,7 @@
-# Why: Why: expose the ABI 0.3 text declarations, freeze their C and C++
-layouts, and publish the text capability for paragraph and font operations.
-The 32-bit expectations use the compiler-verified arm-hard layout for the new
-structs.
+# Why: expose the ABI 0.3 text declarations, freeze their C and C++ layouts,
+# and publish the text capability for paragraph and font operations. The
+# 32-bit expectations use the compiler-verified arm-hard layout for the new
+# structs.
 diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
 index a27e43c58c7..a67a311a880 100644
 --- a/engine/src/flutter/runtime_spi/BUILD.gn

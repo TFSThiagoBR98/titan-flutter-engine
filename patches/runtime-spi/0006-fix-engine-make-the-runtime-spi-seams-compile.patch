@@ -1,5 +1,5 @@
-# Why: Why: the S1 seams were written without compiling; restore the includes
-and declarations the split removed
+# Why: the S1 seams were written without compiling; restore the includes and
+# declarations the split removed
 diff --git a/engine/src/flutter/fml/trace_event_unittests.cc b/engine/src/flutter/fml/trace_event_unittests.cc
 index 28c40e5a3e7..985a5206a78 100644
 --- a/engine/src/flutter/fml/trace_event_unittests.cc

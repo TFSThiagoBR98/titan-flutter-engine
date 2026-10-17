@@ -204,7 +204,7 @@ commit_slug() {
 why_header() {
   local body=$1
   printf '%s' "$body" | python3 -c \
-    'import sys, textwrap; print(textwrap.fill("# Why: " + sys.stdin.read().strip(), width=78))'
+    'import re, sys, textwrap; body = re.sub(r"(?i)^\s*why\s*:\s*", "", sys.stdin.read().strip(), count=1); print(textwrap.fill("# Why: " + body, width=78, subsequent_indent="# "))'
 }
 
 export_patches() {

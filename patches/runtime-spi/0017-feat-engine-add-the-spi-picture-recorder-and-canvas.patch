@@ -1,6 +1,6 @@
-# Why: Why: expose DisplayListBuilder recording through the Runtime SPI while
-retaining pictures independently from their handles and rejecting invalid
-recorder operations.
+# Why: expose DisplayListBuilder recording through the Runtime SPI while
+# retaining pictures independently from their handles and rejecting invalid
+# recorder operations.
 diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
 index 5cab935c901..4e2f6d0f784 100644
 --- a/engine/src/flutter/runtime_spi/BUILD.gn

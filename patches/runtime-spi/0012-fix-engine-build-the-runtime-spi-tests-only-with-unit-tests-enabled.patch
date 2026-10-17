@@ -1,6 +1,5 @@
-# Why: Why: the SPI test targets depended on shell test fixtures that only
-exist with enable_unittests, which broke every build configured without unit
-tests
+# Why: the SPI test targets depended on shell test fixtures that only exist
+# with enable_unittests, which broke every build configured without unit tests
 diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
 index dde80fe3b32..ecf698a01cb 100644
 --- a/engine/src/flutter/runtime_spi/BUILD.gn

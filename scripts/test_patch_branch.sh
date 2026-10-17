@@ -175,10 +175,21 @@ printf '%s\n' 'second runtime change' > "$worktree_directory/second.txt"
 git -C "$worktree_directory" add -- second.txt
 git -C "$worktree_directory" commit --quiet -m 'feat: second seam' -m 'second runtime reason'
 
+printf '%s\n' 'Why prefix change' > "$worktree_directory/why-prefix.txt"
+git -C "$worktree_directory" add -- why-prefix.txt
+git -C "$worktree_directory" commit --quiet -m 'feat: prefixed reason' -m 'Why: keep X'
+
+long_reason='This body is intentionally long enough to wrap onto multiple header lines so every continuation line must preserve the comment marker for a valid exported patch.'
+printf '%s\n' 'Long Why header' > "$worktree_directory/long-why.txt"
+git -C "$worktree_directory" add -- long-why.txt
+git -C "$worktree_directory" commit --quiet -m 'feat: wrapped reason' -m "$long_reason"
+
 run_patch_branch export "$worktree_directory" runtime-spi
 first_patch="$standalone_repository/patches/runtime-spi/0001-feat-first-seam.patch"
 second_patch="$standalone_repository/patches/runtime-spi/0002-feat-second-seam.patch"
-[[ -f "$first_patch" && -f "$second_patch" ]] || {
+prefixed_patch="$standalone_repository/patches/runtime-spi/0003-feat-prefixed-reason.patch"
+long_patch="$standalone_repository/patches/runtime-spi/0004-feat-wrapped-reason.patch"
+[[ -f "$first_patch" && -f "$second_patch" && -f "$prefixed_patch" && -f "$long_patch" ]] || {
   printf 'error: export did not create the numbered patches\n' >&2
   exit 1
 }
@@ -186,6 +197,22 @@ assert_contains "$first_patch" '# Why: first runtime reason' 'first Why header'
 assert_contains "$first_patch" 'diff --git' 'first diff header'
 assert_contains "$second_patch" '# Why: second runtime reason' 'second Why header'
 assert_contains "$second_patch" 'diff --git' 'second diff header'
+assert_contains "$prefixed_patch" '# Why: keep X' 'single Why prefix'
+assert_contains "$prefixed_patch" 'diff --git' 'prefixed diff header'
+
+why_header_lines=0
+while IFS= read -r line; do
+  [[ "$line" == diff\ --git* ]] && break
+  [[ "$line" == '# '* ]] || {
+    printf 'error: long Why header line lacks the comment marker: %s\n' "$line" >&2
+    exit 1
+  }
+  [[ "$line" == '# Why: '* ]] && why_header_lines=$((why_header_lines + 1))
+done < "$long_patch"
+[[ "$why_header_lines" -eq 1 ]] || {
+  printf 'error: long Why header has %d primary lines\n' "$why_header_lines" >&2
+  exit 1
+}
 
 git clone --quiet --no-local "$flutter_directory" "$clone_directory"
 while IFS= read -r folder; do

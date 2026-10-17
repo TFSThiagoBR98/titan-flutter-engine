@@ -1,5 +1,5 @@
 # Why: the conformance runtime and benchmark target cover scene construction
-through the SPI frame boundary
+# through the SPI frame boundary
 diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
 index 603c89ed8f3..a27e43c58c7 100644
 --- a/engine/src/flutter/runtime_spi/BUILD.gn

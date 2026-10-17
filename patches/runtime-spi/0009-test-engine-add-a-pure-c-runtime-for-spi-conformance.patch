@@ -1,5 +1,5 @@
-# Why: Why: Provide a stateful C-only runtime that records borrowed SPI inputs
-and exercises response and frame callbacks in conformance tests.
+# Why: Provide a stateful C-only runtime that records borrowed SPI inputs and
+# exercises response and frame callbacks in conformance tests.
 diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
 index 27368e00822..50fec11ecbf 100644
 --- a/engine/src/flutter/runtime_spi/BUILD.gn

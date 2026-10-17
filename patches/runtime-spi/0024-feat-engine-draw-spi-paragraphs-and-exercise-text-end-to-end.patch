@@ -1,7 +1,7 @@
-# Why: Why: expose paragraph drawing through the runtime SPI, advertise the
-text capability, and cover the C runtime round trip with deterministic ICU and
-opaque-font test fixtures. Compare display-list text by recorded color,
-bounds, and glyph content because DlText equality is pointer-based.
+# Why: expose paragraph drawing through the runtime SPI, advertise the text
+# capability, and cover the C runtime round trip with deterministic ICU and
+# opaque-font test fixtures. Compare display-list text by recorded color,
+# bounds, and glyph content because DlText equality is pointer-based.
 diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
 index fcb87ce3d36..d8395e947b5 100644
 --- a/engine/src/flutter/runtime_spi/BUILD.gn

@@ -1,5 +1,6 @@
-# Why: Why: Freeze a language-neutral, versioned C ABI for runtime handshakes,
-events, frames, and platform messages, with cross-architecture layout checks.
+# Why: Freeze a language-neutral, versioned C ABI for runtime handshakes,
+# events, frames, and platform messages, with cross-architecture layout
+# checks.
 diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
 index efc3cd319c4..27368e00822 100644
 --- a/engine/src/flutter/runtime_spi/BUILD.gn

@@ -1,6 +1,7 @@
-# Why: Why: expose paragraph construction, UTF-8 validation, layout queries,
-metrics, placeholder geometry, glyph and word queries, line metrics, and
-handle lifetime through the runtime text ABI with direct txt parity coverage.
+# Why: expose paragraph construction, UTF-8 validation, layout queries,
+# metrics, placeholder geometry, glyph and word queries, line metrics, and
+# handle lifetime through the runtime text ABI with direct txt parity
+# coverage.
 diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
 index 8b30b332145..fcb87ce3d36 100644
 --- a/engine/src/flutter/runtime_spi/BUILD.gn

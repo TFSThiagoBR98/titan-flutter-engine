@@ -1,5 +1,5 @@
 # Why: Keep per-engine scene objects behind monotonically increasing handles
-with explicit retain and release lifetimes.
+# with explicit retain and release lifetimes.
 diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
 index 48ccb91f1a4..3bed01fa742 100644
 --- a/engine/src/flutter/runtime_spi/BUILD.gn

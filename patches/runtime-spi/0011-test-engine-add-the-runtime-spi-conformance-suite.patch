@@ -1,11 +1,11 @@
-# Why: Why: Exercise the Shell-facing runtime SPI contract end to end,
-including lifecycle, views, frames, input, platform messages, borrowed data,
-stale scenes, and shutdown behavior. The suite also closes the report_error
-seam semantics by stopping callbacks immediately, posting stop on the UI
-runner, completing pending responses, and preserving single stop and destroy
-calls. Link the explicit ShellTest fixture sources, fixture implementation,
-and generated fixture assets so the test binary resolves without changing
-production targets.
+# Why: Exercise the Shell-facing runtime SPI contract end to end, including
+# lifecycle, views, frames, input, platform messages, borrowed data, stale
+# scenes, and shutdown behavior. The suite also closes the report_error seam
+# semantics by stopping callbacks immediately, posting stop on the UI runner,
+# completing pending responses, and preserving single stop and destroy calls.
+# Link the explicit ShellTest fixture sources, fixture implementation, and
+# generated fixture assets so the test binary resolves without changing
+# production targets.
 diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
 index 383a7bed211..dde80fe3b32 100644
 --- a/engine/src/flutter/runtime_spi/BUILD.gn
