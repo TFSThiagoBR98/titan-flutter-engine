@@ -1,0 +1,92 @@
+# Why: The ABI 0.6 paint_effects pointer adds four bytes to
+# FlutterSpiEngineApi on 32-bit targets. Freeze the corrected size and remove
+# the trailing blank lines introduced by the SPI effects patch.
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 055f557298e..12c71163dc1 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -247,7 +247,7 @@ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, report_error,
+                   sizeof(void*) == 8 ? 104 : 64);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, scene,
+                   sizeof(void*) == 8 ? 112 : 68);
+-SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 144 : 84);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 144 : 88);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, color, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, offset, 20);
+@@ -402,7 +402,7 @@ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, image,
+                   sizeof(void*) == 8 ? 128 : 76);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, paint_effects,
+                   sizeof(void*) == 8 ? 136 : 80);
+-SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 144 : 84);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 144 : 88);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, shader_linear_gradient,
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_color_filter.cc b/engine/src/flutter/runtime_spi/effects/spi_color_filter.cc
+index fd38a0dac39..68e23d5fce7 100644
+--- a/engine/src/flutter/runtime_spi/effects/spi_color_filter.cc
++++ b/engine/src/flutter/runtime_spi/effects/spi_color_filter.cc
+@@ -128,4 +128,3 @@ std::shared_ptr<const DlColorFilter> SpiColorFilterGet(
+ }
+ 
+ }  // namespace flutter
+-
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_color_filter.h b/engine/src/flutter/runtime_spi/effects/spi_color_filter.h
+index cf498579531..d8983a87f22 100644
+--- a/engine/src/flutter/runtime_spi/effects/spi_color_filter.h
++++ b/engine/src/flutter/runtime_spi/effects/spi_color_filter.h
+@@ -33,4 +33,3 @@ std::shared_ptr<const DlColorFilter> SpiColorFilterGet(
+ }  // namespace flutter
+ 
+ #endif  // FLUTTER_RUNTIME_SPI_EFFECTS_SPI_COLOR_FILTER_H_
+-
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_image_filter.cc b/engine/src/flutter/runtime_spi/effects/spi_image_filter.cc
+index 665e16a8c25..cb7d948068c 100644
+--- a/engine/src/flutter/runtime_spi/effects/spi_image_filter.cc
++++ b/engine/src/flutter/runtime_spi/effects/spi_image_filter.cc
+@@ -177,4 +177,3 @@ std::shared_ptr<DlImageFilter> SpiImageFilterGet(FlutterSpiImageFilter* filter)
+ }
+ 
+ }  // namespace flutter
+-
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_image_filter.h b/engine/src/flutter/runtime_spi/effects/spi_image_filter.h
+index b6d037c146d..9af2ec5c6f2 100644
+--- a/engine/src/flutter/runtime_spi/effects/spi_image_filter.h
++++ b/engine/src/flutter/runtime_spi/effects/spi_image_filter.h
+@@ -44,4 +44,3 @@ std::shared_ptr<DlImageFilter> SpiImageFilterGet(FlutterSpiImageFilter* filter);
+ }  // namespace flutter
+ 
+ #endif  // FLUTTER_RUNTIME_SPI_EFFECTS_SPI_IMAGE_FILTER_H_
+-
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_shader.cc b/engine/src/flutter/runtime_spi/effects/spi_shader.cc
+index 08bbba083b6..84bfabb81a0 100644
+--- a/engine/src/flutter/runtime_spi/effects/spi_shader.cc
++++ b/engine/src/flutter/runtime_spi/effects/spi_shader.cc
+@@ -289,4 +289,3 @@ std::shared_ptr<DlColorSource> SpiShaderGet(FlutterSpiShader* shader) {
+ }
+ 
+ }  // namespace flutter
+-
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_shader.h b/engine/src/flutter/runtime_spi/effects/spi_shader.h
+index cc6c91960b1..8325ead10b0 100644
+--- a/engine/src/flutter/runtime_spi/effects/spi_shader.h
++++ b/engine/src/flutter/runtime_spi/effects/spi_shader.h
+@@ -69,4 +69,3 @@ std::shared_ptr<DlColorSource> SpiShaderGet(FlutterSpiShader* shader);
+ }  // namespace flutter
+ 
+ #endif  // FLUTTER_RUNTIME_SPI_EFFECTS_SPI_SHADER_H_
+-
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index 4916d0521fe..33e437ad79f 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -344,7 +344,7 @@ TEST(SpiAbi, EngineApiLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, text, 120, 72);
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, image, 128, 76);
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, paint_effects, 136, 80);
+-  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 144u : 84u);
++  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 144u : 88u);
+ }
+ 
+ TEST(SpiAbi, PaintEffectsApiLayoutIsFrozen) {
