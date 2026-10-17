@@ -372,6 +372,14 @@ Os pontos que ainda dependiam de Dart no `shell.cc` foram para `shell_dart.cc`: 
 
 O checkpoint confirmou **1250 PASS** e **0 FAIL** no `check-runtime-spi.sh`, o probe `9afdbcd18abd9b35` em x64 e arm64-musl sob QEMU, a configuração `--gn-only` dos dez alvos, o alvo `runtime_spi_c_api` em arm-hard e `tools/ci.sh engine`. A série limpa contém **82 patches** do repositório do Flutter, dos quais **67** pertencem a `runtime-spi`; o `engine.lock` registra `patches_sha256=4d4caa68c747fa9e2c341454c7f97cef15ebfe8ab941e9322fa4fbeccabeca57`. Os benchmarks estão em [runtime-spi-s4b.md](medidas/runtime-spi-s4b.md); `BM_ShellInitialization` ficou inconclusivo, e o A/B controlado entre as duas revisões compiladas permanece pendente para a S5.5.
 
+## S4c-1: contrato completo
+
+A S4c-1 completa a ABI 0.12 nos dois sentidos. Do engine para o runtime, o contrato passa a publicar telas, tempos de quadro e consultas de hit test; do runtime para o engine, passa a cobrir rota inicial, locale, semântica, ciclo de vida do isolate, deferred libraries, mensagens de canal, escala de fonte, foco, reset interno e leitura de assets. Esses pontos faltavam porque a tabela anterior cobria apenas as extensões opcionais já identificadas na S4a e os handlers de service protocol da S4b, deixando o restante do `RuntimeDelegate` e as solicitações correspondentes do `Engine` presos às interfaces internas em C++.
+
+As strings e listas devolvidas pelo engine são alocadas e liberadas pela própria `FlutterSpiEngineApi`, enquanto mapeamentos de assets conservam a função `release` do `fml::Mapping` que os criou; assim, a propriedade não atravessa os módulos `.so` por um alocador inadequado. O `PlatformMessageHandler` permanece sem um campo próprio na ABI porque o envio de mensagens já o usa internamente e expor esse detalhe duplicaria uma otimização do engine, não um contrato necessário ao runtime.
+
+O checkpoint confirmou **1275 PASS** e **0 FAIL** no `check-runtime-spi.sh`, contra 1250 PASS na S4b, além do probe `9afdbcd18abd9b35` em x64 e arm64-musl sob QEMU, da configuração `--gn-only` dos dez alvos, do alvo `runtime_spi_c_api` em arm-hard e de `tools/ci.sh engine`. A série limpa contém **85 patches** do repositório do Flutter, dos quais **70** pertencem a `runtime-spi`; o `engine.lock` registra `patches_sha256=a02204f0857fc6a46f7e1dc1315f48368bbd88b4c2b157295710bbec820512de`. Os benchmarks não foram medidos nesta fase, que não altera o pipeline de quadros; os números completos estão em [runtime-spi-s4c1.md](medidas/runtime-spi-s4c1.md).
+
 ## Ciclo de vida e falhas
 
 O host cria, inicia, encerra e libera o backend. Uma falha recuperável encerra o runtime ativo e limpa os recursos;

@@ -41,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   conversão em shader de paint ou image filter, sem Dart.
 - Runtime SPI S3b-5: ABI 0.9 para publicar a árvore de semântica (nós, flags, textos com atributos, transformações, filhos e ações
   customizadas) de uma view, com o mesmo resultado do SemanticsUpdateBuilder do dart:ui e sem Dart.
+- Runtime SPI S4c-1: ABI 0.12 com o contrato completo entre o engine e o runtime
+  (telas, tempos de quadro, hit test, rota inicial, locale, deferred libraries, foco, assets e demais pedidos do
+  runtime ao engine).
 
 ### Fixed
 

@@ -75,6 +75,9 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0065-refactor-engine-expose-the-shell-service-protocol-handlers-as-a-c-handler.patch` | Expor os handlers do service protocol do Shell no core, sem depender da VM do Dart. | |
 | `0066-feat-engine-serve-the-core-service-handlers-through-the-dart-vm-service.patch` | Servir os handlers do core pelo transporte do VM service do Dart. | |
 | `0067-refactor-engine-move-the-remaining-dart-code-out-of-the-shell.patch` | Mover os pontos restantes de Dart para fora do Shell comum. | |
+| `0068-feat-engine-complete-the-runtime-spi-contract-in-both-directions.patch` | Completar a ABI C11 0.12 com o contrato entre engine e runtime nos dois sentidos. | |
+| `0069-feat-engine-serve-the-full-runtime-contract-from-the-spi-backend.patch` | Servir o contrato completo pelo backend do Runtime SPI e pelo `RuntimeDelegate`. | |
+| `0070-test-engine-exercise-the-full-runtime-contract-end-to-end.patch` | Exercitar o contrato completo do Runtime SPI ponta a ponta. | |
 
 O fluxo é:
 
