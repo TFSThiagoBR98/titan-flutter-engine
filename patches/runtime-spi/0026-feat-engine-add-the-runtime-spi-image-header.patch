@@ -1,0 +1,338 @@
+# Why: define the frozen image ABI 0.4 for future decoding and drawing
+# callbacks.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index d8395e947b5..8ba18fbb7cd 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -52,6 +52,7 @@ source_set("runtime_spi_c_api") {
+     "include/flutter_runtime_spi.h",
+     "include/flutter_scene.h",
+     "include/flutter_text.h",
++    "include/flutter_image.h",
+   ]
+   sources = [ "abi_layout_check.c" ]
+ }
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index e6defe2310d..7111dcba5a6 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -4,6 +4,7 @@
+ 
+ #include <stddef.h>
+ 
++#include "flutter/runtime_spi/include/flutter_image.h"
+ #include "flutter/runtime_spi/include/flutter_text.h"
+ #include "flutter/runtime_spi/include/flutter_runtime_spi.h"
+ 
+@@ -231,7 +232,7 @@ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, report_error,
+                   sizeof(void*) == 8 ? 104 : 64);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, scene,
+                   sizeof(void*) == 8 ? 112 : 68);
+-SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 128 : 80);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 136 : 80);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, color, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, offset, 20);
+@@ -382,4 +383,56 @@ SPI_EXPECT_SIZE(FlutterSpiLineMetrics, sizeof(void*) == 8 ? 104 : 88);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, text,
+                   sizeof(void*) == 8 ? 120 : 72);
+-SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 128 : 80);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, image,
++                  sizeof(void*) == 8 ? 128 : 76);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 136 : 80);
++
++SPI_EXPECT_OFFSET(FlutterSpiPixels, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiPixels, pixels,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiPixels, pixels_size,
++                  sizeof(void*) == 8 ? 16 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiPixels, width,
++                  sizeof(void*) == 8 ? 24 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiPixels, height,
++                  sizeof(void*) == 8 ? 28 : 16);
++SPI_EXPECT_OFFSET(FlutterSpiPixels, row_bytes,
++                  sizeof(void*) == 8 ? 32 : 20);
++SPI_EXPECT_OFFSET(FlutterSpiPixels, pixel_format,
++                  sizeof(void*) == 8 ? 36 : 24);
++SPI_EXPECT_SIZE(FlutterSpiPixels, sizeof(void*) == 8 ? 40 : 28);
++
++SPI_EXPECT_OFFSET(FlutterSpiImageDecodeOptions, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiImageDecodeOptions, target_width,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiImageDecodeOptions, target_height,
++                  sizeof(void*) == 8 ? 12 : 8);
++SPI_EXPECT_SIZE(FlutterSpiImageDecodeOptions,
++                sizeof(void*) == 8 ? 16 : 12);
++
++SPI_EXPECT_OFFSET(FlutterSpiRSTransform, scos, 0);
++SPI_EXPECT_OFFSET(FlutterSpiRSTransform, ssin, 4);
++SPI_EXPECT_OFFSET(FlutterSpiRSTransform, tx, 8);
++SPI_EXPECT_OFFSET(FlutterSpiRSTransform, ty, 12);
++SPI_EXPECT_SIZE(FlutterSpiRSTransform, 16);
++
++SPI_EXPECT_OFFSET(FlutterSpiImageApi, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiImageApi, image_decode,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiImageApi, image_create_from_pixels,
++                  sizeof(void*) == 8 ? 16 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiImageApi, image_get_size,
++                  sizeof(void*) == 8 ? 24 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiImageApi, image_retain,
++                  sizeof(void*) == 8 ? 32 : 16);
++SPI_EXPECT_OFFSET(FlutterSpiImageApi, image_release,
++                  sizeof(void*) == 8 ? 40 : 20);
++SPI_EXPECT_OFFSET(FlutterSpiImageApi, canvas_draw_image,
++                  sizeof(void*) == 8 ? 48 : 24);
++SPI_EXPECT_OFFSET(FlutterSpiImageApi, canvas_draw_image_rect,
++                  sizeof(void*) == 8 ? 56 : 28);
++SPI_EXPECT_OFFSET(FlutterSpiImageApi, canvas_draw_image_nine,
++                  sizeof(void*) == 8 ? 64 : 32);
++SPI_EXPECT_OFFSET(FlutterSpiImageApi, canvas_draw_atlas,
++                  sizeof(void*) == 8 ? 72 : 36);
++SPI_EXPECT_SIZE(FlutterSpiImageApi, sizeof(void*) == 8 ? 80 : 40);
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_image.h b/engine/src/flutter/runtime_spi/include/flutter_image.h
+new file mode 100644
+index 00000000000..ea6e3f3c001
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/include/flutter_image.h
+@@ -0,0 +1,112 @@
++#ifndef FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_IMAGE_H_
++#define FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_IMAGE_H_
++
++#include <stddef.h>
++#include <stdint.h>
++
++#include "flutter_scene.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef struct FlutterSpiImage FlutterSpiImage;
++
++typedef enum {
++  kFlutterSpiPixelFormatRGBA8888 = 0,
++  kFlutterSpiPixelFormatBGRA8888 = 1,
++  kFlutterSpiPixelFormatRGBAFloat32 = 2,
++  kFlutterSpiPixelFormatRFloat32 = 3,
++} FlutterSpiPixelFormat;
++
++typedef enum {
++  kFlutterSpiFilterQualityNone = 0,
++  kFlutterSpiFilterQualityLow = 1,
++  kFlutterSpiFilterQualityMedium = 2,
++  kFlutterSpiFilterQualityHigh = 3,
++} FlutterSpiFilterQuality;
++
++typedef struct {
++  size_t struct_size;
++  const uint8_t* pixels;
++  size_t pixels_size;
++  int32_t width;
++  int32_t height;
++  int32_t row_bytes;
++  int32_t pixel_format;
++} FlutterSpiPixels;
++
++typedef struct {
++  size_t struct_size;
++  int32_t target_width;
++  int32_t target_height;
++} FlutterSpiImageDecodeOptions;
++
++typedef struct {
++  float scos;
++  float ssin;
++  float tx;
++  float ty;
++} FlutterSpiRSTransform;
++
++typedef void (*FlutterSpiImageCallback)(void* user_data,
++                                        FlutterSpiResult result,
++                                        FlutterSpiImage* image);
++
++typedef struct FlutterSpiImageApi {
++  size_t struct_size;
++  FlutterSpiResult (*image_decode)(
++      FlutterSpiEngine* engine,
++      const uint8_t* data,
++      size_t size,
++      const FlutterSpiImageDecodeOptions* options,
++      FlutterSpiImageCallback callback,
++      void* user_data);
++  FlutterSpiResult (*image_create_from_pixels)(
++      FlutterSpiEngine* engine,
++      const FlutterSpiPixels* pixels,
++      const FlutterSpiImageDecodeOptions* options,
++      FlutterSpiImageCallback callback,
++      void* user_data);
++  FlutterSpiResult (*image_get_size)(FlutterSpiImage* image,
++                                     int32_t* out_width,
++                                     int32_t* out_height);
++  FlutterSpiResult (*image_retain)(FlutterSpiImage* image);
++  FlutterSpiResult (*image_release)(FlutterSpiImage* image);
++  FlutterSpiResult (*canvas_draw_image)(FlutterSpiPictureRecorder* recorder,
++                                        FlutterSpiImage* image,
++                                        FlutterSpiPoint offset,
++                                        int32_t filter_quality,
++                                        const FlutterSpiPaint* paint);
++  FlutterSpiResult (*canvas_draw_image_rect)(
++      FlutterSpiPictureRecorder* recorder,
++      FlutterSpiImage* image,
++      const FlutterSpiRect* src,
++      const FlutterSpiRect* dst,
++      int32_t filter_quality,
++      const FlutterSpiPaint* paint);
++  FlutterSpiResult (*canvas_draw_image_nine)(
++      FlutterSpiPictureRecorder* recorder,
++      FlutterSpiImage* image,
++      const FlutterSpiRect* center,
++      const FlutterSpiRect* dst,
++      int32_t filter_quality,
++      const FlutterSpiPaint* paint);
++  FlutterSpiResult (*canvas_draw_atlas)(
++      FlutterSpiPictureRecorder* recorder,
++      FlutterSpiImage* image,
++      const FlutterSpiRSTransform* transforms,
++      const FlutterSpiRect* rects,
++      const FlutterSpiColor* colors,
++      size_t count,
++      int32_t blend_mode,
++      int32_t filter_quality,
++      const FlutterSpiRect* cull_rect,
++      const FlutterSpiPaint* paint);
++} FlutterSpiImageApi;
++
++#ifdef __cplusplus
++}  // extern "C"
++#endif
++
++#endif  // FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_IMAGE_H_
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index 83664fd6d8b..af7477e29b0 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 3
++#define FLUTTER_SPI_VERSION_MINOR 4
+ 
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+@@ -24,6 +24,7 @@ enum {
+   kFlutterSpiCapEmptyScene = 1ULL << 6,
+   kFlutterSpiCapScene = 1ULL << 7,
+   kFlutterSpiCapText = 1ULL << 8,
++  kFlutterSpiCapImage = 1ULL << 9,
+ };
+ 
+ typedef struct FlutterSpiEngine FlutterSpiEngine;
+@@ -33,6 +34,7 @@ typedef struct FlutterSpiEngineApi FlutterSpiEngineApi;
+ 
+ #include "flutter_scene.h"
+ #include "flutter_text.h"
++#include "flutter_image.h"
+ 
+ typedef struct {
+   size_t struct_size;
+@@ -210,6 +212,7 @@ struct FlutterSpiEngineApi {
+                                    const char* message);
+   const FlutterSpiSceneApi* scene;
+   const FlutterSpiTextApi* text;
++  const FlutterSpiImageApi* image;
+ };
+ 
+ /*
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index bf35037671b..0532ce8843b 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -6,6 +6,7 @@
+ 
+ #include "flutter/display_list/dl_color.h"
+ #include "flutter/display_list/dl_paint.h"
++#include "flutter/runtime_spi/include/flutter_image.h"
+ #include "flutter/runtime_spi/include/flutter_text.h"
+ #include "flutter/runtime_spi/include/flutter_runtime_spi.h"
+ #include "flutter/txt/src/txt/font_style.h"
+@@ -43,6 +44,19 @@ TEST(SpiAbi, CapabilityValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiCapEmptyScene, 1u << 6);
+   EXPECT_EQ(kFlutterSpiCapScene, 1u << 7);
+   EXPECT_EQ(kFlutterSpiCapText, 1u << 8);
++  EXPECT_EQ(kFlutterSpiCapImage, 1ULL << 9);
++}
++
++TEST(SpiAbi, ImageEnumValuesAreFrozen) {
++  EXPECT_EQ(kFlutterSpiPixelFormatRGBA8888, 0);
++  EXPECT_EQ(kFlutterSpiPixelFormatBGRA8888, 1);
++  EXPECT_EQ(kFlutterSpiPixelFormatRGBAFloat32, 2);
++  EXPECT_EQ(kFlutterSpiPixelFormatRFloat32, 3);
++  EXPECT_EQ(kFlutterSpiFilterQualityNone, 0);
++  EXPECT_EQ(kFlutterSpiFilterQualityLow, 1);
++  EXPECT_EQ(kFlutterSpiFilterQualityMedium, 2);
++  EXPECT_EQ(kFlutterSpiFilterQualityHigh, 3);
++  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 4);
+ }
+ 
+ TEST(SpiAbi, TextEnumValuesMatchTxt) {
+@@ -298,7 +312,44 @@ TEST(SpiAbi, EngineApiLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, log, 96, 60);
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, report_error, 104, 64);
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, scene, 112, 68);
+-  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 128u : 80u);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, text, 120, 72);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, image, 128, 76);
++  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 136u : 80u);
++}
++
++TEST(SpiAbi, ImageLayoutIsFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiPixels, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiPixels, pixels, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiPixels, pixels_size, 16, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiPixels, width, 24, 12);
++  EXPECT_SPI_OFFSET(FlutterSpiPixels, height, 28, 16);
++  EXPECT_SPI_OFFSET(FlutterSpiPixels, row_bytes, 32, 20);
++  EXPECT_SPI_OFFSET(FlutterSpiPixels, pixel_format, 36, 24);
++  EXPECT_EQ(sizeof(FlutterSpiPixels), sizeof(void*) == 8 ? 40u : 28u);
++
++  EXPECT_SPI_OFFSET(FlutterSpiImageDecodeOptions, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiImageDecodeOptions, target_width, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiImageDecodeOptions, target_height, 12, 8);
++  EXPECT_EQ(sizeof(FlutterSpiImageDecodeOptions),
++            sizeof(void*) == 8 ? 16u : 12u);
++
++  EXPECT_SPI_OFFSET(FlutterSpiRSTransform, scos, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiRSTransform, ssin, 4, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiRSTransform, tx, 8, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiRSTransform, ty, 12, 12);
++  EXPECT_EQ(sizeof(FlutterSpiRSTransform), 16u);
++
++  EXPECT_SPI_OFFSET(FlutterSpiImageApi, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiImageApi, image_decode, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiImageApi, image_create_from_pixels, 16, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiImageApi, image_get_size, 24, 12);
++  EXPECT_SPI_OFFSET(FlutterSpiImageApi, image_retain, 32, 16);
++  EXPECT_SPI_OFFSET(FlutterSpiImageApi, image_release, 40, 20);
++  EXPECT_SPI_OFFSET(FlutterSpiImageApi, canvas_draw_image, 48, 24);
++  EXPECT_SPI_OFFSET(FlutterSpiImageApi, canvas_draw_image_rect, 56, 28);
++  EXPECT_SPI_OFFSET(FlutterSpiImageApi, canvas_draw_image_nine, 64, 32);
++  EXPECT_SPI_OFFSET(FlutterSpiImageApi, canvas_draw_atlas, 72, 36);
++  EXPECT_EQ(sizeof(FlutterSpiImageApi), sizeof(void*) == 8 ? 80u : 40u);
+ }
+ 
+ TEST(SpiAbi, TextLayoutIsFrozen) {
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index 10936a3db95..9da90107a97 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -72,6 +72,7 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+       .report_error = ReportError,
+       .scene = SpiSceneApi(),
+       .text = &kTextApi,
++      .image = nullptr,
+   };
+ }
+ 
