@@ -57,6 +57,7 @@ windows = jobs.fetch('windows')
 release = jobs.fetch('release')
 expected_jobs = %w[build sysroot linux_platform macos windows release]
 raise "unexpected jobs: #{jobs.keys.inspect}" unless jobs.keys.sort == expected_jobs.sort
+artifact_name_owners = {}
 %w[build sysroot linux_platform macos windows].each do |job_name|
   build_job = jobs.fetch(job_name)
   log_upload = build_job.fetch('steps').find do |step|
@@ -65,6 +66,26 @@ raise "unexpected jobs: #{jobs.keys.inspect}" unless jobs.keys.sort == expected_
   end
   raise "#{job_name} must upload build logs" unless log_upload
   raise "#{job_name} build logs must upload on every outcome" unless log_upload['if'] == 'always()'
+
+  matrix_keys = build_job.fetch('strategy').fetch('matrix').keys - %w[include exclude]
+  artifact_uploads = build_job.fetch('steps').select do |step|
+    step['uses'] == 'actions/upload-artifact@v4'
+  end
+  artifact_uploads.each do |upload|
+    artifact_name = upload.dig('with', 'name').to_s
+    matrix_keys_present = matrix_keys.all? do |matrix_key|
+      artifact_name.include?("matrix.#{matrix_key}")
+    end
+    variant_present = job_name == 'linux_platform' && artifact_name.include?('matrix.variant')
+    unless matrix_keys_present || variant_present
+      raise "#{job_name} artifact name must include every matrix key: #{artifact_name}"
+    end
+    if artifact_name_owners.key?(artifact_name)
+      previous_job = artifact_name_owners.fetch(artifact_name)
+      raise "artifact name template is shared by #{previous_job} and #{job_name}: #{artifact_name}"
+    end
+    artifact_name_owners[artifact_name] = job_name
+  end
 end
 raise 'build must use the hosted runner' unless build['runs-on'] == 'ubuntu-24.04'
 raise 'sysroot job must use the hosted runner' unless sysroot['runs-on'] == 'ubuntu-24.04'
@@ -194,6 +215,12 @@ raise 'release must depend on every host job' unless release['needs'].sort == %w
 raise 'release must assemble the full SDK' unless release['steps'].any? { |step| step['run']&.include?('scripts/ci.sh assemble') }
 download = release['steps'].find { |step| step['uses'] == 'actions/download-artifact@v4' }
 raise 'release must download the combined Linux build artifacts' unless download&.dig('with', 'pattern') == 'flutter-build-*' && download.dig('with', 'path') == '/mnt/titan'
+sdk_download = release['steps'].find do |step|
+  step['uses'] == 'actions/download-artifact@v4' && step.dig('with', 'pattern') == 'flutter-sdk-*'
+end
+raise 'release must download the combined Flutter SDK artifacts' unless sdk_download
+raise 'release SDK artifacts must be merged' unless sdk_download.dig('with', 'merge-multiple') == true
+raise 'release SDK artifacts must use the assemble input path' unless sdk_download.dig('with', 'path') == '/mnt/titan/work/flutter/engine/src/out'
 RUBY
 
 if "$ci_script" free-disk > /tmp/titan-ci-free-disk.out 2>&1; then

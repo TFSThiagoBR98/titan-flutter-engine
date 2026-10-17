@@ -262,7 +262,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs-${{ matrix.mode }}
+          name: build-logs-macos-arm64-${{ matrix.mode }}
           path: ${{ runner.temp }}/titan/work/matrix/
           if-no-files-found: ignore
       - name: Upload macOS archives
@@ -388,13 +388,13 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs-windows
+          name: build-logs-windows-${{ matrix.cpu }}-${{ matrix.mode }}
           path: C:\titan\work\matrix\
           if-no-files-found: ignore
       - name: Upload Windows archives
         uses: actions/upload-artifact@v4
         with:
-          name: flutter-sdk-windows
+          name: flutter-sdk-windows-${{ matrix.cpu }}-${{ matrix.mode }}
           path: C:\titan\work\flutter\engine\src\out\*\zip_archives\**
           if-no-files-found: error
 
@@ -421,6 +421,12 @@ jobs:
         with:
           path: /mnt/titan
           pattern: flutter-build-*
+          merge-multiple: true
+      - name: Download Flutter SDK archives
+        uses: actions/download-artifact@v4
+        with:
+          path: /mnt/titan/work/flutter/engine/src/out
+          pattern: flutter-sdk-*
           merge-multiple: true
       - name: Checkout pinned Flutter revision
         run: |
