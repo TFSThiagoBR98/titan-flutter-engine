@@ -1,0 +1,633 @@
+# Why: Publish semantics capability and forward ABI-built node and custom
+# action updates through the runtime delegate to the platform view.
+diff --git a/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+index 2924ed0c780..8fa7cdf8cac 100644
+--- a/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+@@ -155,20 +155,57 @@ class ReplyingPlatformMessageHandler final : public PlatformMessageHandler {
+   bool handled_ = false;
+ };
+ 
++class SemanticsCapture final {
++ public:
++  void UpdateSemantics(int64_t view_id,
++                       SemanticsNodeUpdates nodes,
++                       CustomAccessibilityActionUpdates actions) {
++    view_id_ = view_id;
++    nodes_ = std::move(nodes);
++    actions_ = std::move(actions);
++    updated_.store(true, std::memory_order_release);
++  }
++
++  bool updated() const { return updated_.load(std::memory_order_acquire); }
++  int64_t view_id() const { return view_id_; }
++  const SemanticsNodeUpdates& nodes() const { return nodes_; }
++  const CustomAccessibilityActionUpdates& actions() const { return actions_; }
++
++ private:
++  std::atomic_bool updated_ = false;
++  int64_t view_id_ = 0;
++  SemanticsNodeUpdates nodes_;
++  CustomAccessibilityActionUpdates actions_;
++};
++
+ class HandlerPlatformView final : public PlatformView {
+  public:
+   HandlerPlatformView(Shell& shell,
+                       const TaskRunners& task_runners,
+-                      std::shared_ptr<PlatformMessageHandler> handler)
+-      : PlatformView(shell, task_runners), handler_(std::move(handler)) {}
++                      std::shared_ptr<PlatformMessageHandler> handler,
++                      std::shared_ptr<SemanticsCapture> semantics_capture =
++                          nullptr)
++      : PlatformView(shell, task_runners),
++        handler_(std::move(handler)),
++        semantics_capture_(std::move(semantics_capture)) {}
+ 
+   std::shared_ptr<PlatformMessageHandler> GetPlatformMessageHandler()
+       const override {
+     return handler_;
+   }
+ 
++  void UpdateSemantics(int64_t view_id,
++                       SemanticsNodeUpdates nodes,
++                       CustomAccessibilityActionUpdates actions) override {
++    if (semantics_capture_ != nullptr) {
++      semantics_capture_->UpdateSemantics(view_id, std::move(nodes),
++                                           std::move(actions));
++    }
++  }
++
+  private:
+   std::shared_ptr<PlatformMessageHandler> handler_;
++  std::shared_ptr<SemanticsCapture> semantics_capture_;
+ };
+ 
+ class SpiConformance : public ShellTest {
+@@ -204,16 +241,17 @@ class SpiConformance : public ShellTest {
+   }
+ 
+   void StartShellWithHandler(
+-      const std::shared_ptr<PlatformMessageHandler>& handler) {
++      const std::shared_ptr<PlatformMessageHandler>& handler,
++      const std::shared_ptr<SemanticsCapture>& semantics_capture = nullptr) {
+     auto settings = CreateSettingsForFixture();
+     settings.icu_data_path = IcuDataPathForTesting();
+     auto factory = std::make_shared<SpiRuntimeBackendFactory>(
+         c_test_runtime_table(runtime_));
+     shell_ = Shell::Create(
+         PlatformData(), *task_runners_, settings,
+-        [handler](Shell& shell) {
++        [handler, semantics_capture](Shell& shell) {
+           return std::make_unique<HandlerPlatformView>(
+-              shell, shell.GetTaskRunners(), handler);
++              shell, shell.GetTaskRunners(), handler, semantics_capture);
+         },
+         [](Shell& shell) { return std::make_unique<Rasterizer>(shell); },
+         factory);
+@@ -247,6 +285,16 @@ class SpiConformance : public ShellTest {
+     return runtime_->snapshot_bytes_ready;
+   }
+ 
++  bool WaitForSemanticsUpdate(const std::shared_ptr<SemanticsCapture>& capture,
++                              fml::TimeDelta timeout) {
++    const fml::TimePoint deadline = fml::TimePoint::Now() + timeout;
++    while (!capture->updated() && fml::TimePoint::Now() < deadline) {
++      FlushUi();
++      std::this_thread::sleep_for(std::chrono::milliseconds(10));
++    }
++    return capture->updated();
++  }
++
+   CTestRuntime* runtime_ = nullptr;
+   std::unique_ptr<TaskRunners> task_runners_;
+   std::unique_ptr<Shell> shell_;
+@@ -325,6 +373,32 @@ TEST_F(SpiConformance, SceneApiAnnouncedByCapability) {
+   EXPECT_NE(runtime_->engine_api->capabilities & kFlutterSpiCapScene, 0u);
+ }
+ 
++TEST_F(SpiConformance, SemanticsUpdateAnnouncedByCapability) {
++  StartShell();
++
++  ASSERT_NE(runtime_->engine_api, nullptr);
++  ASSERT_NE(runtime_->engine_api->semantics, nullptr);
++  EXPECT_NE(runtime_->engine_api->capabilities & kFlutterSpiCapSemanticsUpdate,
++            0u);
++}
++
++TEST_F(SpiConformance, SemanticsUpdateReachesPlatformView) {
++  auto capture = std::make_shared<SemanticsCapture>();
++  runtime_->semantics_on_begin_frame = true;
++  StartShellWithHandler(nullptr, capture);
++
++  PumpOneFrame(shell_.get());
++  ASSERT_TRUE(WaitForSemanticsUpdate(capture, fml::TimeDelta::FromSeconds(5)));
++  ASSERT_EQ(runtime_->semantics_update_result, kFlutterSpiOk);
++  EXPECT_EQ(capture->view_id(), kImplicitViewId);
++  ASSERT_EQ(capture->nodes().size(), 3u);
++  EXPECT_EQ(capture->nodes().at(0).label, "root");
++  EXPECT_EQ(capture->nodes().at(1).label, "first");
++  EXPECT_EQ(capture->nodes().at(2).label, "second");
++  ASSERT_EQ(capture->actions().size(), 1u);
++  EXPECT_EQ(capture->actions().at(7).label, "Activate");
++}
++
+ TEST_F(SpiConformance, SceneLayersAnnouncedByCapability) {
+   StartShell();
+ 
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index 9dfae23aa5b..4acb297a260 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -18,6 +18,7 @@
+ #include "flutter/runtime_spi/image/spi_image_codec.h"
+ #include "flutter/runtime_spi/image/spi_image_readback.h"
+ #include "flutter/runtime_spi/scene/spi_canvas.h"
++#include "flutter/runtime_spi/semantics/spi_semantics.h"
+ #include "flutter/runtime_spi/spi_runtime_backend.h"
+ #include "flutter/runtime_spi/spi_scene.h"
+ #include "flutter/runtime_spi/text/spi_font.h"
+@@ -92,6 +93,15 @@ const FlutterSpiPaintEffectsApi kPaintEffectsApi = {
+     .image_filter_blur_bounded = SpiImageFilterBlurBounded,
+ };
+ 
++const FlutterSpiSemanticsApi kSemanticsApi = {
++    .struct_size = sizeof(FlutterSpiSemanticsApi),
++    .update_builder_create = SpiEngineApi::SemanticsUpdateBuilderCreate,
++    .update_node = SpiEngineApi::SemanticsUpdateNode,
++    .update_custom_action = SpiEngineApi::SemanticsUpdateCustomAction,
++    .update_submit = SpiEngineApi::SemanticsUpdateSubmit,
++    .update_builder_release = SpiEngineApi::SemanticsUpdateBuilderRelease,
++};
++
+ }  // namespace
+ 
+ FlutterSpiEngineApi SpiEngineApi::Create() {
+@@ -140,7 +150,8 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+                       kFlutterSpiCapText | kFlutterSpiCapImage |
+                       kFlutterSpiCapImageOutput | kFlutterSpiCapPaintEffects |
+                       kFlutterSpiCapSceneLayers |
+-                      kFlutterSpiCapFragmentPrograms,
++                      kFlutterSpiCapFragmentPrograms |
++                      kFlutterSpiCapSemanticsUpdate,
+       .request_frame = RequestFrame,
+       .scene_create_empty = SceneCreateEmpty,
+       .scene_release = SceneRelease,
+@@ -157,10 +168,77 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+       .image = &image_api,
+       .paint_effects = &kPaintEffectsApi,
+       .fragment = SpiFragment::Api(),
+-      .semantics = nullptr,
++      .semantics = &kSemanticsApi,
+   };
+ }
+ 
++FlutterSpiResult SpiEngineApi::SemanticsUpdateBuilderCreate(
++    FlutterSpiEngine* engine,
++    FlutterSpiSemanticsUpdateBuilder** out_builder) {
++  if (engine == nullptr || engine->backend == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (!engine->backend->HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  const FlutterSpiResult result =
++      SpiSemantics::Api()->update_builder_create(engine, out_builder);
++  if (result == kFlutterSpiOk) {
++    engine->backend->RegisterSemanticsBuilder(*out_builder);
++  }
++  return result;
++}
++
++FlutterSpiResult SpiEngineApi::SemanticsUpdateNode(
++    FlutterSpiSemanticsUpdateBuilder* builder,
++    const FlutterSpiSemanticsNode* node) {
++  SpiRuntimeBackend* backend = SpiRuntimeBackend::FindSemanticsBackend(builder);
++  if (backend == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!backend->HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  return SpiSemantics::Api()->update_node(builder, node);
++}
++
++FlutterSpiResult SpiEngineApi::SemanticsUpdateCustomAction(
++    FlutterSpiSemanticsUpdateBuilder* builder,
++    const FlutterSpiSemanticsCustomAction* action) {
++  SpiRuntimeBackend* backend = SpiRuntimeBackend::FindSemanticsBackend(builder);
++  if (backend == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!backend->HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  return SpiSemantics::Api()->update_custom_action(builder, action);
++}
++
++FlutterSpiResult SpiEngineApi::SemanticsUpdateSubmit(
++    FlutterSpiSemanticsUpdateBuilder* builder,
++    int64_t view_id) {
++  SpiRuntimeBackend* backend = SpiRuntimeBackend::FindSemanticsBackend(builder);
++  if (backend == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  return backend->SubmitSemantics(view_id, builder);
++}
++
++FlutterSpiResult SpiEngineApi::SemanticsUpdateBuilderRelease(
++    FlutterSpiSemanticsUpdateBuilder* builder) {
++  SpiRuntimeBackend* backend = SpiRuntimeBackend::FindSemanticsBackend(builder);
++  if (backend == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  const FlutterSpiResult result =
++      SpiSemantics::Api()->update_builder_release(builder);
++  if (result == kFlutterSpiOk) {
++    backend->UnregisterSemanticsBuilder(builder);
++  }
++  return result;
++}
++
+ FlutterSpiResult SpiEngineApi::TextFontLoad(FlutterSpiEngine* engine,
+                                             const uint8_t* data,
+                                             size_t size,
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.h b/engine/src/flutter/runtime_spi/spi_engine_api.h
+index b306a6effe2..d6342c68d3b 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.h
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.h
+@@ -95,6 +95,20 @@ class SpiEngineApi final {
+                                            int32_t width,
+                                            int32_t height,
+                                            FlutterSpiImage** out_image);
++  static FlutterSpiResult SemanticsUpdateBuilderCreate(
++      FlutterSpiEngine* engine,
++      FlutterSpiSemanticsUpdateBuilder** out_builder);
++  static FlutterSpiResult SemanticsUpdateNode(
++      FlutterSpiSemanticsUpdateBuilder* builder,
++      const FlutterSpiSemanticsNode* node);
++  static FlutterSpiResult SemanticsUpdateCustomAction(
++      FlutterSpiSemanticsUpdateBuilder* builder,
++      const FlutterSpiSemanticsCustomAction* action);
++  static FlutterSpiResult SemanticsUpdateSubmit(
++      FlutterSpiSemanticsUpdateBuilder* builder,
++      int64_t view_id);
++  static FlutterSpiResult SemanticsUpdateBuilderRelease(
++      FlutterSpiSemanticsUpdateBuilder* builder);
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+index b6aeb2c0f64..0c159495743 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+@@ -8,6 +8,7 @@
+ #include <atomic>
+ #include <cstring>
+ #include <limits>
++#include <mutex>
+ #include <string>
+ 
+ #include "flutter/fml/logging.h"
+@@ -17,6 +18,7 @@
+ #include "flutter/runtime/runtime_delegate.h"
+ #include "flutter/runtime_spi/spi_engine_api.h"
+ #include "flutter/runtime_spi/spi_scene.h"
++#include "flutter/runtime_spi/semantics/spi_semantics.h"
+ 
+ namespace flutter {
+ namespace {
+@@ -89,6 +91,9 @@ class SpiEngineResponse final : public PlatformMessageResponse {
+ }  // namespace
+ 
+ std::unordered_set<SpiRuntimeBackend*> SpiRuntimeBackend::live_backends_;
++std::unordered_map<FlutterSpiSemanticsUpdateBuilder*, SpiRuntimeBackend*>
++    SpiRuntimeBackend::semantics_builders_;
++std::mutex SpiRuntimeBackend::semantics_builders_mutex_;
+ 
+ SpiRuntimeBackend::SpiRuntimeBackend(
+     RuntimeDelegate& runtime_delegate,
+@@ -123,6 +128,17 @@ SpiRuntimeBackend::SpiRuntimeBackend(
+ SpiRuntimeBackend::~SpiRuntimeBackend() {
+   StopRuntime();
+   live_backends_.erase(this);
++  {
++    std::lock_guard<std::mutex> lock(semantics_builders_mutex_);
++    for (auto iterator = semantics_builders_.begin();
++         iterator != semantics_builders_.end();) {
++      if (iterator->second == this) {
++        iterator = semantics_builders_.erase(iterator);
++      } else {
++        ++iterator;
++      }
++    }
++  }
+   if (table_.destroy != nullptr) {
+     table_.destroy(table_.user_data);
+   }
+@@ -376,6 +392,25 @@ bool SpiRuntimeBackend::IsCallbackAvailable(size_t offset, size_t size) const {
+   return table_.struct_size >= offset + size;
+ }
+ 
++void SpiRuntimeBackend::RegisterSemanticsBuilder(
++    FlutterSpiSemanticsUpdateBuilder* builder) {
++  std::lock_guard<std::mutex> lock(semantics_builders_mutex_);
++  semantics_builders_[builder] = this;
++}
++
++void SpiRuntimeBackend::UnregisterSemanticsBuilder(
++    FlutterSpiSemanticsUpdateBuilder* builder) {
++  std::lock_guard<std::mutex> lock(semantics_builders_mutex_);
++  semantics_builders_.erase(builder);
++}
++
++SpiRuntimeBackend* SpiRuntimeBackend::FindSemanticsBackend(
++    FlutterSpiSemanticsUpdateBuilder* builder) {
++  std::lock_guard<std::mutex> lock(semantics_builders_mutex_);
++  const auto iterator = semantics_builders_.find(builder);
++  return iterator == semantics_builders_.end() ? nullptr : iterator->second;
++}
++
+ SpiRuntimeBackend* SpiRuntimeBackend::FindBackendForResponse(
+     FlutterSpiResponseHandle* response) {
+   if (response == nullptr) {
+@@ -525,6 +560,28 @@ FlutterSpiResult SpiRuntimeBackend::SubmitFrame(int64_t view_id,
+   return kFlutterSpiOk;
+ }
+ 
++FlutterSpiResult SpiRuntimeBackend::SubmitSemantics(
++    int64_t view_id,
++    FlutterSpiSemanticsUpdateBuilder* builder) {
++  if (builder == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (stop_requested_) {
++    return kFlutterSpiInternalError;
++  }
++  if (!HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  const FlutterSpiResult result =
++      SpiSemantics::Api()->update_submit(builder, view_id);
++  if (result != kFlutterSpiOk) {
++    return result;
++  }
++  runtime_delegate_.UpdateSemantics(view_id, std::move(builder->nodes),
++                                    std::move(builder->actions));
++  return kFlutterSpiOk;
++}
++
+ FlutterSpiResult SpiRuntimeBackend::FramesDone() {
+   if (stop_requested_) {
+     return kFlutterSpiInternalError;
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.h b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+index f988ab94fc1..27f87273bb5 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.h
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+@@ -8,6 +8,7 @@
+ #include <cstdint>
+ #include <future>
+ #include <memory>
++#include <mutex>
+ #include <unordered_map>
+ #include <unordered_set>
+ #include <vector>
+@@ -98,6 +99,9 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+                                uint64_t frame_token,
+                                FlutterSpiScene* scene,
+                                double device_pixel_ratio);
++  FlutterSpiResult SubmitSemantics(
++      int64_t view_id,
++      FlutterSpiSemanticsUpdateBuilder* builder);
+   FlutterSpiResult FramesDone();
+   FlutterSpiResult SendPlatformMessage(
+       const char* channel,
+@@ -154,6 +158,10 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+   bool HasCapability(FlutterSpiCapabilities capability) const;
+   bool IsTableCompatible() const;
+   bool IsCallbackAvailable(size_t offset, size_t size) const;
++  void RegisterSemanticsBuilder(FlutterSpiSemanticsUpdateBuilder* builder);
++  void UnregisterSemanticsBuilder(FlutterSpiSemanticsUpdateBuilder* builder);
++  static SpiRuntimeBackend* FindSemanticsBackend(
++      FlutterSpiSemanticsUpdateBuilder* builder);
+   void StopRuntime();
+   void CompletePendingResponses();
+   static SpiRuntimeBackend* FindBackendForResponse(
+@@ -183,6 +191,11 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+   std::unique_ptr<SpiImageSnapshot> image_snapshot_;
+   std::unique_ptr<SpiImageDecoding> image_decoding_;
+ 
++  static std::unordered_map<FlutterSpiSemanticsUpdateBuilder*,
++                            SpiRuntimeBackend*>
++      semantics_builders_;
++  static std::mutex semantics_builders_mutex_;
++
+   static std::unordered_set<SpiRuntimeBackend*> live_backends_;
+ };
+ 
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
+index ebdbed803c5..f3a158c990a 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
+@@ -43,7 +43,12 @@ class FakeRuntimeDelegate final : public RuntimeDelegate {
+ 
+   void UpdateSemantics(int64_t view_id,
+                        SemanticsNodeUpdates update,
+-                       CustomAccessibilityActionUpdates actions) override {}
++                       CustomAccessibilityActionUpdates actions) override {
++    semantics_update_count++;
++    last_semantics_view_id = view_id;
++    last_semantics_nodes = std::move(update);
++    last_semantics_actions = std::move(actions);
++  }
+ 
+   void SetApplicationLocale(std::string locale) override {}
+ 
+@@ -94,10 +99,14 @@ class FakeRuntimeDelegate final : public RuntimeDelegate {
+   size_t all_views_rendered_count = 0;
+   size_t render_count = 0;
+   size_t platform_message_count = 0;
++  size_t semantics_update_count = 0;
+   int64_t last_rendered_view_id = 0;
++  int64_t last_semantics_view_id = 0;
+   float last_rendered_device_pixel_ratio = 0.0f;
+   std::unique_ptr<flutter::LayerTree> last_layer_tree;
+   std::unique_ptr<PlatformMessage> last_platform_message;
++  SemanticsNodeUpdates last_semantics_nodes;
++  CustomAccessibilityActionUpdates last_semantics_actions;
+ 
+  private:
+   FontCollection font_collection;
+@@ -213,6 +222,58 @@ TEST_F(SpiRuntimeBackendTest, SubmitWithStaleTokenIsRejectedAndReleasesScene) {
+             kFlutterSpiStaleFrame);
+ }
+ 
++TEST_F(SpiRuntimeBackendTest, SemanticsSubmitReachesDelegate) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  ASSERT_NE(runtime->engine_api->semantics, nullptr);
++  const FlutterSpiSemanticsApi* api = runtime->engine_api->semantics;
++  FlutterSpiSemanticsUpdateBuilder* builder = nullptr;
++  ASSERT_EQ(api->update_builder_create(runtime->engine, &builder),
++            kFlutterSpiOk);
++
++  FlutterSpiSemanticsNode node = {};
++  node.struct_size = sizeof(FlutterSpiSemanticsNode);
++  node.id = 7;
++  node.label.text = "root";
++  FlutterSpiSemanticsCustomAction action = {};
++  action.struct_size = sizeof(FlutterSpiSemanticsCustomAction);
++  action.id = 9;
++  action.label = "Activate";
++
++  ASSERT_EQ(api->update_node(builder, &node), kFlutterSpiOk);
++  ASSERT_EQ(api->update_custom_action(builder, &action), kFlutterSpiOk);
++  ASSERT_EQ(api->update_submit(builder, 42), kFlutterSpiOk);
++  ASSERT_EQ(api->update_builder_release(builder), kFlutterSpiOk);
++
++  ASSERT_EQ(delegate.semantics_update_count, 1u);
++  EXPECT_EQ(delegate.last_semantics_view_id, 42);
++  ASSERT_EQ(delegate.last_semantics_nodes.size(), 1u);
++  EXPECT_EQ(delegate.last_semantics_nodes.at(7).label, "root");
++  ASSERT_EQ(delegate.last_semantics_actions.size(), 1u);
++  EXPECT_EQ(delegate.last_semantics_actions.at(9).label, "Activate");
++}
++
++TEST_F(SpiRuntimeBackendTest, SemanticsSubmitOffUiThreadIsRejected) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  ASSERT_NE(runtime->engine_api->semantics, nullptr);
++  const FlutterSpiSemanticsApi* api = runtime->engine_api->semantics;
++  FlutterSpiSemanticsUpdateBuilder* builder = nullptr;
++  ASSERT_EQ(api->update_builder_create(runtime->engine, &builder),
++            kFlutterSpiOk);
++
++  std::atomic<FlutterSpiResult> result{kFlutterSpiInternalError};
++  std::thread worker([&] { result = api->update_submit(builder, 42); });
++  worker.join();
++
++  EXPECT_EQ(result.load(), kFlutterSpiWrongThread);
++  EXPECT_EQ(api->update_builder_release(builder), kFlutterSpiOk);
++}
++
+ TEST_F(SpiRuntimeBackendTest, CallsFromOtherThreadsAreRejected) {
+   auto backend = CreateBackend(c_test_runtime_table(runtime));
+   LaunchBackend(backend.get());
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.c b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+index bc2a3c8d1de..87fdaf72ebf 100644
+--- a/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+@@ -82,6 +82,8 @@ static void test_runtime_submit_text_scene(
+ static void test_runtime_submit_image_scene(
+     CTestRuntime* runtime,
+     const FlutterSpiFrameInfo* frame_info);
++static void test_runtime_submit_semantics(CTestRuntime* runtime,
++                                          const FlutterSpiFrameInfo* frame_info);
+ static void test_runtime_snapshot_image_callback(void* user_data,
+                                                  FlutterSpiResult result,
+                                                  FlutterSpiImage* image);
+@@ -162,7 +164,8 @@ static void test_runtime_begin_frame(void* user_data,
+     runtime->last_frame_info = *frame_info;
+     runtime->has_last_frame_info = true;
+   }
+-  if ((!runtime->submit_on_begin_frame && !runtime->draw_scene_on_begin_frame &&
++  if ((!runtime->submit_on_begin_frame && !runtime->semantics_on_begin_frame &&
++       !runtime->draw_scene_on_begin_frame &&
+        !runtime->draw_effects_on_begin_frame &&
+        !runtime->fragment_on_begin_frame &&
+        !runtime->retained_layers_on_begin_frame &&
+@@ -198,6 +201,10 @@ static void test_runtime_begin_frame(void* user_data,
+     }
+     return;
+   }
++  if (runtime->semantics_on_begin_frame) {
++    test_runtime_submit_semantics(runtime, frame_info);
++    return;
++  }
+   if (runtime->retained_layers_on_begin_frame) {
+     test_runtime_submit_retained_layers_scene(runtime, frame_info);
+     return;
+@@ -247,6 +254,51 @@ static void test_runtime_begin_frame(void* user_data,
+       runtime->last_view_metrics.device_pixel_ratio);
+ }
+ 
++static void test_runtime_submit_semantics(
++    CTestRuntime* runtime,
++    const FlutterSpiFrameInfo* frame_info) {
++  const FlutterSpiSemanticsApi* api =
++      runtime->engine_api == NULL ? NULL : runtime->engine_api->semantics;
++  FlutterSpiSemanticsUpdateBuilder* builder = NULL;
++  const int32_t children[] = {1, 2};
++  FlutterSpiSemanticsNode root = {0};
++  FlutterSpiSemanticsNode first_child = {0};
++  FlutterSpiSemanticsNode second_child = {0};
++  FlutterSpiSemanticsCustomAction action = {0};
++
++  (void)frame_info;
++  runtime->semantics_update_result = kFlutterSpiInternalError;
++  if (api == NULL || runtime->engine == NULL ||
++      api->update_builder_create(runtime->engine, &builder) != kFlutterSpiOk) {
++    return;
++  }
++
++  root.struct_size = sizeof(root);
++  root.id = 0;
++  root.children_in_traversal_order = children;
++  root.children_in_traversal_order_count = 2;
++  root.label.text = "root";
++  first_child.struct_size = sizeof(first_child);
++  first_child.id = 1;
++  first_child.label.text = "first";
++  second_child.struct_size = sizeof(second_child);
++  second_child.id = 2;
++  second_child.label.text = "second";
++  action.struct_size = sizeof(action);
++  action.id = 7;
++  action.label = "Activate";
++
++  if (api->update_node(builder, &root) != kFlutterSpiOk ||
++      api->update_node(builder, &first_child) != kFlutterSpiOk ||
++      api->update_node(builder, &second_child) != kFlutterSpiOk ||
++      api->update_custom_action(builder, &action) != kFlutterSpiOk) {
++    api->update_builder_release(builder);
++    return;
++  }
++  runtime->semantics_update_result = api->update_submit(builder, 0);
++  api->update_builder_release(builder);
++}
++
+ static void test_runtime_pointer_events(void* user_data,
+                                         const FlutterSpiPointerEvent* events,
+                                         size_t count) {
+@@ -983,6 +1035,7 @@ CTestRuntime* c_test_runtime_create(void) {
+   CTestRuntime* runtime = (CTestRuntime*)calloc(1, sizeof(CTestRuntime));
+   if (runtime != NULL) {
+     runtime->image_callback_result = kFlutterSpiInternalError;
++    runtime->semantics_update_result = kFlutterSpiInternalError;
+   }
+   return runtime;
+ }
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.h b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+index b7b937c7763..8b50fcd6b4b 100644
+--- a/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+@@ -14,6 +14,7 @@ typedef struct CTestRuntime {
+   size_t remove_view_count;
+   size_t set_view_metrics_count;
+   size_t begin_frame_count;
++  FlutterSpiResult semantics_update_result;
+   size_t pointer_events_count;
+   size_t key_event_count;
+   size_t platform_message_count;
+@@ -44,6 +45,7 @@ typedef struct CTestRuntime {
+ 
+   bool respond_to_messages;
+   bool submit_on_begin_frame;
++  bool semantics_on_begin_frame;
+   bool draw_scene_on_begin_frame;
+   bool draw_effects_on_begin_frame;
+   bool fragment_on_begin_frame;
