@@ -1,0 +1,738 @@
+# Why: Why: expose the runtime SPI text style conversions and dynamic font
+loading required by the ABI while keeping the implementation Dart-free.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index a67a311a880..8b30b332145 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -88,6 +88,32 @@ source_set("scene") {
+   ]
+ }
+ 
++source_set("text") {
++  public = [
++    "text/spi_font.h",
++    "text/spi_text_style.h",
++  ]
++  sources = [
++    "text/spi_font.cc",
++    "text/spi_font.h",
++    "text/spi_text_style.cc",
++    "text/spi_text_style.h",
++  ]
++  public_deps = [
++    ":runtime_spi_c_api",
++    ":scene",
++    "//flutter/fml",
++    "//flutter/txt",
++  ]
++  assert_no_deps = [
++    "//flutter/third_party/dart/*",
++    "//flutter/third_party/tonic/*",
++    "//flutter/runtime:runtime",
++    "//flutter/runtime:libdart",
++    "//flutter/lib/ui:ui",
++  ]
++}
++
+ if (enable_unittests) {
+   executable("runtime_spi_unittests") {
+     testonly = true
+@@ -101,14 +127,18 @@ if (enable_unittests) {
+       "scene/spi_scene_builder_parity_unittests.cc",
+       "scene/spi_scene_trace_unittests.cc",
+       "spi_runtime_backend_unittests.cc",
++      "text/spi_font_unittests.cc",
++      "text/spi_text_style_unittests.cc",
+     ]
+     deps = [
+       ":c_test_runtime",
+       ":runtime_spi_c_api",
+       ":scene",
+       ":spi_backend",
++      ":text",
+       "//flutter/common",
+       "//flutter/fml",
++      "//flutter/lib/ui",
+       "//flutter/runtime",
+       "//flutter/shell/common:shell_test_fixture_sources",
+       "//flutter/shell/common:shell_unittests_fixtures",
+diff --git a/engine/src/flutter/runtime_spi/text/spi_font.cc b/engine/src/flutter/runtime_spi/text/spi_font.cc
+new file mode 100644
+index 00000000000..c53b10cce33
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/text/spi_font.cc
+@@ -0,0 +1,40 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/text/spi_font.h"
++
++#include <utility>
++
++#include "third_party/skia/include/core/SkData.h"
++#include "third_party/skia/include/core/SkString.h"
++#include "txt/platform.h"
++
++namespace flutter {
++
++FlutterSpiResult FontLoad(const uint8_t* data,
++                          size_t size,
++                          const char* family_alias,
++                          void* user_data,
++                          FontRegistrar registrar) {
++  if (data == nullptr || size == 0 || registrar == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++
++  sk_sp<SkData> font_data = SkData::MakeWithCopy(data, size);
++  sk_sp<SkTypeface> typeface =
++      txt::GetDefaultFontManager()->makeFromData(std::move(font_data));
++  if (typeface == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++
++  SkString typeface_family_name;
++  typeface->getFamilyName(&typeface_family_name);
++  const std::string family_name = family_alias == nullptr
++                                      ? typeface_family_name.c_str()
++                                      : family_alias;
++  registrar(user_data, family_name, std::move(typeface));
++  return kFlutterSpiOk;
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/text/spi_font.h b/engine/src/flutter/runtime_spi/text/spi_font.h
+new file mode 100644
+index 00000000000..e1b36affb72
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/text/spi_font.h
+@@ -0,0 +1,28 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_TEXT_SPI_FONT_H_
++#define FLUTTER_RUNTIME_SPI_TEXT_SPI_FONT_H_
++
++#include <string>
++
++#include "flutter/runtime_spi/include/flutter_text.h"
++#include "third_party/skia/include/core/SkRefCnt.h"
++#include "third_party/skia/include/core/SkTypeface.h"
++
++namespace flutter {
++
++using FontRegistrar = void (*)(void* user_data,
++                               std::string family_name,
++                               sk_sp<SkTypeface> typeface);
++
++FlutterSpiResult FontLoad(const uint8_t* data,
++                          size_t size,
++                          const char* family_alias,
++                          void* user_data,
++                          FontRegistrar registrar);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_TEXT_SPI_FONT_H_
+diff --git a/engine/src/flutter/runtime_spi/text/spi_font_unittests.cc b/engine/src/flutter/runtime_spi/text/spi_font_unittests.cc
+new file mode 100644
+index 00000000000..341012689d9
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/text/spi_font_unittests.cc
+@@ -0,0 +1,69 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/text/spi_font.h"
++
++#include <string>
++#include <utility>
++
++#include "flutter/lib/ui/text/font_collection.h"
++#include "flutter/testing/testing.h"
++#include "third_party/skia/include/core/SkString.h"
++
++namespace flutter::testing {
++namespace {
++
++struct RegisteredFont {
++  std::string family_name;
++  sk_sp<SkTypeface> typeface;
++};
++
++void RegisterFont(void* user_data,
++                  std::string family_name,
++                  sk_sp<SkTypeface> typeface) {
++  auto* registered_font = static_cast<RegisteredFont*>(user_data);
++  registered_font->family_name = std::move(family_name);
++  registered_font->typeface = std::move(typeface);
++}
++
++TEST(SpiFont, LoadsRobotoAndRegistersItsFamily) {
++  auto mapping = OpenFixtureAsMapping("Roboto-Regular.ttf");
++  ASSERT_NE(mapping, nullptr);
++
++  RegisteredFont registered_font;
++  EXPECT_EQ(FontLoad(mapping->GetMapping(), mapping->GetSize(), nullptr,
++                     &registered_font, RegisterFont),
++            kFlutterSpiOk);
++  EXPECT_EQ(registered_font.family_name, "Roboto");
++  ASSERT_NE(registered_font.typeface, nullptr);
++  SkString family_name;
++  registered_font.typeface->getFamilyName(&family_name);
++  EXPECT_STREQ(family_name.c_str(), "Roboto");
++}
++
++TEST(SpiFont, LoadsRobotoWithAlias) {
++  auto mapping = OpenFixtureAsMapping("Roboto-Regular.ttf");
++  ASSERT_NE(mapping, nullptr);
++
++  RegisteredFont registered_font;
++  EXPECT_EQ(FontLoad(mapping->GetMapping(), mapping->GetSize(), "Titan Sans",
++                     &registered_font, RegisterFont),
++            kFlutterSpiOk);
++  EXPECT_EQ(registered_font.family_name, "Titan Sans");
++  ASSERT_NE(registered_font.typeface, nullptr);
++}
++
++TEST(SpiFont, RejectsInvalidFontBytes) {
++  constexpr uint8_t kInvalidFontBytes[] = {0x00, 0x01, 0x02, 0x03};
++  RegisteredFont registered_font;
++
++  EXPECT_EQ(FontLoad(kInvalidFontBytes, sizeof(kInvalidFontBytes), nullptr,
++                     &registered_font, RegisterFont),
++            kFlutterSpiInvalidArgument);
++  EXPECT_TRUE(registered_font.family_name.empty());
++  EXPECT_EQ(registered_font.typeface, nullptr);
++}
++
++}  // namespace
++}  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/text/spi_text_style.cc b/engine/src/flutter/runtime_spi/text/spi_text_style.cc
+new file mode 100644
+index 00000000000..9234bbb5b83
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/text/spi_text_style.cc
+@@ -0,0 +1,283 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/text/spi_text_style.h"
++
++#include <cstddef>
++#include <string>
++
++#include "flutter/fml/string_conversion.h"
++#include "flutter/runtime_spi/scene/spi_geometry.h"
++#include "flutter/runtime_spi/scene/spi_paint.h"
++#include "txt/text_shadow.h"
++
++namespace flutter {
++namespace {
++
++bool ContainsField(size_t struct_size, size_t offset, size_t field_size) {
++  return struct_size >= offset && struct_size - offset >= field_size;
++}
++
++template <typename Structure>
++bool HasField(const Structure& structure, size_t offset, size_t field_size) {
++  return ContainsField(structure.struct_size, offset, field_size);
++}
++
++void AppendFamilies(const char* const* families,
++                    size_t count,
++                    std::vector<std::string>* destination) {
++  if (families == nullptr) {
++    return;
++  }
++  destination->reserve(count);
++  for (size_t index = 0; index < count; index++) {
++    if (families[index] != nullptr) {
++      destination->emplace_back(families[index]);
++    }
++  }
++}
++
++void ReplaceFamilies(const char* const* families,
++                     size_t count,
++                     std::vector<std::string>* destination) {
++  if (families == nullptr || count == 0) {
++    return;
++  }
++  destination->clear();
++  AppendFamilies(families, count, destination);
++}
++
++void AppendFeatures(const FlutterSpiFontFeature* features,
++                    size_t count,
++                    txt::FontFeatures* destination) {
++  if (features == nullptr) {
++    return;
++  }
++  for (size_t index = 0; index < count; index++) {
++    destination->SetFeature(std::string(features[index].tag, 4),
++                            features[index].value);
++  }
++}
++
++void AppendVariations(const FlutterSpiFontVariation* variations,
++                      size_t count,
++                      txt::FontVariations* destination) {
++  if (variations == nullptr) {
++    return;
++  }
++  for (size_t index = 0; index < count; index++) {
++    destination->SetAxisValue(std::string(variations[index].axis, 4),
++                              variations[index].value);
++  }
++}
++
++void AppendShadows(const FlutterSpiTextShadow* shadows,
++                   size_t count,
++                   std::vector<txt::TextShadow>* destination) {
++  if (shadows == nullptr) {
++    return;
++  }
++  destination->reserve(count);
++  for (size_t index = 0; index < count; index++) {
++    const FlutterSpiTextShadow& shadow = shadows[index];
++    destination->emplace_back(ToDlColor(shadow.color).argb(),
++                              SkPoint::Make(shadow.offset.x, shadow.offset.y),
++                              shadow.blur_sigma);
++  }
++}
++
++void SetHeight(float height, double* destination, bool* has_override) {
++  if (height == 0.0f) {
++    return;
++  }
++  *destination = height;
++  *has_override = true;
++}
++
++}  // namespace
++
++txt::TextStyle ToTxtTextStyle(const FlutterSpiTextStyle* style) {
++  txt::TextStyle result;
++  if (style == nullptr) {
++    return result;
++  }
++
++  if (HasField(*style, offsetof(FlutterSpiTextStyle, color),
++               sizeof(style->color))) {
++    result.color = ToDlColor(style->color).argb();
++  }
++  if (HasField(*style, offsetof(FlutterSpiTextStyle, decoration),
++               sizeof(style->decoration))) {
++    result.decoration = style->decoration;
++  }
++  if (HasField(*style, offsetof(FlutterSpiTextStyle, decoration_color),
++               sizeof(style->decoration_color))) {
++    result.decoration_color = ToDlColor(style->decoration_color).argb();
++  }
++  if (HasField(*style, offsetof(FlutterSpiTextStyle, decoration_style),
++               sizeof(style->decoration_style))) {
++    result.decoration_style = static_cast<txt::TextDecorationStyle>(
++        style->decoration_style);
++  }
++  if (HasField(*style, offsetof(FlutterSpiTextStyle, decoration_thickness),
++               sizeof(style->decoration_thickness))) {
++    result.decoration_thickness_multiplier = style->decoration_thickness;
++  }
++  if (HasField(*style, offsetof(FlutterSpiTextStyle, font_weight),
++               sizeof(style->font_weight))) {
++    result.font_weight = style->font_weight;
++  }
++  if (HasField(*style, offsetof(FlutterSpiTextStyle, font_style),
++               sizeof(style->font_style))) {
++    result.font_style = static_cast<txt::FontStyle>(style->font_style);
++  }
++  if (HasField(*style, offsetof(FlutterSpiTextStyle, text_baseline),
++               sizeof(style->text_baseline))) {
++    result.text_baseline = static_cast<txt::TextBaseline>(style->text_baseline);
++  }
++  if (HasField(*style, offsetof(FlutterSpiTextStyle, half_leading),
++               sizeof(style->half_leading))) {
++    result.half_leading = style->half_leading;
++  }
++  if (HasField(*style, offsetof(FlutterSpiTextStyle, font_families),
++               sizeof(style->font_families))) {
++    ReplaceFamilies(style->font_families, style->font_family_count,
++                    &result.font_families);
++  }
++  if (HasField(*style, offsetof(FlutterSpiTextStyle, font_size),
++               sizeof(style->font_size))) {
++    result.font_size = style->font_size;
++  }
++  if (HasField(*style, offsetof(FlutterSpiTextStyle, letter_spacing),
++               sizeof(style->letter_spacing))) {
++    result.letter_spacing = style->letter_spacing;
++  }
++  if (HasField(*style, offsetof(FlutterSpiTextStyle, word_spacing),
++               sizeof(style->word_spacing))) {
++    result.word_spacing = style->word_spacing;
++  }
++  if (HasField(*style, offsetof(FlutterSpiTextStyle, height),
++               sizeof(style->height))) {
++    SetHeight(style->height, &result.height, &result.has_height_override);
++  }
++  if (HasField(*style, offsetof(FlutterSpiTextStyle, locale),
++               sizeof(style->locale)) &&
++      style->locale != nullptr) {
++    result.locale = style->locale;
++  }
++  if (HasField(*style, offsetof(FlutterSpiTextStyle, foreground),
++               sizeof(style->foreground)) &&
++      style->foreground != nullptr) {
++    result.foreground = ToDlPaint(*style->foreground);
++  }
++  if (HasField(*style, offsetof(FlutterSpiTextStyle, background),
++               sizeof(style->background)) &&
++      style->background != nullptr) {
++    result.background = ToDlPaint(*style->background);
++  }
++  if (HasField(*style, offsetof(FlutterSpiTextStyle, shadows),
++               sizeof(style->shadows))) {
++    AppendShadows(style->shadows, style->shadow_count, &result.text_shadows);
++  }
++  if (HasField(*style, offsetof(FlutterSpiTextStyle, features),
++               sizeof(style->features))) {
++    AppendFeatures(style->features, style->feature_count,
++                   &result.font_features);
++  }
++  if (HasField(*style, offsetof(FlutterSpiTextStyle, variations),
++               sizeof(style->variations))) {
++    AppendVariations(style->variations, style->variation_count,
++                     &result.font_variations);
++  }
++  return result;
++}
++
++txt::ParagraphStyle ToTxtParagraphStyle(
++    const FlutterSpiParagraphStyle* style) {
++  txt::ParagraphStyle result;
++  if (style == nullptr) {
++    return result;
++  }
++
++  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, text_align),
++               sizeof(style->text_align))) {
++    result.text_align = static_cast<txt::TextAlign>(style->text_align);
++  }
++  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, text_direction),
++               sizeof(style->text_direction))) {
++    result.text_direction =
++        static_cast<txt::TextDirection>(style->text_direction);
++  }
++  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, max_lines),
++               sizeof(style->max_lines)) &&
++      style->max_lines != 0) {
++    result.max_lines = style->max_lines;
++  }
++  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, font_family),
++               sizeof(style->font_family)) &&
++      style->font_family != nullptr) {
++    result.font_family = style->font_family;
++  }
++  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, font_size),
++               sizeof(style->font_size))) {
++    result.font_size = style->font_size;
++  }
++  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, height),
++               sizeof(style->height))) {
++    SetHeight(style->height, &result.height, &result.has_height_override);
++  }
++  if (HasField(*style,
++               offsetof(FlutterSpiParagraphStyle, text_height_behavior),
++               sizeof(style->text_height_behavior))) {
++    result.text_height_behavior = style->text_height_behavior;
++  }
++  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, font_weight),
++               sizeof(style->font_weight))) {
++    result.font_weight = style->font_weight;
++  }
++  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, font_style),
++               sizeof(style->font_style))) {
++    result.font_style = static_cast<txt::FontStyle>(style->font_style);
++  }
++  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, strut_enabled),
++               sizeof(style->strut_enabled))) {
++    result.strut_enabled = style->strut_enabled;
++  }
++  if (HasField(*style,
++               offsetof(FlutterSpiParagraphStyle, strut_font_families),
++               sizeof(style->strut_font_families))) {
++    ReplaceFamilies(style->strut_font_families,
++                    style->strut_font_family_count,
++                    &result.strut_font_families);
++  }
++  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, strut_font_size),
++               sizeof(style->strut_font_size))) {
++    result.strut_font_size = style->strut_font_size;
++  }
++  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, strut_height),
++               sizeof(style->strut_height))) {
++    result.strut_height = style->strut_height;
++  }
++  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, strut_leading),
++               sizeof(style->strut_leading))) {
++    result.strut_leading = style->strut_leading;
++  }
++  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, strut_force_height),
++               sizeof(style->strut_force_height))) {
++    result.force_strut_height = style->strut_force_height;
++  }
++  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, ellipsis),
++               sizeof(style->ellipsis)) &&
++      style->ellipsis != nullptr) {
++    result.ellipsis = fml::Utf8ToUtf16(style->ellipsis);
++  }
++  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, locale),
++               sizeof(style->locale)) &&
++      style->locale != nullptr) {
++    result.locale = style->locale;
++  }
++  return result;
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/text/spi_text_style.h b/engine/src/flutter/runtime_spi/text/spi_text_style.h
+new file mode 100644
+index 00000000000..3136c69325f
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/text/spi_text_style.h
+@@ -0,0 +1,20 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_TEXT_SPI_TEXT_STYLE_H_
++#define FLUTTER_RUNTIME_SPI_TEXT_SPI_TEXT_STYLE_H_
++
++#include "flutter/runtime_spi/include/flutter_text.h"
++#include "txt/paragraph_style.h"
++#include "txt/text_style.h"
++
++namespace flutter {
++
++txt::TextStyle ToTxtTextStyle(const FlutterSpiTextStyle* style);
++txt::ParagraphStyle ToTxtParagraphStyle(
++    const FlutterSpiParagraphStyle* style);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_TEXT_SPI_TEXT_STYLE_H_
+diff --git a/engine/src/flutter/runtime_spi/text/spi_text_style_unittests.cc b/engine/src/flutter/runtime_spi/text/spi_text_style_unittests.cc
+new file mode 100644
+index 00000000000..96e533a2fdd
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/text/spi_text_style_unittests.cc
+@@ -0,0 +1,204 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/text/spi_text_style.h"
++
++#include <cstddef>
++#include <vector>
++
++#include "flutter/display_list/dl_paint.h"
++#include "flutter/runtime_spi/scene/spi_geometry.h"
++#include "flutter/runtime_spi/scene/spi_paint.h"
++#include "flutter/testing/testing.h"
++#include "txt/font_features.h"
++#include "txt/paragraph_style.h"
++#include "txt/text_decoration.h"
++#include "txt/text_style.h"
++
++namespace flutter::testing {
++namespace {
++
++constexpr FlutterSpiColor kTextColor = {
++    .red = 0.1f,
++    .green = 0.2f,
++    .blue = 0.3f,
++    .alpha = 0.4f,
++    .color_space = kFlutterSpiColorSpaceSRGB,
++};
++
++constexpr FlutterSpiColor kDecorationColor = {
++    .red = 0.5f,
++    .green = 0.6f,
++    .blue = 0.7f,
++    .alpha = 0.8f,
++    .color_space = kFlutterSpiColorSpaceDisplayP3,
++};
++
++constexpr FlutterSpiPaint kForeground = {
++    .struct_size = sizeof(FlutterSpiPaint),
++    .color = kTextColor,
++    .blend_mode = kFlutterSpiBlendModeMultiply,
++    .style = kFlutterSpiPaintStyleStroke,
++    .stroke_width = 2.5f,
++    .stroke_cap = kFlutterSpiStrokeCapRound,
++    .stroke_join = kFlutterSpiStrokeJoinBevel,
++    .stroke_miter = 3.5f,
++    .anti_alias = false,
++    .invert_colors = true,
++};
++
++constexpr FlutterSpiTextShadow kShadow = {
++    .color = kDecorationColor,
++    .offset = {.x = 3.0f, .y = 4.0f},
++    .blur_sigma = 5.0f,
++};
++
++constexpr FlutterSpiFontFeature kFeature = {.tag = {'s', 'm', 'c', 'p'},
++                                             .value = 1};
++constexpr FlutterSpiFontVariation kVariation = {.axis = {'w', 'g', 'h', 't'},
++                                                .value = 650.0f};
++
++TEST(SpiTextStyle, ConvertsEveryField) {
++  const char* families[] = {"Roboto", "Noto Sans"};
++  const FlutterSpiTextStyle input = {
++      .struct_size = sizeof(FlutterSpiTextStyle),
++      .color = kTextColor,
++      .decoration = kFlutterSpiTextDecorationUnderline |
++                    kFlutterSpiTextDecorationOverline,
++      .decoration_color = kDecorationColor,
++      .decoration_style = kFlutterSpiTextDecorationStyleDashed,
++      .decoration_thickness = 1.5f,
++      .font_weight = 700,
++      .font_style = kFlutterSpiFontStyleItalic,
++      .text_baseline = kFlutterSpiTextBaselineIdeographic,
++      .half_leading = true,
++      .font_families = families,
++      .font_family_count = 2,
++      .font_size = 22.0f,
++      .letter_spacing = 1.25f,
++      .word_spacing = 2.5f,
++      .height = 1.75f,
++      .locale = "pt-BR",
++      .foreground = &kForeground,
++      .background = &kForeground,
++      .shadows = &kShadow,
++      .shadow_count = 1,
++      .features = &kFeature,
++      .feature_count = 1,
++      .variations = &kVariation,
++      .variation_count = 1,
++  };
++
++  const txt::TextStyle result = ToTxtTextStyle(&input);
++
++  EXPECT_EQ(result.color, ToDlColor(kTextColor).argb());
++  EXPECT_EQ(result.decoration, txt::kUnderline | txt::kOverline);
++  EXPECT_EQ(result.decoration_color, ToDlColor(kDecorationColor).argb());
++  EXPECT_EQ(result.decoration_style, txt::TextDecorationStyle::kDashed);
++  EXPECT_DOUBLE_EQ(result.decoration_thickness_multiplier, 1.5);
++  EXPECT_EQ(result.font_weight, 700);
++  EXPECT_EQ(result.font_style, txt::FontStyle::italic);
++  EXPECT_EQ(result.text_baseline, txt::TextBaseline::kIdeographic);
++  EXPECT_TRUE(result.half_leading);
++  ASSERT_EQ(result.font_families,
++            (std::vector<std::string>{"Roboto", "Noto Sans"}));
++  EXPECT_DOUBLE_EQ(result.font_size, 22.0);
++  EXPECT_DOUBLE_EQ(result.letter_spacing, 1.25);
++  EXPECT_DOUBLE_EQ(result.word_spacing, 2.5);
++  EXPECT_DOUBLE_EQ(result.height, 1.75);
++  EXPECT_TRUE(result.has_height_override);
++  EXPECT_EQ(result.locale, "pt-BR");
++  ASSERT_TRUE(result.foreground.has_value());
++  EXPECT_EQ(*result.foreground, ToDlPaint(kForeground));
++  ASSERT_TRUE(result.background.has_value());
++  EXPECT_EQ(*result.background, ToDlPaint(kForeground));
++  ASSERT_EQ(result.text_shadows.size(), 1u);
++  EXPECT_EQ(result.text_shadows[0].color, ToDlColor(kDecorationColor).argb());
++  EXPECT_EQ(result.text_shadows[0].offset, SkPoint::Make(3.0f, 4.0f));
++  EXPECT_DOUBLE_EQ(result.text_shadows[0].blur_sigma, 5.0);
++  ASSERT_EQ(result.font_features.GetFontFeatures().size(), 1u);
++  EXPECT_EQ(result.font_features.GetFontFeatures().at("smcp"), 1);
++  ASSERT_EQ(result.font_variations.GetAxisValues().size(), 1u);
++  EXPECT_FLOAT_EQ(result.font_variations.GetAxisValues().at("wght"), 650.0f);
++}
++
++TEST(SpiTextStyle, OlderStructUsesTxtDefaults) {
++  const FlutterSpiTextStyle input = {
++      .struct_size = offsetof(FlutterSpiTextStyle, color),
++  };
++
++  const txt::TextStyle result = ToTxtTextStyle(&input);
++  const txt::TextStyle defaults;
++
++  EXPECT_TRUE(result.equals(defaults));
++}
++
++TEST(SpiTextStyle, ConvertsParagraphStyleFields) {
++  const char* strut_families[] = {"Roboto Mono"};
++  const FlutterSpiParagraphStyle input = {
++      .struct_size = sizeof(FlutterSpiParagraphStyle),
++      .text_align = kFlutterSpiTextAlignJustify,
++      .text_direction = kFlutterSpiTextDirectionRtl,
++      .max_lines = 3,
++      .font_family = "Roboto",
++      .font_size = 20.0f,
++      .height = 1.5f,
++      .text_height_behavior = kFlutterSpiTextHeightBehaviorDisableLastDescent,
++      .font_weight = 600,
++      .font_style = kFlutterSpiFontStyleItalic,
++      .strut_enabled = true,
++      .strut_font_families = strut_families,
++      .strut_font_family_count = 1,
++      .strut_font_size = 18.0f,
++      .strut_height = 1.25f,
++      .strut_leading = 0.5f,
++      .strut_force_height = true,
++      .ellipsis = "...",
++      .locale = "en-US",
++  };
++
++  const txt::ParagraphStyle result = ToTxtParagraphStyle(&input);
++
++  EXPECT_EQ(result.text_align, txt::TextAlign::justify);
++  EXPECT_EQ(result.text_direction, txt::TextDirection::rtl);
++  EXPECT_EQ(result.max_lines, 3u);
++  EXPECT_EQ(result.font_family, "Roboto");
++  EXPECT_DOUBLE_EQ(result.font_size, 20.0);
++  EXPECT_DOUBLE_EQ(result.height, 1.5);
++  EXPECT_TRUE(result.has_height_override);
++  EXPECT_EQ(result.text_height_behavior,
++            txt::TextHeightBehavior::kDisableLastDescent);
++  EXPECT_EQ(result.font_weight, 600);
++  EXPECT_EQ(result.font_style, txt::FontStyle::italic);
++  EXPECT_TRUE(result.strut_enabled);
++  EXPECT_EQ(result.strut_font_families,
++            (std::vector<std::string>{"Roboto Mono"}));
++  EXPECT_DOUBLE_EQ(result.strut_font_size, 18.0);
++  EXPECT_DOUBLE_EQ(result.strut_height, 1.25);
++  EXPECT_DOUBLE_EQ(result.strut_leading, 0.5);
++  EXPECT_TRUE(result.force_strut_height);
++  EXPECT_EQ(result.ellipsis, u"...");
++  EXPECT_EQ(result.locale, "en-US");
++}
++
++TEST(SpiTextStyle, OlderParagraphStructUsesTxtDefaults) {
++  const FlutterSpiParagraphStyle input = {
++      .struct_size = offsetof(FlutterSpiParagraphStyle, text_align),
++  };
++
++  const txt::ParagraphStyle result = ToTxtParagraphStyle(&input);
++  const txt::ParagraphStyle defaults;
++
++  EXPECT_EQ(result.text_align, defaults.text_align);
++  EXPECT_EQ(result.text_direction, defaults.text_direction);
++  EXPECT_EQ(result.max_lines, defaults.max_lines);
++  EXPECT_EQ(result.font_size, defaults.font_size);
++  EXPECT_EQ(result.height, defaults.height);
++  EXPECT_FALSE(result.has_height_override);
++  EXPECT_EQ(result.strut_font_size, defaults.strut_font_size);
++  EXPECT_EQ(result.ellipsis, defaults.ellipsis);
++}
++
++}  // namespace
++}  // namespace flutter::testing
