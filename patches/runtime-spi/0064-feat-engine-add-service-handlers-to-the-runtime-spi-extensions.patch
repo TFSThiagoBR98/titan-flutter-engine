@@ -1,0 +1,153 @@
+# Why: expose the service-handler callbacks and freeze their ABI layout for
+# the next runtime SPI minor version.
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 710b7e2fc17..211251d69fd 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -201,6 +201,20 @@ SPI_EXPECT_OFFSET(FlutterSpiMapping, release,
+                   sizeof(void*) == 8 ? 24 : 12);
+ SPI_EXPECT_SIZE(FlutterSpiMapping, sizeof(void*) == 8 ? 32 : 16);
+ 
++SPI_EXPECT_OFFSET(FlutterSpiServiceHandler, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiServiceHandler, user_data,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiServiceHandler, methods,
++                  sizeof(void*) == 8 ? 16 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiServiceHandler, method_count,
++                  sizeof(void*) == 8 ? 24 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiServiceHandler, handle,
++                  sizeof(void*) == 8 ? 32 : 16);
++SPI_EXPECT_OFFSET(FlutterSpiServiceHandler, free_json,
++                  sizeof(void*) == 8 ? 40 : 20);
++SPI_EXPECT_SIZE(FlutterSpiServiceHandler,
++                sizeof(void*) == 8 ? 48 : 24);
++
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, user_data,
+                   sizeof(void*) == 8 ? 8 : 4);
+@@ -231,8 +245,19 @@ SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, shutdown_platform_isolates,
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions,
+                   set_root_isolate_owner_to_current_thread,
+                   sizeof(void*) == 8 ? 112 : 56);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, register_service_handler,
++                  sizeof(void*) == 8 ? 120 : 60);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, unregister_service_handler,
++                  sizeof(void*) == 8 ? 128 : 64);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions,
++                  refresh_service_handler_description,
++                  sizeof(void*) == 8 ? 136 : 68);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, notify_low_memory,
++                  sizeof(void*) == 8 ? 144 : 72);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, is_running_runtime_code,
++                  sizeof(void*) == 8 ? 152 : 76);
+ SPI_EXPECT_SIZE(FlutterSpiRuntimeExtensions,
+-                sizeof(void*) == 8 ? 120 : 60);
++                sizeof(void*) == 8 ? 160 : 80);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, version_major,
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_extensions.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_extensions.h
+index 26594694218..55bd2047777 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_extensions.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_extensions.h
+@@ -27,6 +27,20 @@ typedef enum {
+   kFlutterSpiRuntimeErrorCompilation = 3,
+ } FlutterSpiRuntimeErrorType;
+ 
++typedef struct FlutterSpiServiceHandler {
++  size_t struct_size;
++  void* user_data;
++  const char* const* methods;
++  size_t method_count;
++  bool (*handle)(void* user_data,
++                 const char* method,
++                 const char* const* keys,
++                 const char* const* values,
++                 size_t param_count,
++                 char** out_json);
++  void (*free_json)(void* user_data, char* json);
++} FlutterSpiServiceHandler;
++
+ typedef struct FlutterSpiRuntimeExtensions {
+   size_t struct_size;
+   void* user_data;
+@@ -49,6 +63,14 @@ typedef struct FlutterSpiRuntimeExtensions {
+                                       bool transient);
+   void (*shutdown_platform_isolates)(void* user_data);
+   void (*set_root_isolate_owner_to_current_thread)(void* user_data);
++  void (*register_service_handler)(void* user_data,
++                                   const FlutterSpiServiceHandler* handler);
++  void (*unregister_service_handler)(void* user_data,
++                                     const FlutterSpiServiceHandler* handler);
++  void (*refresh_service_handler_description)(
++      void* user_data, const FlutterSpiServiceHandler* handler);
++  void (*notify_low_memory)(void* user_data);
++  bool (*is_running_runtime_code)(void* user_data);
+ } FlutterSpiRuntimeExtensions;
+ 
+ #ifdef __cplusplus
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index 9428e3c8968..78aa1d3e0cc 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 10
++#define FLUTTER_SPI_VERSION_MINOR 11
+ 
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index ec0197c9044..edf938acbff 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -91,7 +91,7 @@ TEST(SpiAbi, ImageEnumValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawUnmodified, 2);
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawExtendedRGBA128, 3);
+   EXPECT_EQ(kFlutterSpiImageByteFormatPNG, 4);
+-  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 10);
++  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 11);
+ }
+ 
+ TEST(SpiAbi, SemanticsLayoutIsFrozen) {
+@@ -451,7 +451,37 @@ TEST(SpiAbi, RuntimeExtensionsEnumAndLayoutsAreFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions,
+                     set_root_isolate_owner_to_current_thread, 112, 56);
+   EXPECT_EQ(sizeof(FlutterSpiRuntimeExtensions),
+-            sizeof(void*) == 8 ? 120u : 60u);
++            sizeof(void*) == 8 ? 160u : 80u);
++}
++
++TEST(SpiAbi, ServiceHandlerLayoutIsFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiServiceHandler, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiServiceHandler, user_data, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiServiceHandler, methods, 16, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiServiceHandler, method_count, 24, 12);
++  EXPECT_SPI_OFFSET(FlutterSpiServiceHandler, handle, 32, 16);
++  EXPECT_SPI_OFFSET(FlutterSpiServiceHandler, free_json, 40, 20);
++  EXPECT_EQ(sizeof(FlutterSpiServiceHandler), sizeof(void*) == 8 ? 48u : 24u);
++
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions,
++                    register_service_handler,
++                    120,
++                    60);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions,
++                    unregister_service_handler,
++                    128,
++                    64);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions,
++                    refresh_service_handler_description,
++                    136,
++                    68);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions, notify_low_memory, 144, 72);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeExtensions,
++                    is_running_runtime_code,
++                    152,
++                    76);
++  EXPECT_EQ(sizeof(FlutterSpiRuntimeExtensions),
++            sizeof(void*) == 8 ? 160u : 80u);
+ }
+ 
+ TEST(SpiAbi, EngineApiLayoutIsFrozen) {
