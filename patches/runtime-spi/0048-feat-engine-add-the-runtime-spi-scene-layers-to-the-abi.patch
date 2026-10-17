@@ -1,0 +1,202 @@
+# Why: expose the append-only scene-layer ABI and capability needed by the
+# remaining runtime SPI scene-builder tasks, with frozen 64-bit and 32-bit
+# layout checks.
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 12c71163dc1..555fd0db5ab 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -450,8 +450,37 @@ SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, vertices_release,
+                   sizeof(void*) == 8 ? 160 : 80);
+ SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, canvas_draw_vertices,
+                   sizeof(void*) == 8 ? 168 : 84);
++SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, image_filter_blur_bounded,
++                  sizeof(void*) == 8 ? 176 : 88);
+ SPI_EXPECT_SIZE(FlutterSpiPaintEffectsApi,
+-                sizeof(void*) == 8 ? 176 : 88);
++                sizeof(void*) == 8 ? 184 : 92);
++
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_push_clip_rsuperellipse,
++                  sizeof(void*) == 8 ? 464 : 232);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_push_color_filter,
++                  sizeof(void*) == 8 ? 472 : 236);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_push_image_filter,
++                  sizeof(void*) == 8 ? 480 : 240);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_push_backdrop_filter,
++                  sizeof(void*) == 8 ? 488 : 244);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_push_shader_mask,
++                  sizeof(void*) == 8 ? 496 : 248);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_add_texture,
++                  sizeof(void*) == 8 ? 504 : 252);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_add_platform_view,
++                  sizeof(void*) == 8 ? 512 : 256);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_add_performance_overlay,
++                  sizeof(void*) == 8 ? 520 : 260);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_take_last_layer,
++                  sizeof(void*) == 8 ? 528 : 264);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_assign_old_layer,
++                  sizeof(void*) == 8 ? 536 : 268);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_add_retained,
++                  sizeof(void*) == 8 ? 544 : 272);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, engine_layer_release,
++                  sizeof(void*) == 8 ? 552 : 276);
++SPI_EXPECT_SIZE(FlutterSpiSceneApi, sizeof(void*) == 8 ? 560 : 280);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiPixels, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiPixels, pixels,
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_paint_effects.h b/engine/src/flutter/runtime_spi/include/flutter_paint_effects.h
+index 67668b818cb..c57dde2e2c7 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_paint_effects.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_paint_effects.h
+@@ -123,6 +123,13 @@ typedef struct FlutterSpiPaintEffectsApi {
+                                            FlutterSpiVertices* vertices,
+                                            int32_t blend_mode,
+                                            const FlutterSpiPaint* paint);
++  FlutterSpiResult (*image_filter_blur_bounded)(
++      FlutterSpiEngine* engine,
++      float sigma_x,
++      float sigma_y,
++      int32_t tile_mode,
++      const FlutterSpiRect* bounds,
++      FlutterSpiImageFilter** out_filter);
+ } FlutterSpiPaintEffectsApi;
+ 
+ #ifdef __cplusplus
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index c78a79b11ff..dfc65e76c25 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 6
++#define FLUTTER_SPI_VERSION_MINOR 7
+ 
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+@@ -27,6 +27,7 @@ enum {
+   kFlutterSpiCapImage = 1ULL << 9,
+   kFlutterSpiCapImageOutput = 1ULL << 10,
+   kFlutterSpiCapPaintEffects = 1ULL << 11,
++  kFlutterSpiCapSceneLayers = 1ULL << 12,
+ };
+ 
+ typedef struct FlutterSpiEngine FlutterSpiEngine;
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_scene.h b/engine/src/flutter/runtime_spi/include/flutter_scene.h
+index dd6447f3bcd..300be421184 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_scene.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_scene.h
+@@ -31,6 +31,7 @@ typedef struct FlutterSpiShader FlutterSpiShader;
+ typedef struct FlutterSpiColorFilter FlutterSpiColorFilter;
+ typedef struct FlutterSpiImageFilter FlutterSpiImageFilter;
+ typedef struct FlutterSpiVertices FlutterSpiVertices;
++typedef struct FlutterSpiEngineLayer FlutterSpiEngineLayer;
+ 
+ typedef enum {
+   kFlutterSpiColorSpaceSRGB = 0,
+@@ -337,6 +338,52 @@ struct FlutterSpiSceneApi {
+ 
+   FlutterSpiResult (*scene_trace)(FlutterSpiScene* scene, char** out_utf8);
+   FlutterSpiResult (*trace_free)(char* trace);
++  FlutterSpiResult (*scene_push_clip_rsuperellipse)(
++      FlutterSpiSceneBuilder* builder,
++      const FlutterSpiRRect* shape,
++      int32_t clip_behavior);
++  FlutterSpiResult (*scene_push_color_filter)(FlutterSpiSceneBuilder* builder,
++                                              FlutterSpiColorFilter* filter);
++  FlutterSpiResult (*scene_push_image_filter)(FlutterSpiSceneBuilder* builder,
++                                              FlutterSpiImageFilter* filter,
++                                              float dx,
++                                              float dy);
++  FlutterSpiResult (*scene_push_backdrop_filter)(
++      FlutterSpiSceneBuilder* builder,
++      FlutterSpiImageFilter* filter,
++      int32_t blend_mode,
++      bool has_backdrop_id,
++      int64_t backdrop_id);
++  FlutterSpiResult (*scene_push_shader_mask)(FlutterSpiSceneBuilder* builder,
++                                             FlutterSpiShader* shader,
++                                             const FlutterSpiRect* mask_rect,
++                                             int32_t blend_mode,
++                                             int32_t filter_quality);
++  FlutterSpiResult (*scene_add_texture)(FlutterSpiSceneBuilder* builder,
++                                        float dx,
++                                        float dy,
++                                        float width,
++                                        float height,
++                                        int64_t texture_id,
++                                        bool freeze,
++                                        int32_t filter_quality);
++  FlutterSpiResult (*scene_add_platform_view)(FlutterSpiSceneBuilder* builder,
++                                              float dx,
++                                              float dy,
++                                              float width,
++                                              float height,
++                                              int64_t view_id);
++  FlutterSpiResult (*scene_add_performance_overlay)(
++      FlutterSpiSceneBuilder* builder,
++      uint64_t enabled_options,
++      const FlutterSpiRect* bounds);
++  FlutterSpiResult (*scene_take_last_layer)(FlutterSpiSceneBuilder* builder,
++                                            FlutterSpiEngineLayer** out_layer);
++  FlutterSpiResult (*scene_assign_old_layer)(FlutterSpiSceneBuilder* builder,
++                                             FlutterSpiEngineLayer* old_layer);
++  FlutterSpiResult (*scene_add_retained)(FlutterSpiSceneBuilder* builder,
++                                         FlutterSpiEngineLayer* layer);
++  FlutterSpiResult (*engine_layer_release)(FlutterSpiEngineLayer* layer);
+ };
+ 
+ #ifdef __cplusplus
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index 33e437ad79f..aa864a704ca 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -48,6 +48,7 @@ TEST(SpiAbi, CapabilityValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiCapImage, 1ULL << 9);
+   EXPECT_EQ(kFlutterSpiCapImageOutput, 1ULL << 10);
+   EXPECT_EQ(kFlutterSpiCapPaintEffects, 1ULL << 11);
++  EXPECT_EQ(kFlutterSpiCapSceneLayers, 1ULL << 12);
+ }
+ 
+ TEST(SpiAbi, ImageEnumValuesAreFrozen) {
+@@ -64,7 +65,7 @@ TEST(SpiAbi, ImageEnumValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawUnmodified, 2);
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawExtendedRGBA128, 3);
+   EXPECT_EQ(kFlutterSpiImageByteFormatPNG, 4);
+-  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 6);
++  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 7);
+ }
+ 
+ TEST(SpiAbi, PaintEffectsEnumValuesAreFrozen) {
+@@ -373,8 +374,29 @@ TEST(SpiAbi, PaintEffectsApiLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiPaintEffectsApi, vertices_create, 152, 76);
+   EXPECT_SPI_OFFSET(FlutterSpiPaintEffectsApi, vertices_release, 160, 80);
+   EXPECT_SPI_OFFSET(FlutterSpiPaintEffectsApi, canvas_draw_vertices, 168, 84);
++  EXPECT_SPI_OFFSET(FlutterSpiPaintEffectsApi, image_filter_blur_bounded,
++                    176, 88);
+   EXPECT_EQ(sizeof(FlutterSpiPaintEffectsApi),
+-            sizeof(void*) == 8 ? 176u : 88u);
++            sizeof(void*) == 8 ? 184u : 92u);
++}
++
++TEST(SpiAbi, SceneApiLayoutIsFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, scene_push_clip_rsuperellipse,
++                    464, 232);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, scene_push_color_filter, 472, 236);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, scene_push_image_filter, 480, 240);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, scene_push_backdrop_filter, 488, 244);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, scene_push_shader_mask, 496, 248);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, scene_add_texture, 504, 252);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, scene_add_platform_view, 512, 256);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, scene_add_performance_overlay,
++                    520, 260);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, scene_take_last_layer, 528, 264);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, scene_assign_old_layer, 536, 268);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, scene_add_retained, 544, 272);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, engine_layer_release, 552, 276);
++  EXPECT_EQ(sizeof(FlutterSpiSceneApi), sizeof(void*) == 8 ? 560u : 280u);
+ }
+ 
+ TEST(SpiAbi, ImageLayoutIsFrozen) {
