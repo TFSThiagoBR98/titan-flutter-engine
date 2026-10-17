@@ -1,0 +1,597 @@
+# Why: expose raster conversion and byte encoding through a Dart-free image
+# readback seam while keeping dart:ui callback behavior unchanged.
+diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
+index 14a1cc1f076..2a155164c01 100644
+--- a/engine/src/flutter/lib/ui/BUILD.gn
++++ b/engine/src/flutter/lib/ui/BUILD.gn
+@@ -119,6 +119,11 @@ source_set("ui_image_output") {
+   sources = [
+     "painting/display_list_deferred_image_gpu_skia.cc",
+     "painting/display_list_deferred_image_gpu_skia.h",
++    "painting/image_encoding_impl.h",
++    "painting/image_encoding_skia.cc",
++    "painting/image_encoding_skia.h",
++    "painting/image_readback.cc",
++    "painting/image_readback.h",
+     "painting/image_snapshot.cc",
+     "painting/image_snapshot.h",
+   ]
+@@ -143,11 +148,14 @@ source_set("ui_image_output") {
+     sources += [
+       "painting/display_list_deferred_image_gpu_impeller.cc",
+       "painting/display_list_deferred_image_gpu_impeller.h",
++      "painting/image_encoding_impeller.cc",
++      "painting/image_encoding_impeller.h",
+     ]
+ 
+     deps += [
+       "//flutter/impeller",
+       "//flutter/impeller/display_list",
++      "//flutter/impeller/display_list:skia_conversions",
+     ]
+   }
+ 
+@@ -211,9 +219,6 @@ source_set("ui") {
+     "painting/image_descriptor.h",
+     "painting/image_encoding.cc",
+     "painting/image_encoding.h",
+-    "painting/image_encoding_impl.h",
+-    "painting/image_encoding_skia.cc",
+-    "painting/image_encoding_skia.h",
+     "painting/image_filter.cc",
+     "painting/image_filter.h",
+     "painting/image_shader.cc",
+@@ -309,8 +314,6 @@ source_set("ui") {
+ 
+   if (impeller_supports_rendering) {
+     sources += [
+-      "painting/image_encoding_impeller.cc",
+-      "painting/image_encoding_impeller.h",
+       "painting/pixel_deferred_image_gpu_impeller.cc",
+       "painting/pixel_deferred_image_gpu_impeller.h",
+     ]
+diff --git a/engine/src/flutter/lib/ui/painting/image_encoding.cc b/engine/src/flutter/lib/ui/painting/image_encoding.cc
+index 9c9f49bf9ff..d6b9a894642 100644
+--- a/engine/src/flutter/lib/ui/painting/image_encoding.cc
++++ b/engine/src/flutter/lib/ui/painting/image_encoding.cc
+@@ -3,25 +3,14 @@
+ // found in the LICENSE file.
+ 
+ #include "flutter/lib/ui/painting/image_encoding.h"
+-#include "flutter/lib/ui/painting/image_encoding_impl.h"
+ 
+ #include <memory>
+ #include <utility>
+ 
+-#include "flutter/common/task_runners.h"
+-#include "flutter/fml/build_config.h"
+ #include "flutter/fml/make_copyable.h"
+-#include "flutter/fml/status_or.h"
+-#include "flutter/fml/trace_event.h"
+ #include "flutter/lib/ui/painting/image.h"
+-#include "fml/status.h"
+-#if IMPELLER_SUPPORTS_RENDERING
+-#include "flutter/lib/ui/painting/image_encoding_impeller.h"
+-#endif  // IMPELLER_SUPPORTS_RENDERING
+-#include "flutter/lib/ui/painting/image_encoding_skia.h"
+-#include "third_party/skia/include/core/SkImage.h"
+-#include "third_party/skia/include/core/SkSurface.h"
+-#include "third_party/skia/include/encode/SkPngEncoder.h"
++#include "flutter/lib/ui/painting/image_readback.h"
++#include "flutter/lib/ui/ui_dart_state.h"
+ #include "third_party/tonic/dart_persistent_value.h"
+ #include "third_party/tonic/logging/dart_invoke.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
+@@ -65,56 +54,11 @@ void InvokeDataCallback(std::unique_ptr<DartPersistentValue> callback,
+   DartInvoke(callback->value(), {dart_data, Dart_Null()});
+ }
+ 
+-fml::StatusOr<sk_sp<SkData>> CopyImageByteData(
+-    const sk_sp<SkImage>& raster_image,
+-    SkColorType color_type,
+-    SkAlphaType alpha_type) {
+-  FML_DCHECK(raster_image);
+-
+-  SkPixmap pixmap;
+-
+-  if (!raster_image->peekPixels(&pixmap)) {
+-    return fml::Status(fml::StatusCode::kInternal,
+-                       "Could not copy pixels from the raster image.");
+-  }
+-
+-  // The color types already match. No need to swizzle. Return early.
+-  if (pixmap.colorType() == color_type && pixmap.alphaType() == alpha_type) {
+-    return SkData::MakeWithCopy(pixmap.addr(), pixmap.computeByteSize());
+-  }
+-
+-  // Perform swizzle if the type doesnt match the specification.
+-  auto surface = SkSurfaces::Raster(
+-      SkImageInfo::Make(raster_image->width(), raster_image->height(),
+-                        color_type, alpha_type, nullptr));
+-
+-  if (!surface) {
+-    fml::Status(fml::StatusCode::kInternal,
+-                "Could not set up the surface for swizzle.");
+-  }
+-
+-  surface->writePixels(pixmap, 0, 0);
+-
+-  if (!surface->peekPixels(&pixmap)) {
+-    return fml::Status(fml::StatusCode::kInternal,
+-                       "Pixel address is not available.");
+-  }
+-
+-  return SkData::MakeWithCopy(pixmap.addr(), pixmap.computeByteSize());
+-}
+-
+ void EncodeImageAndInvokeDataCallback(
+     const sk_sp<DlImage>& image,
+     std::unique_ptr<DartPersistentValue> callback,
+     ImageByteFormat format,
+-    const fml::RefPtr<fml::TaskRunner>& ui_task_runner,
+-    const fml::RefPtr<fml::TaskRunner>& raster_task_runner,
+-    const fml::RefPtr<fml::TaskRunner>& io_task_runner,
+-    const fml::WeakPtr<GrDirectContext>& resource_context,
+-    const fml::TaskRunnerAffineWeakPtr<SnapshotDelegate>& snapshot_delegate,
+-    const std::shared_ptr<const fml::SyncSwitch>& is_gpu_disabled_sync_switch,
+-    const std::shared_ptr<impeller::Context>& impeller_context,
+-    bool is_impeller_enabled) {
++    ImageReadbackContext context) {
+   auto callback_task =
+       fml::MakeCopyable([callback = std::move(callback)](
+                             fml::StatusOr<sk_sp<SkData>>&& encoded) mutable {
+@@ -123,41 +67,19 @@ void EncodeImageAndInvokeDataCallback(
+   // The static leak checker gets confused by the use of fml::MakeCopyable in
+   // EncodeImage.
+   // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
+-  auto encode_task =
+-      [callback_task = std::move(callback_task), format,
+-       ui_task_runner](const fml::StatusOr<sk_sp<SkImage>>& raster_image) {
++  ConvertToRasterImageAsync(
++      context, image,
++      [callback_task = std::move(callback_task), format](
++          fml::StatusOr<sk_sp<SkImage>> raster_image) mutable {
+         if (raster_image.ok()) {
+-          fml::StatusOr<sk_sp<SkData>> encoded =
+-              EncodeImage(raster_image.value(), format);
+-          ui_task_runner->PostTask([callback_task = callback_task,
+-                                    encoded = std::move(encoded)]() mutable {
+-            callback_task(std::move(encoded));
+-          });
++          callback_task(
++              EncodeRasterImage(raster_image.value(), format));
+         } else {
+-          ui_task_runner->PostTask([callback_task = callback_task,
+-                                    raster_image = raster_image]() mutable {
+-            callback_task(raster_image.status());
+-          });
++          callback_task(raster_image.status());
+         }
+-      };
++      });
+ 
+   FML_DCHECK(image);
+-#if IMPELLER_SUPPORTS_RENDERING
+-  if (is_impeller_enabled) {
+-    ImageEncodingImpeller::ConvertImageToRaster(
+-        image, encode_task, raster_task_runner, io_task_runner,
+-        snapshot_delegate, is_gpu_disabled_sync_switch, impeller_context);
+-    return;
+-  }
+-#endif  // IMPELLER_SUPPORTS_RENDERING
+-#if !SLIMPELLER
+-  ConvertImageToRasterSkia(image, encode_task, raster_task_runner,
+-                           io_task_runner, resource_context, snapshot_delegate,
+-                           is_gpu_disabled_sync_switch);
+-
+-#else   //  !SLIMPELLER
+-  FML_LOG(FATAL) << "Unsupported renderer.";
+-#endif  //  !SLIMPELLER
+ }
+ 
+ }  // namespace
+@@ -190,13 +112,24 @@ Dart_Handle EncodeImage(CanvasImage* canvas_image,
+        io_manager = UIDartState::Current()->GetIOManager(),
+        snapshot_delegate = UIDartState::Current()->GetSnapshotDelegate(),
+        is_impeller_enabled =
+-           UIDartState::Current()->IsImpellerEnabled()]() mutable {
++           UIDartState::Current()->IsImpellerEnabled(),
++       impeller_context =
++           UIDartState::Current()->GetIOManager()->GetImpellerContext(),
++       gpu_disabled_switch = UIDartState::Current()
++                                 ->GetIOManager()
++                                 ->GetIsGpuDisabledSyncSwitch()]() mutable {
++        ImageReadbackContext context{
++            ui_task_runner,
++            raster_task_runner,
++            io_task_runner,
++            snapshot_delegate,
++            io_manager,
++            gpu_disabled_switch,
++            is_impeller_enabled,
++            impeller_context,
++        };
+         EncodeImageAndInvokeDataCallback(
+-            image, std::move(callback), image_format, ui_task_runner,
+-            raster_task_runner, io_task_runner,
+-            io_manager->GetResourceContext(), snapshot_delegate,
+-            io_manager->GetIsGpuDisabledSyncSwitch(),
+-            io_manager->GetImpellerContext(), is_impeller_enabled);
++            image, std::move(callback), image_format, std::move(context));
+       }));
+ 
+   return Dart_Null();
+@@ -204,40 +137,7 @@ Dart_Handle EncodeImage(CanvasImage* canvas_image,
+ 
+ fml::StatusOr<sk_sp<SkData>> EncodeImage(const sk_sp<SkImage>& raster_image,
+                                          ImageByteFormat format) {
+-  TRACE_EVENT0("flutter", __FUNCTION__);
+-
+-  if (!raster_image) {
+-    return fml::Status(fml::StatusCode::kInternal, "Missing raster image.");
+-  }
+-
+-  switch (format) {
+-    case kPNG: {
+-      auto png_image = SkPngEncoder::Encode(nullptr, raster_image.get(), {});
+-
+-      if (png_image == nullptr) {
+-        return fml::Status(fml::StatusCode::kInternal,
+-                           "Could not convert raster image to PNG.");
+-      };
+-      return png_image;
+-    }
+-    case kRawRGBA:
+-      return CopyImageByteData(raster_image, kRGBA_8888_SkColorType,
+-                               kPremul_SkAlphaType);
+-
+-    case kRawStraightRGBA:
+-      return CopyImageByteData(raster_image, kRGBA_8888_SkColorType,
+-                               kUnpremul_SkAlphaType);
+-
+-    case kRawUnmodified:
+-      return CopyImageByteData(raster_image, raster_image->colorType(),
+-                               raster_image->alphaType());
+-    case kRawExtendedRgba128:
+-      return CopyImageByteData(raster_image, kRGBA_F32_SkColorType,
+-                               kUnpremul_SkAlphaType);
+-  }
+-
+-  return fml::Status(fml::StatusCode::kInternal,
+-                     "Unknown error encoding image.");
++  return EncodeRasterImage(raster_image, format);
+ }
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/image_encoding.h b/engine/src/flutter/lib/ui/painting/image_encoding.h
+index 16b4c927be8..1537f4e0685 100644
+--- a/engine/src/flutter/lib/ui/painting/image_encoding.h
++++ b/engine/src/flutter/lib/ui/painting/image_encoding.h
+@@ -5,23 +5,13 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_IMAGE_ENCODING_H_
+ #define FLUTTER_LIB_UI_PAINTING_IMAGE_ENCODING_H_
+ 
+-#include "fml/status_or.h"
+-#include "third_party/skia/include/core/SkImage.h"
++#include "flutter/lib/ui/painting/image_readback.h"
+ #include "third_party/tonic/dart_library_natives.h"
+ 
+ namespace flutter {
+ 
+ class CanvasImage;
+ 
+-// This must be kept in sync with the enum in painting.dart
+-enum ImageByteFormat {
+-  kRawRGBA,
+-  kRawStraightRGBA,
+-  kRawUnmodified,
+-  kRawExtendedRgba128,
+-  kPNG,
+-};
+-
+ Dart_Handle EncodeImage(CanvasImage* canvas_image,
+                         int format,
+                         Dart_Handle callback_handle);
+diff --git a/engine/src/flutter/lib/ui/painting/image_encoding_impeller.cc b/engine/src/flutter/lib/ui/painting/image_encoding_impeller.cc
+index 53d9bcb8a2d..e71237d6cf2 100644
+--- a/engine/src/flutter/lib/ui/painting/image_encoding_impeller.cc
++++ b/engine/src/flutter/lib/ui/painting/image_encoding_impeller.cc
+@@ -6,7 +6,6 @@
+ 
+ #include "flutter/display_list/geometry/dl_geometry_conversions.h"
+ #include "flutter/impeller/display_list/dl_image_impeller.h"
+-#include "flutter/lib/ui/painting/image.h"
+ #include "fml/status.h"
+ #include "impeller/core/device_buffer.h"
+ #include "impeller/core/formats.h"
+@@ -277,13 +276,15 @@ void ImageEncodingImpeller::ConvertImageToRaster(
+ 
+ int ImageEncodingImpeller::GetColorSpace(
+     const std::shared_ptr<impeller::Texture>& texture) {
++  constexpr int kSrgbColorSpace = 0;
++  constexpr int kExtendedSrgbColorSpace = 1;
+   const impeller::TextureDescriptor& desc = texture->GetTextureDescriptor();
+   switch (desc.format) {
+     case impeller::PixelFormat::kB10G10R10XR:  // intentional_fallthrough
+     case impeller::PixelFormat::kR16G16B16A16Float:
+-      return ColorSpace::kExtendedSRGB;
++      return kExtendedSrgbColorSpace;
+     default:
+-      return ColorSpace::kSRGB;
++      return kSrgbColorSpace;
+   }
+ }
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/image_encoding_impeller.h b/engine/src/flutter/lib/ui/painting/image_encoding_impeller.h
+index ede28129f41..bc7148a62a9 100644
+--- a/engine/src/flutter/lib/ui/painting/image_encoding_impeller.h
++++ b/engine/src/flutter/lib/ui/painting/image_encoding_impeller.h
+@@ -5,6 +5,9 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_IMAGE_ENCODING_IMPELLER_H_
+ #define FLUTTER_LIB_UI_PAINTING_IMAGE_ENCODING_IMPELLER_H_
+ 
++#include <functional>
++#include <memory>
++
+ #include "flutter/common/task_runners.h"
+ #include "flutter/display_list/image/dl_image.h"
+ #include "flutter/fml/memory/weak_ptr.h"
+diff --git a/engine/src/flutter/lib/ui/painting/image_encoding_impl.h b/engine/src/flutter/lib/ui/painting/image_encoding_impl.h
+index 142ac598906..e148de0c5d7 100644
+--- a/engine/src/flutter/lib/ui/painting/image_encoding_impl.h
++++ b/engine/src/flutter/lib/ui/painting/image_encoding_impl.h
+@@ -5,7 +5,9 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_IMAGE_ENCODING_IMPL_H_
+ #define FLUTTER_LIB_UI_PAINTING_IMAGE_ENCODING_IMPL_H_
+ 
+-#include "flutter/lib/ui/ui_dart_state.h"
++#include "flutter/fml/logging.h"
++#include "flutter/fml/memory/weak_ptr.h"
++#include "flutter/fml/synchronization/sync_switch.h"
+ #include "third_party/skia/include/core/SkCanvas.h"
+ #include "third_party/skia/include/core/SkImage.h"
+ #include "third_party/skia/include/core/SkSurface.h"
+diff --git a/engine/src/flutter/lib/ui/painting/image_encoding_skia.cc b/engine/src/flutter/lib/ui/painting/image_encoding_skia.cc
+index e49aae9dc19..6d628b70ebc 100644
+--- a/engine/src/flutter/lib/ui/painting/image_encoding_skia.cc
++++ b/engine/src/flutter/lib/ui/painting/image_encoding_skia.cc
+@@ -4,11 +4,10 @@
+ 
+ #if !SLIMPELLER
+ 
+-#include "flutter/lib/ui/painting/image_encoding.h"
++#include "flutter/lib/ui/painting/image_encoding_skia.h"
+ #include "flutter/lib/ui/painting/image_encoding_impl.h"
+ 
+ #include "flutter/display_list/image/dl_image_skia.h"
+-#include "flutter/lib/ui/painting/image.h"
+ 
+ namespace flutter {
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/image_encoding_skia.h b/engine/src/flutter/lib/ui/painting/image_encoding_skia.h
+index 42953d4ccd8..af7e600d028 100644
+--- a/engine/src/flutter/lib/ui/painting/image_encoding_skia.h
++++ b/engine/src/flutter/lib/ui/painting/image_encoding_skia.h
+@@ -5,10 +5,13 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_IMAGE_ENCODING_SKIA_H_
+ #define FLUTTER_LIB_UI_PAINTING_IMAGE_ENCODING_SKIA_H_
+ 
++#include <functional>
++
+ #if !SLIMPELLER
+ 
+ #include "flutter/common/task_runners.h"
+ #include "flutter/display_list/image/dl_image.h"
++#include "flutter/fml/memory/weak_ptr.h"
+ #include "flutter/fml/synchronization/sync_switch.h"
+ #include "flutter/lib/ui/snapshot_delegate.h"
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/image_readback.cc b/engine/src/flutter/lib/ui/painting/image_readback.cc
+new file mode 100644
+index 00000000000..392434e5b95
+--- /dev/null
++++ b/engine/src/flutter/lib/ui/painting/image_readback.cc
+@@ -0,0 +1,138 @@
++// Copyright 2013 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/lib/ui/painting/image_readback.h"
++
++#include <utility>
++
++#include "flutter/fml/logging.h"
++#include "flutter/fml/trace_event.h"
++#include "flutter/lib/ui/io_manager.h"
++#include "flutter/lib/ui/painting/image_encoding_impl.h"
++#include "flutter/lib/ui/painting/image_encoding_impeller.h"
++#include "flutter/lib/ui/painting/image_encoding_skia.h"
++#include "third_party/skia/include/core/SkSurface.h"
++#include "third_party/skia/include/encode/SkPngEncoder.h"
++
++namespace flutter {
++namespace {
++
++fml::StatusOr<sk_sp<SkData>> CopyImageByteData(
++    const sk_sp<SkImage>& raster_image,
++    SkColorType color_type,
++    SkAlphaType alpha_type) {
++  FML_DCHECK(raster_image);
++
++  SkPixmap pixmap;
++
++  if (!raster_image->peekPixels(&pixmap)) {
++    return fml::Status(fml::StatusCode::kInternal,
++                       "Could not copy pixels from the raster image.");
++  }
++
++  if (pixmap.colorType() == color_type && pixmap.alphaType() == alpha_type) {
++    return SkData::MakeWithCopy(pixmap.addr(), pixmap.computeByteSize());
++  }
++
++  auto surface = SkSurfaces::Raster(
++      SkImageInfo::Make(raster_image->width(), raster_image->height(),
++                        color_type, alpha_type, nullptr));
++
++  if (!surface) {
++    fml::Status(fml::StatusCode::kInternal,
++                "Could not set up the surface for swizzle.");
++  }
++
++  surface->writePixels(pixmap, 0, 0);
++
++  if (!surface->peekPixels(&pixmap)) {
++    return fml::Status(fml::StatusCode::kInternal,
++                       "Pixel address is not available.");
++  }
++
++  return SkData::MakeWithCopy(pixmap.addr(), pixmap.computeByteSize());
++}
++
++}  // namespace
++
++void ConvertToRasterImageAsync(
++    const ImageReadbackContext& context,
++    sk_sp<DlImage> image,
++    std::function<void(fml::StatusOr<sk_sp<SkImage>>)> on_ui_thread) {
++  auto on_io_thread = [ui_task_runner = context.ui_task_runner,
++                       on_ui_thread = std::move(on_ui_thread)](
++                          fml::StatusOr<sk_sp<SkImage>> result) mutable {
++    fml::TaskRunner::RunNowOrPostTask(
++        ui_task_runner,
++        [on_ui_thread = std::move(on_ui_thread),
++         result = std::move(result)]() mutable {
++          on_ui_thread(std::move(result));
++        });
++  };
++
++  FML_DCHECK(image);
++#if IMPELLER_SUPPORTS_RENDERING
++  if (context.impeller_enabled) {
++    ImageEncodingImpeller::ConvertImageToRaster(
++        image, std::move(on_io_thread), context.raster_task_runner,
++        context.io_task_runner, context.snapshot_delegate,
++        context.gpu_disabled_switch, context.impeller_context);
++    return;
++  }
++#endif  // IMPELLER_SUPPORTS_RENDERING
++#if !SLIMPELLER
++  ConvertImageToRasterSkia(
++      image,
++      [on_io_thread = std::move(on_io_thread)](
++          sk_sp<SkImage> raster_image) mutable {
++        on_io_thread(std::move(raster_image));
++      },
++      context.raster_task_runner, context.io_task_runner,
++      context.io_manager->GetResourceContext(), context.snapshot_delegate,
++      context.gpu_disabled_switch);
++#else   // !SLIMPELLER
++  FML_LOG(FATAL) << "Unsupported renderer.";
++#endif  // !SLIMPELLER
++}
++
++fml::StatusOr<sk_sp<SkData>> EncodeRasterImage(
++    const sk_sp<SkImage>& raster_image,
++    ImageByteFormat format) {
++  TRACE_EVENT0("flutter", __FUNCTION__);
++
++  if (!raster_image) {
++    return fml::Status(fml::StatusCode::kInternal, "Missing raster image.");
++  }
++
++  switch (format) {
++    case ImageByteFormat::kPNG: {
++      auto png_image = SkPngEncoder::Encode(nullptr, raster_image.get(), {});
++
++      if (png_image == nullptr) {
++        return fml::Status(fml::StatusCode::kInternal,
++                           "Could not convert raster image to PNG.");
++      };
++      return png_image;
++    }
++    case ImageByteFormat::kRawRGBA:
++      return CopyImageByteData(raster_image, kRGBA_8888_SkColorType,
++                               kPremul_SkAlphaType);
++
++    case ImageByteFormat::kRawStraightRGBA:
++      return CopyImageByteData(raster_image, kRGBA_8888_SkColorType,
++                               kUnpremul_SkAlphaType);
++
++    case ImageByteFormat::kRawUnmodified:
++      return CopyImageByteData(raster_image, raster_image->colorType(),
++                               raster_image->alphaType());
++    case ImageByteFormat::kRawExtendedRgba128:
++      return CopyImageByteData(raster_image, kRGBA_F32_SkColorType,
++                               kUnpremul_SkAlphaType);
++  }
++
++  return fml::Status(fml::StatusCode::kInternal,
++                     "Unknown error encoding image.");
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/image_readback.h b/engine/src/flutter/lib/ui/painting/image_readback.h
+new file mode 100644
+index 00000000000..dc841099657
+--- /dev/null
++++ b/engine/src/flutter/lib/ui/painting/image_readback.h
+@@ -0,0 +1,59 @@
++// Copyright 2013 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_LIB_UI_PAINTING_IMAGE_READBACK_H_
++#define FLUTTER_LIB_UI_PAINTING_IMAGE_READBACK_H_
++
++#include <cstdint>
++#include <functional>
++#include <memory>
++
++#include "flutter/display_list/image/dl_image.h"
++#include "flutter/fml/memory/weak_ptr.h"
++#include "flutter/fml/status_or.h"
++#include "flutter/fml/synchronization/sync_switch.h"
++#include "flutter/fml/task_runner.h"
++#include "flutter/lib/ui/snapshot_delegate.h"
++#include "third_party/skia/include/core/SkData.h"
++#include "third_party/skia/include/core/SkImage.h"
++
++namespace impeller {
++class Context;
++}  // namespace impeller
++
++namespace flutter {
++
++class IOManager;
++
++enum class ImageByteFormat {
++  kRawRGBA = 0,
++  kRawStraightRGBA = 1,
++  kRawUnmodified = 2,
++  kRawExtendedRgba128 = 3,
++  kPNG = 4,
++};
++
++struct ImageReadbackContext {
++  fml::RefPtr<fml::TaskRunner> ui_task_runner;
++  fml::RefPtr<fml::TaskRunner> raster_task_runner;
++  fml::RefPtr<fml::TaskRunner> io_task_runner;
++  fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate;
++  fml::WeakPtr<IOManager> io_manager;
++  std::shared_ptr<const fml::SyncSwitch> gpu_disabled_switch;
++  bool impeller_enabled;
++  std::shared_ptr<impeller::Context> impeller_context;
++};
++
++void ConvertToRasterImageAsync(
++    const ImageReadbackContext& context,
++    sk_sp<DlImage> image,
++    std::function<void(fml::StatusOr<sk_sp<SkImage>>)> on_ui_thread);
++
++fml::StatusOr<sk_sp<SkData>> EncodeRasterImage(
++    const sk_sp<SkImage>& raster_image,
++    ImageByteFormat format);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_LIB_UI_PAINTING_IMAGE_READBACK_H_
