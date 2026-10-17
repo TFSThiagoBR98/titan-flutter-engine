@@ -141,13 +141,16 @@ raise 'macOS build must use the progress wrapper' unless macos_builds.all? do |s
 end
 raise 'macOS job must build Darwin and iOS' unless macos_builds.any? { |step| step['run'].include?('--kind ios') } && macos_builds.any? { |step| step['run'].include?('--kind framework') }
 
+windows_matrix = windows.fetch('strategy').fetch('matrix')
+raise 'Windows matrix CPUs are incomplete' unless windows_matrix['cpu'] == %w[x64 arm64]
+raise 'Windows matrix modes are incomplete' unless windows_matrix['mode'] == %w[debug profile release]
 windows_builds = windows.fetch('steps').select { |step| step['run']&.include?('build-engine-windows.ps1') }
-raise 'Windows build steps are incomplete' unless windows_builds.length == 2
-raise 'Windows build must use a background heartbeat' unless windows_builds.all? do |step|
-  run = step.fetch('run')
-  run.include?('Start-Job') && run.include?('TITAN_PROGRESS_SECONDS') && run.include?('TITAN_WORK_DIR')
-end
-raise 'Windows job must build Windows and Android' unless windows_builds.any? { |step| step['run'].include?("-Kind', 'host") } && windows_builds.any? { |step| step['run'].include?("-Kind', 'android") }
+raise 'Windows build must have one combined step' unless windows_builds.length == 1
+windows_build = windows_builds.fetch(0).fetch('run')
+raise 'Windows build must use a background heartbeat' unless windows_build.include?('Start-Job') && windows_build.include?('TITAN_PROGRESS_SECONDS') && windows_build.include?('TITAN_WORK_DIR')
+raise 'Windows build must centralize argument construction' unless windows_build.include?('function Get-BuildArguments') && windows_build.include?('function Invoke-LoggedBuild')
+raise 'Windows build must not use array-unwrapping ArgumentList syntax' if windows_build.include?('(,$')
+raise 'Windows job must build host and Android artifacts from one step' unless windows_build.include?("Get-BuildArguments 'host'") && windows_build.include?("Get-BuildArguments 'android'")
 raise 'sysroot cache must be keyed per defconfig' unless build.fetch('steps').any? { |step| step['uses'] == 'actions/cache@v4' && step.dig('with', 'key').to_s.include?('${{ matrix.defconfig }}') && step.dig('with', 'key').to_s.include?('hashFiles(format(') }
 raise 'download-artifact must merge matrix artifacts' unless release['steps'].any? do |step|
   step['uses'] == 'actions/download-artifact@v4' && step.dig('with', 'merge-multiple') == true

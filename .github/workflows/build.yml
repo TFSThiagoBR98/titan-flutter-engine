@@ -238,42 +238,40 @@ jobs:
           if-no-files-found: error
 
   windows:
-    name: Build Windows and Android artifacts
+    name: Build Windows artifact (${{ matrix.cpu }}-${{ matrix.mode }})
     runs-on: windows-2025
     timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        cpu: [x64, arm64]
+        mode: [debug, profile, release]
     env:
       TITAN_WORK_DIR: C:\titan\work
+      TITAN_CPU: ${{ matrix.cpu }}
+      TITAN_MODE: ${{ matrix.mode }}
+      TITAN_VARIANT: windows-${{ matrix.cpu }}-${{ matrix.mode }}
     steps:
       - uses: actions/checkout@v4
-      - name: Build Windows host artifacts
+      - name: Build Windows and Android artifacts
         shell: pwsh
         run: |
-          $progressInterval = if ([string]::IsNullOrWhiteSpace($env:TITAN_PROGRESS_SECONDS)) { 60 } else { [int]$env:TITAN_PROGRESS_SECONDS }
-          $progressVariants = foreach ($mode in @('debug', 'profile', 'release')) {
-            "windows-host-$mode-x64"
-            "windows-host-$mode-arm64"
-          }
-          $matrixDirectory = Join-Path $env:TITAN_WORK_DIR 'matrix'
-          New-Item -ItemType Directory -Force -Path $matrixDirectory | Out-Null
-          $heartbeat = Start-Job -ScriptBlock {
-            param([string[]]$Variants, [string]$WorkDirectory, [int]$Interval)
-            while ($true) {
-              Start-Sleep -Seconds $Interval
-              foreach ($variant in $Variants) {
-                $log = Join-Path (Join-Path $WorkDirectory 'matrix') "$variant.log"
-                $status = if (Test-Path -LiteralPath $log) {
-                  Get-Content -LiteralPath $log -Tail 4096 -ErrorAction SilentlyContinue |
-                    Select-String -Pattern '^\[[0-9]+/[0-9]+\]' |
-                    Select-Object -Last 1
-                }
-                if ($null -eq $status) {
-                  "$variant`: preparing (checkout, gclient, GN)"
-                } else {
-                  "$variant`: $($status.Line)"
-                }
-              }
+          function Get-BuildArguments {
+            param(
+              [string]$Kind,
+              [string]$Mode,
+              [string]$Cpu,
+              [string]$AndroidCpu
+            )
+            $arguments = @('-Kind', $Kind, '-Mode', $Mode, '-Jobs', '2')
+            if ($Kind -eq 'host') {
+              $arguments += @('-Cpu', $Cpu)
+            } else {
+              $arguments += @('-AndroidCpu', $AndroidCpu)
             }
-          } -ArgumentList $progressVariants, $env:TITAN_WORK_DIR, $progressInterval
+            return $arguments
+          }
+
           function Invoke-LoggedBuild {
             param([string]$Variant, [string[]]$Arguments)
             $log = Join-Path $matrixDirectory "$Variant.log"
@@ -295,71 +293,55 @@ jobs:
               throw "Windows build failed for $Variant with exit code $exitCode"
             }
           }
-          try {
-            foreach ($mode in @('debug', 'profile', 'release')) {
-              Invoke-LoggedBuild "windows-host-$mode-x64" @('-Kind', 'host', '-Mode', $mode, '-Cpu', 'x64', '-Jobs', '2')
-              Invoke-LoggedBuild "windows-host-$mode-arm64" @('-Kind', 'host', '-Mode', $mode, '-Cpu', 'arm64', '-Jobs', '2')
-            }
-          } finally {
-            Stop-Job -Job $heartbeat -ErrorAction SilentlyContinue
-            Receive-Job -Job $heartbeat -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
-            Remove-Job -Job $heartbeat -Force -ErrorAction SilentlyContinue
-          }
-      - name: Build Android snapshots
-        shell: pwsh
-        run: |
-          $progressInterval = if ([string]::IsNullOrWhiteSpace($env:TITAN_PROGRESS_SECONDS)) { 60 } else { [int]$env:TITAN_PROGRESS_SECONDS }
-          $progressVariants = foreach ($mode in @('profile', 'release')) {
-            foreach ($androidCpu in @('arm', 'arm64', 'x64')) {
-              "windows-android-$mode-$androidCpu"
-            }
-          }
-          $matrixDirectory = Join-Path $env:TITAN_WORK_DIR 'matrix'
-          New-Item -ItemType Directory -Force -Path $matrixDirectory | Out-Null
-          $heartbeat = Start-Job -ScriptBlock {
-            param([string[]]$Variants, [string]$WorkDirectory, [int]$Interval)
-            while ($true) {
-              Start-Sleep -Seconds $Interval
-              foreach ($variant in $Variants) {
-                $log = Join-Path (Join-Path $WorkDirectory 'matrix') "$variant.log"
-                $status = if (Test-Path -LiteralPath $log) {
-                  Get-Content -LiteralPath $log -Tail 4096 -ErrorAction SilentlyContinue |
-                    Select-String -Pattern '^\[[0-9]+/[0-9]+\]' |
-                    Select-Object -Last 1
-                }
-                if ($null -eq $status) {
-                  "$variant`: preparing (checkout, gclient, GN)"
-                } else {
-                  "$variant`: $($status.Line)"
-                }
-              }
-            }
-          } -ArgumentList $progressVariants, $env:TITAN_WORK_DIR, $progressInterval
-          function Invoke-LoggedBuild {
-            param([string]$Variant, [string[]]$Arguments)
-            $log = Join-Path $matrixDirectory "$Variant.log"
-            $buildJob = Start-Job -ScriptBlock {
-              param([string]$ScriptPath, [string[]]$ScriptArguments, [string]$LogPath)
-              & pwsh -NoProfile -File $ScriptPath @ScriptArguments *> $LogPath
-              [int]$LASTEXITCODE
-            } -ArgumentList 'scripts/build-engine-windows.ps1', $Arguments, $log
-            try {
-              do {
-                Receive-Job -Job $heartbeat | ForEach-Object { Write-Host $_ }
-                Start-Sleep -Seconds 1
-              } while ((Get-Job -Id $buildJob.Id).State -in @('NotStarted', 'Running'))
-              $exitCode = [int](Receive-Job -Job $buildJob -Wait | Select-Object -Last 1)
-            } finally {
-              Remove-Job -Job $buildJob -Force -ErrorAction SilentlyContinue
-            }
-            if ($exitCode -ne 0) {
-              throw "Windows build failed for $Variant with exit code $exitCode"
-            }
-          }
-          try {
-            foreach ($mode in @('profile', 'release')) {
+
+          if ($env:TITAN_BUILD_ARGUMENTS_ONLY -eq 'true') {
+            $hostArguments = Get-BuildArguments 'host' $env:TITAN_MODE $env:TITAN_CPU ''
+            Write-Output "host=$($hostArguments -join ' ')"
+            if ($env:TITAN_CPU -eq 'x64' -and $env:TITAN_MODE -in @('profile', 'release')) {
               foreach ($androidCpu in @('arm', 'arm64', 'x64')) {
-                Invoke-LoggedBuild "windows-android-$mode-$androidCpu" @('-Kind', 'android', '-Mode', $mode, '-AndroidCpu', $androidCpu, '-Jobs', '2')
+                $androidArguments = Get-BuildArguments 'android' $env:TITAN_MODE $env:TITAN_CPU $androidCpu
+                Write-Output "android-$androidCpu=$($androidArguments -join ' ')"
+              }
+            }
+            exit 0
+          }
+
+          $progressInterval = if ([string]::IsNullOrWhiteSpace($env:TITAN_PROGRESS_SECONDS)) { 60 } else { [int]$env:TITAN_PROGRESS_SECONDS }
+          $progressVariants = @($env:TITAN_VARIANT)
+          if ($env:TITAN_CPU -eq 'x64' -and $env:TITAN_MODE -in @('profile', 'release')) {
+            $progressVariants += foreach ($androidCpu in @('arm', 'arm64', 'x64')) {
+              "windows-$($env:TITAN_CPU)-$($env:TITAN_MODE)-android-$androidCpu"
+            }
+          }
+          $matrixDirectory = Join-Path $env:TITAN_WORK_DIR 'matrix'
+          New-Item -ItemType Directory -Force -Path $matrixDirectory | Out-Null
+          $heartbeat = Start-Job -ScriptBlock {
+            param([string[]]$Variants, [string]$WorkDirectory, [int]$Interval)
+            while ($true) {
+              Start-Sleep -Seconds $Interval
+              foreach ($variant in $Variants) {
+                $log = Join-Path (Join-Path $WorkDirectory 'matrix') "$variant.log"
+                $status = if (Test-Path -LiteralPath $log) {
+                  Get-Content -LiteralPath $log -Tail 4096 -ErrorAction SilentlyContinue |
+                    Select-String -Pattern '^\[[0-9]+/[0-9]+\]' |
+                    Select-Object -Last 1
+                }
+                if ($null -eq $status) {
+                  "$variant`: preparing (checkout, gclient, GN)"
+                } else {
+                  "$variant`: $($status.Line)"
+                }
+              }
+            }
+          } -ArgumentList $progressVariants, $env:TITAN_WORK_DIR, $progressInterval
+          try {
+            $hostArguments = Get-BuildArguments 'host' $env:TITAN_MODE $env:TITAN_CPU ''
+            Invoke-LoggedBuild $env:TITAN_VARIANT $hostArguments
+            if ($env:TITAN_CPU -eq 'x64' -and $env:TITAN_MODE -in @('profile', 'release')) {
+              foreach ($androidCpu in @('arm', 'arm64', 'x64')) {
+                $androidArguments = Get-BuildArguments 'android' $env:TITAN_MODE $env:TITAN_CPU $androidCpu
+                $androidVariant = "windows-$($env:TITAN_CPU)-$($env:TITAN_MODE)-android-$androidCpu"
+                Invoke-LoggedBuild $androidVariant $androidArguments
               }
             }
           } finally {
