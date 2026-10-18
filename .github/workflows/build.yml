@@ -197,16 +197,24 @@ jobs:
           if-no-files-found: error
 
   macos:
-    name: Build macOS and iOS artifacts (${{ matrix.mode }})
+    name: Build macOS and iOS artifacts (${{ matrix.mode }}-${{ matrix.target }})
     runs-on: macos-15
     timeout-minutes: 360
     strategy:
       fail-fast: false
+      # One build per cell: a single job for every macOS target of a profile ran
+      # past six hours on the three-core hosted runner.
       matrix:
         mode: [debug, profile, release]
+        target: [host, framework, gen-snapshot, ios-device, ios-simulator, android-arm, android-arm64, android-x64]
+        exclude:
+          - { mode: debug, target: android-arm }
+          - { mode: debug, target: android-arm64 }
+          - { mode: debug, target: android-x64 }
     env:
       TITAN_MODE: ${{ matrix.mode }}
-      TITAN_VARIANT: macos-arm64-${{ matrix.mode }}
+      TITAN_TARGET: ${{ matrix.target }}
+      TITAN_VARIANT: macos-arm64-${{ matrix.mode }}-${{ matrix.target }}
     steps:
       - uses: actions/checkout@v4
       # The runner context is not available at job level, so the work
@@ -222,53 +230,36 @@ jobs:
         run: |
           brew install flock bash coreutils
           bash -c '((BASH_VERSINFO[0] >= 4))' || { echo "bash 4+ is not first on PATH" >&2; exit 1; }
-      - name: Build macOS and iOS artifacts
+      - name: Build macOS and iOS artifact
         run: |
           mode="$TITAN_MODE"
-          progress_variants=(
-            "macos-arm64-$mode-host"
-            "macos-arm64-$mode-framework"
-            "macos-arm64-$mode-gen-snapshot"
-            "macos-arm64-$mode-ios-device"
-            "macos-arm64-$mode-ios-simulator"
-          )
-          if [[ "$mode" == profile || "$mode" == release ]]; then
-            for android_cpu in arm arm64 x64; do
-              progress_variants+=("macos-arm64-$mode-android-$android_cpu")
-            done
-          fi
-          scripts/ci.sh with-progress "${progress_variants[@]}" -- bash -c '
-            run_logged_build() {
-              local variant=$1
-              shift
-              local log="$TITAN_WORK_DIR/matrix/$variant.log"
-              mkdir -p "$(dirname "$log")"
-              "$@" >"$log" 2>&1
-            }
-
-            mode=$1
-            run_logged_build "macos-arm64-$mode-host" scripts/build-engine-macos.sh --kind host --mode "$mode" --cpu arm64 --out-name "host_$mode" --jobs 2
-            run_logged_build "macos-arm64-$mode-framework" scripts/build-engine-macos.sh --kind framework --mode "$mode" --cpu arm64 --out-name "host_${mode}_framework" --jobs 2
-            run_logged_build "macos-arm64-$mode-gen-snapshot" scripts/build-engine-macos.sh --kind gen-snapshot --mode "$mode" --cpu arm64 --out-name "host_${mode}_gen_snapshot" --jobs 2
-            run_logged_build "macos-arm64-$mode-ios-device" scripts/build-engine-macos.sh --kind ios --mode "$mode" --cpu arm64 --out-name "ios_$mode" --jobs 2
-            run_logged_build "macos-arm64-$mode-ios-simulator" scripts/build-engine-macos.sh --kind ios --mode "$mode" --cpu arm64 --simulator --simulator-cpu arm64 --out-name "ios_${mode}_simulator_arm64" --jobs 2
-            if [[ "$mode" == profile || "$mode" == release ]]; then
-              for android_cpu in arm arm64 x64; do
-                run_logged_build "macos-arm64-$mode-android-$android_cpu" scripts/build-engine-macos.sh --kind android --mode "$mode" --android-cpu "$android_cpu" --out-name "android_${mode}_$android_cpu" --jobs 2
-              done
-            fi
-          ' bash "$mode"
+          case "$TITAN_TARGET" in
+            host) build_arguments=(--kind host --mode "$mode" --cpu arm64 --out-name "host_$mode") ;;
+            framework) build_arguments=(--kind framework --mode "$mode" --cpu arm64 --out-name "host_${mode}_framework") ;;
+            gen-snapshot) build_arguments=(--kind gen-snapshot --mode "$mode" --cpu arm64 --out-name "host_${mode}_gen_snapshot") ;;
+            ios-device) build_arguments=(--kind ios --mode "$mode" --cpu arm64 --out-name "ios_$mode") ;;
+            ios-simulator) build_arguments=(--kind ios --mode "$mode" --cpu arm64 --simulator --simulator-cpu arm64 --out-name "ios_${mode}_simulator_arm64") ;;
+            android-*)
+              android_cpu=${TITAN_TARGET#android-}
+              build_arguments=(--kind android --mode "$mode" --android-cpu "$android_cpu" --out-name "android_${mode}_$android_cpu") ;;
+            *) echo "unknown macOS target: $TITAN_TARGET" >&2; exit 1 ;;
+          esac
+          scripts/ci.sh with-progress "$TITAN_VARIANT" -- bash -c '
+            log="$TITAN_WORK_DIR/matrix/$TITAN_VARIANT.log"
+            mkdir -p "$(dirname "$log")"
+            scripts/build-engine-macos.sh "$@" --jobs 3 >"$log" 2>&1
+          ' bash "${build_arguments[@]}"
       - name: Upload macOS build logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs-macos-arm64-${{ matrix.mode }}
+          name: build-logs-macos-arm64-${{ matrix.mode }}-${{ matrix.target }}
           path: ${{ runner.temp }}/titan/work/matrix/
           if-no-files-found: ignore
       - name: Upload macOS archives
         uses: actions/upload-artifact@v4
         with:
-          name: flutter-sdk-macos-arm64-${{ matrix.mode }}
+          name: flutter-sdk-macos-arm64-${{ matrix.mode }}-${{ matrix.target }}
           path: ${{ runner.temp }}/titan/work/flutter/engine/src/out/*/zip_archives/**
           if-no-files-found: error
 
