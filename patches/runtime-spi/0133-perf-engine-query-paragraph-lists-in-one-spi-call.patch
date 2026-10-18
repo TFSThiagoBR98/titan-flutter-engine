@@ -1,0 +1,94 @@
+# Why: avoid recalculating paragraph list queries when the initial capacity is
+# sufficient.
+diff --git a/engine/src/flutter/lib/ui/text/paragraph.cc b/engine/src/flutter/lib/ui/text/paragraph.cc
+index 85f2fbfa5bb..f5c437b8454 100644
+--- a/engine/src/flutter/lib/ui/text/paragraph.cc
++++ b/engine/src/flutter/lib/ui/text/paragraph.cc
+@@ -22,6 +22,8 @@
+ namespace flutter {
+ namespace {
+ 
++constexpr size_t kInitialQueryCapacity = 16;
++
+ const FlutterSpiTextApi* TextApi() {
+   return SpiEngineTextApi(
+       UIDartState::Current()->platform_configuration()->client()->GetSpiEngine());
+@@ -50,47 +52,50 @@ tonic::Float32List EncodeTextBoxes(
+   return result;
+ }
+ 
++template <typename Element, typename Query>
++std::vector<Element> QueryParagraphList(const Query& query) {
++  std::vector<Element> result(kInitialQueryCapacity);
++  size_t count = result.size();
++  FML_CHECK(query(result.data(), result.size(), &count) == kFlutterSpiOk);
++  if (count > result.size()) {
++    result.resize(count);
++    FML_CHECK(query(result.data(), result.size(), &count) == kFlutterSpiOk);
++  }
++  result.resize(count);
++  return result;
++}
++
+ std::vector<FlutterSpiTextBox> GetRectsForRange(FlutterSpiParagraph* paragraph,
+                                                 unsigned start,
+                                                 unsigned end,
+                                                 unsigned height_style,
+                                                 unsigned width_style) {
+-  size_t count = 0;
+-  FML_CHECK(TextApi()->paragraph_get_rects_for_range(
+-                paragraph, start, end, height_style, width_style, nullptr, 0,
+-                &count) == kFlutterSpiOk);
+-  std::vector<FlutterSpiTextBox> boxes(count);
+-  FML_CHECK(TextApi()->paragraph_get_rects_for_range(
+-                paragraph, start, end, height_style, width_style, boxes.data(),
+-                boxes.size(), &count) == kFlutterSpiOk);
+-  boxes.resize(count);
+-  return boxes;
++  return QueryParagraphList<FlutterSpiTextBox>(
++      [paragraph, start, end, height_style, width_style](
++          FlutterSpiTextBox* boxes, size_t capacity, size_t* count) {
++        return TextApi()->paragraph_get_rects_for_range(
++            paragraph, start, end, height_style, width_style, boxes, capacity,
++            count);
++      });
+ }
+ 
+ std::vector<FlutterSpiTextBox> GetRectsForPlaceholders(
+     FlutterSpiParagraph* paragraph) {
+-  size_t count = 0;
+-  FML_CHECK(TextApi()->paragraph_get_rects_for_placeholders(
+-                paragraph, nullptr, 0, &count) == kFlutterSpiOk);
+-  std::vector<FlutterSpiTextBox> boxes(count);
+-  FML_CHECK(TextApi()->paragraph_get_rects_for_placeholders(
+-                paragraph, boxes.data(), boxes.size(), &count) ==
+-            kFlutterSpiOk);
+-  boxes.resize(count);
+-  return boxes;
++  return QueryParagraphList<FlutterSpiTextBox>(
++      [paragraph](FlutterSpiTextBox* boxes, size_t capacity, size_t* count) {
++        return TextApi()->paragraph_get_rects_for_placeholders(
++            paragraph, boxes, capacity, count);
++      });
+ }
+ 
+ std::vector<FlutterSpiLineMetrics> GetLineMetrics(
+     FlutterSpiParagraph* paragraph) {
+-  size_t count = 0;
+-  FML_CHECK(TextApi()->paragraph_get_line_metrics(
+-                paragraph, nullptr, 0, &count) == kFlutterSpiOk);
+-  std::vector<FlutterSpiLineMetrics> metrics(count);
+-  FML_CHECK(TextApi()->paragraph_get_line_metrics(
+-                paragraph, metrics.data(), metrics.size(), &count) ==
+-            kFlutterSpiOk);
+-  metrics.resize(count);
+-  return metrics;
++  return QueryParagraphList<FlutterSpiLineMetrics>(
++      [paragraph](FlutterSpiLineMetrics* metrics, size_t capacity,
++                  size_t* count) {
++        return TextApi()->paragraph_get_line_metrics(paragraph, metrics,
++                                                     capacity, count);
++      });
+ }
+ 
+ }  // namespace
