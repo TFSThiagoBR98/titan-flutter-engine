@@ -1,0 +1,20 @@
+# Why: remove the redundant UTF-16 to UTF-8 conversion in
+# ParagraphBuilder::addText.
+diff --git a/engine/src/flutter/lib/ui/text/paragraph_builder.cc b/engine/src/flutter/lib/ui/text/paragraph_builder.cc
+index 3ff4757840f..eec1ca2e1ef 100644
+--- a/engine/src/flutter/lib/ui/text/paragraph_builder.cc
++++ b/engine/src/flutter/lib/ui/text/paragraph_builder.cc
+@@ -518,9 +518,10 @@ Dart_Handle ParagraphBuilder::addText(const std::u16string& text) {
+     return tonic::ToDart("string is not well-formed UTF-16");
+   }
+ 
+-  const std::string utf8 = fml::Utf16ToUtf8(text);
+-  FML_CHECK(TextApi()->paragraph_builder_add_text(
+-                m_paragraph_builder_, utf8.data(), utf8.size()) == kFlutterSpiOk);
++  FML_CHECK(TextApi()->paragraph_builder_add_text_utf16(
++                m_paragraph_builder_,
++                reinterpret_cast<const uint16_t*>(text.data()), text.size()) ==
++            kFlutterSpiOk);
+   return Dart_Null();
+ }
+ 

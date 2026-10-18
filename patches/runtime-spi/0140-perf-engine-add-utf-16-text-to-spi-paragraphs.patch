@@ -1,0 +1,115 @@
+# Why: let the text SPI pass Dart UTF-16 directly to txt without redundant
+# encoding work.
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 2c84e1ca905..20c8afb5c45 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -726,7 +726,9 @@ SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_release,
+                   sizeof(void*) == 8 ? 184 : 92);
+ SPI_EXPECT_OFFSET(FlutterSpiTextApi, canvas_draw_paragraph,
+                   sizeof(void*) == 8 ? 192 : 96);
+-SPI_EXPECT_SIZE(FlutterSpiTextApi, sizeof(void*) == 8 ? 200 : 100);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_builder_add_text_utf16,
++                  sizeof(void*) == 8 ? 200 : 100);
++SPI_EXPECT_SIZE(FlutterSpiTextApi, sizeof(void*) == 8 ? 208 : 104);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, text,
+                   sizeof(void*) == 8 ? 120 : 72);
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_text.h b/engine/src/flutter/runtime_spi/include/flutter_text.h
+index 0f5203a6986..4c6836b8021 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_text.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_text.h
+@@ -329,6 +329,10 @@ struct FlutterSpiTextApi {
+                                             FlutterSpiParagraph* paragraph,
+                                             float x,
+                                             float y);
++  FlutterSpiResult (*paragraph_builder_add_text_utf16)(
++      FlutterSpiParagraphBuilder* builder,
++      const uint16_t* utf16,
++      size_t length);
+ };
+ 
+ #ifdef __cplusplus
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index af80db727ff..77af7d51061 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -902,7 +902,9 @@ TEST(SpiAbi, TextLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiTextApi, paragraph_retain, 176, 88);
+   EXPECT_SPI_OFFSET(FlutterSpiTextApi, paragraph_release, 184, 92);
+   EXPECT_SPI_OFFSET(FlutterSpiTextApi, canvas_draw_paragraph, 192, 96);
+-  EXPECT_EQ(sizeof(FlutterSpiTextApi), sizeof(void*) == 8 ? 200u : 100u);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, paragraph_builder_add_text_utf16, 200,
++                    100);
++  EXPECT_EQ(sizeof(FlutterSpiTextApi), sizeof(void*) == 8 ? 208u : 104u);
+ }
+ 
+ TEST(SpiAbi, HeaderIsPureC) {
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index 68acb8cf881..db7fc0bef9f 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -96,6 +96,7 @@ const FlutterSpiTextApi kTextApi = {
+     .paragraph_retain = SpiParagraphRetain,
+     .paragraph_release = SpiParagraphRelease,
+     .canvas_draw_paragraph = CanvasDrawParagraph,
++    .paragraph_builder_add_text_utf16 = SpiParagraphBuilderAddTextUtf16,
+ };
+ 
+ const FlutterSpiPaintEffectsApi kPaintEffectsApi = {
+diff --git a/engine/src/flutter/runtime_spi/text/spi_paragraph.cc b/engine/src/flutter/runtime_spi/text/spi_paragraph.cc
+index c37344cd052..028b1f4a238 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_paragraph.cc
++++ b/engine/src/flutter/runtime_spi/text/spi_paragraph.cc
+@@ -60,6 +60,18 @@ class SpiParagraphBuilder final {
+     return kFlutterSpiOk;
+   }
+ 
++  FlutterSpiResult AddTextUtf16(const uint16_t* utf16, size_t length) {
++    if (utf16 == nullptr && length != 0) {
++      return kFlutterSpiInvalidArgument;
++    }
++    const std::u16string text =
++        length == 0
++            ? std::u16string()
++            : std::u16string(reinterpret_cast<const char16_t*>(utf16), length);
++    builder_->AddText(text);
++    return kFlutterSpiOk;
++  }
++
+   FlutterSpiResult AddPlaceholder(float width,
+                                    float height,
+                                    int32_t alignment,
+@@ -247,6 +259,17 @@ FlutterSpiResult SpiParagraphBuilderAddText(FlutterSpiParagraphBuilder* builder,
+   return builder_value->AddText(utf8, size);
+ }
+ 
++FlutterSpiResult SpiParagraphBuilderAddTextUtf16(
++    FlutterSpiParagraphBuilder* builder,
++    const uint16_t* utf16,
++    size_t length) {
++  const auto builder_value = FindBuilder(builder);
++  if (builder_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  return builder_value->AddTextUtf16(utf16, length);
++}
++
+ FlutterSpiResult SpiParagraphBuilderAddPlaceholder(
+     FlutterSpiParagraphBuilder* builder,
+     float width,
+diff --git a/engine/src/flutter/runtime_spi/text/spi_paragraph.h b/engine/src/flutter/runtime_spi/text/spi_paragraph.h
+index 91becc7456b..7104ba5feca 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_paragraph.h
++++ b/engine/src/flutter/runtime_spi/text/spi_paragraph.h
+@@ -26,6 +26,10 @@ FlutterSpiResult SpiParagraphBuilderPop(FlutterSpiParagraphBuilder* builder);
+ FlutterSpiResult SpiParagraphBuilderAddText(FlutterSpiParagraphBuilder* builder,
+                                             const char* utf8,
+                                             size_t size);
++FlutterSpiResult SpiParagraphBuilderAddTextUtf16(
++    FlutterSpiParagraphBuilder* builder,
++    const uint16_t* utf16,
++    size_t length);
+ FlutterSpiResult SpiParagraphBuilderAddPlaceholder(
+     FlutterSpiParagraphBuilder* builder,
+     float width,
