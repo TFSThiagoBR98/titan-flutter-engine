@@ -1,0 +1,1058 @@
+# Why: construct dart:ui gradients, filters, and vertices directly through the
+# paint-effects SPI while preserving the legacy DisplayList consumer path.
+diff --git a/engine/src/flutter/lib/ui/compositing/scene_builder.cc b/engine/src/flutter/lib/ui/compositing/scene_builder.cc
+index 3e3082dd7fc..752040aae99 100644
+--- a/engine/src/flutter/lib/ui/compositing/scene_builder.cc
++++ b/engine/src/flutter/lib/ui/compositing/scene_builder.cc
+@@ -11,10 +11,6 @@
+ #include "flutter/fml/logging.h"
+ #include "flutter/lib/ui/compositing/scene.h"
+ #include "flutter/lib/ui/floating_point.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+-#include "flutter/runtime_spi/effects/spi_color_filter.h"
+-#include "flutter/runtime_spi/effects/spi_image_filter.h"
+-#include "flutter/runtime_spi/effects/spi_shader.h"
+ #include "flutter/runtime_spi/scene/spi_canvas.h"
+ #include "flutter/runtime_spi/scene/spi_scene_builder.h"
+ 
+@@ -83,10 +79,9 @@ void SceneBuilder::RetainPushedLayer(
+   EngineLayer::MakeRetained(layer_handle, spi_layer);
+ }
+ 
+-void SceneBuilder::pushTransform(
+-    Dart_Handle layer_handle,
+-    tonic::Float64List& matrix4,
+-    const fml::RefPtr<EngineLayer>& old_layer) {
++void SceneBuilder::pushTransform(Dart_Handle layer_handle,
++                                 tonic::Float64List& matrix4,
++                                 const fml::RefPtr<EngineLayer>& old_layer) {
+   FlutterSpiMatrix spi_matrix;
+   for (int index = 0; index < 16; index++) {
+     spi_matrix.m[index] = SafeNarrow(matrix4[index]);
+@@ -156,39 +151,26 @@ void SceneBuilder::pushOpacity(Dart_Handle layer_handle,
+                                double dx,
+                                double dy,
+                                const fml::RefPtr<EngineLayer>& old_layer) {
+-  const FlutterSpiResult push_result =
+-      Api()->scene_push_opacity(builder_, alpha, SafeNarrow(dx),
+-                                SafeNarrow(dy));
++  const FlutterSpiResult push_result = Api()->scene_push_opacity(
++      builder_, alpha, SafeNarrow(dx), SafeNarrow(dy));
+   RetainPushedLayer(push_result, layer_handle, old_layer);
+ }
+ 
+-void SceneBuilder::pushColorFilter(
+-    Dart_Handle layer_handle,
+-    const ColorFilter* color_filter,
+-    const fml::RefPtr<EngineLayer>& old_layer) {
+-  FlutterSpiColorFilter* filter =
+-      SpiColorFilterFromDl(color_filter->filter());
++void SceneBuilder::pushColorFilter(Dart_Handle layer_handle,
++                                   const ColorFilter* color_filter,
++                                   const fml::RefPtr<EngineLayer>& old_layer) {
+   const FlutterSpiResult push_result =
+-      Api()->scene_push_color_filter(builder_, filter);
+-  if (filter != nullptr) {
+-    SpiColorFilterRelease(filter);
+-  }
++      Api()->scene_push_color_filter(builder_, color_filter->spi_handle());
+   RetainPushedLayer(push_result, layer_handle, old_layer);
+ }
+ 
+-void SceneBuilder::pushImageFilter(
+-    Dart_Handle layer_handle,
+-    const ImageFilter* image_filter,
+-    double dx,
+-    double dy,
+-    const fml::RefPtr<EngineLayer>& old_layer) {
+-  FlutterSpiImageFilter* filter =
+-      SpiImageFilterFromDl(image_filter->filter(DlTileMode::kDecal));
++void SceneBuilder::pushImageFilter(Dart_Handle layer_handle,
++                                   const ImageFilter* image_filter,
++                                   double dx,
++                                   double dy,
++                                   const fml::RefPtr<EngineLayer>& old_layer) {
+   const FlutterSpiResult push_result = Api()->scene_push_image_filter(
+-      builder_, filter, SafeNarrow(dx), SafeNarrow(dy));
+-  if (filter != nullptr) {
+-    SpiImageFilterRelease(filter);
+-  }
++      builder_, image_filter->spi_handle(), SafeNarrow(dx), SafeNarrow(dy));
+   RetainPushedLayer(push_result, layer_handle, old_layer);
+ }
+ 
+@@ -204,43 +186,31 @@ void SceneBuilder::pushBackdropFilter(
+     Dart_IntegerToInt64(backdrop_id, &converted_backdrop_id);
+   }
+ 
+-  FlutterSpiImageFilter* image_filter =
+-      SpiImageFilterFromDl(filter->filter(DlTileMode::kMirror));
+   const FlutterSpiResult push_result = Api()->scene_push_backdrop_filter(
+-      builder_, image_filter, blend_mode, has_backdrop_id,
++      builder_, filter->spi_handle(), blend_mode, has_backdrop_id,
+       converted_backdrop_id);
+-  if (image_filter != nullptr) {
+-    SpiImageFilterRelease(image_filter);
+-  }
+   RetainPushedLayer(push_result, layer_handle, old_layer);
+ }
+ 
+-void SceneBuilder::pushShaderMask(
+-    Dart_Handle layer_handle,
+-    Shader* shader,
+-    double mask_rect_left,
+-    double mask_rect_right,
+-    double mask_rect_top,
+-    double mask_rect_bottom,
+-    int blend_mode,
+-    int filter_quality_index,
+-    const fml::RefPtr<EngineLayer>& old_layer) {
++void SceneBuilder::pushShaderMask(Dart_Handle layer_handle,
++                                  Shader* shader,
++                                  double mask_rect_left,
++                                  double mask_rect_right,
++                                  double mask_rect_top,
++                                  double mask_rect_bottom,
++                                  int blend_mode,
++                                  int filter_quality_index,
++                                  const fml::RefPtr<EngineLayer>& old_layer) {
+   const FlutterSpiRect mask_rect = {
+       SafeNarrow(mask_rect_left), SafeNarrow(mask_rect_top),
+       SafeNarrow(mask_rect_right), SafeNarrow(mask_rect_bottom)};
+-  FlutterSpiShader* spi_shader =
+-      SpiShaderFromColorSource(shader->shader(
+-          ImageFilter::SamplingFromIndex(filter_quality_index)));
+-  const FlutterSpiResult push_result = Api()->scene_push_shader_mask(
+-      builder_, spi_shader, &mask_rect, blend_mode, filter_quality_index);
+-  if (spi_shader != nullptr) {
+-    SpiShaderRelease(spi_shader);
+-  }
++  const FlutterSpiResult push_result =
++      Api()->scene_push_shader_mask(builder_, shader->spi_handle(), &mask_rect,
++                                    blend_mode, filter_quality_index);
+   RetainPushedLayer(push_result, layer_handle, old_layer);
+ }
+ 
+-void SceneBuilder::addRetained(
+-    const fml::RefPtr<EngineLayer>& retained_layer) {
++void SceneBuilder::addRetained(const fml::RefPtr<EngineLayer>& retained_layer) {
+   if (!retained_layer || retained_layer->spi_handle() == nullptr) {
+     return;
+   }
+diff --git a/engine/src/flutter/lib/ui/painting/color_filter.cc b/engine/src/flutter/lib/ui/painting/color_filter.cc
+index e6e7c8e041b..e5c5bb3b2c0 100644
+--- a/engine/src/flutter/lib/ui/painting/color_filter.cc
++++ b/engine/src/flutter/lib/ui/painting/color_filter.cc
+@@ -5,9 +5,7 @@
+ #include "flutter/lib/ui/painting/color_filter.h"
+ 
+ #include "flutter/runtime_spi/effects/spi_color_filter.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+-
+-#include <cstring>
++#include "flutter/runtime_spi/spi_engine_api.h"
+ 
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+@@ -19,6 +17,14 @@ namespace flutter {
+ 
+ IMPLEMENT_WRAPPERTYPEINFO(ui, ColorFilter);
+ 
++namespace {
++
++const FlutterSpiPaintEffectsApi* EffectsApi() {
++  return SpiEngineApi::Create().paint_effects;
++}
++
++}  // namespace
++
+ void ColorFilter::Create(Dart_Handle wrapper) {
+   UIDartState::ThrowIfUIOperationsProhibited();
+   auto res = fml::MakeRefCounted<ColorFilter>();
+@@ -26,8 +32,15 @@ void ColorFilter::Create(Dart_Handle wrapper) {
+ }
+ 
+ void ColorFilter::initMode(int color, int blend_mode) {
+-  filter_ = DlColorFilter::MakeBlend(static_cast<DlColor>(color),
+-                                     static_cast<DlBlendMode>(blend_mode));
++  const DlColor dl_color(static_cast<uint32_t>(color));
++  const FlutterSpiColor spi_color = {
++      dl_color.getRedF(),
++      dl_color.getGreenF(),
++      dl_color.getBlueF(),
++      dl_color.getAlphaF(),
++      static_cast<int32_t>(dl_color.getColorSpace()),
++  };
++  EffectsApi()->color_filter_mode(nullptr, spi_color, blend_mode, &spi_filter_);
+ }
+ 
+ void ColorFilter::initMatrix(const tonic::Float32List& color_matrix) {
+@@ -36,33 +49,24 @@ void ColorFilter::initMatrix(const tonic::Float32List& color_matrix) {
+   // Flutter still defines the matrix to be biased by 255 in the last column
+   // (translate). skia is normalized, treating the last column as 0...1, so we
+   // post-scale here before calling the skia factory.
+-  float matrix[20];
+-  memcpy(matrix, color_matrix.data(), sizeof(matrix));
+-  matrix[4] *= 1.0f / 255;
+-  matrix[9] *= 1.0f / 255;
+-  matrix[14] *= 1.0f / 255;
+-  matrix[19] *= 1.0f / 255;
+-  filter_ = DlColorFilter::MakeMatrix(matrix);
++  EffectsApi()->color_filter_matrix(nullptr, color_matrix.data(), &spi_filter_);
+ }
+ 
+ void ColorFilter::initLinearToSrgbGamma() {
+-  filter_ = DlColorFilter::MakeLinearToSrgbGamma();
++  EffectsApi()->color_filter_linear_to_srgb_gamma(nullptr, &spi_filter_);
+ }
+ 
+ void ColorFilter::initSrgbToLinearGamma() {
+-  filter_ = DlColorFilter::MakeSrgbToLinearGamma();
++  EffectsApi()->color_filter_srgb_to_linear_gamma(nullptr, &spi_filter_);
+ }
+ 
+ ColorFilter::~ColorFilter() {
+   if (spi_filter_ != nullptr) {
+-    SpiColorFilterRelease(spi_filter_);
++    EffectsApi()->color_filter_release(spi_filter_);
+   }
+ }
+ 
+ FlutterSpiColorFilter* ColorFilter::spi_handle() const {
+-  if (spi_filter_ == nullptr && filter_ != nullptr) {
+-    spi_filter_ = SpiColorFilterFromDl(filter_);
+-  }
+   return spi_filter_;
+ }
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/color_filter.h b/engine/src/flutter/lib/ui/painting/color_filter.h
+index 010373a5513..dbca625d108 100644
+--- a/engine/src/flutter/lib/ui/painting/color_filter.h
++++ b/engine/src/flutter/lib/ui/painting/color_filter.h
+@@ -5,7 +5,6 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_COLOR_FILTER_H_
+ #define FLUTTER_LIB_UI_PAINTING_COLOR_FILTER_H_
+ 
+-#include "flutter/display_list/effects/dl_color_filter.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "flutter/runtime_spi/include/flutter_paint_effects.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
+@@ -29,12 +28,10 @@ class ColorFilter : public RefCountedDartWrappable<ColorFilter> {
+ 
+   ~ColorFilter() override;
+ 
+-  const std::shared_ptr<const DlColorFilter> filter() const { return filter_; }
+   FlutterSpiColorFilter* spi_handle() const;
+ 
+  private:
+-  std::shared_ptr<const DlColorFilter> filter_;
+-  mutable FlutterSpiColorFilter* spi_filter_ = nullptr;
++  FlutterSpiColorFilter* spi_filter_ = nullptr;
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/gradient.cc b/engine/src/flutter/lib/ui/painting/gradient.cc
+index 5e8633b9107..96b59652d6c 100644
+--- a/engine/src/flutter/lib/ui/painting/gradient.cc
++++ b/engine/src/flutter/lib/ui/painting/gradient.cc
+@@ -4,10 +4,11 @@
+ 
+ #include "flutter/lib/ui/painting/gradient.h"
+ 
+-#include "flutter/runtime_spi/effects/spi_shader.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
++#include <vector>
+ 
+ #include "flutter/lib/ui/floating_point.h"
++#include "flutter/runtime_spi/effects/spi_shader.h"
++#include "flutter/runtime_spi/spi_engine_api.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+@@ -20,6 +21,44 @@ typedef CanvasGradient
+ 
+ IMPLEMENT_WRAPPERTYPEINFO(ui, Gradient);
+ 
++namespace {
++
++const FlutterSpiPaintEffectsApi* EffectsApi() {
++  return SpiEngineApi::Create().paint_effects;
++}
++
++FlutterSpiMatrix ToSpiMatrix(const tonic::Float64List& matrix4) {
++  FlutterSpiMatrix matrix;
++  for (size_t index = 0; index < 16; index++) {
++    matrix.m[index] = SafeNarrow(matrix4[index]);
++  }
++  return matrix;
++}
++
++std::vector<FlutterSpiColor> ToSpiColors(const tonic::Float32List& colors) {
++  std::vector<FlutterSpiColor> spi_colors(colors.num_elements() / 4);
++  for (size_t index = 0; index < spi_colors.size(); index++) {
++    const size_t color_index = index * 4;
++    spi_colors[index] = {
++        colors[color_index + 1],           colors[color_index + 2],
++        colors[color_index + 3],           colors[color_index],
++        kFlutterSpiColorSpaceExtendedSRGB,
++    };
++  }
++  return spi_colors;
++}
++
++const FlutterSpiMatrix* OptionalMatrix(const tonic::Float64List& matrix4,
++                                       FlutterSpiMatrix* spi_matrix) {
++  if (matrix4.data() == nullptr) {
++    return nullptr;
++  }
++  *spi_matrix = ToSpiMatrix(matrix4);
++  return spi_matrix;
++}
++
++}  // namespace
++
+ void CanvasGradient::Create(Dart_Handle wrapper) {
+   UIDartState::ThrowIfUIOperationsProhibited();
+   auto res = fml::MakeRefCounted<CanvasGradient>();
+@@ -36,22 +75,13 @@ void CanvasGradient::initLinear(const tonic::Float32List& end_points,
+              color_stops.data() == nullptr);
+   int num_colors = colors.num_elements() / 4;
+ 
+-  static_assert(sizeof(DlPoint) == sizeof(float) * 2,
+-                "DlPoint doesn't use floats.");
+-
+-  DlMatrix dl_matrix;
+-  bool has_matrix = matrix4.data() != nullptr;
+-  if (has_matrix) {
+-    dl_matrix = ToDlMatrix(matrix4);
+-  }
+-
+-  DlPoint p0 = DlPoint(end_points[0], end_points[1]);
+-  DlPoint p1 = DlPoint(end_points[2], end_points[3]);
+-  dl_shader_ = DlColorSource::MakeLinear(p0, p1, num_colors, colors.data(),
+-                                         color_stops.data(), tile_mode,
+-                                         has_matrix ? &dl_matrix : nullptr);
+-  // Just a sanity check, all gradient shaders should be thread-safe
+-  FML_DCHECK(dl_shader_->isUIThreadSafe());
++  FlutterSpiMatrix spi_matrix;
++  const auto spi_colors = ToSpiColors(colors);
++  EffectsApi()->shader_linear_gradient(
++      nullptr, {end_points[0], end_points[1]}, {end_points[2], end_points[3]},
++      spi_colors.data(), color_stops.data(), num_colors,
++      static_cast<int32_t>(tile_mode), OptionalMatrix(matrix4, &spi_matrix),
++      &spi_shader_);
+ }
+ 
+ void CanvasGradient::initRadial(double center_x,
+@@ -65,18 +95,13 @@ void CanvasGradient::initRadial(double center_x,
+              color_stops.data() == nullptr);
+   int num_colors = colors.num_elements() / 4;
+ 
+-  DlMatrix dl_matrix;
+-  bool has_matrix = matrix4.data() != nullptr;
+-  if (has_matrix) {
+-    dl_matrix = ToDlMatrix(matrix4);
+-  }
+-
+-  dl_shader_ = DlColorSource::MakeRadial(
+-      DlPoint(SafeNarrow(center_x), SafeNarrow(center_y)), SafeNarrow(radius),
+-      num_colors, colors.data(), color_stops.data(), tile_mode,
+-      has_matrix ? &dl_matrix : nullptr);
+-  // Just a sanity check, all gradient shaders should be thread-safe
+-  FML_DCHECK(dl_shader_->isUIThreadSafe());
++  FlutterSpiMatrix spi_matrix;
++  const auto spi_colors = ToSpiColors(colors);
++  EffectsApi()->shader_radial_gradient(
++      nullptr, {SafeNarrow(center_x), SafeNarrow(center_y)}, SafeNarrow(radius),
++      spi_colors.data(), color_stops.data(), num_colors,
++      static_cast<int32_t>(tile_mode), OptionalMatrix(matrix4, &spi_matrix),
++      &spi_shader_);
+ }
+ 
+ void CanvasGradient::initSweep(double center_x,
+@@ -91,20 +116,13 @@ void CanvasGradient::initSweep(double center_x,
+              color_stops.data() == nullptr);
+   int num_colors = colors.num_elements() / 4;
+ 
+-  DlMatrix dl_matrix;
+-  bool has_matrix = matrix4.data() != nullptr;
+-  if (has_matrix) {
+-    dl_matrix = ToDlMatrix(matrix4);
+-  }
+-
+-  dl_shader_ = DlColorSource::MakeSweep(
+-      DlPoint(SafeNarrow(center_x), SafeNarrow(center_y)),
+-      SafeNarrow(start_angle) * 180.0f / static_cast<float>(M_PI),
+-      SafeNarrow(end_angle) * 180.0f / static_cast<float>(M_PI), num_colors,
+-      colors.data(), color_stops.data(), tile_mode,
+-      has_matrix ? &dl_matrix : nullptr);
+-  // Just a sanity check, all gradient shaders should be thread-safe
+-  FML_DCHECK(dl_shader_->isUIThreadSafe());
++  FlutterSpiMatrix spi_matrix;
++  const auto spi_colors = ToSpiColors(colors);
++  EffectsApi()->shader_sweep_gradient(
++      nullptr, {SafeNarrow(center_x), SafeNarrow(center_y)},
++      SafeNarrow(start_angle), SafeNarrow(end_angle), spi_colors.data(),
++      color_stops.data(), num_colors, static_cast<int32_t>(tile_mode),
++      OptionalMatrix(matrix4, &spi_matrix), &spi_shader_);
+ }
+ 
+ void CanvasGradient::initTwoPointConical(double start_x,
+@@ -121,33 +139,29 @@ void CanvasGradient::initTwoPointConical(double start_x,
+              color_stops.data() == nullptr);
+   int num_colors = colors.num_elements() / 4;
+ 
+-  DlMatrix dl_matrix;
+-  bool has_matrix = matrix4.data() != nullptr;
+-  if (has_matrix) {
+-    dl_matrix = ToDlMatrix(matrix4);
+-  }
+-
+-  dl_shader_ = DlColorSource::MakeConical(
+-      DlPoint(SafeNarrow(start_x), SafeNarrow(start_y)),
+-      SafeNarrow(start_radius), DlPoint(SafeNarrow(end_x), SafeNarrow(end_y)),
+-      SafeNarrow(end_radius), num_colors, colors.data(), color_stops.data(),
+-      tile_mode, has_matrix ? &dl_matrix : nullptr);
+-  // Just a sanity check, all gradient shaders should be thread-safe
+-  FML_DCHECK(dl_shader_->isUIThreadSafe());
++  FlutterSpiMatrix spi_matrix;
++  const auto spi_colors = ToSpiColors(colors);
++  EffectsApi()->shader_conical_gradient(
++      nullptr, {SafeNarrow(start_x), SafeNarrow(start_y)},
++      SafeNarrow(start_radius), {SafeNarrow(end_x), SafeNarrow(end_y)},
++      SafeNarrow(end_radius), spi_colors.data(), color_stops.data(), num_colors,
++      static_cast<int32_t>(tile_mode), OptionalMatrix(matrix4, &spi_matrix),
++      &spi_shader_);
+ }
+ 
+ CanvasGradient::CanvasGradient() = default;
+ 
+ CanvasGradient::~CanvasGradient() {
+   if (spi_shader_ != nullptr) {
+-    SpiShaderRelease(spi_shader_);
++    EffectsApi()->shader_release(spi_shader_);
+   }
+ }
+ 
++std::shared_ptr<DlColorSource> CanvasGradient::shader(DlImageSampling) {
++  return spi_shader_ == nullptr ? nullptr : SpiShaderGet(spi_shader_);
++}
++
+ FlutterSpiShader* CanvasGradient::spi_handle() const {
+-  if (spi_shader_ == nullptr && dl_shader_ != nullptr) {
+-    spi_shader_ = SpiShaderFromColorSource(dl_shader_);
+-  }
+   return spi_shader_;
+ }
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/gradient.h b/engine/src/flutter/lib/ui/painting/gradient.h
+index 2d040ce7da5..376813aabd0 100644
+--- a/engine/src/flutter/lib/ui/painting/gradient.h
++++ b/engine/src/flutter/lib/ui/painting/gradient.h
+@@ -5,7 +5,6 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_GRADIENT_H_
+ #define FLUTTER_LIB_UI_PAINTING_GRADIENT_H_
+ 
+-#include "flutter/display_list/effects/dl_color_source.h"
+ #include "flutter/lib/ui/painting/matrix.h"
+ #include "flutter/lib/ui/painting/shader.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
+@@ -54,16 +53,12 @@ class CanvasGradient : public Shader {
+                            DlTileMode tile_mode,
+                            const tonic::Float64List& matrix4);
+ 
+-  std::shared_ptr<DlColorSource> shader(DlImageSampling sampling) override {
+-    // Gradient color sources do not have image sampling variants...
+-    return dl_shader_;
+-  }
++  std::shared_ptr<DlColorSource> shader(DlImageSampling sampling) override;
+   FlutterSpiShader* spi_handle() const override;
+ 
+  private:
+   CanvasGradient();
+-  std::shared_ptr<DlColorSource> dl_shader_;
+-  mutable FlutterSpiShader* spi_shader_ = nullptr;
++  FlutterSpiShader* spi_shader_ = nullptr;
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/image_filter.cc b/engine/src/flutter/lib/ui/painting/image_filter.cc
+index 6fc1f461af5..c6b92bbbb6d 100644
+--- a/engine/src/flutter/lib/ui/painting/image_filter.cc
++++ b/engine/src/flutter/lib/ui/painting/image_filter.cc
+@@ -6,9 +6,9 @@
+ 
+ #include "flutter/runtime_spi/effects/spi_image_filter.h"
+ #include "flutter/runtime_spi/internal/spi_internal_bridges.h"
++#include "flutter/runtime_spi/spi_engine_api.h"
+ 
+ #include "display_list/dl_sampling_options.h"
+-#include "display_list/effects/dl_image_filters.h"
+ #include "flutter/lib/ui/floating_point.h"
+ #include "flutter/lib/ui/painting/matrix.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+@@ -23,6 +23,22 @@ namespace flutter {
+ 
+ IMPLEMENT_WRAPPERTYPEINFO(ui, ImageFilter);
+ 
++namespace {
++
++const FlutterSpiPaintEffectsApi* EffectsApi() {
++  return SpiEngineApi::Create().paint_effects;
++}
++
++FlutterSpiMatrix ToSpiMatrix(const tonic::Float64List& matrix4) {
++  FlutterSpiMatrix matrix;
++  for (size_t index = 0; index < 16; index++) {
++    matrix.m[index] = SafeNarrow(matrix4[index]);
++  }
++  return matrix;
++}
++
++}  // namespace
++
+ void ImageFilter::Create(Dart_Handle wrapper) {
+   UIDartState::ThrowIfUIOperationsProhibited();
+   auto res = fml::MakeRefCounted<ImageFilter>();
+@@ -58,31 +74,14 @@ ImageFilter::ImageFilter() {}
+ 
+ ImageFilter::~ImageFilter() {
+   if (spi_filter_ != nullptr) {
+-    SpiImageFilterRelease(spi_filter_);
++    EffectsApi()->image_filter_release(spi_filter_);
+   }
+ }
+ 
+ FlutterSpiImageFilter* ImageFilter::spi_handle() const {
+-  if (spi_filter_ == nullptr && filter_ != nullptr) {
+-    spi_filter_ = SpiImageFilterFromDl(filter_);
+-  }
+   return spi_filter_;
+ }
+ 
+-const std::shared_ptr<DlImageFilter> ImageFilter::filter(
+-    DlTileMode mode) const {
+-  if (is_dynamic_tile_mode_) {
+-    FML_DCHECK(filter_.get() != nullptr);
+-    const DlBlurImageFilter* blur_filter = filter_->asBlur();
+-    FML_DCHECK(blur_filter != nullptr);
+-    if (blur_filter->tile_mode() != mode) {
+-      return DlBlurImageFilter::Make(blur_filter->sigma_x(),
+-                                     blur_filter->sigma_y(), mode);
+-    }
+-  }
+-  return filter_;
+-}
+-
+ void ImageFilter::initBlur(double sigma_x,
+                            double sigma_y,
+                            int tile_mode_index,
+@@ -91,82 +90,65 @@ void ImageFilter::initBlur(double sigma_x,
+                            double bounds_top,
+                            double bounds_right,
+                            double bounds_bottom) {
+-  DlTileMode tile_mode;
+-  bool is_dynamic;
+-  if (tile_mode_index < 0) {
+-    is_dynamic = true;
+-    tile_mode = DlTileMode::kClamp;
+-  } else {
+-    is_dynamic = false;
+-    tile_mode = static_cast<DlTileMode>(tile_mode_index);
+-  }
+-  std::optional<DlRect> bounds;
+   if (bounded) {
+-    bounds =
+-        DlRect::MakeLTRB(SafeNarrow(bounds_left), SafeNarrow(bounds_top),
+-                         SafeNarrow(bounds_right), SafeNarrow(bounds_bottom));
++    const FlutterSpiRect bounds = {
++        SafeNarrow(bounds_left), SafeNarrow(bounds_top),
++        SafeNarrow(bounds_right), SafeNarrow(bounds_bottom)};
++    EffectsApi()->image_filter_blur_bounded(
++        nullptr, SafeNarrow(sigma_x), SafeNarrow(sigma_y), tile_mode_index,
++        &bounds, &spi_filter_);
++    return;
+   }
+-  filter_ = DlBlurImageFilter::Make(SafeNarrow(sigma_x), SafeNarrow(sigma_y),
+-                                    tile_mode, bounds);
+-  // If it was a NOP filter, don't bother processing dynamic substitutions
+-  // (They'd fail the FML_DCHECK anyway)
+-  is_dynamic_tile_mode_ = is_dynamic && filter_;
++  EffectsApi()->image_filter_blur(nullptr, SafeNarrow(sigma_x),
++                                  SafeNarrow(sigma_y), tile_mode_index,
++                                  &spi_filter_);
+ }
+ 
+ void ImageFilter::initDilate(double radius_x, double radius_y) {
+-  is_dynamic_tile_mode_ = false;
+-  filter_ =
+-      DlDilateImageFilter::Make(SafeNarrow(radius_x), SafeNarrow(radius_y));
++  EffectsApi()->image_filter_dilate(nullptr, SafeNarrow(radius_x),
++                                    SafeNarrow(radius_y), &spi_filter_);
+ }
+ 
+ void ImageFilter::initErode(double radius_x, double radius_y) {
+-  is_dynamic_tile_mode_ = false;
+-  filter_ =
+-      DlErodeImageFilter::Make(SafeNarrow(radius_x), SafeNarrow(radius_y));
++  EffectsApi()->image_filter_erode(nullptr, SafeNarrow(radius_x),
++                                   SafeNarrow(radius_y), &spi_filter_);
+ }
+ 
+ void ImageFilter::initMatrix(const tonic::Float64List& matrix4,
+                              int filterQualityIndex) {
+-  is_dynamic_tile_mode_ = false;
+   auto sampling = ImageFilter::SamplingFromIndex(filterQualityIndex);
+-  filter_ = DlMatrixImageFilter::Make(ToDlMatrix(matrix4), sampling);
++  const FlutterSpiMatrix spi_matrix = ToSpiMatrix(matrix4);
++  EffectsApi()->image_filter_matrix(
++      nullptr, &spi_matrix, static_cast<int32_t>(sampling), &spi_filter_);
+ }
+ 
+ void ImageFilter::initColorFilter(ColorFilter* colorFilter) {
+   FML_DCHECK(colorFilter);
+-  is_dynamic_tile_mode_ = false;
+-  filter_ = DlColorFilterImageFilter::Make(colorFilter->filter());
++  EffectsApi()->image_filter_from_color_filter(
++      nullptr, colorFilter->spi_handle(), &spi_filter_);
+ }
+ 
+ void ImageFilter::initComposeFilter(ImageFilter* outer, ImageFilter* inner) {
+   FML_DCHECK(outer && inner);
+-  is_dynamic_tile_mode_ = false;
+-  filter_ = DlComposeImageFilter::Make(outer->filter(DlTileMode::kClamp),
+-                                       inner->filter(DlTileMode::kClamp));
++  EffectsApi()->image_filter_compose(nullptr, outer->spi_handle(),
++                                     inner->spi_handle(), &spi_filter_);
+ }
+ 
+ void ImageFilter::initShader(ReusableFragmentShader* shader,
+                              int filterQualityIndex) {
+   FML_DCHECK(shader);
+-  filter_ = shader->as_image_filter(SamplingFromIndex(filterQualityIndex));
++  spi_filter_ = SpiImageFilterFromDl(
++      shader->as_image_filter(SamplingFromIndex(filterQualityIndex)));
+ }
+ 
+ bool ImageFilter::equals(Dart_Handle a_handle, Dart_Handle b_handle) {
+   ImageFilter* a = tonic::DartConverter<ImageFilter*>::FromDart(a_handle);
+   ImageFilter* b = tonic::DartConverter<ImageFilter*>::FromDart(b_handle);
+-  if (a == b) {
+-    return true;
+-  }
+-  if (!a || !b) {
+-    return false;
+-  }
+-  if (a->filter_ == b->filter_) {
+-    return true;
+-  }
+-  if (!a->filter_ || !b->filter_) {
+-    return false;
+-  }
+-  return *a->filter_ == *b->filter_;
++  bool equal = false;
++  const FlutterSpiResult result = EffectsApi()->image_filter_equals(
++      a == nullptr ? nullptr : a->spi_handle(),
++      b == nullptr ? nullptr : b->spi_handle(), &equal);
++  return result == kFlutterSpiOk && equal;
+ }
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/image_filter.h b/engine/src/flutter/lib/ui/painting/image_filter.h
+index 462a8851015..e2757d788ef 100644
+--- a/engine/src/flutter/lib/ui/painting/image_filter.h
++++ b/engine/src/flutter/lib/ui/painting/image_filter.h
+@@ -6,11 +6,10 @@
+ #define FLUTTER_LIB_UI_PAINTING_IMAGE_FILTER_H_
+ 
+ #include "flutter/display_list/dl_sampling_options.h"
+-#include "flutter/display_list/effects/dl_image_filter.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "flutter/lib/ui/painting/color_filter.h"
+-#include "lib/ui/painting/fragment_shader.h"
+ #include "flutter/runtime_spi/include/flutter_paint_effects.h"
++#include "lib/ui/painting/fragment_shader.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
+ 
+ namespace tonic {
+@@ -46,7 +45,6 @@ class ImageFilter : public RefCountedDartWrappable<ImageFilter> {
+   void initShader(ReusableFragmentShader* shader, int filter_quality_index);
+   static bool equals(Dart_Handle a_handle, Dart_Handle b_handle);
+ 
+-  const std::shared_ptr<DlImageFilter> filter(DlTileMode mode) const;
+   FlutterSpiImageFilter* spi_handle() const;
+ 
+   static void RegisterNatives(tonic::DartLibraryNatives* natives);
+@@ -54,9 +52,7 @@ class ImageFilter : public RefCountedDartWrappable<ImageFilter> {
+  private:
+   ImageFilter();
+ 
+-  std::shared_ptr<DlImageFilter> filter_;
+-  bool is_dynamic_tile_mode_ = false;
+-  mutable FlutterSpiImageFilter* spi_filter_ = nullptr;
++  FlutterSpiImageFilter* spi_filter_ = nullptr;
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/paint.cc b/engine/src/flutter/lib/ui/painting/paint.cc
+index 5c5629a7b3b..76156eb6f95 100644
+--- a/engine/src/flutter/lib/ui/painting/paint.cc
++++ b/engine/src/flutter/lib/ui/painting/paint.cc
+@@ -12,6 +12,9 @@
+ #include "flutter/lib/ui/painting/color_filter.h"
+ #include "flutter/lib/ui/painting/image_filter.h"
+ #include "flutter/lib/ui/painting/shader.h"
++#include "flutter/runtime_spi/effects/spi_color_filter.h"
++#include "flutter/runtime_spi/effects/spi_image_filter.h"
++#include "flutter/runtime_spi/effects/spi_shader.h"
+ #include "flutter/runtime_spi/include/flutter_scene.h"
+ #include "third_party/skia/include/core/SkColorFilter.h"
+ #include "third_party/skia/include/core/SkImageFilter.h"
+@@ -147,7 +150,7 @@ const DlPaint* Paint::paint(DlPaint& paint,
+       } else {
+         ColorFilter* decoded =
+             tonic::DartConverter<ColorFilter*>::FromDart(color_filter);
+-        paint.setColorFilter(decoded->filter());
++        paint.setColorFilter(SpiColorFilterGet(decoded->spi_handle()));
+       }
+     }
+ 
+@@ -158,7 +161,8 @@ const DlPaint* Paint::paint(DlPaint& paint,
+       } else {
+         ImageFilter* decoded =
+             tonic::DartConverter<ImageFilter*>::FromDart(image_filter);
+-        paint.setImageFilter(decoded->filter(tile_mode));
++        paint.setImageFilter(
++            SpiImageFilterResolve(decoded->spi_handle(), tile_mode));
+       }
+     }
+   }
+@@ -252,7 +256,8 @@ void Paint::ToSpiPaint(FlutterSpiPaint* out) const {
+   FML_CHECK(!Dart_IsError(
+       Dart_ListGetRange(paint_objects_, 0, kObjectCount, values)));
+ 
+-  Shader* shader = tonic::DartConverter<Shader*>::FromDart(values[kShaderIndex]);
++  Shader* shader =
++      tonic::DartConverter<Shader*>::FromDart(values[kShaderIndex]);
+   out->shader = shader == nullptr ? nullptr : shader->spi_handle();
+   ColorFilter* color_filter =
+       tonic::DartConverter<ColorFilter*>::FromDart(values[kColorFilterIndex]);
+@@ -279,10 +284,8 @@ void DecodeSpiPaint(const uint8_t* bytes, FlutterSpiPaint* out) {
+   const float* float_data = reinterpret_cast<const float*>(bytes);
+ 
+   out->struct_size = sizeof(FlutterSpiPaint);
+-  out->color = {float_data[kColorRedIndex],
+-                float_data[kColorGreenIndex],
+-                float_data[kColorBlueIndex],
+-                1.f - float_data[kColorAlphaIndex],
++  out->color = {float_data[kColorRedIndex], float_data[kColorGreenIndex],
++                float_data[kColorBlueIndex], 1.f - float_data[kColorAlphaIndex],
+                 static_cast<int32_t>(uint_data[kColorSpaceIndex])};
+   out->blend_mode =
+       static_cast<int32_t>(uint_data[kBlendModeIndex] ^ kBlendModeDefault);
+diff --git a/engine/src/flutter/lib/ui/painting/vertices.cc b/engine/src/flutter/lib/ui/painting/vertices.cc
+index fc8e39d5194..db44f6da3e7 100644
+--- a/engine/src/flutter/lib/ui/painting/vertices.cc
++++ b/engine/src/flutter/lib/ui/painting/vertices.cc
+@@ -4,11 +4,11 @@
+ 
+ #include "flutter/lib/ui/painting/vertices.h"
+ 
+-#include <algorithm>
++#include <vector>
+ 
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/runtime_spi/effects/spi_vertices.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
++#include "flutter/runtime_spi/spi_engine_api.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+ #include "third_party/tonic/dart_library_natives.h"
+ 
+@@ -16,18 +16,38 @@ namespace flutter {
+ 
+ IMPLEMENT_WRAPPERTYPEINFO(ui, Vertices);
+ 
++namespace {
++
++const FlutterSpiPaintEffectsApi* EffectsApi() {
++  return SpiEngineApi::Create().paint_effects;
++}
++
++std::vector<FlutterSpiColor> ToSpiColors(const tonic::Int32List& colors) {
++  std::vector<FlutterSpiColor> spi_colors(colors.num_elements());
++  for (size_t index = 0; index < spi_colors.size(); index++) {
++    const DlColor color(static_cast<uint32_t>(colors[index]));
++    spi_colors[index] = {
++        color.getRedF(),
++        color.getGreenF(),
++        color.getBlueF(),
++        color.getAlphaF(),
++        static_cast<int32_t>(color.getColorSpace()),
++    };
++  }
++  return spi_colors;
++}
++
++}  // namespace
++
+ Vertices::Vertices() {}
+ 
+ Vertices::~Vertices() {
+   if (spi_vertices_ != nullptr) {
+-    SpiVerticesRelease(spi_vertices_);
++    EffectsApi()->vertices_release(spi_vertices_);
+   }
+ }
+ 
+ FlutterSpiVertices* Vertices::spi_handle() const {
+-  if (spi_vertices_ == nullptr && vertices_ != nullptr) {
+-    spi_vertices_ = SpiVerticesFromDl(vertices_);
+-  }
+   return spi_vertices_;
+ }
+ 
+@@ -48,57 +68,36 @@ bool Vertices::init(Dart_Handle vertices_handle,
+     return false;
+   }
+ 
+-  DlVertices::Builder::Flags flags;
+-  if (texture_coordinates.data()) {
+-    flags = flags | DlVertices::Builder::kHasTextureCoordinates;
+-  }
+-  if (colors.data()) {
+-    flags = flags | DlVertices::Builder::kHasColors;
+-  }
+-  DlVertices::Builder builder(vertex_mode, positions.num_elements() / 2, flags,
+-                              indices.num_elements());
+-
+-  if (!builder.is_valid()) {
+-    return false;
+-  }
+-
+-  // positions are required for SkVertices::Builder
+-  builder.store_vertices(positions.data());
+-
+-  if (texture_coordinates.data()) {
+-    // SkVertices::Builder assumes equal numbers of elements
+-    FML_DCHECK(positions.num_elements() == texture_coordinates.num_elements());
+-    builder.store_texture_coordinates(texture_coordinates.data());
+-  }
+-
+-  if (colors.data()) {
+-    // SkVertices::Builder assumes equal numbers of elements
+-    FML_DCHECK(positions.num_elements() / 2 == colors.num_elements());
+-    builder.store_colors(reinterpret_cast<const SkColor*>(colors.data()));
+-  }
+-
+-  if (indices.data() && indices.num_elements() > 0) {
+-    builder.store_indices(indices.data());
+-  }
++  static_assert(sizeof(FlutterSpiPoint) == sizeof(float) * 2,
++                "FlutterSpiPoint must use two floats.");
++  const auto spi_colors = ToSpiColors(colors);
++  FlutterSpiVertices* spi_vertices = nullptr;
++  const FlutterSpiResult result = EffectsApi()->vertices_create(
++      nullptr, static_cast<int32_t>(vertex_mode),
++      reinterpret_cast<const FlutterSpiPoint*>(positions.data()),
++      positions.num_elements() / 2,
++      reinterpret_cast<const FlutterSpiPoint*>(texture_coordinates.data()),
++      spi_colors.data(), indices.data(), indices.num_elements(), &spi_vertices);
+ 
+   positions.Release();
+   texture_coordinates.Release();
+   colors.Release();
+   indices.Release();
+ 
++  if (result != kFlutterSpiOk) {
++    return false;
++  }
+   auto vertices = fml::MakeRefCounted<Vertices>();
+-  vertices->vertices_ = builder.build();
++  vertices->spi_vertices_ = spi_vertices;
+   vertices->AssociateWithDartWrapper(vertices_handle);
+-
+   return true;
+ }
+ 
+ void Vertices::dispose() {
+   if (spi_vertices_ != nullptr) {
+-    SpiVerticesRelease(spi_vertices_);
++    EffectsApi()->vertices_release(spi_vertices_);
+     spi_vertices_ = nullptr;
+   }
+-  vertices_.reset();
+   ClearDartWrapper();
+ }
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/vertices.h b/engine/src/flutter/lib/ui/painting/vertices.h
+index 171e1d54752..1f1fddef1c6 100644
+--- a/engine/src/flutter/lib/ui/painting/vertices.h
++++ b/engine/src/flutter/lib/ui/painting/vertices.h
+@@ -5,11 +5,10 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_VERTICES_H_
+ #define FLUTTER_LIB_UI_PAINTING_VERTICES_H_
+ 
+-#include "flutter/display_list/dl_vertices.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
++#include "flutter/runtime_spi/include/flutter_paint_effects.h"
+ #include "third_party/skia/include/core/SkVertices.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
+-#include "flutter/runtime_spi/include/flutter_paint_effects.h"
+ 
+ namespace flutter {
+ 
+@@ -27,7 +26,6 @@ class Vertices : public RefCountedDartWrappable<Vertices> {
+                    Dart_Handle colors_handle,
+                    Dart_Handle indices_handle);
+ 
+-  const std::shared_ptr<DlVertices>& vertices() const { return vertices_; }
+   FlutterSpiVertices* spi_handle() const;
+ 
+   void dispose();
+@@ -35,8 +33,7 @@ class Vertices : public RefCountedDartWrappable<Vertices> {
+  private:
+   Vertices();
+ 
+-  std::shared_ptr<DlVertices> vertices_;
+-  mutable FlutterSpiVertices* spi_vertices_ = nullptr;
++  FlutterSpiVertices* spi_vertices_ = nullptr;
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
+index bfad4e60050..736f257f76e 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
+@@ -10,10 +10,8 @@
+ #include "flutter/flow/layers/layer_tree.h"
+ #include "flutter/lib/ui/text/font_collection.h"
+ #include "flutter/runtime/runtime_delegate.h"
+-#include "flutter/runtime_spi/effects/spi_color_filter.h"
+ #include "flutter/runtime_spi/effects/spi_image_filter.h"
+ #include "flutter/runtime_spi/effects/spi_shader.h"
+-#include "flutter/runtime_spi/effects/spi_vertices.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
+ #include "flutter/runtime_spi/scene/spi_canvas.h"
+ #include "flutter/runtime_spi/spi_runtime_backend.h"
+@@ -30,15 +28,6 @@ FlutterSpiShader* SpiShaderFromColorSource(
+   return handle;
+ }
+ 
+-FlutterSpiColorFilter* SpiColorFilterFromDl(
+-    std::shared_ptr<const DlColorFilter> filter) {
+-  FlutterSpiColorFilter* handle = nullptr;
+-  if (SpiColorFilterCreate(std::move(filter), &handle) != kFlutterSpiOk) {
+-    return nullptr;
+-  }
+-  return handle;
+-}
+-
+ FlutterSpiImageFilter* SpiImageFilterFromDl(
+     std::shared_ptr<DlImageFilter> filter) {
+   FlutterSpiImageFilter* handle = nullptr;
+@@ -56,10 +45,6 @@ FlutterSpiImage* SpiImageFromDlImage(sk_sp<DlImage> image) {
+   return handle;
+ }
+ 
+-FlutterSpiVertices* SpiVerticesFromDl(std::shared_ptr<DlVertices> vertices) {
+-  return SpiVerticesWrap(std::move(vertices));
+-}
+-
+ const DisplayList* SpiPictureDisplayList(FlutterSpiPicture* picture) {
+   return SpiPictureDisplayListForTesting(picture);
+ }
+@@ -78,16 +63,15 @@ std::unique_ptr<LayerTree> SpiSceneTakeLayerTree(FlutterSpiScene* scene) {
+   return layer_tree;
+ }
+ 
+-FlutterSpiResult SpiSubmitSemantics(
+-    FlutterSpiEngine* engine,
+-    int64_t view_id,
+-    SemanticsNodeUpdates nodes,
+-    CustomAccessibilityActionUpdates actions) {
++FlutterSpiResult SpiSubmitSemantics(FlutterSpiEngine* engine,
++                                    int64_t view_id,
++                                    SemanticsNodeUpdates nodes,
++                                    CustomAccessibilityActionUpdates actions) {
+   if (engine == nullptr || engine->backend == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+-  engine->backend->runtime_delegate_.UpdateSemantics(
+-      view_id, std::move(nodes), std::move(actions));
++  engine->backend->runtime_delegate_.UpdateSemantics(view_id, std::move(nodes),
++                                                     std::move(actions));
+   return kFlutterSpiOk;
+ }
+ 
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+index 3b27d5d3190..2044516aa73 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+@@ -7,13 +7,11 @@
+ 
+ #include <memory>
+ 
+-#include "flutter/display_list/effects/dl_color_filter.h"
++#include "flutter/display_list/display_list.h"
+ #include "flutter/display_list/effects/dl_color_source.h"
+ #include "flutter/display_list/effects/dl_image_filter.h"
+ #include "flutter/display_list/geometry/dl_path.h"
+ #include "flutter/display_list/image/dl_image.h"
+-#include "flutter/display_list/display_list.h"
+-#include "flutter/display_list/dl_vertices.h"
+ #include "flutter/lib/ui/semantics/custom_accessibility_action.h"
+ #include "flutter/lib/ui/semantics/semantics_node.h"
+ #include "flutter/runtime_spi/include/flutter_runtime_spi.h"
+@@ -25,22 +23,17 @@ class FontCollection;
+ class LayerTree;
+ class PlatformMessageHandler;
+ 
+-// Temporary bridge until S4g moves color-source creation behind dart:ui SPI.
++// Temporary bridge until S4g-2 moves image and fragment shader creation behind
++// dart:ui SPI.
+ FlutterSpiShader* SpiShaderFromColorSource(std::shared_ptr<DlColorSource>);
+ 
+-// Temporary bridge until S4g moves color-filter creation behind dart:ui SPI.
+-FlutterSpiColorFilter* SpiColorFilterFromDl(
+-    std::shared_ptr<const DlColorFilter>);
+-
+-// Temporary bridge until S4g moves image-filter creation behind dart:ui SPI.
++// Temporary bridge for fragment shader image filters until S4g-2 moves the
++// remaining Dl dependency behind dart:ui SPI.
+ FlutterSpiImageFilter* SpiImageFilterFromDl(std::shared_ptr<DlImageFilter>);
+ 
+ // Temporary bridge until S4g moves image creation behind dart:ui SPI.
+ FlutterSpiImage* SpiImageFromDlImage(sk_sp<DlImage>);
+ 
+-// Temporary bridge until S4g moves vertices creation behind dart:ui SPI.
+-FlutterSpiVertices* SpiVerticesFromDl(std::shared_ptr<DlVertices>);
+-
+ // Temporary bridge until S4e moves picture ownership behind dart:ui SPI.
+ const DisplayList* SpiPictureDisplayList(FlutterSpiPicture*);
+ 
+@@ -51,11 +44,10 @@ sk_sp<DisplayList> SpiPictureSharedDisplayList(FlutterSpiPicture*);
+ std::unique_ptr<LayerTree> SpiSceneTakeLayerTree(FlutterSpiScene* scene);
+ 
+ // Temporary bridge until S4e moves semantics submission behind dart:ui SPI.
+-FlutterSpiResult SpiSubmitSemantics(
+-    FlutterSpiEngine* engine,
+-    int64_t view_id,
+-    SemanticsNodeUpdates nodes,
+-    CustomAccessibilityActionUpdates actions);
++FlutterSpiResult SpiSubmitSemantics(FlutterSpiEngine* engine,
++                                    int64_t view_id,
++                                    SemanticsNodeUpdates nodes,
++                                    CustomAccessibilityActionUpdates actions);
+ 
+ FlutterSpiResult SpiEngineFontLoad(FlutterSpiEngine* engine,
+                                    const uint8_t* data,
+@@ -70,7 +62,8 @@ FontCollection& SpiEngineFontCollection(FlutterSpiEngine* engine);
+ // Temporary bridge until S4g moves asset access behind dart:ui SPI.
+ std::shared_ptr<AssetManager> SpiEngineAssetManager(FlutterSpiEngine* engine);
+ 
+-// Temporary bridge: background isolates post platform messages straight to the shell's handler, a Dart-only path with no C equivalent yet.
++// Temporary bridge: background isolates post platform messages straight to the
++// shell's handler, a Dart-only path with no C equivalent yet.
+ std::weak_ptr<PlatformMessageHandler> SpiEnginePlatformMessageHandler(
+     FlutterSpiEngine* engine);
+ 
