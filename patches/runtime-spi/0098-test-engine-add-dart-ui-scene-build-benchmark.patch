@@ -1,0 +1,207 @@
+# Why: establish the S4e retained-scene construction baseline before migrating
+# compositing to the runtime SPI.
+diff --git a/engine/src/flutter/lib/ui/fixtures/ui_test.dart b/engine/src/flutter/lib/ui/fixtures/ui_test.dart
+index 17d27bac8fd..d790a5db508 100644
+--- a/engine/src/flutter/lib/ui/fixtures/ui_test.dart
++++ b/engine/src/flutter/lib/ui/fixtures/ui_test.dart
+@@ -51,6 +51,163 @@ void buildPathFrame() {
+   }
+ }
+ 
++Picture _createScenePicture(Color color, double size) {
++  final PictureRecorder recorder = PictureRecorder();
++  final Canvas canvas = Canvas(recorder, Rect.fromLTWH(0, 0, size, size));
++  canvas.drawRect(Rect.fromLTWH(0, 0, size, size), Paint()..color = color);
++  return recorder.endRecording();
++}
++
++@pragma('vm:entry-point')
++void buildSceneFrame() {
++  const int groupCount = 60;
++  const int retainedGroupCount = 10;
++  const int framesPerRetention = 3;
++  final List<Picture> pictures = <Picture>[
++    _createScenePicture(const Color(0xFF2563EB), 16),
++    _createScenePicture(const Color(0xFF16A34A), 20),
++    _createScenePicture(const Color(0xFFDC2626), 24),
++    _createScenePicture(const Color(0xFFCA8A04), 28),
++  ];
++  final ColorFilter colorFilter = ColorFilter.mode(
++    const Color(0xFFFFFFFF),
++    BlendMode.modulate,
++  );
++  List<OffsetEngineLayer?> previousOffsetLayers = <OffsetEngineLayer?>[];
++  List<TransformEngineLayer?> previousTransformLayers = <TransformEngineLayer?>[];
++  List<ClipRectEngineLayer?> previousClipRectLayers = <ClipRectEngineLayer?>[];
++  List<OpacityEngineLayer?> previousOpacityLayers = <OpacityEngineLayer?>[];
++  List<ClipRRectEngineLayer?> previousClipRRectLayers = <ClipRRectEngineLayer?>[];
++  List<ColorFilterEngineLayer?> previousColorFilterLayers = <ColorFilterEngineLayer?>[];
++
++  for (int frameIndex = 0; frameIndex < framesPerRetention * 2; frameIndex++) {
++    final bool retainFirstGroups =
++        frameIndex % framesPerRetention == framesPerRetention - 1 &&
++        previousOpacityLayers.length == groupCount &&
++        previousOpacityLayers[retainedGroupCount - 1] != null;
++    final SceneBuilder sceneBuilder = SceneBuilder();
++    final List<OffsetEngineLayer?> nextOffsetLayers = <OffsetEngineLayer?>[];
++    final List<TransformEngineLayer?> nextTransformLayers = <TransformEngineLayer?>[];
++    final List<ClipRectEngineLayer?> nextClipRectLayers = <ClipRectEngineLayer?>[];
++    final List<OpacityEngineLayer?> nextOpacityLayers = <OpacityEngineLayer?>[];
++    final List<ClipRRectEngineLayer?> nextClipRRectLayers = <ClipRRectEngineLayer?>[];
++    final List<ColorFilterEngineLayer?> nextColorFilterLayers = <ColorFilterEngineLayer?>[];
++
++    for (int groupIndex = 0; groupIndex < groupCount; groupIndex++) {
++      if (retainFirstGroups && groupIndex < retainedGroupCount) {
++        sceneBuilder.addRetained(previousOpacityLayers[groupIndex]!);
++        nextOffsetLayers.add(null);
++        nextTransformLayers.add(null);
++        nextClipRectLayers.add(null);
++        nextOpacityLayers.add(null);
++        nextClipRRectLayers.add(null);
++        nextColorFilterLayers.add(null);
++        continue;
++      }
++
++      final double offset = groupIndex.toDouble() * 6.0;
++      final OffsetEngineLayer offsetLayer = sceneBuilder.pushOffset(
++        offset,
++        offset * 0.5,
++        oldLayer: groupIndex < previousOffsetLayers.length
++            ? previousOffsetLayers[groupIndex]
++            : null,
++      );
++      final double scale = 1.0 + (groupIndex % 5) * 0.01;
++      final TransformEngineLayer transformLayer = sceneBuilder.pushTransform(
++        Float64List.fromList(<double>[
++          scale,
++          0,
++          0,
++          0,
++          0,
++          scale,
++          0,
++          0,
++          0,
++          0,
++          1,
++          0,
++          offset,
++          offset * 0.5,
++          0,
++          1,
++        ]),
++        oldLayer: groupIndex < previousTransformLayers.length
++            ? previousTransformLayers[groupIndex]
++            : null,
++      );
++      final ClipRectEngineLayer clipRectLayer = sceneBuilder.pushClipRect(
++        Rect.fromLTWH(0, 0, 64, 48),
++        oldLayer: groupIndex < previousClipRectLayers.length
++            ? previousClipRectLayers[groupIndex]
++            : null,
++      );
++      final OpacityEngineLayer opacityLayer = sceneBuilder.pushOpacity(
++        200,
++        oldLayer: groupIndex < previousOpacityLayers.length
++            ? previousOpacityLayers[groupIndex]
++            : null,
++      );
++
++      ClipRRectEngineLayer? clipRRectLayer;
++      ColorFilterEngineLayer? colorFilterLayer;
++      if ((groupIndex + 1) % 10 == 0) {
++        clipRRectLayer = sceneBuilder.pushClipRRect(
++          RRect.fromRectAndRadius(
++            const Rect.fromLTWH(0, 0, 64, 48),
++            const Radius.circular(4),
++          ),
++          oldLayer: groupIndex < previousClipRRectLayers.length
++              ? previousClipRRectLayers[groupIndex]
++              : null,
++        );
++        colorFilterLayer = sceneBuilder.pushColorFilter(
++          colorFilter,
++          oldLayer: groupIndex < previousColorFilterLayers.length
++              ? previousColorFilterLayers[groupIndex]
++              : null,
++        );
++      }
++
++      sceneBuilder.addPicture(
++        Offset.zero,
++        pictures[groupIndex % pictures.length],
++        isComplexHint: groupIndex % 2 == 0,
++        willChangeHint: groupIndex % 3 == 0,
++      );
++      if (colorFilterLayer != null) {
++        sceneBuilder.pop();
++        sceneBuilder.pop();
++      }
++      sceneBuilder.pop();
++      sceneBuilder.pop();
++      sceneBuilder.pop();
++      sceneBuilder.pop();
++
++      nextOffsetLayers.add(offsetLayer);
++      nextTransformLayers.add(transformLayer);
++      nextClipRectLayers.add(clipRectLayer);
++      nextOpacityLayers.add(opacityLayer);
++      nextClipRRectLayers.add(clipRRectLayer);
++      nextColorFilterLayers.add(colorFilterLayer);
++    }
++
++    final Scene scene = sceneBuilder.build();
++    scene.dispose();
++    previousOffsetLayers = nextOffsetLayers;
++    previousTransformLayers = nextTransformLayers;
++    previousClipRectLayers = nextClipRectLayers;
++    previousOpacityLayers = nextOpacityLayers;
++    previousClipRRectLayers = nextClipRRectLayers;
++    previousColorFilterLayers = nextColorFilterLayers;
++  }
++
++  for (final Picture picture in pictures) {
++    picture.dispose();
++  }
++}
++
+ final List<Paint> _realisticFillPaints = <Paint>[
+   Paint()..color = const Color(0xFF2563EB),
+   Paint()..color = const Color(0xFF16A34A),
+diff --git a/engine/src/flutter/lib/ui/ui_benchmarks.cc b/engine/src/flutter/lib/ui/ui_benchmarks.cc
+index 15882ab4778..45b0450fd3e 100644
+--- a/engine/src/flutter/lib/ui/ui_benchmarks.cc
++++ b/engine/src/flutter/lib/ui/ui_benchmarks.cc
+@@ -126,4 +126,32 @@ static void BM_DartPathBuildFrame(benchmark::State& state) {
+ 
+ BENCHMARK(BM_DartPathBuildFrame)->Unit(benchmark::kMicrosecond);
+ 
++static void BM_DartSceneBuildFrame(benchmark::State& state) {
++  ThreadHost thread_host(ThreadHost::ThreadHostConfig(
++      "test", ThreadHost::Type::kPlatform | ThreadHost::Type::kRaster |
++                  ThreadHost::Type::kIo | ThreadHost::Type::kUi));
++  TaskRunners task_runners("test", thread_host.platform_thread->GetTaskRunner(),
++                           thread_host.raster_thread->GetTaskRunner(),
++                           thread_host.ui_thread->GetTaskRunner(),
++                           thread_host.io_thread->GetTaskRunner());
++  Fixture fixture;
++  auto settings = fixture.CreateSettingsForFixture();
++  auto vm_ref = DartVMRef::Create(settings);
++  auto isolate =
++      testing::RunDartCodeInIsolate(vm_ref, settings, task_runners, "main", {},
++                                    testing::GetDefaultKernelFilePath(), {});
++
++  while (state.KeepRunning()) {
++    bool successful = isolate->RunInIsolateScope([&]() -> bool {
++      Dart_Handle result = Dart_Invoke(
++          Dart_RootLibrary(), Dart_NewStringFromCString("buildSceneFrame"), 0,
++          nullptr);
++      return !Dart_IsError(result);
++    });
++    FML_CHECK(successful);
++  }
++}
++
++BENCHMARK(BM_DartSceneBuildFrame)->Unit(benchmark::kMicrosecond);
++
+ }  // namespace flutter
