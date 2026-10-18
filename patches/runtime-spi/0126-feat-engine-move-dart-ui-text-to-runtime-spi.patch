@@ -1,0 +1,1288 @@
+# Why: move dart:ui paragraph construction and queries onto the runtime SPI
+# text handles.
+diff --git a/engine/src/flutter/lib/ui/text/paragraph.cc b/engine/src/flutter/lib/ui/text/paragraph.cc
+index 0c068cab80b..aeec3413cbd 100644
+--- a/engine/src/flutter/lib/ui/text/paragraph.cc
++++ b/engine/src/flutter/lib/ui/text/paragraph.cc
+@@ -4,14 +4,15 @@
+ 
+ #include "flutter/lib/ui/text/paragraph.h"
+ 
+-#include "flutter/common/settings.h"
+-#include "flutter/common/task_runners.h"
++#include <array>
++#include <cmath>
++#include <vector>
++
+ #include "flutter/fml/logging.h"
+-#include "flutter/fml/task_runner.h"
+-#include "flutter/runtime_spi/scene/spi_canvas.h"
++#include "flutter/lib/ui/ui_dart_state.h"
++#include "flutter/lib/ui/window/platform_configuration.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/dart/runtime/include/dart_api.h"
+-#include "third_party/skia/modules/skparagraph/include/DartTypes.h"
+-#include "third_party/skia/modules/skparagraph/include/Paragraph.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+@@ -19,48 +20,126 @@
+ #include "third_party/tonic/logging/dart_invoke.h"
+ 
+ namespace flutter {
++namespace {
++
++const FlutterSpiTextApi* TextApi() {
++  return SpiEngineTextApi(
++      UIDartState::Current()->platform_configuration()->client()->GetSpiEngine());
++}
++
++FlutterSpiParagraphMetrics GetMetrics(FlutterSpiParagraph* paragraph) {
++  FlutterSpiParagraphMetrics metrics = {};
++  metrics.struct_size = sizeof(FlutterSpiParagraphMetrics);
++  FML_CHECK(TextApi()->paragraph_get_metrics(paragraph, &metrics) ==
++            kFlutterSpiOk);
++  return metrics;
++}
++
++tonic::Float32List EncodeTextBoxes(
++    const std::vector<FlutterSpiTextBox>& boxes) {
++  tonic::Float32List result(
++      Dart_NewTypedData(Dart_TypedData_kFloat32, boxes.size() * 5));
++  uint64_t position = 0;
++  for (const FlutterSpiTextBox& box : boxes) {
++    result[position++] = box.rect.left;
++    result[position++] = box.rect.top;
++    result[position++] = box.rect.right;
++    result[position++] = box.rect.bottom;
++    result[position++] = static_cast<float>(box.direction);
++  }
++  return result;
++}
++
++std::vector<FlutterSpiTextBox> GetRectsForRange(FlutterSpiParagraph* paragraph,
++                                                unsigned start,
++                                                unsigned end,
++                                                unsigned height_style,
++                                                unsigned width_style) {
++  size_t count = 0;
++  FML_CHECK(TextApi()->paragraph_get_rects_for_range(
++                paragraph, start, end, height_style, width_style, nullptr, 0,
++                &count) == kFlutterSpiOk);
++  std::vector<FlutterSpiTextBox> boxes(count);
++  FML_CHECK(TextApi()->paragraph_get_rects_for_range(
++                paragraph, start, end, height_style, width_style, boxes.data(),
++                boxes.size(), &count) == kFlutterSpiOk);
++  boxes.resize(count);
++  return boxes;
++}
++
++std::vector<FlutterSpiTextBox> GetRectsForPlaceholders(
++    FlutterSpiParagraph* paragraph) {
++  size_t count = 0;
++  FML_CHECK(TextApi()->paragraph_get_rects_for_placeholders(
++                paragraph, nullptr, 0, &count) == kFlutterSpiOk);
++  std::vector<FlutterSpiTextBox> boxes(count);
++  FML_CHECK(TextApi()->paragraph_get_rects_for_placeholders(
++                paragraph, boxes.data(), boxes.size(), &count) ==
++            kFlutterSpiOk);
++  boxes.resize(count);
++  return boxes;
++}
++
++std::vector<FlutterSpiLineMetrics> GetLineMetrics(
++    FlutterSpiParagraph* paragraph) {
++  size_t count = 0;
++  FML_CHECK(TextApi()->paragraph_get_line_metrics(
++                paragraph, nullptr, 0, &count) == kFlutterSpiOk);
++  std::vector<FlutterSpiLineMetrics> metrics(count);
++  FML_CHECK(TextApi()->paragraph_get_line_metrics(
++                paragraph, metrics.data(), metrics.size(), &count) ==
++            kFlutterSpiOk);
++  metrics.resize(count);
++  return metrics;
++}
++
++}  // namespace
+ 
+ IMPLEMENT_WRAPPERTYPEINFO(ui, Paragraph);
+ 
+-Paragraph::Paragraph(std::unique_ptr<txt::Paragraph> paragraph)
+-    : m_paragraph_(std::move(paragraph)) {}
++Paragraph::Paragraph(FlutterSpiParagraph* paragraph)
++    : m_paragraph_(paragraph) {}
+ 
+-Paragraph::~Paragraph() = default;
++Paragraph::~Paragraph() {
++  if (m_paragraph_ != nullptr) {
++    FML_CHECK(TextApi()->paragraph_release(m_paragraph_) == kFlutterSpiOk);
++  }
++}
+ 
+ double Paragraph::width() {
+-  return m_paragraph_->GetMaxWidth();
++  return GetMetrics(m_paragraph_).width;
+ }
+ 
+ double Paragraph::height() {
+-  return m_paragraph_->GetHeight();
++  return GetMetrics(m_paragraph_).height;
+ }
+ 
+ double Paragraph::longestLine() {
+-  return m_paragraph_->GetLongestLine();
++  return GetMetrics(m_paragraph_).longest_line;
+ }
+ 
+ double Paragraph::minIntrinsicWidth() {
+-  return m_paragraph_->GetMinIntrinsicWidth();
++  return GetMetrics(m_paragraph_).min_intrinsic_width;
+ }
+ 
+ double Paragraph::maxIntrinsicWidth() {
+-  return m_paragraph_->GetMaxIntrinsicWidth();
++  return GetMetrics(m_paragraph_).max_intrinsic_width;
+ }
+ 
+ double Paragraph::alphabeticBaseline() {
+-  return m_paragraph_->GetAlphabeticBaseline();
++  return GetMetrics(m_paragraph_).alphabetic_baseline;
+ }
+ 
+ double Paragraph::ideographicBaseline() {
+-  return m_paragraph_->GetIdeographicBaseline();
++  return GetMetrics(m_paragraph_).ideographic_baseline;
+ }
+ 
+ bool Paragraph::didExceedMaxLines() {
+-  return m_paragraph_->DidExceedMaxLines();
++  return GetMetrics(m_paragraph_).did_exceed_max_lines;
+ }
+ 
+ void Paragraph::layout(double width) {
+-  m_paragraph_->Layout(width);
++  FML_CHECK(TextApi()->paragraph_layout(m_paragraph_, width) == kFlutterSpiOk);
+ }
+ 
+ void Paragraph::paint(Canvas* canvas, double x, double y) {
+@@ -68,83 +147,56 @@ void Paragraph::paint(Canvas* canvas, double x, double y) {
+     // disposed.
+     return;
+   }
+-
+-  DisplayListBuilder* builder = SpiPictureRecorderBuilder(canvas->recorder());
+-  if (builder) {
+-    m_paragraph_->Paint(builder, x, y);
+-  }
+-}
+-
+-static tonic::Float32List EncodeTextBoxes(
+-    const std::vector<txt::Paragraph::TextBox>& boxes) {
+-  // Layout:
+-  // First value is the number of values.
+-  // Then there are boxes.size() groups of 5 which are LTRBD, where D is the
+-  // text direction index.
+-  tonic::Float32List result(
+-      Dart_NewTypedData(Dart_TypedData_kFloat32, boxes.size() * 5));
+-  uint64_t position = 0;
+-  for (uint64_t i = 0; i < boxes.size(); i++) {
+-    const txt::Paragraph::TextBox& box = boxes[i];
+-    result[position++] = box.rect.fLeft;
+-    result[position++] = box.rect.fTop;
+-    result[position++] = box.rect.fRight;
+-    result[position++] = box.rect.fBottom;
+-    result[position++] = static_cast<float>(box.direction);
+-  }
+-  return result;
++  FML_CHECK(TextApi()->canvas_draw_paragraph(canvas->recorder(), m_paragraph_,
++                                              x, y) == kFlutterSpiOk);
+ }
+ 
+ tonic::Float32List Paragraph::getRectsForRange(unsigned start,
+                                                unsigned end,
+                                                unsigned boxHeightStyle,
+                                                unsigned boxWidthStyle) {
+-  std::vector<txt::Paragraph::TextBox> boxes = m_paragraph_->GetRectsForRange(
+-      start, end, static_cast<txt::Paragraph::RectHeightStyle>(boxHeightStyle),
+-      static_cast<txt::Paragraph::RectWidthStyle>(boxWidthStyle));
+-  return EncodeTextBoxes(boxes);
++  return EncodeTextBoxes(GetRectsForRange(m_paragraph_, start, end,
++                                           boxHeightStyle, boxWidthStyle));
+ }
+ 
+ tonic::Float32List Paragraph::getRectsForPlaceholders() {
+-  std::vector<txt::Paragraph::TextBox> boxes =
+-      m_paragraph_->GetRectsForPlaceholders();
+-  return EncodeTextBoxes(boxes);
++  return EncodeTextBoxes(GetRectsForPlaceholders(m_paragraph_));
+ }
+ 
+ Dart_Handle Paragraph::getPositionForOffset(double dx, double dy) {
+-  txt::Paragraph::PositionWithAffinity pos =
+-      m_paragraph_->GetGlyphPositionAtCoordinate(dx, dy);
+-  std::vector<size_t> result = {
+-      pos.position,                      // size_t already
+-      static_cast<size_t>(pos.affinity)  // affinity (enum)
+-  };
++  size_t offset = 0;
++  int32_t affinity = 0;
++  FML_CHECK(TextApi()->paragraph_get_glyph_position_at(
++                m_paragraph_, dx, dy, &offset, &affinity) == kFlutterSpiOk);
++  std::vector<size_t> result = {offset, static_cast<size_t>(affinity)};
+   return tonic::DartConverter<decltype(result)>::ToDart(result);
+ }
+ 
+-Dart_Handle glyphInfoFrom(
+-    Dart_Handle constructor,
+-    const skia::textlayout::Paragraph::GlyphInfo& glyphInfo) {
++Dart_Handle GlyphInfoFrom(Dart_Handle constructor,
++                          const FlutterSpiGlyphInfo& glyph_info) {
+   std::array<Dart_Handle, 7> arguments = {
+-      Dart_NewDouble(glyphInfo.fGraphemeLayoutBounds.fLeft),
+-      Dart_NewDouble(glyphInfo.fGraphemeLayoutBounds.fTop),
+-      Dart_NewDouble(glyphInfo.fGraphemeLayoutBounds.fRight),
+-      Dart_NewDouble(glyphInfo.fGraphemeLayoutBounds.fBottom),
+-      Dart_NewInteger(glyphInfo.fGraphemeClusterTextRange.start),
+-      Dart_NewInteger(glyphInfo.fGraphemeClusterTextRange.end),
+-      Dart_NewBoolean(glyphInfo.fDirection ==
+-                      skia::textlayout::TextDirection::kLtr),
++      Dart_NewDouble(glyph_info.grapheme_bounds.left),
++      Dart_NewDouble(glyph_info.grapheme_bounds.top),
++      Dart_NewDouble(glyph_info.grapheme_bounds.right),
++      Dart_NewDouble(glyph_info.grapheme_bounds.bottom),
++      Dart_NewInteger(glyph_info.range_start),
++      Dart_NewInteger(glyph_info.range_end),
++      Dart_NewBoolean(glyph_info.is_ltr),
+   };
+   return Dart_InvokeClosure(constructor, arguments.size(), arguments.data());
+ }
+ 
+ Dart_Handle Paragraph::getGlyphInfoAt(unsigned utf16Offset,
+                                       Dart_Handle constructor) const {
+-  skia::textlayout::Paragraph::GlyphInfo glyphInfo;
+-  const bool found = m_paragraph_->GetGlyphInfoAt(utf16Offset, &glyphInfo);
++  FlutterSpiGlyphInfo glyph_info = {};
++  bool found = false;
++  FML_CHECK(TextApi()->paragraph_get_glyph_info_at(
++                m_paragraph_, utf16Offset, &glyph_info, &found) ==
++            kFlutterSpiOk);
+   if (!found) {
+     return Dart_Null();
+   }
+-  Dart_Handle handle = glyphInfoFrom(constructor, glyphInfo);
++  Dart_Handle handle = GlyphInfoFrom(constructor, glyph_info);
+   tonic::CheckAndHandleError(handle);
+   return handle;
+ }
+@@ -152,89 +204,76 @@ Dart_Handle Paragraph::getGlyphInfoAt(unsigned utf16Offset,
+ Dart_Handle Paragraph::getClosestGlyphInfo(double dx,
+                                            double dy,
+                                            Dart_Handle constructor) const {
+-  skia::textlayout::Paragraph::GlyphInfo glyphInfo;
+-  const bool found =
+-      m_paragraph_->GetClosestGlyphInfoAtCoordinate(dx, dy, &glyphInfo);
++  FlutterSpiGlyphInfo glyph_info = {};
++  bool found = false;
++  FML_CHECK(TextApi()->paragraph_get_closest_glyph_info(
++                m_paragraph_, dx, dy, &glyph_info, &found) == kFlutterSpiOk);
+   if (!found) {
+     return Dart_Null();
+   }
+-  Dart_Handle handle = glyphInfoFrom(constructor, glyphInfo);
++  Dart_Handle handle = GlyphInfoFrom(constructor, glyph_info);
+   tonic::CheckAndHandleError(handle);
+   return handle;
+ }
+ 
+ Dart_Handle Paragraph::getWordBoundary(unsigned utf16Offset) {
+-  txt::Paragraph::Range<size_t> point =
+-      m_paragraph_->GetWordBoundary(utf16Offset);
+-  std::vector<size_t> result = {point.start, point.end};
++  size_t start = 0;
++  size_t end = 0;
++  FML_CHECK(TextApi()->paragraph_get_word_boundary(
++                m_paragraph_, utf16Offset, &start, &end) == kFlutterSpiOk);
++  std::vector<size_t> result = {start, end};
+   return tonic::DartConverter<decltype(result)>::ToDart(result);
+ }
+ 
+ Dart_Handle Paragraph::getLineBoundary(unsigned utf16Offset) {
+-  std::vector<txt::LineMetrics> metrics = m_paragraph_->GetLineMetrics();
+-  int line_start = -1;
+-  int line_end = -1;
+-  for (txt::LineMetrics& line : metrics) {
+-    if (utf16Offset >= line.start_index && utf16Offset <= line.end_index) {
+-      line_start = line.start_index;
+-      line_end = line.end_index;
+-      break;
+-    }
+-  }
+-  std::vector<int> result = {line_start, line_end};
++  int64_t start = -1;
++  int64_t end = -1;
++  FML_CHECK(TextApi()->paragraph_get_line_boundary(
++                m_paragraph_, utf16Offset, &start, &end) == kFlutterSpiOk);
++  std::vector<int> result = {static_cast<int>(start), static_cast<int>(end)};
+   return tonic::DartConverter<decltype(result)>::ToDart(result);
+ }
+ 
+ tonic::Float64List Paragraph::computeLineMetrics() const {
+-  std::vector<txt::LineMetrics> metrics = m_paragraph_->GetLineMetrics();
+-
+-  // Layout:
+-  // boxes.size() groups of 9 which are the line metrics
+-  // properties
++  const std::vector<FlutterSpiLineMetrics> metrics =
++      GetLineMetrics(m_paragraph_);
+   tonic::Float64List result(
+       Dart_NewTypedData(Dart_TypedData_kFloat64, metrics.size() * 9));
+   uint64_t position = 0;
+-  for (uint64_t i = 0; i < metrics.size(); i++) {
+-    const txt::LineMetrics& line = metrics[i];
++  for (const FlutterSpiLineMetrics& line : metrics) {
+     result[position++] = static_cast<double>(line.hard_break);
+     result[position++] = line.ascent;
+     result[position++] = line.descent;
+     result[position++] = line.unscaled_ascent;
+-    // We add then round to get the height. The
+-    // definition of height here is different
+-    // than the one in LibTxt.
+     result[position++] = round(line.ascent + line.descent);
+     result[position++] = line.width;
+     result[position++] = line.left;
+     result[position++] = line.baseline;
+     result[position++] = static_cast<double>(line.line_number);
+   }
+-
+   return result;
+ }
+ 
+ Dart_Handle Paragraph::getLineMetricsAt(int lineNumber,
+                                         Dart_Handle constructor) const {
+-  skia::textlayout::LineMetrics line;
+-  const bool found = m_paragraph_->GetLineMetricsAt(lineNumber, &line);
++  FlutterSpiLineMetrics line = {};
++  bool found = false;
++  FML_CHECK(TextApi()->paragraph_get_line_metrics_at(
++                m_paragraph_, lineNumber, &line, &found) == kFlutterSpiOk);
+   if (!found) {
+     return Dart_Null();
+   }
+   std::array<Dart_Handle, 9> arguments = {
+-      Dart_NewBoolean(line.fHardBreak),
+-      Dart_NewDouble(line.fAscent),
+-      Dart_NewDouble(line.fDescent),
+-      Dart_NewDouble(line.fUnscaledAscent),
+-      // We add then round to get the height. The
+-      // definition of height here is different
+-      // than the one in LibTxt.
+-      Dart_NewDouble(round(line.fAscent + line.fDescent)),
+-      Dart_NewDouble(line.fWidth),
+-      Dart_NewDouble(line.fLeft),
+-      Dart_NewDouble(line.fBaseline),
+-      Dart_NewInteger(line.fLineNumber),
++      Dart_NewBoolean(line.hard_break),
++      Dart_NewDouble(line.ascent),
++      Dart_NewDouble(line.descent),
++      Dart_NewDouble(line.unscaled_ascent),
++      Dart_NewDouble(round(line.ascent + line.descent)),
++      Dart_NewDouble(line.width),
++      Dart_NewDouble(line.left),
++      Dart_NewDouble(line.baseline),
++      Dart_NewInteger(line.line_number),
+   };
+-
+   Dart_Handle handle =
+       Dart_InvokeClosure(constructor, arguments.size(), arguments.data());
+   tonic::CheckAndHandleError(handle);
+@@ -242,15 +281,24 @@ Dart_Handle Paragraph::getLineMetricsAt(int lineNumber,
+ }
+ 
+ size_t Paragraph::getNumberOfLines() const {
+-  return m_paragraph_->GetNumberOfLines();
++  size_t line_count = 0;
++  FML_CHECK(TextApi()->paragraph_get_line_count(m_paragraph_, &line_count) ==
++            kFlutterSpiOk);
++  return line_count;
+ }
+ 
+ int Paragraph::getLineNumberAt(size_t utf16Offset) const {
+-  return m_paragraph_->GetLineNumberAt(utf16Offset);
++  int32_t line_number = 0;
++  FML_CHECK(TextApi()->paragraph_get_line_number_at(
++                m_paragraph_, utf16Offset, &line_number) == kFlutterSpiOk);
++  return line_number;
+ }
+ 
+ void Paragraph::dispose() {
+-  m_paragraph_.reset();
++  if (m_paragraph_ != nullptr) {
++    FML_CHECK(TextApi()->paragraph_release(m_paragraph_) == kFlutterSpiOk);
++    m_paragraph_ = nullptr;
++  }
+   ClearDartWrapper();
+ }
+ 
+diff --git a/engine/src/flutter/lib/ui/text/paragraph.h b/engine/src/flutter/lib/ui/text/paragraph.h
+index a3e4389be15..8f5ccda5862 100644
+--- a/engine/src/flutter/lib/ui/text/paragraph.h
++++ b/engine/src/flutter/lib/ui/text/paragraph.h
+@@ -8,7 +8,7 @@
+ #include "flutter/fml/message_loop.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "flutter/lib/ui/painting/canvas.h"
+-#include "flutter/txt/src/txt/paragraph.h"
++#include "flutter/runtime_spi/include/flutter_text.h"
+ 
+ namespace flutter {
+ 
+@@ -18,8 +18,8 @@ class Paragraph : public RefCountedDartWrappable<Paragraph> {
+ 
+  public:
+   static void Create(Dart_Handle paragraph_handle,
+-                     std::unique_ptr<txt::Paragraph> txt_paragraph) {
+-    auto paragraph = fml::MakeRefCounted<Paragraph>(std::move(txt_paragraph));
++                     FlutterSpiParagraph* spi_paragraph) {
++    auto paragraph = fml::MakeRefCounted<Paragraph>(spi_paragraph);
+     paragraph->AssociateWithDartWrapper(paragraph_handle);
+   }
+ 
+@@ -58,9 +58,9 @@ class Paragraph : public RefCountedDartWrappable<Paragraph> {
+   void dispose();
+ 
+  private:
+-  std::unique_ptr<txt::Paragraph> m_paragraph_;
++  FlutterSpiParagraph* m_paragraph_ = nullptr;
+ 
+-  explicit Paragraph(std::unique_ptr<txt::Paragraph> paragraph);
++  explicit Paragraph(FlutterSpiParagraph* paragraph);
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/text/paragraph_builder.cc b/engine/src/flutter/lib/ui/text/paragraph_builder.cc
+index b8b86ab4d44..2302a9842f3 100644
+--- a/engine/src/flutter/lib/ui/text/paragraph_builder.cc
++++ b/engine/src/flutter/lib/ui/text/paragraph_builder.cc
+@@ -4,22 +4,16 @@
+ 
+ #include "flutter/lib/ui/text/paragraph_builder.h"
+ 
++#include <cstdint>
+ #include <cstring>
++#include <string>
++#include <vector>
+ 
+-#include "flutter/common/settings.h"
+-#include "flutter/common/task_runners.h"
+ #include "flutter/fml/logging.h"
+-#include "flutter/fml/task_runner.h"
+-#include "flutter/lib/ui/text/font_collection.h"
++#include "flutter/fml/string_conversion.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/lib/ui/window/platform_configuration.h"
+ #include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+-#include "flutter/txt/src/txt/font_style.h"
+-#include "flutter/txt/src/txt/font_weight.h"
+-#include "flutter/txt/src/txt/paragraph_style.h"
+-#include "flutter/txt/src/txt/text_baseline.h"
+-#include "flutter/txt/src/txt/text_decoration.h"
+-#include "flutter/txt/src/txt/text_style.h"
+ #include "third_party/icu/source/common/unicode/ustring.h"
+ #include "third_party/skia/include/core/SkColor.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+@@ -31,10 +25,6 @@
+ namespace flutter {
+ namespace {
+ 
+-const double kTextHeightNone = 0.0;
+-
+-// TextStyle
+-
+ const int kTSLeadingDistributionIndex = 0;
+ const int kTSColorIndex = 1;
+ const int kTSTextDecorationIndex = 2;
+@@ -77,8 +67,6 @@ const int kTSTextShadowsMask = 1 << kTSTextShadowsIndex;
+ const int kTSFontFeaturesMask = 1 << kTSFontFeaturesIndex;
+ const int kTSFontVariationsMask = 1 << kTSFontVariationsIndex;
+ 
+-// ParagraphStyle
+-
+ const int kPSTextAlignIndex = 1;
+ const int kPSTextDirectionIndex = 2;
+ const int kPSFontWeightIndex = 3;
+@@ -91,9 +79,6 @@ const int kPSHeightIndex = 9;
+ const int kPSStrutStyleIndex = 10;
+ const int kPSEllipsisIndex = 11;
+ const int kPSLocaleIndex = 12;
+-// render_soft_hyphens is the first field whose mask bit and encode slot differ:
+-// it claims the next free mask bit (13), but stores its value in the next free
+-// encode slot (7), since slots 7-12 are reused only as mask-bit positions.
+ const int kPSRenderSoftHyphensIndex = 13;
+ const int kPSRenderSoftHyphensEncodeIndex = 7;
+ 
+@@ -111,8 +96,6 @@ const int kPSEllipsisMask = 1 << kPSEllipsisIndex;
+ const int kPSLocaleMask = 1 << kPSLocaleIndex;
+ const int kPSRenderSoftHyphensMask = 1 << kPSRenderSoftHyphensIndex;
+ 
+-// TextShadows decoding
+-
+ constexpr uint32_t kColorDefault = 0xFF000000;
+ constexpr uint32_t kBytesPerShadow = 16;
+ constexpr uint32_t kShadowPropertiesCount = 4;
+@@ -120,16 +103,11 @@ constexpr uint32_t kColorOffset = 0;
+ constexpr uint32_t kXOffset = 1;
+ constexpr uint32_t kYOffset = 2;
+ constexpr uint32_t kBlurOffset = 3;
+-
+-// FontFeature decoding
+ constexpr uint32_t kBytesPerFontFeature = 8;
+-constexpr uint32_t kFontFeatureTagLength = 4;
+-
+-// FontVariation decoding
+ constexpr uint32_t kBytesPerFontVariation = 8;
++constexpr uint32_t kFontFeatureTagLength = 4;
+ constexpr uint32_t kFontVariationTagLength = 4;
+ 
+-// Strut decoding
+ const int kSFontWeightIndex = 0;
+ const int kSFontStyleIndex = 1;
+ const int kSFontFamilyIndex = 2;
+@@ -148,83 +126,196 @@ const int kSHeightMask = 1 << kSHeightIndex;
+ const int kSLeadingMask = 1 << kSLeadingIndex;
+ const int kSForceStrutHeightMask = 1 << kSForceStrutHeightIndex;
+ 
+-}  // namespace
+-
+-IMPLEMENT_WRAPPERTYPEINFO(ui, ParagraphBuilder);
+-
+-void ParagraphBuilder::Create(Dart_Handle wrapper,
+-                              Dart_Handle encoded_handle,
+-                              Dart_Handle strutData,
+-                              const std::string& fontFamily,
+-                              const std::vector<std::string>& strutFontFamilies,
+-                              double fontSize,
+-                              double height,
+-                              const std::u16string& ellipsis,
+-                              const std::string& locale) {
+-  UIDartState::ThrowIfUIOperationsProhibited();
+-  auto res = fml::MakeRefCounted<ParagraphBuilder>(
+-      encoded_handle, strutData, fontFamily, strutFontFamilies, fontSize,
+-      height, ellipsis, locale);
+-  res->AssociateWithDartWrapper(wrapper);
++static_assert(kFlutterSpiTextStyleFieldLeadingDistribution ==
++              kTSLeadingDistributionMask);
++static_assert(kFlutterSpiTextStyleFieldColor == kTSColorMask);
++static_assert(kFlutterSpiTextStyleFieldDecoration == kTSTextDecorationMask);
++static_assert(kFlutterSpiTextStyleFieldDecorationColor ==
++              kTSTextDecorationColorMask);
++static_assert(kFlutterSpiTextStyleFieldDecorationStyle ==
++              kTSTextDecorationStyleMask);
++static_assert(kFlutterSpiTextStyleFieldFontWeight == kTSFontWeightMask);
++static_assert(kFlutterSpiTextStyleFieldFontStyle == kTSFontStyleMask);
++static_assert(kFlutterSpiTextStyleFieldTextBaseline == kTSTextBaselineMask);
++static_assert(kFlutterSpiTextStyleFieldDecorationThickness ==
++              kTSTextDecorationThicknessMask);
++static_assert(kFlutterSpiTextStyleFieldFontFamily == kTSFontFamilyMask);
++static_assert(kFlutterSpiTextStyleFieldFontSize == kTSFontSizeMask);
++static_assert(kFlutterSpiTextStyleFieldLetterSpacing == kTSLetterSpacingMask);
++static_assert(kFlutterSpiTextStyleFieldWordSpacing == kTSWordSpacingMask);
++static_assert(kFlutterSpiTextStyleFieldHeight == kTSHeightMask);
++static_assert(kFlutterSpiTextStyleFieldLocale == kTSLocaleMask);
++static_assert(kFlutterSpiTextStyleFieldBackground == kTSBackgroundMask);
++static_assert(kFlutterSpiTextStyleFieldForeground == kTSForegroundMask);
++static_assert(kFlutterSpiTextStyleFieldShadows == kTSTextShadowsMask);
++static_assert(kFlutterSpiTextStyleFieldFontFeatures == kTSFontFeaturesMask);
++static_assert(kFlutterSpiTextStyleFieldFontVariations ==
++              kTSFontVariationsMask);
++static_assert(kFlutterSpiParagraphStyleFieldTextAlign == kPSTextAlignMask);
++static_assert(kFlutterSpiParagraphStyleFieldTextDirection ==
++              kPSTextDirectionMask);
++static_assert(kFlutterSpiParagraphStyleFieldFontWeight == kPSFontWeightMask);
++static_assert(kFlutterSpiParagraphStyleFieldFontStyle == kPSFontStyleMask);
++static_assert(kFlutterSpiParagraphStyleFieldMaxLines == kPSMaxLinesMask);
++static_assert(kFlutterSpiParagraphStyleFieldTextHeightBehavior ==
++              kPSTextHeightBehaviorMask);
++static_assert(kFlutterSpiParagraphStyleFieldFontFamily == kPSFontFamilyMask);
++static_assert(kFlutterSpiParagraphStyleFieldFontSize == kPSFontSizeMask);
++static_assert(kFlutterSpiParagraphStyleFieldHeight == kPSHeightMask);
++static_assert(kFlutterSpiParagraphStyleFieldStrutStyle == kPSStrutStyleMask);
++static_assert(kFlutterSpiParagraphStyleFieldEllipsis == kPSEllipsisMask);
++static_assert(kFlutterSpiParagraphStyleFieldLocale == kPSLocaleMask);
++static_assert(kFlutterSpiParagraphStyleFieldRenderSoftHyphens ==
++              kPSRenderSoftHyphensMask);
++static_assert(kFlutterSpiStrutStyleFieldFontWeight == kSFontWeightMask);
++static_assert(kFlutterSpiStrutStyleFieldFontStyle == kSFontStyleMask);
++static_assert(kFlutterSpiStrutStyleFieldFontFamily == kSFontFamilyMask);
++static_assert(kFlutterSpiStrutStyleFieldLeadingDistribution ==
++              kSLeadingDistributionMask);
++static_assert(kFlutterSpiStrutStyleFieldFontSize == kSFontSizeMask);
++static_assert(kFlutterSpiStrutStyleFieldHeight == kSHeightMask);
++static_assert(kFlutterSpiStrutStyleFieldLeading == kSLeadingMask);
++static_assert(kFlutterSpiStrutStyleFieldForceStrutHeight ==
++              kSForceStrutHeightMask);
++
++FlutterSpiColor ToSpiColor(uint32_t color) {
++  return {
++      .red = SkColorGetR(color) / 255.0f,
++      .green = SkColorGetG(color) / 255.0f,
++      .blue = SkColorGetB(color) / 255.0f,
++      .alpha = SkColorGetA(color) / 255.0f,
++      .color_space = kFlutterSpiColorSpaceSRGB,
++  };
+ }
+ 
+-// returns true if there is a font family defined. Font family is the only
+-// parameter passed directly.
+-void decodeStrut(Dart_Handle strut_data,
++void DecodeStrut(Dart_Handle strut_data,
+                  const std::vector<std::string>& strut_font_families,
+-                 txt::ParagraphStyle& paragraph_style) {  // NOLINT
++                 FlutterSpiParagraphStyle& paragraph_style,
++                 std::vector<const char*>& family_pointers) {
+   if (strut_data == Dart_Null()) {
+     return;
+   }
+-
+   tonic::DartByteData byte_data(strut_data);
+   if (byte_data.length_in_bytes() == 0) {
+     return;
+   }
+-  paragraph_style.strut_enabled = true;
+ 
++  paragraph_style.strut_enabled = true;
+   const int32_t* int32_data = static_cast<const int32_t*>(byte_data.data());
+-  int32_t mask = int32_data[0];
++  const uint32_t mask = static_cast<uint32_t>(int32_data[0]);
++  paragraph_style.strut_set_fields = mask | kFlutterSpiStyleFieldsMasked;
+ 
+   size_t int32_count = 1;
+   if (mask & kSFontWeightMask) {
+     paragraph_style.strut_font_weight = int32_data[int32_count++];
+   }
+   if (mask & kSFontStyleMask) {
+-    paragraph_style.strut_font_style =
+-        static_cast<txt::FontStyle>(int32_data[int32_count++]);
++    paragraph_style.strut_font_style = int32_data[int32_count++];
+   }
+-
+   paragraph_style.strut_half_leading = mask & kSLeadingDistributionMask;
+ 
+-  std::vector<float> float_data;
+-  float_data.resize((byte_data.length_in_bytes() / 4) - int32_count);
+-  memcpy(float_data.data(), int32_data + int32_count, float_data.size() * 4);
++  const float* float_data =
++      reinterpret_cast<const float*>(int32_data + int32_count);
+   size_t float_count = 0;
+   if (mask & kSFontSizeMask) {
+     paragraph_style.strut_font_size = float_data[float_count++];
+   }
+   if (mask & kSHeightMask) {
+     paragraph_style.strut_height = float_data[float_count++];
+-    paragraph_style.strut_has_height_override = true;
+   }
+   if (mask & kSLeadingMask) {
+     paragraph_style.strut_leading = float_data[float_count++];
+   }
+-
+-  // The boolean is stored as the last bit in the bitmask, as null
+-  // and false have the same behavior.
+-  paragraph_style.force_strut_height = mask & kSForceStrutHeightMask;
++  paragraph_style.strut_force_height = mask & kSForceStrutHeightMask;
+ 
+   if (mask & kSFontFamilyMask) {
+-    paragraph_style.strut_font_families = strut_font_families;
++    family_pointers.reserve(strut_font_families.size());
++    for (const std::string& family : strut_font_families) {
++      family_pointers.push_back(family.c_str());
++    }
+   } else {
+-    // Provide an empty font name so that the platform default font will be
+-    // used.
+-    paragraph_style.strut_font_families.push_back("");
++    family_pointers.push_back("");
++  }
++  paragraph_style.strut_font_families = family_pointers.data();
++  paragraph_style.strut_font_family_count = family_pointers.size();
++}
++
++void DecodeTextShadows(Dart_Handle shadows_data,
++                       std::vector<FlutterSpiTextShadow>& shadows) {
++  tonic::DartByteData byte_data(shadows_data);
++  FML_CHECK(byte_data.length_in_bytes() % kBytesPerShadow == 0);
++
++  const uint32_t* uint_data = static_cast<const uint32_t*>(byte_data.data());
++  const float* float_data = static_cast<const float*>(byte_data.data());
++  const size_t shadow_count =
++      byte_data.length_in_bytes() / kBytesPerShadow;
++  shadows.reserve(shadow_count);
++  for (size_t index = 0; index < shadow_count; index++) {
++    const size_t offset = index * kShadowPropertiesCount;
++    shadows.push_back({
++        .color = ToSpiColor(uint_data[offset + kColorOffset] ^ kColorDefault),
++        .offset = {.x = float_data[offset + kXOffset],
++                   .y = float_data[offset + kYOffset]},
++        .blur_sigma = float_data[offset + kBlurOffset],
++    });
++  }
++}
++
++void DecodeFontFeatures(Dart_Handle data,
++                        std::vector<FlutterSpiFontFeature>& features) {
++  tonic::DartByteData byte_data(data);
++  FML_CHECK(byte_data.length_in_bytes() % kBytesPerFontFeature == 0);
++  const size_t count = byte_data.length_in_bytes() / kBytesPerFontFeature;
++  features.resize(count);
++  const char* bytes = static_cast<const char*>(byte_data.data());
++  for (size_t index = 0; index < count; index++) {
++    const char* entry = bytes + index * kBytesPerFontFeature;
++    std::memcpy(features[index].tag, entry, kFontFeatureTagLength);
++    features[index].value =
++        *reinterpret_cast<const int32_t*>(entry + kFontFeatureTagLength);
+   }
+ }
+ 
++void DecodeFontVariations(Dart_Handle data,
++                          std::vector<FlutterSpiFontVariation>& variations) {
++  tonic::DartByteData byte_data(data);
++  FML_CHECK(byte_data.length_in_bytes() % kBytesPerFontVariation == 0);
++  const size_t count = byte_data.length_in_bytes() / kBytesPerFontVariation;
++  variations.resize(count);
++  const char* bytes = static_cast<const char*>(byte_data.data());
++  for (size_t index = 0; index < count; index++) {
++    const char* entry = bytes + index * kBytesPerFontVariation;
++    std::memcpy(variations[index].axis, entry, kFontVariationTagLength);
++    variations[index].value =
++        *reinterpret_cast<const float*>(entry + kFontVariationTagLength);
++  }
++}
++
++const FlutterSpiTextApi* TextApi() {
++  return SpiEngineTextApi(
++      UIDartState::Current()->platform_configuration()->client()->GetSpiEngine());
++}
++
++}  // namespace
++
++IMPLEMENT_WRAPPERTYPEINFO(ui, ParagraphBuilder);
++
++void ParagraphBuilder::Create(Dart_Handle wrapper,
++                              Dart_Handle encoded_handle,
++                              Dart_Handle strutData,
++                              const std::string& fontFamily,
++                              const std::vector<std::string>& strutFontFamilies,
++                              double fontSize,
++                              double height,
++                              const std::u16string& ellipsis,
++                              const std::string& locale) {
++  UIDartState::ThrowIfUIOperationsProhibited();
++  auto res = fml::MakeRefCounted<ParagraphBuilder>(
++      encoded_handle, strutData, fontFamily, strutFontFamilies, fontSize,
++      height, ellipsis, locale);
++  res->AssociateWithDartWrapper(wrapper);
++}
++
+ ParagraphBuilder::ParagraphBuilder(
+     Dart_Handle encoded_data,
+     Dart_Handle strutData,
+@@ -234,273 +325,185 @@ ParagraphBuilder::ParagraphBuilder(
+     double height,
+     const std::u16string& ellipsis,
+     const std::string& locale) {
+-  int32_t mask = 0;
+-  txt::ParagraphStyle style;
+-  {
+-    tonic::Int32List encoded(encoded_data);
+-
+-    mask = encoded[0];
+-
+-    if (mask & kPSTextAlignMask) {
+-      style.text_align =
+-          static_cast<txt::TextAlign>(encoded[kPSTextAlignIndex]);
+-    }
+-
+-    if (mask & kPSTextDirectionMask) {
+-      style.text_direction =
+-          static_cast<txt::TextDirection>(encoded[kPSTextDirectionIndex]);
+-    }
+-
+-    if (mask & kPSFontWeightMask) {
+-      style.font_weight = encoded[kPSFontWeightIndex];
+-    }
++  tonic::Int32List encoded(encoded_data);
++  const uint32_t mask = static_cast<uint32_t>(encoded[0]);
++  FlutterSpiParagraphStyle style = {};
++  style.struct_size = sizeof(FlutterSpiParagraphStyle);
++  style.set_fields = mask | kFlutterSpiStyleFieldsMasked;
+ 
+-    if (mask & kPSFontStyleMask) {
+-      style.font_style =
+-          static_cast<txt::FontStyle>(encoded[kPSFontStyleIndex]);
+-    }
+-
+-    if (mask & kPSFontFamilyMask) {
+-      style.font_family = fontFamily;
+-    }
+-
+-    if (mask & kPSFontSizeMask) {
+-      style.font_size = fontSize;
+-    }
+-
+-    if (mask & kPSHeightMask) {
+-      style.height = height;
+-      style.has_height_override = true;
+-    }
+-
+-    if (mask & kPSTextHeightBehaviorMask) {
+-      style.text_height_behavior = encoded[kPSTextHeightBehaviorIndex];
+-    }
+-
+-    if (mask & kPSMaxLinesMask) {
+-      style.max_lines = encoded[kPSMaxLinesIndex];
+-    }
+-
+-    if (mask & kPSRenderSoftHyphensMask) {
+-      // Hyphens.manual (0) renders the soft hyphen glyph; Hyphens.hidden (1)
+-      // suppresses it.
+-      style.render_soft_hyphens = encoded[kPSRenderSoftHyphensEncodeIndex] == 0;
+-    }
++  if (mask & kPSTextAlignMask) {
++    style.text_align = encoded[kPSTextAlignIndex];
++  }
++  if (mask & kPSTextDirectionMask) {
++    style.text_direction = encoded[kPSTextDirectionIndex];
++  }
++  if (mask & kPSFontWeightMask) {
++    style.font_weight = encoded[kPSFontWeightIndex];
++  }
++  if (mask & kPSFontStyleMask) {
++    style.font_style = encoded[kPSFontStyleIndex];
++  }
++  if (mask & kPSFontFamilyMask) {
++    style.font_family = fontFamily.c_str();
++  }
++  if (mask & kPSFontSizeMask) {
++    style.font_size = fontSize;
++  }
++  if (mask & kPSHeightMask) {
++    style.height = height;
++  }
++  if (mask & kPSTextHeightBehaviorMask) {
++    style.text_height_behavior = encoded[kPSTextHeightBehaviorIndex];
++  }
++  if (mask & kPSMaxLinesMask) {
++    style.max_lines = encoded[kPSMaxLinesIndex];
++  }
++  if (mask & kPSRenderSoftHyphensMask) {
++    style.render_soft_hyphens = encoded[kPSRenderSoftHyphensEncodeIndex] == 0;
+   }
+ 
++  std::vector<const char*> strut_family_pointers;
+   if (mask & kPSStrutStyleMask) {
+-    decodeStrut(strutData, strutFontFamilies, style);
++    DecodeStrut(strutData, strutFontFamilies, style, strut_family_pointers);
+   }
+ 
++  const std::string ellipsis_utf8 = fml::Utf16ToUtf8(ellipsis);
+   if (mask & kPSEllipsisMask) {
+-    style.ellipsis = ellipsis;
++    style.ellipsis = ellipsis_utf8.c_str();
+   }
+-
+   if (mask & kPSLocaleMask) {
+-    style.locale = locale;
+-  }
+-
+-  FontCollection& font_collection = SpiEngineFontCollection(
+-      UIDartState::Current()->platform_configuration()->client()->GetSpiEngine());
+-
+-  auto impeller_enabled = UIDartState::Current()->IsImpellerEnabled();
+-  m_paragraph_builder_ = txt::ParagraphBuilder::CreateSkiaBuilder(
+-      style, font_collection.GetFontCollection(), impeller_enabled);
+-}
+-
+-ParagraphBuilder::~ParagraphBuilder() = default;
+-
+-void decodeTextShadows(
+-    Dart_Handle shadows_data,
+-    std::vector<txt::TextShadow>& decoded_shadows) {  // NOLINT
+-  decoded_shadows.clear();
+-
+-  tonic::DartByteData byte_data(shadows_data);
+-  FML_CHECK(byte_data.length_in_bytes() % kBytesPerShadow == 0);
+-
+-  const uint32_t* uint_data = static_cast<const uint32_t*>(byte_data.data());
+-  const float* float_data = static_cast<const float*>(byte_data.data());
+-
+-  size_t shadow_count = byte_data.length_in_bytes() / kBytesPerShadow;
+-  size_t shadow_count_offset = 0;
+-  for (size_t shadow_index = 0; shadow_index < shadow_count; ++shadow_index) {
+-    shadow_count_offset = shadow_index * kShadowPropertiesCount;
+-    SkColor color =
+-        uint_data[shadow_count_offset + kColorOffset] ^ kColorDefault;
+-    decoded_shadows.emplace_back(
+-        color,
+-        SkPoint::Make(float_data[shadow_count_offset + kXOffset],
+-                      float_data[shadow_count_offset + kYOffset]),
+-        float_data[shadow_count_offset + kBlurOffset]);
++    style.locale = locale.c_str();
+   }
+-}
+-
+-void decodeFontFeatures(Dart_Handle font_features_data,
+-                        txt::FontFeatures& font_features) {  // NOLINT
+-  tonic::DartByteData byte_data(font_features_data);
+-  FML_CHECK(byte_data.length_in_bytes() % kBytesPerFontFeature == 0);
+ 
+-  size_t feature_count = byte_data.length_in_bytes() / kBytesPerFontFeature;
+-  for (size_t feature_index = 0; feature_index < feature_count;
+-       ++feature_index) {
+-    size_t feature_offset = feature_index * kBytesPerFontFeature;
+-    const char* feature_bytes =
+-        static_cast<const char*>(byte_data.data()) + feature_offset;
+-    std::string tag(feature_bytes, kFontFeatureTagLength);
+-    int32_t value = *(reinterpret_cast<const int32_t*>(feature_bytes +
+-                                                       kFontFeatureTagLength));
+-    font_features.SetFeature(tag, value);
+-  }
++  FlutterSpiEngine* engine =
++      UIDartState::Current()->platform_configuration()->client()->GetSpiEngine();
++  FML_CHECK(TextApi() != nullptr);
++  FML_CHECK(TextApi()->paragraph_builder_create(
++                engine, &style, &m_paragraph_builder_) == kFlutterSpiOk);
+ }
+ 
+-void decodeFontVariations(Dart_Handle font_variations_data,
+-                          txt::FontVariations& font_variations) {  // NOLINT
+-  tonic::DartByteData byte_data(font_variations_data);
+-  FML_CHECK(byte_data.length_in_bytes() % kBytesPerFontVariation == 0);
+-
+-  size_t variation_count = byte_data.length_in_bytes() / kBytesPerFontVariation;
+-  for (size_t variation_index = 0; variation_index < variation_count;
+-       ++variation_index) {
+-    size_t variation_offset = variation_index * kBytesPerFontVariation;
+-    const char* variation_bytes =
+-        static_cast<const char*>(byte_data.data()) + variation_offset;
+-    std::string tag(variation_bytes, kFontVariationTagLength);
+-    float value = *(reinterpret_cast<const float*>(variation_bytes +
+-                                                   kFontVariationTagLength));
+-    font_variations.SetAxisValue(tag, value);
++ParagraphBuilder::~ParagraphBuilder() {
++  if (m_paragraph_builder_ != nullptr) {
++    FML_CHECK(TextApi()->paragraph_builder_release(m_paragraph_builder_) ==
++              kFlutterSpiOk);
+   }
+ }
+ 
+-void ParagraphBuilder::pushStyle(const tonic::Int32List& encoded,
+-                                 const std::vector<std::string>& fontFamilies,
+-                                 double fontSize,
+-                                 double letterSpacing,
+-                                 double wordSpacing,
+-                                 double height,
+-                                 double decorationThickness,
+-                                 const std::string& locale,
+-                                 Dart_Handle background_objects,
+-                                 Dart_Handle background_data,
+-                                 Dart_Handle foreground_objects,
+-                                 Dart_Handle foreground_data,
+-                                 Dart_Handle shadows_data,
+-                                 Dart_Handle font_features_data,
+-                                 Dart_Handle font_variations_data) {
++void ParagraphBuilder::pushStyle(
++    const tonic::Int32List& encoded,
++    const std::vector<std::string>& fontFamilies,
++    double fontSize,
++    double letterSpacing,
++    double wordSpacing,
++    double height,
++    double decorationThickness,
++    const std::string& locale,
++    Dart_Handle background_objects,
++    Dart_Handle background_data,
++    Dart_Handle foreground_objects,
++    Dart_Handle foreground_data,
++    Dart_Handle shadows_data,
++    Dart_Handle font_features_data,
++    Dart_Handle font_variations_data) {
+   FML_DCHECK(encoded.num_elements() == 9);
+-
+-  int32_t mask = encoded[0];
+-
+-  // Set to use the properties of the previous style if the property is not
+-  // explicitly given.
+-  txt::TextStyle style = m_paragraph_builder_->PeekStyle();
+-
++  const uint32_t mask = static_cast<uint32_t>(encoded[0]);
++  FlutterSpiTextStyle style = {};
++  style.struct_size = sizeof(FlutterSpiTextStyle);
++  style.set_fields = mask | kFlutterSpiStyleFieldsMasked;
+   style.half_leading = mask & kTSLeadingDistributionMask;
+-  // Only change the style property from the previous value if a new explicitly
+-  // set value is available
++
+   if (mask & kTSColorMask) {
+-    style.color = encoded[kTSColorIndex];
++    style.color = ToSpiColor(encoded[kTSColorIndex]);
+   }
+-
+   if (mask & kTSTextDecorationMask) {
+-    style.decoration =
+-        static_cast<txt::TextDecoration>(encoded[kTSTextDecorationIndex]);
++    style.decoration = encoded[kTSTextDecorationIndex];
+   }
+-
+   if (mask & kTSTextDecorationColorMask) {
+-    style.decoration_color = encoded[kTSTextDecorationColorIndex];
++    style.decoration_color = ToSpiColor(encoded[kTSTextDecorationColorIndex]);
+   }
+-
+   if (mask & kTSTextDecorationStyleMask) {
+-    style.decoration_style = static_cast<txt::TextDecorationStyle>(
+-        encoded[kTSTextDecorationStyleIndex]);
++    style.decoration_style = encoded[kTSTextDecorationStyleIndex];
+   }
+-
+   if (mask & kTSTextDecorationThicknessMask) {
+-    style.decoration_thickness_multiplier = decorationThickness;
++    style.decoration_thickness = decorationThickness;
+   }
+-
+   if (mask & kTSTextBaselineMask) {
+-    // TODO(abarth): Implement TextBaseline. The CSS version of this
+-    // property wasn't wired up either.
++    style.text_baseline = encoded[kTSTextBaselineIndex];
+   }
+-
+-  if (mask & (kTSFontWeightMask | kTSFontStyleMask | kTSFontSizeMask |
+-              kTSLetterSpacingMask | kTSWordSpacingMask)) {
+-    if (mask & kTSFontWeightMask) {
+-      style.font_weight = encoded[kTSFontWeightIndex];
+-    }
+-
+-    if (mask & kTSFontStyleMask) {
+-      style.font_style =
+-          static_cast<txt::FontStyle>(encoded[kTSFontStyleIndex]);
+-    }
+-
+-    if (mask & kTSFontSizeMask) {
+-      style.font_size = fontSize;
+-    }
+-
+-    if (mask & kTSLetterSpacingMask) {
+-      style.letter_spacing = letterSpacing;
+-    }
+-
+-    if (mask & kTSWordSpacingMask) {
+-      style.word_spacing = wordSpacing;
+-    }
++  if (mask & kTSFontWeightMask) {
++    style.font_weight = encoded[kTSFontWeightIndex];
++  }
++  if (mask & kTSFontStyleMask) {
++    style.font_style = encoded[kTSFontStyleIndex];
++  }
++  if (mask & kTSFontSizeMask) {
++    style.font_size = fontSize;
++  }
++  if (mask & kTSLetterSpacingMask) {
++    style.letter_spacing = letterSpacing;
++  }
++  if (mask & kTSWordSpacingMask) {
++    style.word_spacing = wordSpacing;
+   }
+-
+   if (mask & kTSHeightMask) {
+     style.height = height;
+-    style.has_height_override = style.height != kTextHeightNone;
+   }
+-
+   if (mask & kTSLocaleMask) {
+-    style.locale = locale;
++    style.locale = locale.c_str();
+   }
+ 
+-  if (mask & kTSBackgroundMask) {
+-    Paint background(background_objects, background_data);
+-    if (background.isNotNull()) {
+-      DlPaint dl_paint;
+-      background.paint(dl_paint, DisplayListOpFlags::kDrawParagraphFlags,
+-                       DlTileMode::kDecal);
+-      style.background = dl_paint;
+-    }
++  Paint background(background_objects, background_data);
++  FlutterSpiPaint background_paint = {};
++  if (mask & kTSBackgroundMask && background.isNotNull()) {
++    background.ToSpiPaint(&background_paint);
++    style.background = &background_paint;
+   }
+ 
+-  if (mask & kTSForegroundMask) {
+-    Paint foreground(foreground_objects, foreground_data);
+-    if (foreground.isNotNull()) {
+-      DlPaint dl_paint;
+-      foreground.paint(dl_paint, DisplayListOpFlags::kDrawParagraphFlags,
+-                       DlTileMode::kDecal);
+-      style.foreground = dl_paint;
+-    }
++  Paint foreground(foreground_objects, foreground_data);
++  FlutterSpiPaint foreground_paint = {};
++  if (mask & kTSForegroundMask && foreground.isNotNull()) {
++    foreground.ToSpiPaint(&foreground_paint);
++    style.foreground = &foreground_paint;
+   }
+ 
++  std::vector<FlutterSpiTextShadow> shadows;
+   if (mask & kTSTextShadowsMask) {
+-    decodeTextShadows(shadows_data, style.text_shadows);
++    DecodeTextShadows(shadows_data, shadows);
++    style.shadows = shadows.data();
++    style.shadow_count = shadows.size();
+   }
+ 
++  std::vector<const char*> family_pointers;
+   if (mask & kTSFontFamilyMask) {
+-    // The child style's font families override the parent's font families.
+-    // If the child's fonts are not available, then the font collection will
+-    // use the system fallback fonts (not the parent's fonts).
+-    style.font_families = fontFamilies;
++    family_pointers.reserve(fontFamilies.size());
++    for (const std::string& family : fontFamilies) {
++      family_pointers.push_back(family.c_str());
++    }
++    style.font_families = family_pointers.data();
++    style.font_family_count = family_pointers.size();
+   }
+ 
++  std::vector<FlutterSpiFontFeature> features;
+   if (mask & kTSFontFeaturesMask) {
+-    decodeFontFeatures(font_features_data, style.font_features);
++    DecodeFontFeatures(font_features_data, features);
++    style.features = features.data();
++    style.feature_count = features.size();
+   }
+ 
++  std::vector<FlutterSpiFontVariation> variations;
+   if (mask & kTSFontVariationsMask) {
+-    decodeFontVariations(font_variations_data, style.font_variations);
++    DecodeFontVariations(font_variations_data, variations);
++    style.variations = variations.data();
++    style.variation_count = variations.size();
+   }
+ 
+-  m_paragraph_builder_->PushStyle(style);
++  FML_CHECK(TextApi()->paragraph_builder_push_style(m_paragraph_builder_,
++                                                     &style) == kFlutterSpiOk);
+ }
+ 
+ void ParagraphBuilder::pop() {
+-  m_paragraph_builder_->Pop();
++  FML_CHECK(TextApi()->paragraph_builder_pop(m_paragraph_builder_) ==
++            kFlutterSpiOk);
+ }
+ 
+ Dart_Handle ParagraphBuilder::addText(const std::u16string& text) {
+@@ -508,9 +511,6 @@ Dart_Handle ParagraphBuilder::addText(const std::u16string& text) {
+     return Dart_Null();
+   }
+ 
+-  // Use ICU to validate the UTF-16 input.  Calling u_strToUTF8 with a null
+-  // output buffer will return U_BUFFER_OVERFLOW_ERROR if the input is well
+-  // formed.
+   const UChar* text_ptr = reinterpret_cast<const UChar*>(text.data());
+   UErrorCode error_code = U_ZERO_ERROR;
+   u_strToUTF8(nullptr, 0, nullptr, text_ptr, text.size(), &error_code);
+@@ -518,8 +518,9 @@ Dart_Handle ParagraphBuilder::addText(const std::u16string& text) {
+     return tonic::ToDart("string is not well-formed UTF-16");
+   }
+ 
+-  m_paragraph_builder_->AddText(text);
+-
++  const std::string utf8 = fml::Utf16ToUtf8(text);
++  FML_CHECK(TextApi()->paragraph_builder_add_text(
++                m_paragraph_builder_, utf8.data(), utf8.size()) == kFlutterSpiOk);
+   return Dart_Null();
+ }
+ 
+@@ -528,16 +529,17 @@ void ParagraphBuilder::addPlaceholder(double width,
+                                       unsigned alignment,
+                                       double baseline_offset,
+                                       unsigned baseline) {
+-  txt::PlaceholderRun placeholder_run(
+-      width, height, static_cast<txt::PlaceholderAlignment>(alignment),
+-      static_cast<txt::TextBaseline>(baseline), baseline_offset);
+-
+-  m_paragraph_builder_->AddPlaceholder(placeholder_run);
++  FML_CHECK(TextApi()->paragraph_builder_add_placeholder(
++                m_paragraph_builder_, width, height, alignment, baseline_offset,
++                baseline) == kFlutterSpiOk);
+ }
+ 
+ void ParagraphBuilder::build(Dart_Handle paragraph_handle) {
+-  Paragraph::Create(paragraph_handle, m_paragraph_builder_->Build());
+-  m_paragraph_builder_.reset();
++  FlutterSpiParagraph* paragraph = nullptr;
++  FML_CHECK(TextApi()->paragraph_builder_build(m_paragraph_builder_,
++                                                &paragraph) == kFlutterSpiOk);
++  Paragraph::Create(paragraph_handle, paragraph);
++  m_paragraph_builder_ = nullptr;
+   ClearDartWrapper();
+ }
+ 
+diff --git a/engine/src/flutter/lib/ui/text/paragraph_builder.h b/engine/src/flutter/lib/ui/text/paragraph_builder.h
+index 895cae10f12..fde6ddee622 100644
+--- a/engine/src/flutter/lib/ui/text/paragraph_builder.h
++++ b/engine/src/flutter/lib/ui/text/paragraph_builder.h
+@@ -5,12 +5,10 @@
+ #ifndef FLUTTER_LIB_UI_TEXT_PARAGRAPH_BUILDER_H_
+ #define FLUTTER_LIB_UI_TEXT_PARAGRAPH_BUILDER_H_
+ 
+-#include <memory>
+-
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "flutter/lib/ui/painting/paint.h"
+ #include "flutter/lib/ui/text/paragraph.h"
+-#include "flutter/txt/src/txt/paragraph_builder.h"
++#include "flutter/runtime_spi/include/flutter_text.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
+ 
+ namespace flutter {
+@@ -78,7 +76,7 @@ class ParagraphBuilder : public RefCountedDartWrappable<ParagraphBuilder> {
+                             const std::u16string& ellipsis,
+                             const std::string& locale);
+ 
+-  std::unique_ptr<txt::ParagraphBuilder> m_paragraph_builder_;
++  FlutterSpiParagraphBuilder* m_paragraph_builder_ = nullptr;
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
+index 70132da9206..bfad4e60050 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
+@@ -105,6 +105,13 @@ FlutterSpiResult SpiEngineFontLoad(FlutterSpiEngine* engine,
+   return text_api->font_load(engine, data, size, family_alias);
+ }
+ 
++const FlutterSpiTextApi* SpiEngineTextApi(FlutterSpiEngine* engine) {
++  if (engine == nullptr || engine->backend == nullptr) {
++    return nullptr;
++  }
++  return engine->backend->engine_api().text;
++}
++
+ std::shared_ptr<AssetManager> SpiEngineAssetManager(FlutterSpiEngine* engine) {
+   return engine->backend->runtime_delegate_.GetAssetManager();
+ }
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+index 1859bd3fbce..3b27d5d3190 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+@@ -62,6 +62,8 @@ FlutterSpiResult SpiEngineFontLoad(FlutterSpiEngine* engine,
+                                    size_t size,
+                                    const char* family_alias);
+ 
++const FlutterSpiTextApi* SpiEngineTextApi(FlutterSpiEngine* engine);
++
+ // Temporary bridge until S4f moves font access behind dart:ui SPI.
+ FontCollection& SpiEngineFontCollection(FlutterSpiEngine* engine);
+ 
