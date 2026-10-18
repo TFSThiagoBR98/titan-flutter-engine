@@ -390,6 +390,44 @@ O warm-up frame usa `frame_token == 0` fora de um `begin_frame`, quando não há
 
 O checkpoint confirmou **1298 PASS** e **0 FAIL** no `check-runtime-spi.sh`, além do probe `9afdbcd18abd9b35` em x64 e arm64-musl sob QEMU, da configuração `--gn-only` dos dez alvos, do alvo `runtime_spi_c_api` em arm-hard e de `tools/ci.sh engine`. A série limpa contém **91 patches** do repositório do Flutter, dos quais **76** pertencem a `runtime-spi`; o `engine.lock` registra `patches_sha256=1e5f99699a9a3b4efaf91a9b209ff1097d270bc9d9681661c6f29809d9def115`. Os benchmarks de `shell_benchmarks` e `ui_benchmarks` permanecem pendentes e serão executados em rodada isolada depois da preparação dos sysroots, para não contaminar a medição com os seis núcleos ocupados pelo checkpoint.
 
+## S4d-1: Canvas sobre a API de cena
+
+A S4d-1 faz `Canvas`, `PictureRecorder` e `Picture` do `dart:ui` gravarem pela
+API de cena do Runtime SPI. O `Canvas` continua sendo uma API por chamada no
+core: cada operação chega à função correspondente da tabela do SPI, e o
+`PictureRecorder` entrega o `FlutterSpiPictureRecorder` ao caminho de pintura.
+Assim, a implementação Dart preserva a validação e as conversões existentes,
+enquanto o core mantém a gravação e a composição pela cena.
+
+A ABI 0.15 acrescenta desenho e recorte de superelipse, a matriz de
+transformação e os limites de clip local e de destino. Shaders, filtros, paths,
+imagens e vertices que ainda não têm uma migração completa entram por pontes
+internas temporárias. Cada objeto guarda seu handle SPI em cache e o libera no
+destrutor; a mutação de `CanvasPath` invalida o handle para que o próximo
+desenho reflita a nova forma.
+
+O portão usou um benchmark de quadro realista, com dez repetições e A/B
+intercalado quando o kernel do fixture permitia a comparação. A base ficou em
+524–527 µs; o caminho da Task 4 ficou em 642 µs, o ajuste de handles em 631 µs,
+o cache de paint em 622 µs (+18%) e os argumentos escalares do t11 em
+476–497 µs, com mediana de 487 µs (-7,6%). A tabela completa, a ressalva sobre
+os kernels dos fixtures e o perfil callgrind estão em
+[runtime-spi-s4d1.md](medidas/runtime-spi-s4d1.md).
+
+A Task 10, que tentou natives leaf para passar os bytes do paint por ponteiro,
+foi abandonada: a VM não executou as chamadas leaf, sem resolução de símbolo
+nem exceção, e o trabalho foi preservado na branch
+`wip/s4d1-task10-leaf`. A alternativa adotada na Task 11 passa os dados do
+paint como argumentos escalares sem leaf. O `flutter-rs` continua sendo o
+lugar previsto para um buffer de comandos quando uma linguagem com FFI caro
+precisar agrupar chamadas; o core não ganha um formato binário novo.
+
+O checkpoint desta série confirmou 1320 PASS e 0 FAIL no
+`check-runtime-spi.sh`. A comparação de desempenho deve ser lida junto com a
+nota de método da medição: cada binário precisa usar o kernel correspondente
+ao seu fixture, e a base usada para a comparação do t11 veio de duas sessões
+anteriores sem carga.
+
 ## Ciclo de vida e falhas
 
 O host cria, inicia, encerra e libera o backend. Uma falha recuperável encerra o runtime ativo e limpa os recursos;

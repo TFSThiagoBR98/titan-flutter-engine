@@ -85,6 +85,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Runtime SPI S4c-2: apps Dart passam a rodar pelo SPI (o runtime Dart é um runtime de tabela, como o Rust); ABI 0.13 com warm-up frame (token 0) e lançamento opaco do isolate; ABI 0.14 com resultado de adicionar/remover view, estado "rodando" do runtime e métricas de view completas (restrições, insets de gesto, display features).
+- Runtime SPI S4d-1: `Canvas`, `PictureRecorder` e `Picture` do `dart:ui` passam a gravar pela API de cena do SPI; a ABI 0.15 acrescenta operações de superelipse e consultas de transformação e clips, com handles de pintura em cache.
 - Runtime SPI S4b: o Shell deixa de depender da VM do Dart; os handlers do service
   protocol ficam no core e são servidos pelo VM service através da tabela de extensões (ABI 0.11).
 - Runtime SPI S4a: o engine chama as funções que só existem com Dart (microtasks, deferred libraries, código de retorno,

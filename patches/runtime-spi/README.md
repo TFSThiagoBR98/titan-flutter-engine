@@ -84,6 +84,17 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0074-feat-engine-report-view-results-and-running-state-through-the-spi-table.patch` | Reportar resultados de view e o estado de execução do runtime pela tabela do SPI. | |
 | `0075-fix-engine-give-the-dart-runtime-the-shell-s-platform-message-handler.patch` | Fornecer ao runtime Dart o `PlatformMessageHandler` do Shell. | |
 | `0076-fix-engine-carry-the-full-view-metrics-and-consume-submitted-scenes-through-the-spi.patch` | Transportar as métricas completas de view e consumir cenas submetidas pelo SPI. | |
+| `0077-test-engine-add-a-realistic-dart-ui-frame-benchmark.patch` | Adicionar o benchmark de quadro realista do `dart:ui` para o portão da S4d-1. | |
+| `0078-feat-engine-add-rsuperellipse-and-canvas-queries-to-the-spi-scene-api.patch` | Adicionar superelipses e consultas de transformação e clips à API de cena. | |
+| `0079-feat-engine-bridge-the-remaining-dart-ui-painting-objects-to-spi-handles.patch` | Criar pontes temporárias e handles SPI para os objetos restantes de pintura do `dart:ui`. | |
+| `0080-refactor-engine-record-dart-ui-canvas-calls-through-the-spi-scene-api.patch` | Gravar as chamadas de `Canvas`, `PictureRecorder` e `Picture` pela API de cena. | |
+| `0081-test-engine-cover-every-dart-ui-canvas-op-through-the-spi-recorder.patch` | Cobrir as operações de `Canvas` pela gravação do SPI. | |
+| `0082-test-engine-cover-generation-aware-spi-handles.patch` | Cobrir handles SPI com slot e geração. | |
+| `0083-perf-engine-look-up-spi-handles-by-slot-and-generation.patch` | Remover hash e cópia de `shared_ptr` do lookup quente de handles. | |
+| `0084-test-engine-cover-converted-paint-cache-invalidation.patch` | Cobrir a invalidação do cache de paint convertido. | |
+| `0085-perf-engine-reuse-the-last-converted-paint-per-recorder.patch` | Reutilizar o último paint convertido por recorder quando os bytes e handles forem válidos. | |
+| `0086-test-engine-observe-converted-paint-changes-on-cache-misses.patch` | Verificar alterações observáveis do paint nos misses do cache. | |
+| `0087-perf-engine-pass-dart-ui-paint-data-as-scalar-ffi-arguments.patch` | Passar os dados do paint como argumentos escalares FFI, sem natives leaf. | |
 
 O fluxo é:
 
