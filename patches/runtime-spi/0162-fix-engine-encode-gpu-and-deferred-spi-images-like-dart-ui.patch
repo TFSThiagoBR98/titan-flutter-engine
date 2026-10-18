@@ -1,0 +1,373 @@
+# Why: Route SPI image readback through the existing dart:ui raster conversion
+# and encoding pipeline so deferred and GPU images produce the same bytes.
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_fragment_unittests.cc b/engine/src/flutter/runtime_spi/effects/spi_fragment_unittests.cc
+index 2c59d6b26a3..d0d74ac483a 100644
+--- a/engine/src/flutter/runtime_spi/effects/spi_fragment_unittests.cc
++++ b/engine/src/flutter/runtime_spi/effects/spi_fragment_unittests.cc
+@@ -203,6 +203,7 @@ class SpiFragmentTest : public ::testing::Test {
+     backend_promise.set_value(backend);
+     return std::make_unique<SpiRuntimeBackend>(
+         delegate_, *task_runners_, c_test_runtime_table(runtime_),
++        fml::WeakPtr<IOManager>{},
+         fml::TaskRunnerAffineWeakPtr<ImageDecoder>{},
+         fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>{},
+         fml::TaskRunnerAffineWeakPtr<SnapshotDelegate>{}, nullptr, true,
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_readback.cc b/engine/src/flutter/runtime_spi/image/spi_image_readback.cc
+index feb2d81e849..675883ce3be 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_readback.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_readback.cc
+@@ -4,10 +4,10 @@
+ 
+ #include "flutter/runtime_spi/image/spi_image_readback.h"
+ 
+-#include "flutter/display_list/image/dl_image_skia.h"
+-#include "flutter/lib/ui/painting/image_readback.h"
++#include <utility>
++
++#include "flutter/lib/ui/io_manager.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
+-#include "third_party/skia/include/core/SkPixmap.h"
+ 
+ namespace flutter {
+ namespace {
+@@ -17,9 +17,36 @@ bool IsSupportedFormat(int32_t format) {
+          format <= static_cast<int32_t>(ImageByteFormat::kPNG);
+ }
+ 
++void CompleteBytes(FlutterSpiBytesCallback callback,
++                   void* user_data,
++                   fml::StatusOr<sk_sp<SkData>> encoded) {
++  if (!encoded.ok()) {
++    callback(user_data, kFlutterSpiInternalError, nullptr, 0);
++    return;
++  }
++
++  callback(user_data, kFlutterSpiOk,
++           static_cast<const uint8_t*>(encoded.value()->data()),
++           encoded.value()->size());
++}
++
++void PostInternalError(const ImageReadbackContext& context,
++                       FlutterSpiBytesCallback callback,
++                       void* user_data) {
++  auto report_error = [callback, user_data]() {
++    callback(user_data, kFlutterSpiInternalError, nullptr, 0);
++  };
++  if (!context.ui_task_runner) {
++    report_error();
++    return;
++  }
++  context.ui_task_runner->PostTask(std::move(report_error));
++}
++
+ }  // namespace
+ 
+-FlutterSpiResult SpiImageToBytes(FlutterSpiImage* image,
++FlutterSpiResult SpiImageToBytes(const ImageReadbackContext& context,
++                                 FlutterSpiImage* image,
+                                  int32_t format,
+                                  FlutterSpiBytesCallback callback,
+                                  void* user_data) {
+@@ -27,38 +54,43 @@ FlutterSpiResult SpiImageToBytes(FlutterSpiImage* image,
+     return kFlutterSpiInvalidArgument;
+   }
+ 
+-  const sk_sp<DlImage> dl_image = SpiImageGet(image);
++  sk_sp<DlImage> dl_image = SpiImageGet(image);
+   if (dl_image == nullptr) {
+     return kFlutterSpiInvalidHandle;
+   }
+ 
+-  const DlImageSkia* skia_image = dl_image->asSkiaImage();
+-  sk_sp<SkImage> raster_image =
+-      skia_image == nullptr ? nullptr : skia_image->skia_image();
+-  if (raster_image == nullptr) {
+-    callback(user_data, kFlutterSpiInternalError, nullptr, 0);
++  if (!context.io_task_runner) {
++    PostInternalError(context, callback, user_data);
+     return kFlutterSpiOk;
+   }
+ 
+-  SkPixmap pixmap;
+-  if (!raster_image->peekPixels(&pixmap)) {
+-    raster_image = raster_image->makeRasterImage(nullptr);
+-  }
+-  if (raster_image == nullptr) {
+-    callback(user_data, kFlutterSpiInternalError, nullptr, 0);
+-    return kFlutterSpiOk;
+-  }
++  context.io_task_runner->PostTask([context, dl_image = std::move(dl_image),
++                                    format, callback, user_data]() mutable {
++    if (!context.io_manager) {
++      PostInternalError(context, callback, user_data);
++      return;
++    }
+ 
+-  const auto encoded =
+-      EncodeRasterImage(raster_image, static_cast<ImageByteFormat>(format));
+-  if (!encoded.ok()) {
+-    callback(user_data, kFlutterSpiInternalError, nullptr, 0);
+-    return kFlutterSpiOk;
+-  }
++    ImageReadbackContext readback_context = context;
++    readback_context.gpu_disabled_switch =
++        context.io_manager->GetIsGpuDisabledSyncSwitch();
++    readback_context.impeller_context =
++        context.io_manager->GetImpellerContext();
++    ConvertToRasterImageAsync(
++        readback_context, std::move(dl_image),
++        [format, callback,
++         user_data](fml::StatusOr<sk_sp<SkImage>> raster_image) mutable {
++          if (!raster_image.ok()) {
++            callback(user_data, kFlutterSpiInternalError, nullptr, 0);
++            return;
++          }
+ 
+-  callback(user_data, kFlutterSpiOk,
+-           static_cast<const uint8_t*>(encoded.value()->data()),
+-           encoded.value()->size());
++          CompleteBytes(
++              callback, user_data,
++              EncodeRasterImage(raster_image.value(),
++                                static_cast<ImageByteFormat>(format)));
++        });
++  });
+   return kFlutterSpiOk;
+ }
+ 
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_readback.h b/engine/src/flutter/runtime_spi/image/spi_image_readback.h
+index 1b2f5ea1316..df7ddbb52f1 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_readback.h
++++ b/engine/src/flutter/runtime_spi/image/spi_image_readback.h
+@@ -5,11 +5,15 @@
+ #ifndef FLUTTER_RUNTIME_SPI_IMAGE_SPI_IMAGE_READBACK_H_
+ #define FLUTTER_RUNTIME_SPI_IMAGE_SPI_IMAGE_READBACK_H_
+ 
++#include "flutter/lib/ui/painting/image_readback.h"
+ #include "flutter/runtime_spi/include/flutter_image.h"
+ 
+ namespace flutter {
+ 
+-FlutterSpiResult SpiImageToBytes(FlutterSpiImage* image,
++// The callback is invoked on the UI task runner, like dart:ui's
++// Image.toByteData callback.
++FlutterSpiResult SpiImageToBytes(const ImageReadbackContext& context,
++                                 FlutterSpiImage* image,
+                                  int32_t format,
+                                  FlutterSpiBytesCallback callback,
+                                  void* user_data);
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index 90423df112d..f9ea8452275 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -67,7 +67,7 @@ FlutterSpiResult ImageToBytes(FlutterSpiEngine* engine,
+   if (engine == nullptr || engine->backend == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+-  return SpiImageToBytes(image, format, callback, user_data);
++  return engine->backend->ImageToBytes(image, format, callback, user_data);
+ }
+ 
+ const FlutterSpiTextApi kTextApi = {
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+index 9689e608b05..2c27cca3554 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+@@ -13,9 +13,11 @@
+ 
+ #include "flutter/fml/logging.h"
+ #include "flutter/fml/make_copyable.h"
++#include "flutter/lib/ui/io_manager.h"
+ #include "flutter/lib/ui/window/key_data.h"
+ #include "flutter/lib/ui/window/platform_message_response.h"
+ #include "flutter/runtime/runtime_delegate.h"
++#include "flutter/runtime_spi/image/spi_image_readback.h"
+ #include "flutter/runtime_spi/spi_engine_api.h"
+ #include "flutter/runtime_spi/spi_scene.h"
+ #include "flutter/runtime_spi/semantics/spi_semantics.h"
+@@ -128,6 +130,7 @@ SpiRuntimeBackend::SpiRuntimeBackend(
+     RuntimeDelegate& runtime_delegate,
+     const TaskRunners& task_runners,
+     const FlutterSpiRuntimeTable& table,
++    fml::WeakPtr<IOManager> io_manager,
+     fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
+     fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
+         image_generator_registry,
+@@ -137,6 +140,7 @@ SpiRuntimeBackend::SpiRuntimeBackend(
+     std::shared_future<impeller::RuntimeStageBackend> runtime_stage_backend)
+     : runtime_delegate_(runtime_delegate),
+       task_runners_(task_runners),
++      io_manager_(std::move(io_manager)),
+       table_(table),
+       engine_api_(SpiEngineApi::Create()),
+       engine_handle_(new FlutterSpiEngine{this}),
+@@ -174,6 +178,25 @@ SpiRuntimeBackend::~SpiRuntimeBackend() {
+   delete engine_handle_;
+ }
+ 
++FlutterSpiResult SpiRuntimeBackend::ImageToBytes(
++    FlutterSpiImage* image,
++    int32_t format,
++    FlutterSpiBytesCallback callback,
++    void* user_data) {
++  return SpiImageToBytes(
++      ImageReadbackContext{
++          .ui_task_runner = task_runners_.GetUITaskRunner(),
++          .raster_task_runner = task_runners_.GetRasterTaskRunner(),
++          .io_task_runner = task_runners_.GetIOTaskRunner(),
++          .snapshot_delegate = snapshot_delegate_,
++          .io_manager = io_manager_,
++          .gpu_disabled_switch = nullptr,
++          .impeller_enabled = impeller_enabled_,
++          .impeller_context = nullptr,
++      },
++      image, format, callback, user_data);
++}
++
+ std::unique_ptr<RuntimeBackend> SpiRuntimeBackend::Clone() const {
+   return nullptr;
+ }
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.h b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+index ee2ad954ad4..13e4e191f5b 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.h
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+@@ -26,6 +26,7 @@ namespace flutter {
+ 
+ class AssetManager;
+ class FontCollection;
++class IOManager;
+ class PlatformMessageHandler;
+ class RuntimeDelegate;
+ class SpiRuntimeBackend;
+@@ -51,6 +52,7 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+   SpiRuntimeBackend(RuntimeDelegate& runtime_delegate,
+                     const TaskRunners& task_runners,
+                     const FlutterSpiRuntimeTable& table,
++                    fml::WeakPtr<IOManager> io_manager,
+                     fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder =
+                         {},
+                     fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
+@@ -159,6 +161,10 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+                                     int32_t width,
+                                     int32_t height,
+                                     FlutterSpiImage** out_image);
++  FlutterSpiResult ImageToBytes(FlutterSpiImage* image,
++                                int32_t format,
++                                FlutterSpiBytesCallback callback,
++                                void* user_data);
+ 
+   const FlutterSpiEngineApi& engine_api() const { return engine_api_; }
+   FlutterSpiEngine* engine_handle() { return engine_handle_; }
+@@ -198,6 +204,7 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+ 
+   RuntimeDelegate& runtime_delegate_;
+   TaskRunners task_runners_;
++  fml::WeakPtr<IOManager> io_manager_;
+   FlutterSpiRuntimeTable table_ = {};
+   FlutterSpiEngineApi engine_api_ = {};
+   FlutterSpiEngine* engine_handle_ = nullptr;
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc
+index 02cf1397e6a..432895c817d 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc
+@@ -51,7 +51,8 @@ std::unique_ptr<RuntimeBackend> SpiRuntimeBackendFactory::Create(
+     return nullptr;
+   }
+   return std::make_unique<SpiRuntimeBackend>(runtime_delegate, task_runners,
+-                                             table_, std::move(image_decoder),
++                                             table_, std::move(io_manager),
++                                             std::move(image_decoder),
+                                              std::move(image_generator_registry),
+                                              std::move(snapshot_delegate),
+                                              std::move(unref_queue),
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
+index 7d136ee6929..a8cdb8cde99 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
+@@ -398,7 +398,8 @@ class SpiRuntimeBackendTest : public ::testing::Test {
+ 
+   std::unique_ptr<SpiRuntimeBackend> CreateBackend(
+       FlutterSpiRuntimeTable table) {
+-    return std::make_unique<SpiRuntimeBackend>(delegate, *task_runners, table);
++    return std::make_unique<SpiRuntimeBackend>(delegate, *task_runners, table,
++                                               fml::WeakPtr<IOManager>());
+   }
+ 
+   void LaunchBackend(SpiRuntimeBackend* backend) {
+diff --git a/engine/src/flutter/runtime_spi/text/spi_paragraph_draw_parity_unittests.cc b/engine/src/flutter/runtime_spi/text/spi_paragraph_draw_parity_unittests.cc
+index ef1f68c119f..91e9da529d0 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_paragraph_draw_parity_unittests.cc
++++ b/engine/src/flutter/runtime_spi/text/spi_paragraph_draw_parity_unittests.cc
+@@ -298,6 +298,7 @@ TEST_F(SpiParagraphDrawTest, ImpellerEngineRecordsTextFrames) {
+   FlutterSpiRuntimeTable runtime_table = {};
+   auto backend = std::make_unique<SpiRuntimeBackend>(
+       *engine, task_runners, runtime_table,
++      fml::WeakPtr<IOManager>(),
+       fml::TaskRunnerAffineWeakPtr<ImageDecoder>(),
+       fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>(),
+       fml::TaskRunnerAffineWeakPtr<SnapshotDelegate>(), nullptr, true);
+diff --git a/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc b/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
+index 7fa5325f083..1feb938d799 100644
+--- a/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
++++ b/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
+@@ -47,6 +47,7 @@ std::unique_ptr<RuntimeBackend> DartRuntimeBackendFactory::Create(
+   auto backend_image_generator_registry = image_generator_registry;
+   auto backend_snapshot_delegate = snapshot_delegate;
+   auto backend_unref_queue = unref_queue;
++  auto backend_io_manager = io_manager;
+   auto delegate_bridge = std::make_unique<DartRuntimeDelegateBridge>();
+   auto controller = std::make_unique<RuntimeController>(
+       *delegate_bridge,                     // runtime delegate
+@@ -77,6 +78,7 @@ std::unique_ptr<RuntimeBackend> DartRuntimeBackendFactory::Create(
+       root_isolate_create_callback);
+   auto backend = std::make_unique<SpiRuntimeBackend>(
+       runtime_delegate, task_runners, runtime->table(),
++      std::move(backend_io_manager),
+       std::move(backend_image_decoder),
+       std::move(backend_image_generator_registry),
+       std::move(backend_snapshot_delegate), std::move(backend_unref_queue),
+@@ -106,6 +108,7 @@ std::unique_ptr<RuntimeBackend> DartRuntimeBackendFactory::Spawn(
+   auto backend_image_decoder = image_decoder;
+   auto backend_image_generator_registry = image_generator_registry;
+   auto backend_snapshot_delegate = snapshot_delegate;
++  auto backend_io_manager = io_manager;
+   auto controller = runtime_controller.Spawn(
+       *delegate_bridge, advisory_script_uri, advisory_script_entrypoint,
+       idle_notification_callback, isolate_create_callback,
+@@ -117,6 +120,7 @@ std::unique_ptr<RuntimeBackend> DartRuntimeBackendFactory::Spawn(
+       root_isolate_create_callback);
+   auto backend = std::make_unique<SpiRuntimeBackend>(
+       runtime_delegate, task_runners, runtime->table(),
++      std::move(backend_io_manager),
+       std::move(backend_image_decoder),
+       std::move(backend_image_generator_registry),
+       std::move(backend_snapshot_delegate), nullptr, settings.enable_impeller);
+diff --git a/engine/src/flutter/shell/common/engine.cc b/engine/src/flutter/shell/common/engine.cc
+index c7b4ad4b1aa..b59664fb4de 100644
+--- a/engine/src/flutter/shell/common/engine.cc
++++ b/engine/src/flutter/shell/common/engine.cc
+@@ -63,6 +63,7 @@ std::unique_ptr<RuntimeBackend> MakeDartRuntimeBackend(
+     std::unique_ptr<RuntimeController> controller,
+     const Settings& settings,
+     const fml::closure& root_isolate_create_callback,
++    fml::WeakPtr<IOManager> io_manager,
+     fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
+     fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
+         image_generator_registry) {
+@@ -72,6 +73,7 @@ std::unique_ptr<RuntimeBackend> MakeDartRuntimeBackend(
+       root_isolate_create_callback);
+   auto backend = std::make_unique<SpiRuntimeBackend>(
+       runtime_delegate, task_runners, runtime->table(),
++      std::move(io_manager),
+       std::move(image_decoder), std::move(image_generator_registry));
+   runtime.release();
+   return backend;
+@@ -104,7 +106,7 @@ Engine::Engine(
+   runtime_backend_factory_ = std::make_shared<DartRuntimeBackendFactory>();
+   runtime_backend_ = MakeDartRuntimeBackend(
+       *this, task_runners, std::move(runtime_controller), settings,
+-      root_isolate_create_callback_, image_decoder_->GetWeakPtr(),
++      root_isolate_create_callback_, io_manager, image_decoder_->GetWeakPtr(),
+       image_generator_registry_.GetWeakPtr());
+ }
+ 
