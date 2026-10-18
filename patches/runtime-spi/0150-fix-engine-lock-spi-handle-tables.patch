@@ -1,0 +1,101 @@
+# Why: serialize handle table access across engine and finalizer threads while
+# destroying released values outside the table lock.
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_handle_table.h b/engine/src/flutter/runtime_spi/scene/spi_handle_table.h
+index 50c77a1e5ef..09309443775 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_handle_table.h
++++ b/engine/src/flutter/runtime_spi/scene/spi_handle_table.h
+@@ -8,6 +8,7 @@
+ #include <cstddef>
+ #include <cstdint>
+ #include <memory>
++#include <mutex>
+ #include <vector>
+ 
+ namespace flutter {
+@@ -16,6 +17,7 @@ template <typename T>
+ class SpiHandleTable final {
+  public:
+   uintptr_t Insert(std::shared_ptr<T> value) {
++    std::lock_guard<std::mutex> lock(mutex_);
+     while (!free_slots_.empty()) {
+       const std::size_t index = free_slots_.back();
+       free_slots_.pop_back();
+@@ -39,16 +41,21 @@ class SpiHandleTable final {
+   }
+ 
+   std::shared_ptr<T> Find(uintptr_t handle) const {
++    std::lock_guard<std::mutex> lock(mutex_);
+     const Entry* entry = FindEntry(handle);
+     return entry == nullptr ? nullptr : entry->value;
+   }
+ 
++  // The raw pointer remains valid after releasing the lock because the entry
++  // owns a heap object; the caller must keep the handle alive while using it.
+   T* FindRaw(uintptr_t handle) const {
++    std::lock_guard<std::mutex> lock(mutex_);
+     const Entry* entry = FindEntry(handle);
+     return entry == nullptr ? nullptr : entry->value.get();
+   }
+ 
+   bool Retain(uintptr_t handle) {
++    std::lock_guard<std::mutex> lock(mutex_);
+     Entry* entry = FindEntry(handle);
+     if (entry == nullptr) {
+       return false;
+@@ -58,25 +65,32 @@ class SpiHandleTable final {
+   }
+ 
+   bool Release(uintptr_t handle) {
+-    std::size_t index = 0;
+-    uint32_t generation = 0;
+-    if (!DecodeHandle(handle, &index, &generation) ||
+-        index >= entries_.size()) {
+-      return false;
+-    }
+-    Entry& entry = entries_[index];
+-    if (entry.reference_count == 0 || entry.generation != generation) {
+-      return false;
+-    }
+-    if (--entry.reference_count == 0) {
+-      entry.value.reset();
+-      free_slots_.push_back(index);
+-      active_count_--;
++    std::shared_ptr<T> value_to_destroy;
++    {
++      std::lock_guard<std::mutex> lock(mutex_);
++      std::size_t index = 0;
++      uint32_t generation = 0;
++      if (!DecodeHandle(handle, &index, &generation) ||
++          index >= entries_.size()) {
++        return false;
++      }
++      Entry& entry = entries_[index];
++      if (entry.reference_count == 0 || entry.generation != generation) {
++        return false;
++      }
++      if (--entry.reference_count == 0) {
++        value_to_destroy = std::move(entry.value);
++        free_slots_.push_back(index);
++        active_count_--;
++      }
++      return true;
+     }
+-    return true;
+   }
+ 
+-  std::size_t size() const { return active_count_; }
++  std::size_t size() const {
++    std::lock_guard<std::mutex> lock(mutex_);
++    return active_count_;
++  }
+ 
+  private:
+   struct Entry {
+@@ -132,6 +146,7 @@ class SpiHandleTable final {
+     return &entry;
+   }
+ 
++  mutable std::mutex mutex_;
+   std::vector<Entry> entries_;
+   std::vector<std::size_t> free_slots_;
+   std::size_t active_count_ = 0;
