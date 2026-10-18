@@ -428,6 +428,30 @@ nota de método da medição: cada binário precisa usar o kernel correspondente
 ao seu fixture, e a base usada para a comparação do t11 veio de duas sessões
 anteriores sem carga.
 
+## S4d-2: Path sobre a API de cena
+
+A S4d-2 faz `Path` e `PathMeasure` do `dart:ui` usarem a API de cena do
+Runtime SPI. O `SpiPath` mantém um `SkPathBuilder` para mutações lineares e
+publica snapshots para consultas, operações derivadas, desenho e medidas. O
+`SpiPathMeasure` mantém a mesma iteração de contornos do
+`SkContourMeasureIter`; os wrappers Dart continuam donos dos handles e a ponte
+temporária para `DlPath` permanece somente onde o compositing ainda precisa
+dela.
+
+A ABI 0.16 acrescenta os métodos relativos, arcos, formas, composição,
+consultas, cópia, transformação, deslocamento, operações booleanas e
+`PathMeasure`. A mutação invalida os caches de snapshot e de `DlPath`, e uma
+operação de path que falha não deixa handle de resultado. A paridade é coberta
+contra os mesmos roteiros diretos em Skia, incluindo `addPath` com `extend`,
+volatilidade, bounds, `contains` e a iteração de contornos.
+
+O portão de desempenho foi medido com `BM_DartPathBuildFrame` e
+`BM_DartCanvasRecordFrame`. A primeira medição encontrou uma regressão de 46%
+na construção de paths; o perfil identificou a cópia de `SkPathBuilder` em
+cada mutação. Depois da Task 5b, o builder passou a ser mantido no `SpiPath` e
+o portão ficou em −0,6% nos dois benchmarks. As duas medições completas estão
+em [runtime-spi-s4d2.md](medidas/runtime-spi-s4d2.md).
+
 ## Ciclo de vida e falhas
 
 O host cria, inicia, encerra e libera o backend. Uma falha recuperável encerra o runtime ativo e limpa os recursos;

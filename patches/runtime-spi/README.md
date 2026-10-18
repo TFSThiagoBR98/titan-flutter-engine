@@ -95,6 +95,16 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0085-perf-engine-reuse-the-last-converted-paint-per-recorder.patch` | Reutilizar o último paint convertido por recorder quando os bytes e handles forem válidos. | |
 | `0086-test-engine-observe-converted-paint-changes-on-cache-misses.patch` | Verificar alterações observáveis do paint nos misses do cache. | |
 | `0087-perf-engine-pass-dart-ui-paint-data-as-scalar-ffi-arguments.patch` | Passar os dados do paint como argumentos escalares FFI, sem natives leaf. | |
+| `0088-test-engine-add-dart-ui-path-construction-benchmark.patch` | Estabelecer o benchmark de construção de paths do `dart:ui` para o portão da S4d-2. | |
+| `0089-test-engine-add-s4d-2-path-spi-parity-red-tests.patch` | Fixar os testes RED de paridade da superfície de `Path` da ABI 0.16. | |
+| `0090-feat-engine-implement-s4d-2-path-spi-operations.patch` | Implementar a superfície de paths da ABI 0.16 sobre `SkPath`. | |
+| `0091-fix-engine-preserve-existing-spi-path-builders.patch` | Preservar os métodos existentes de construção de paths no SPI. | |
+| `0092-fix-engine-match-vendored-path-apis.patch` | Usar os símbolos exatos de Skia e DisplayList do checkout fixado. | |
+| `0093-test-engine-add-s4d-2-path-measure-spi-parity-red-tests.patch` | Fixar os testes RED de paridade de `PathMeasure` da ABI 0.16. | |
+| `0094-feat-engine-implement-s4d-2-path-measure-spi.patch` | Expor a iteração de contornos e as operações derivadas de `PathMeasure` pela API de cena. | |
+| `0095-fix-engine-include-the-path-type-in-measure-tests.patch` | Incluir a definição completa de `DlPath` no helper de paridade de medidas. | |
+| `0096-feat-engine-move-dart-ui-paths-to-runtime-spi.patch` | Fazer `CanvasPath` e `CanvasPathMeasure` possuírem handles da API de cena. | |
+| `0097-perf-engine-mutate-spi-paths-through-a-path-builder.patch` | Evitar reconstruir um `SkPathBuilder` completo a cada mutação de path. | |
 
 O fluxo é:
 
