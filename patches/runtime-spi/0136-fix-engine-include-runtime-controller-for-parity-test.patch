@@ -1,0 +1,23 @@
+# Why: provide the complete constructor type and explicit weak pointer used by
+# the engine-backed parity fixture.
+diff --git a/engine/src/flutter/runtime_spi/text/spi_paragraph_draw_parity_unittests.cc b/engine/src/flutter/runtime_spi/text/spi_paragraph_draw_parity_unittests.cc
+index cca76384a74..1d68841fc3e 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_paragraph_draw_parity_unittests.cc
++++ b/engine/src/flutter/runtime_spi/text/spi_paragraph_draw_parity_unittests.cc
+@@ -22,6 +22,7 @@
+ #include "flutter/runtime_spi/text/spi_paragraph.h"
+ #include "flutter/runtime_spi/text/spi_text_style.h"
+ #include "flutter/runtime_spi/spi_runtime_backend.h"
++#include "flutter/runtime/runtime_controller.h"
+ #include "flutter/shell/common/engine.h"
+ #include "flutter/testing/testing.h"
+ #include "flutter/third_party/skia/include/core/SkTextBlob.h"
+@@ -292,7 +293,7 @@ TEST_F(SpiParagraphDrawTest, ImpellerEngineRecordsTextFrames) {
+   Settings settings;
+   auto engine = std::make_unique<Engine>(
+       engine_delegate, nullptr, task_runners, settings,
+-      std::unique_ptr<Animator>(), {}, font_collection_,
++      std::unique_ptr<Animator>(), fml::WeakPtr<IOManager>(), font_collection_,
+       std::unique_ptr<RuntimeController>(), nullptr);
+   FlutterSpiRuntimeTable runtime_table = {};
+   auto backend = std::make_unique<SpiRuntimeBackend>(

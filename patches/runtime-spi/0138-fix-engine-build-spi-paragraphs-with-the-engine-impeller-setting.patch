@@ -1,0 +1,28 @@
+# Why: preserve the engine's Impeller text-frame selection when Runtime SPI
+# creates a paragraph builder.
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index 70674ce9547..68acb8cf881 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -555,7 +555,8 @@ FlutterSpiResult SpiEngineApi::TextParagraphBuilderCreate(
+   }
+   return SpiParagraphBuilderCreate(SpiEngineFontCollection(engine)
+                                        .GetFontCollection(),
+-                                   false, style, out_builder);
++                                   engine->backend->impeller_enabled(), style,
++                                   out_builder);
+ }
+ 
+ FlutterSpiResult SpiEngineApi::ImageDecode(
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.h b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+index 4eb5e0abcdc..c5cb335cf1f 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.h
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+@@ -152,6 +152,7 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+ 
+   const FlutterSpiEngineApi& engine_api() const { return engine_api_; }
+   FlutterSpiEngine* engine_handle() { return engine_handle_; }
++  bool impeller_enabled() const { return impeller_enabled_; }
+ 
+  private:
+   friend class SpiEngineApi;
