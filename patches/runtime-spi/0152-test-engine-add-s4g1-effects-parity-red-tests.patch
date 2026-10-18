@@ -1,0 +1,132 @@
+# Why: Lock the required image filter equality and Dl factory input parity
+# before implementing ABI 0.19.
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_effects_parity_unittests.cc b/engine/src/flutter/runtime_spi/effects/spi_effects_parity_unittests.cc
+index 9cc7e0c5c47..3930406abeb 100644
+--- a/engine/src/flutter/runtime_spi/effects/spi_effects_parity_unittests.cc
++++ b/engine/src/flutter/runtime_spi/effects/spi_effects_parity_unittests.cc
+@@ -368,6 +368,125 @@ TEST(SpiImageFilter, ComposeMatchesDartUi) {
+   EXPECT_EQ(SpiImageFilterRelease(outer), kFlutterSpiOk);
+ }
+ 
++TEST(SpiImageFilterParity, EqualsMatchesDlEquality) {
++  FlutterSpiEngine engine = TestEngine();
++  FlutterSpiImageFilter* first = nullptr;
++  FlutterSpiImageFilter* second = nullptr;
++  FlutterSpiImageFilter* different = nullptr;
++  ASSERT_EQ(SpiImageFilterBlur(&engine, 2.0f, 3.0f,
++                               kFlutterSpiTileModeClamp, &first),
++            kFlutterSpiOk);
++  ASSERT_EQ(SpiImageFilterBlur(&engine, 2.0f, 3.0f,
++                               kFlutterSpiTileModeClamp, &second),
++            kFlutterSpiOk);
++  ASSERT_EQ(SpiImageFilterBlur(&engine, 4.0f, 3.0f,
++                               kFlutterSpiTileModeClamp, &different),
++            kFlutterSpiOk);
++
++  const FlutterSpiPaintEffectsApi* effects =
++      SpiEngineApi::Create().paint_effects;
++  bool equal = false;
++  ASSERT_EQ(effects->image_filter_equals(first, second, &equal),
++            kFlutterSpiOk);
++  EXPECT_TRUE(equal);
++  ASSERT_EQ(effects->image_filter_equals(first, different, &equal),
++            kFlutterSpiOk);
++  EXPECT_FALSE(equal);
++  ASSERT_EQ(effects->image_filter_equals(nullptr, nullptr, &equal),
++            kFlutterSpiOk);
++  EXPECT_TRUE(equal);
++  ASSERT_EQ(effects->image_filter_equals(nullptr, first, &equal),
++            kFlutterSpiOk);
++  EXPECT_FALSE(equal);
++
++  EXPECT_EQ(SpiImageFilterRelease(different), kFlutterSpiOk);
++  EXPECT_EQ(SpiImageFilterRelease(second), kFlutterSpiOk);
++  EXPECT_EQ(SpiImageFilterRelease(first), kFlutterSpiOk);
++}
++
++TEST(SpiImageFilterParity, ZeroSigmaBlurIsNoFilter) {
++  FlutterSpiEngine engine = TestEngine();
++  FlutterSpiImageFilter* filter = nullptr;
++
++  EXPECT_EQ(SpiImageFilterBlur(&engine, 0.0f, 0.0f,
++                               kFlutterSpiTileModeClamp, &filter),
++            kFlutterSpiOk);
++  EXPECT_EQ(filter, nullptr);
++}
++
++TEST(SpiImageFilterParity, NegativeSigmaMatchesDlFactory) {
++  FlutterSpiEngine engine = TestEngine();
++  FlutterSpiImageFilter* filter = nullptr;
++
++  const auto expected =
++      DlImageFilter::MakeBlur(-1.0f, 2.0f, DlTileMode::kClamp);
++  ASSERT_EQ(SpiImageFilterBlur(&engine, -1.0f, 2.0f,
++                               kFlutterSpiTileModeClamp, &filter),
++            kFlutterSpiOk);
++  if (expected == nullptr) {
++    EXPECT_EQ(filter, nullptr);
++  } else {
++    ASSERT_NE(filter, nullptr);
++    EXPECT_EQ(*SpiImageFilterGet(filter), *expected);
++    EXPECT_EQ(SpiImageFilterRelease(filter), kFlutterSpiOk);
++  }
++}
++
++TEST(SpiColorFilterParity, TransparentSrcOverIsNoFilter) {
++  FlutterSpiEngine engine = TestEngine();
++  const FlutterSpiColor color = {
++      .red = 0.0f, .green = 0.0f, .blue = 0.0f, .alpha = 0.0f,
++      .color_space = kFlutterSpiColorSpaceSRGB};
++  FlutterSpiColorFilter* filter = nullptr;
++
++  EXPECT_EQ(SpiColorFilterMode(&engine, color, kFlutterSpiBlendModeSrcOver,
++                               &filter),
++            kFlutterSpiOk);
++  EXPECT_EQ(filter, nullptr);
++}
++
++TEST(SpiShaderParity, GradientInputsMatchDlFactory) {
++  FlutterSpiEngine engine = TestEngine();
++  const std::array<FlutterSpiColor, 2> two_colors = {
++      FlutterSpiColor{.red = 1.0f,
++                      .green = 0.0f,
++                      .blue = 0.0f,
++                      .alpha = 1.0f,
++                      .color_space = kFlutterSpiColorSpaceSRGB},
++      FlutterSpiColor{.red = 0.0f,
++                      .green = 1.0f,
++                      .blue = 0.0f,
++                      .alpha = 1.0f,
++                      .color_space = kFlutterSpiColorSpaceSRGB},
++  };
++  const std::array<FlutterSpiColor, 1> one_color = {two_colors[0]};
++  const auto dl_two_colors = ToDlColors(TestColors());
++
++  for (const auto& colors :
++       std::array<std::pair<const FlutterSpiColor*, size_t>, 2>{
++           std::pair{two_colors.data(), two_colors.size()},
++           std::pair{one_color.data(), one_color.size()}}) {
++    FlutterSpiShader* shader = nullptr;
++    ASSERT_EQ(SpiShaderLinearGradient(
++                  &engine, {0.0f, 0.0f}, {10.0f, 10.0f}, colors.first,
++                  nullptr, colors.second, kFlutterSpiTileModeClamp, nullptr,
++                  &shader),
++              kFlutterSpiOk);
++    const auto expected = DlColorSource::MakeLinear(
++        {0.0f, 0.0f}, {10.0f, 10.0f}, colors.second,
++        colors.first == two_colors.data() ? dl_two_colors.data()
++                                          : &dl_two_colors[0],
++        nullptr, DlTileMode::kClamp);
++    if (expected == nullptr) {
++      EXPECT_EQ(shader, nullptr);
++    } else {
++      ASSERT_NE(shader, nullptr);
++      EXPECT_EQ(*SpiShaderGet(shader), *expected);
++      EXPECT_EQ(SpiShaderRelease(shader), kFlutterSpiOk);
++    }
++  }
++}
++
+ TEST(SpiShader, RejectsMismatchedStops) {
+   FlutterSpiEngine engine = TestEngine();
+   const auto colors = TestColors();
