@@ -1,0 +1,91 @@
+# Why: establish the S4d-2 path construction baseline before migrating Path to
+# the scene SPI.
+diff --git a/engine/src/flutter/lib/ui/fixtures/ui_test.dart b/engine/src/flutter/lib/ui/fixtures/ui_test.dart
+index df10c01a509..17d27bac8fd 100644
+--- a/engine/src/flutter/lib/ui/fixtures/ui_test.dart
++++ b/engine/src/flutter/lib/ui/fixtures/ui_test.dart
+@@ -10,6 +10,47 @@ import 'dart:ffi' hide Size;
+ 
+ void main() {}
+ 
++@pragma('vm:entry-point')
++void buildPathFrame() {
++  const int pathCount = 300;
++  const int compoundPathCount = 50;
++  final Paint paint = Paint()..color = const Color(0xFF2563EB);
++
++  for (int index = 0; index < pathCount; index++) {
++    final double offset = index.toDouble();
++    final Path path = Path()
++      ..moveTo(offset, 0)
++      ..lineTo(offset + 8, 4)
++      ..lineTo(offset + 16, 0)
++      ..lineTo(offset + 24, 4)
++      ..lineTo(offset + 32, 0)
++      ..cubicTo(offset + 8, 12, offset + 24, 12, offset + 32, 20)
++      ..quadraticBezierTo(offset + 16, 28, offset, 20)
++      ..close();
++
++    if (index < compoundPathCount) {
++      path
++        ..addRect(Rect.fromLTWH(offset, 32, 16, 12))
++        ..addOval(Rect.fromLTWH(offset + 20, 32, 16, 12))
++        ..addRRect(
++          RRect.fromRectAndRadius(
++            Rect.fromLTWH(offset + 40, 32, 16, 12),
++            const Radius.circular(2),
++          ),
++        );
++    }
++
++    final PictureRecorder recorder = PictureRecorder();
++    final Canvas canvas = Canvas(
++      recorder,
++      const Rect.fromLTWH(0, 0, 400, 64),
++    );
++    canvas.drawPath(path, paint);
++    final Picture picture = recorder.endRecording();
++    picture.dispose();
++  }
++}
++
+ final List<Paint> _realisticFillPaints = <Paint>[
+   Paint()..color = const Color(0xFF2563EB),
+   Paint()..color = const Color(0xFF16A34A),
+diff --git a/engine/src/flutter/lib/ui/ui_benchmarks.cc b/engine/src/flutter/lib/ui/ui_benchmarks.cc
+index 4dc9ca445e4..15882ab4778 100644
+--- a/engine/src/flutter/lib/ui/ui_benchmarks.cc
++++ b/engine/src/flutter/lib/ui/ui_benchmarks.cc
+@@ -98,4 +98,32 @@ static void BM_DartCanvasRecordFrame(benchmark::State& state) {
+ 
+ BENCHMARK(BM_DartCanvasRecordFrame)->Unit(benchmark::kMicrosecond);
+ 
++static void BM_DartPathBuildFrame(benchmark::State& state) {
++  ThreadHost thread_host(ThreadHost::ThreadHostConfig(
++      "test", ThreadHost::Type::kPlatform | ThreadHost::Type::kRaster |
++                  ThreadHost::Type::kIo | ThreadHost::Type::kUi));
++  TaskRunners task_runners("test", thread_host.platform_thread->GetTaskRunner(),
++                           thread_host.raster_thread->GetTaskRunner(),
++                           thread_host.ui_thread->GetTaskRunner(),
++                           thread_host.io_thread->GetTaskRunner());
++  Fixture fixture;
++  auto settings = fixture.CreateSettingsForFixture();
++  auto vm_ref = DartVMRef::Create(settings);
++  auto isolate =
++      testing::RunDartCodeInIsolate(vm_ref, settings, task_runners, "main", {},
++                                    testing::GetDefaultKernelFilePath(), {});
++
++  while (state.KeepRunning()) {
++    bool successful = isolate->RunInIsolateScope([&]() -> bool {
++      Dart_Handle result = Dart_Invoke(
++          Dart_RootLibrary(), Dart_NewStringFromCString("buildPathFrame"), 0,
++          nullptr);
++      return !Dart_IsError(result);
++    });
++    FML_CHECK(successful);
++  }
++}
++
++BENCHMARK(BM_DartPathBuildFrame)->Unit(benchmark::kMicrosecond);
++
+ }  // namespace flutter
