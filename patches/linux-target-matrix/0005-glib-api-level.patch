@@ -1,0 +1,19 @@
+# Why: Buildroot sysroots ship GLib 2.86, whose glib-typeof.h includes <type_traits>
+# from C headers for C++ at API level 2.68+; the GTK shell includes GLib inside
+# extern "C", so the build fails with "templates must have C++ linkage".
+diff --git a/engine/src/flutter/shell/platform/linux/config/BUILD.gn b/engine/src/flutter/shell/platform/linux/config/BUILD.gn
+--- a/engine/src/flutter/shell/platform/linux/config/BUILD.gn
++++ b/engine/src/flutter/shell/platform/linux/config/BUILD.gn
+@@ -36,6 +36,12 @@ foreach(pkg, _pkg_configs) {
+   if (!is_minimal_linux && build_linux_gtk_shell) {
+     pkg_config(pkg.name) {
+       packages = [ pkg.package ]
++      if (pkg.name == "gtk") {
++        # GLib 2.68+ pulls <type_traits> into its C headers when the API level
++        # allows it, and the GTK shell includes those headers inside
++        # extern "C". Pin the API level the shell already targets.
++        defines = [ "GLIB_VERSION_MIN_REQUIRED=GLIB_VERSION_2_56" ]
++      }
+     }
+   } else {
+     config(pkg.name) {
