@@ -1,0 +1,170 @@
+# Why: keep the SPI engine lookup and type conversions compatible with the
+# migrated dart:ui image call sites.
+diff --git a/engine/src/flutter/lib/ui/compositing/scene.cc b/engine/src/flutter/lib/ui/compositing/scene.cc
+index 4efa89977f2..12fdedaea7a 100644
+--- a/engine/src/flutter/lib/ui/compositing/scene.cc
++++ b/engine/src/flutter/lib/ui/compositing/scene.cc
+@@ -18,6 +18,7 @@
+ #include "third_party/tonic/dart_args.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+ #include "third_party/tonic/dart_library_natives.h"
++#include "third_party/tonic/logging/dart_invoke.h"
+ 
+ namespace flutter {
+ 
+@@ -94,7 +95,7 @@ Dart_Handle Scene::toImageSync(uint32_t width,
+   FlutterSpiScene* scene = CreateSpiScene(width, height);
+   FlutterSpiImage* image = nullptr;
+   if (scene == nullptr ||
+-      SpiImageApi()->scene_to_image_sync(SpiEngineHandle(), scene,
++      SpiImageApi()->scene_to_image_sync(CanvasImage::GetSpiEngine(), scene,
+                                          static_cast<int32_t>(width),
+                                          static_cast<int32_t>(height), &image) !=
+           kFlutterSpiOk ||
+@@ -132,7 +133,7 @@ Dart_Handle Scene::toImage(uint32_t width,
+   auto* callback = new tonic::DartPersistentValue(
+       tonic::DartState::Current(), raw_image_callback);
+   const FlutterSpiResult result = SpiImageApi()->scene_to_image(
+-      SpiEngineHandle(), scene, static_cast<int32_t>(width),
++      CanvasImage::GetSpiEngine(), scene, static_cast<int32_t>(width),
+       static_cast<int32_t>(height), InvokeImageCallback, callback);
+   SpiSceneRelease(scene);
+   if (result != kFlutterSpiOk) {
+diff --git a/engine/src/flutter/lib/ui/painting/image.cc b/engine/src/flutter/lib/ui/painting/image.cc
+index 51b47e903bc..bf2d062f8cf 100644
+--- a/engine/src/flutter/lib/ui/painting/image.cc
++++ b/engine/src/flutter/lib/ui/painting/image.cc
+@@ -35,6 +35,13 @@ CanvasImage::~CanvasImage() {
+ 
+ FlutterSpiImage* CanvasImage::spi_handle() const { return spi_image_; }
+ 
++FlutterSpiEngine* CanvasImage::GetSpiEngine() {
++  return UIDartState::Current()
++      ->platform_configuration()
++      ->client()
++      ->GetSpiEngine();
++}
++
+ fml::RefPtr<CanvasImage> CanvasImage::CreateFromDlImageForGpu(
+     sk_sp<DlImage> image) {
+   return Create(SpiImageFromDlImage(std::move(image)));
+@@ -146,15 +153,15 @@ const char* DoDecodeImageFromPixelsSync(Dart_Handle pixels_handle,
+   FlutterSpiPixels spi_pixels = {
+       .struct_size = sizeof(FlutterSpiPixels),
+       .pixels = pixels.data(),
+-      .pixels_size = pixels.num_elements(),
++      .pixels_size = static_cast<size_t>(pixels.num_elements()),
+       .width = static_cast<int32_t>(width),
+       .height = static_cast<int32_t>(height),
+-      .row_bytes = width * BytesPerPixel(format),
++      .row_bytes = static_cast<int32_t>(width * BytesPerPixel(format)),
+       .pixel_format = pixel_format,
+   };
+   FlutterSpiImage* image = nullptr;
+   if (SpiImageApi()->image_create_from_pixels_sync(
+-          SpiEngineHandle(), &spi_pixels, &image) != kFlutterSpiOk ||
++          GetSpiEngine(), &spi_pixels, nullptr, &image) != kFlutterSpiOk ||
+       image == nullptr) {
+     return "Failed to create image from pixels.";
+   }
+diff --git a/engine/src/flutter/lib/ui/painting/image.h b/engine/src/flutter/lib/ui/painting/image.h
+index a4cf99e56c4..a212e4d63ef 100644
+--- a/engine/src/flutter/lib/ui/painting/image.h
++++ b/engine/src/flutter/lib/ui/painting/image.h
+@@ -66,6 +66,8 @@ class CanvasImage final : public RefCountedDartWrappable<CanvasImage> {
+ 
+   FlutterSpiImage* spi_handle() const;
+ 
++  static FlutterSpiEngine* GetSpiEngine();
++
+   sk_sp<DlImage> GetDlImageForGpu() const;
+ 
+   int colorSpace();
+diff --git a/engine/src/flutter/lib/ui/painting/image_encoding.cc b/engine/src/flutter/lib/ui/painting/image_encoding.cc
+index 4852884b3d3..0d15233d137 100644
+--- a/engine/src/flutter/lib/ui/painting/image_encoding.cc
++++ b/engine/src/flutter/lib/ui/painting/image_encoding.cc
+@@ -102,7 +102,7 @@ Dart_Handle EncodeImage(CanvasImage* canvas_image,
+   auto* callback = new DartPersistentValue(tonic::DartState::Current(),
+                                            callback_handle);
+   const FlutterSpiResult result = SpiImageApi()->image_to_bytes(
+-      SpiEngineHandle(), canvas_image->spi_handle(), spi_format,
++      CanvasImage::GetSpiEngine(), canvas_image->spi_handle(), spi_format,
+       InvokeSpiBytesCallback, callback);
+   if (result != kFlutterSpiOk) {
+     delete callback;
+diff --git a/engine/src/flutter/lib/ui/painting/image_shader.cc b/engine/src/flutter/lib/ui/painting/image_shader.cc
+index a042e87d221..71da8b06027 100644
+--- a/engine/src/flutter/lib/ui/painting/image_shader.cc
++++ b/engine/src/flutter/lib/ui/painting/image_shader.cc
+@@ -48,7 +48,7 @@ Dart_Handle ImageShader::initWithImage(CanvasImage* image,
+   sampling_is_locked_ = filter_quality_index >= 0;
+   const FlutterSpiResult result =
+       SpiPaintEffectsApi()->shader_image(
+-          SpiEngineHandle(), image_, static_cast<int32_t>(tmx),
++          CanvasImage::GetSpiEngine(), image_, static_cast<int32_t>(tmx),
+           static_cast<int32_t>(tmy), filter_quality_index, &matrix,
+           &spi_shader_);
+   if (result != kFlutterSpiOk) {
+diff --git a/engine/src/flutter/lib/ui/painting/picture.cc b/engine/src/flutter/lib/ui/painting/picture.cc
+index 380fb0e0cda..17c611646d1 100644
+--- a/engine/src/flutter/lib/ui/painting/picture.cc
++++ b/engine/src/flutter/lib/ui/painting/picture.cc
+@@ -109,7 +109,7 @@ Dart_Handle Picture::toImage(uint32_t width,
+     auto* callback = new tonic::DartPersistentValue(
+         tonic::DartState::Current(), raw_image_callback);
+     const FlutterSpiResult result = SpiImageApi()->picture_to_image(
+-        SpiEngineHandle(), spi_picture_, static_cast<int32_t>(width),
++        CanvasImage::GetSpiEngine(), spi_picture_, static_cast<int32_t>(width),
+         static_cast<int32_t>(height), InvokeImageCallback, callback);
+     if (result != kFlutterSpiOk) {
+       delete callback;
+@@ -136,7 +136,8 @@ void Picture::toImageSync(uint32_t width,
+     }
+     FlutterSpiImage* image = nullptr;
+     if (SpiImageApi()->picture_to_image_sync_with_format(
+-            SpiEngineHandle(), spi_picture_, static_cast<int32_t>(width),
++            CanvasImage::GetSpiEngine(), spi_picture_,
++            static_cast<int32_t>(width),
+             static_cast<int32_t>(height), pixel_format, &image) !=
+             kFlutterSpiOk ||
+         image == nullptr) {
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
+index 4cb64f06e94..8985adb6d9a 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
+@@ -9,7 +9,6 @@
+ #include "flutter/assets/asset_manager.h"
+ #include "flutter/flow/layers/layer_tree.h"
+ #include "flutter/lib/ui/text/font_collection.h"
+-#include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/runtime/runtime_delegate.h"
+ #include "flutter/runtime_spi/effects/spi_image_filter.h"
+ #include "flutter/runtime_spi/effects/spi_shader.h"
+@@ -34,13 +33,6 @@ const FlutterSpiPaintEffectsApi* SpiPaintEffectsApi() {
+   return SpiEngineApi::Create().paint_effects;
+ }
+ 
+-FlutterSpiEngine* SpiEngineHandle() {
+-  return UIDartState::Current()
+-      ->platform_configuration()
+-      ->client()
+-      ->GetSpiEngine();
+-}
+-
+ const FlutterSpiImageApi* SpiImageApi() {
+   return SpiEngineApi::Create().image;
+ }
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+index ddcdedf5beb..9e4629384c0 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+@@ -29,8 +29,6 @@ FlutterSpiShader* SpiShaderFromColorSource(std::shared_ptr<DlColorSource>);
+ 
+ const FlutterSpiPaintEffectsApi* SpiPaintEffectsApi();
+ 
+-FlutterSpiEngine* SpiEngineHandle();
+-
+ const FlutterSpiImageApi* SpiImageApi();
+ 
+ // Temporary bridge for fragment shader image filters until S4g-2 moves the

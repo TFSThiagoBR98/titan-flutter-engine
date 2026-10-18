@@ -1,0 +1,71 @@
+# Why: Update the existing Flutter GPU consumers mechanically for CanvasImage
+# handle ownership without changing their public behavior.
+diff --git a/engine/src/flutter/lib/gpu/surface.cc b/engine/src/flutter/lib/gpu/surface.cc
+index d1757bc6161..a5924b791b7 100644
+--- a/engine/src/flutter/lib/gpu/surface.cc
++++ b/engine/src/flutter/lib/gpu/surface.cc
+@@ -8,6 +8,7 @@
+ 
+ #include "flutter/lib/gpu/formats.h"
+ #include "flutter/lib/ui/painting/image.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "fml/logging.h"
+ #include "impeller/core/allocator.h"
+ #include "tonic/converter/dart_converter.h"
+@@ -160,8 +161,7 @@ Dart_Handle Surface::CreateImage(const sk_sp<DlImage>& image) const {
+   if (!image) {
+     return Dart_Null();
+   }
+-  auto canvas_image = CanvasImage::Create();
+-  canvas_image->set_image(image);
++  auto canvas_image = CanvasImage::Create(SpiImageFromDlImage(image));
+   return canvas_image->CreateOuterWrapping();
+ }
+ 
+diff --git a/engine/src/flutter/lib/gpu/texture.cc b/engine/src/flutter/lib/gpu/texture.cc
+index e5ba0615e05..784c7a78daf 100644
+--- a/engine/src/flutter/lib/gpu/texture.cc
++++ b/engine/src/flutter/lib/gpu/texture.cc
+@@ -10,6 +10,7 @@
+ #include "flutter/lib/gpu/formats.h"
+ #include "flutter/lib/ui/painting/image.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "fml/make_copyable.h"
+ #include "fml/mapping.h"
+ #include "impeller/core/allocator.h"
+@@ -168,7 +169,8 @@ static std::shared_ptr<impeller::Texture> GetTextureFromImage(
+   if (!canvas_image) {
+     return nullptr;
+   }
+-  sk_sp<flutter::DlImage> dl_image = canvas_image->image();
++  sk_sp<flutter::DlImage> dl_image =
++      flutter::SpiImageToDlImage(canvas_image->spi_handle());
+   if (!dl_image) {
+     return nullptr;
+   }
+@@ -186,9 +188,9 @@ Dart_Handle Texture::AsImage() const {
+   // Impeller is disabled, it's impossible to get here anyhow, so just ifdef it
+   // out.
+ #if IMPELLER_SUPPORTS_RENDERING
+-  auto image = flutter::CanvasImage::Create();
+   auto dl_image = impeller::DlImageImpeller::Make(texture_);
+-  image->set_image(dl_image);
++  auto image = flutter::CanvasImage::Create(
++      flutter::SpiImageFromDlImage(std::move(dl_image)));
+   auto wrapped = image->CreateOuterWrapping();
+   return wrapped;
+ #else
+diff --git a/engine/src/flutter/lib/ui/compositing/scene.cc b/engine/src/flutter/lib/ui/compositing/scene.cc
+index ccdd70df242..4efa89977f2 100644
+--- a/engine/src/flutter/lib/ui/compositing/scene.cc
++++ b/engine/src/flutter/lib/ui/compositing/scene.cc
+@@ -13,7 +13,7 @@
+ #include "flutter/lib/ui/window/platform_configuration.h"
+ #include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "flutter/runtime_spi/scene/spi_canvas.h"
+-#include "flutter/runtime_spi/scene/spi_scene.h"
++#include "flutter/runtime_spi/spi_scene.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+ #include "third_party/tonic/dart_binding_macros.h"

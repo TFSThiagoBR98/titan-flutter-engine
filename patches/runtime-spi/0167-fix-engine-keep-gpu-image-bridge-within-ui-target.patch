@@ -1,0 +1,116 @@
+# Why: Adapt the GPU target through CanvasImage without adding a forbidden
+# direct dependency on the runtime SPI bridge target.
+diff --git a/engine/src/flutter/lib/gpu/surface.cc b/engine/src/flutter/lib/gpu/surface.cc
+index a5924b791b7..f833b7503fe 100644
+--- a/engine/src/flutter/lib/gpu/surface.cc
++++ b/engine/src/flutter/lib/gpu/surface.cc
+@@ -8,7 +8,6 @@
+ 
+ #include "flutter/lib/gpu/formats.h"
+ #include "flutter/lib/ui/painting/image.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "fml/logging.h"
+ #include "impeller/core/allocator.h"
+ #include "tonic/converter/dart_converter.h"
+@@ -161,7 +160,7 @@ Dart_Handle Surface::CreateImage(const sk_sp<DlImage>& image) const {
+   if (!image) {
+     return Dart_Null();
+   }
+-  auto canvas_image = CanvasImage::Create(SpiImageFromDlImage(image));
++  auto canvas_image = CanvasImage::CreateFromDlImageForGpu(image);
+   return canvas_image->CreateOuterWrapping();
+ }
+ 
+diff --git a/engine/src/flutter/lib/gpu/texture.cc b/engine/src/flutter/lib/gpu/texture.cc
+index 784c7a78daf..1f41b5aeb4a 100644
+--- a/engine/src/flutter/lib/gpu/texture.cc
++++ b/engine/src/flutter/lib/gpu/texture.cc
+@@ -10,7 +10,6 @@
+ #include "flutter/lib/gpu/formats.h"
+ #include "flutter/lib/ui/painting/image.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "fml/make_copyable.h"
+ #include "fml/mapping.h"
+ #include "impeller/core/allocator.h"
+@@ -169,8 +168,7 @@ static std::shared_ptr<impeller::Texture> GetTextureFromImage(
+   if (!canvas_image) {
+     return nullptr;
+   }
+-  sk_sp<flutter::DlImage> dl_image =
+-      flutter::SpiImageToDlImage(canvas_image->spi_handle());
++  sk_sp<flutter::DlImage> dl_image = canvas_image->GetDlImageForGpu();
+   if (!dl_image) {
+     return nullptr;
+   }
+@@ -189,8 +187,8 @@ Dart_Handle Texture::AsImage() const {
+   // out.
+ #if IMPELLER_SUPPORTS_RENDERING
+   auto dl_image = impeller::DlImageImpeller::Make(texture_);
+-  auto image = flutter::CanvasImage::Create(
+-      flutter::SpiImageFromDlImage(std::move(dl_image)));
++  auto image = flutter::CanvasImage::CreateFromDlImageForGpu(
++      std::move(dl_image));
+   auto wrapped = image->CreateOuterWrapping();
+   return wrapped;
+ #else
+diff --git a/engine/src/flutter/lib/ui/painting/image.cc b/engine/src/flutter/lib/ui/painting/image.cc
+index a4029f5aa5a..51b47e903bc 100644
+--- a/engine/src/flutter/lib/ui/painting/image.cc
++++ b/engine/src/flutter/lib/ui/painting/image.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "flutter/lib/ui/painting/image.h"
+ 
++#include <utility>
++
+ #include "tonic/logging/dart_invoke.h"
+ 
+ #include "flutter/display_list/image/dl_image.h"
+@@ -33,6 +35,15 @@ CanvasImage::~CanvasImage() {
+ 
+ FlutterSpiImage* CanvasImage::spi_handle() const { return spi_image_; }
+ 
++fml::RefPtr<CanvasImage> CanvasImage::CreateFromDlImageForGpu(
++    sk_sp<DlImage> image) {
++  return Create(SpiImageFromDlImage(std::move(image)));
++}
++
++sk_sp<DlImage> CanvasImage::GetDlImageForGpu() const {
++  return SpiImageGet(spi_image_);
++}
++
+ int CanvasImage::width() {
+   int32_t width = 0;
+   int32_t height = 0;
+diff --git a/engine/src/flutter/lib/ui/painting/image.h b/engine/src/flutter/lib/ui/painting/image.h
+index d44f84e40f8..a4cf99e56c4 100644
+--- a/engine/src/flutter/lib/ui/painting/image.h
++++ b/engine/src/flutter/lib/ui/painting/image.h
+@@ -5,6 +5,7 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_IMAGE_H_
+ #define FLUTTER_LIB_UI_PAINTING_IMAGE_H_
+ 
++#include "flutter/display_list/image/dl_image.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "flutter/runtime_spi/include/flutter_image.h"
+ 
+@@ -44,6 +45,9 @@ class CanvasImage final : public RefCountedDartWrappable<CanvasImage> {
+     result->AssociateWithDartWrapper(wrapper);
+   }
+ 
++  static fml::RefPtr<CanvasImage> CreateFromDlImageForGpu(
++      sk_sp<DlImage> image);
++
+   Dart_Handle CreateOuterWrapping();
+ 
+   int width();
+@@ -62,6 +66,8 @@ class CanvasImage final : public RefCountedDartWrappable<CanvasImage> {
+ 
+   FlutterSpiImage* spi_handle() const;
+ 
++  sk_sp<DlImage> GetDlImageForGpu() const;
++
+   int colorSpace();
+ 
+  private:
