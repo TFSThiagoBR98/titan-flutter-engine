@@ -482,6 +482,41 @@ cenas. As três medições, as causas da regressão inicial e as otimizações d
 handles, retenção e matrizes estão em
 [runtime-spi-s4e.md](medidas/runtime-spi-s4e.md).
 
+## S4f: Texto sobre a API de texto
+
+A S4f faz `ParagraphBuilder`, `Paragraph` e `FontCollection::LoadFontFromList`
+do `dart:ui` usarem a API de texto do Runtime SPI. O core passa a ser o dono
+dos builders e parágrafos por handles, enquanto o `lib/ui` conserva as mesmas
+validações, conversões de resultados e regras de descarte do caminho anterior.
+O carregamento dinâmico de fontes chega ao engine pela tabela do SPI e mantém
+a disponibilidade da fonte para os builders seguintes da mesma engine.
+
+A ABI 0.18 acrescenta as máscaras de estilo com as mesmas posições de bit do
+`dart:ui`. `kFlutterSpiStyleFieldsMasked` liga explicitamente a interpretação
+das máscaras; sem esse bit, inclusive em structs antigos ou zerados, todos os
+campos continuam definidos como na ABI 0.17. Assim, `pushStyle` parte do
+estilo atual e aplica somente os campos marcados, e a criação do parágrafo
+porta para o core a herança de estilo, o `decodeStrut`, a distribuição de
+leading e os overrides de altura do `ParagraphBuilder` original.
+
+A mesma versão acrescenta as seis consultas que faltavam ao contrato:
+informação de glifo, glifo mais próximo, limite da linha, métricas de uma
+linha, contagem de linhas e número da linha. O texto e a reticência também
+podem atravessar a fronteira em UTF-16 (`add_text_utf16` e `ellipsis_utf16`),
+evitando a conversão UTF-16 → UTF-8 → UTF-16 no caminho quente.
+
+Para carregar fontes, o cliente da `PlatformConfiguration` e o
+`RuntimeDelegate` passam a expor `GetSpiEngine()` no lugar de
+`GetFontCollection()`. A ponte `SpiEngineFontCollection` sai do caminho do
+`lib/ui`; `SpiPictureRecorderBuilder` também deixa de ser usada por
+`Paragraph::paint`, que desenha pelo recorder do SPI. As pontes temporárias de
+camadas e imagens que pertencem às fases posteriores permanecem fora desta
+migração.
+
+O portão de texto foi aprovado com +4,7% no quadro realista, dentro do limite
+de 5%. As cinco medições, as causas das rodadas e as lições do método estão
+em [runtime-spi-s4f.md](medidas/runtime-spi-s4f.md).
+
 ## Ciclo de vida e falhas
 
 O host cria, inicia, encerra e libera o backend. Uma falha recuperável encerra o runtime ativo e limpa os recursos;

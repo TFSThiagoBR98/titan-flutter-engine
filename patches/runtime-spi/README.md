@@ -122,6 +122,36 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0112-perf-engine-retain-the-last-spi-scene-layer-in-one-call.patch` | Combinar lookup e atribuição do layer antigo em uma operação SPI. | |
 | `0113-perf-engine-retain-pushed-dart-ui-layers-in-one-spi-call.patch` | Evitar chamadas separadas de handles ao reter cada layer empurrado pelo `dart:ui`. | |
 | `0114-perf-engine-convert-scene-transforms-once.patch` | Preencher a transformação do SPI diretamente dos valores da matriz Dart. | |
+| `0115-test-engine-add-the-runtime-spi-s4f-text-benchmark.patch` | Estabelecer o benchmark de construção de parágrafos do `dart:ui` para o portão da S4f. | |
+| `0116-fix-engine-remove-unsupported-const-text-fixture-constructors.patch` | Ajustar os fixtures de texto aos construtores não-const do checkout fixado. | |
+| `0117-test-engine-add-masked-text-style-and-paragraph-query-tests.patch` | Fixar os testes RED das máscaras de estilo e das consultas de parágrafo da ABI 0.18. | |
+| `0118-feat-engine-add-masked-text-styles-and-paragraph-queries-to-the-spi.patch` | Acrescentar máscaras de estilo, herança, `decodeStrut` e consultas de parágrafo ao SPI. | |
+| `0119-fix-engine-gate-text-style-masks-behind-an-explicit-flag.patch` | Fazer a máscara de estilo valer somente quando o bit de ativação estiver presente. | |
+| `0120-fix-engine-use-a-typed-text-style-mask-flag.patch` | Nomear e tipar o bit que ativa as máscaras de estilo da ABI. | |
+| `0121-fix-engine-carry-decoded-strut-fields-through-the-spi.patch` | Transportar os campos decodificados de `strut` até a construção do estilo do SPI. | |
+| `0122-feat-engine-expose-the-spi-engine-to-dart-ui.patch` | Expor o engine do SPI às interfaces de runtime e ao `lib/ui`. | |
+| `0123-fix-engine-route-dart-ui-font-loading-through-spi-table.patch` | Fazer o carregamento de fontes do `dart:ui` passar pela tabela do SPI. | |
+| `0124-fix-engine-update-spi-runtime-test-delegates.patch` | Atualizar os delegates de teste para a interface de engine do SPI. | |
+| `0125-fix-engine-keep-the-legacy-font-bridge-in-the-shell.patch` | Preservar a ponte de fontes legada somente no Shell durante a migração. | |
+| `0126-feat-engine-move-dart-ui-text-to-runtime-spi.patch` | Mover builders, parágrafos e desenho de texto do `dart:ui` para os handles do SPI. | |
+| `0127-fix-engine-make-spi-text-narrowing-explicit.patch` | Tornar explícitas as conversões estreitas dos valores de texto no SPI. | |
+| `0128-test-engine-run-the-paragraph-benchmark-inside-a-shell.patch` | Executar o benchmark de parágrafos dentro de um Shell real. | |
+| `0129-fix-engine-reuse-the-text-benchmark-icu-helper.patch` | Reutilizar o helper de ICU no fixture do benchmark de texto. | |
+| `0130-fix-engine-run-the-paragraph-benchmark-through-a-concrete-shell-test.patch` | Encaminhar o benchmark de parágrafos pelo teste concreto de Shell. | |
+| `0131-fix-engine-link-shell-test-fixtures-without-the-gtest-main.patch` | Ligar os fixtures do teste de Shell sem adicionar outro `gtest_main`. | |
+| `0132-fix-engine-name-test-threads-outside-of-a-running-gtest.patch` | Nomear threads de teste também fora de um gtest em execução. | |
+| `0133-perf-engine-query-paragraph-lists-in-one-spi-call.patch` | Evitar a segunda consulta ao recalcular listas de caixas e métricas. | |
+| `0134-test-engine-cover-impeller-paragraph-text-frames.patch` | Cobrir a escolha de text frames e blobs dos parágrafos com Impeller. | |
+| `0135-fix-engine-construct-parity-test-engine-explicitly.patch` | Construir explicitamente o engine usado pelo teste de paridade. | |
+| `0136-fix-engine-include-runtime-controller-for-parity-test.patch` | Incluir o controlador de runtime necessário ao teste de paridade. | |
+| `0137-fix-engine-type-runtime-backend-test-defaults.patch` | Corrigir os tipos dos defaults do backend de runtime nos testes. | |
+| `0138-fix-engine-build-spi-paragraphs-with-the-engine-impeller-setting.patch` | Construir parágrafos do SPI com a configuração Impeller do engine. | |
+| `0139-test-engine-add-utf-16-text-parity-coverage.patch` | Cobrir a paridade de texto UTF-16 entre o SPI e o `dart:ui`. | |
+| `0140-perf-engine-add-utf-16-text-to-spi-paragraphs.patch` | Acrescentar texto UTF-16 à ABI de parágrafos do SPI. | |
+| `0141-perf-engine-pass-dart-ui-text-to-the-spi-as-utf-16.patch` | Passar o texto do `dart:ui` diretamente como UTF-16 ao SPI. | |
+| `0142-perf-engine-resolve-the-spi-text-table-once.patch` | Resolver uma vez a tabela de texto do SPI no caminho do `lib/ui`. | |
+| `0143-test-engine-cover-utf-16-paragraph-ellipsis.patch` | Cobrir a paridade da reticência UTF-16 nos estilos de parágrafo. | |
+| `0144-perf-engine-accept-utf-16-ellipsis-in-spi-paragraph-styles.patch` | Aceitar reticência UTF-16 nos estilos de parágrafo da ABI 0.18. | |
 
 O fluxo é:
 
