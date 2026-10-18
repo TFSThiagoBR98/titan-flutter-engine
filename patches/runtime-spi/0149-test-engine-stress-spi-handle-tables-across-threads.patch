@@ -1,0 +1,107 @@
+# Why: expose concurrent handle-table races and reentrant release destruction.
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_handle_table_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_handle_table_unittests.cc
+index 31cd11efd26..30ec9706ff4 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_handle_table_unittests.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_handle_table_unittests.cc
+@@ -4,8 +4,11 @@
+ 
+ #include "flutter/runtime_spi/scene/spi_handle_table.h"
+ 
++#include <atomic>
+ #include <cstdint>
+ #include <memory>
++#include <thread>
++#include <vector>
+ 
+ #include "flutter/testing/testing.h"
+ 
+@@ -89,5 +92,89 @@ TEST(SpiHandleTable, UnknownIdIsNotFound) {
+   EXPECT_FALSE(table.Release(999));
+ }
+ 
++TEST(SpiHandleTable, ConcurrentInsertFindReleaseKeepsHandlesConsistent) {
++  constexpr int kThreadCount = 8;
++  constexpr int kCyclesPerThread = 20000;
++
++  SpiHandleTable<int> table;
++  std::atomic<int> ready_threads = 0;
++  std::atomic<bool> start = false;
++  std::atomic<bool> failed = false;
++  std::vector<std::thread> threads;
++  threads.reserve(kThreadCount);
++
++  for (int thread_index = 0; thread_index < kThreadCount; thread_index++) {
++    threads.emplace_back([&table, &ready_threads, &start, &failed,
++                          thread_index]() {
++      ready_threads.fetch_add(1, std::memory_order_relaxed);
++      while (!start.load(std::memory_order_acquire)) {
++        std::this_thread::yield();
++      }
++
++      for (int cycle = 0; cycle < kCyclesPerThread; cycle++) {
++        auto value = std::make_shared<int>(thread_index);
++        const uintptr_t handle = table.Insert(value);
++        if (handle == 0 || table.FindRaw(handle) != value.get() ||
++            !table.Release(handle) || table.FindRaw(handle) != nullptr) {
++          failed.store(true, std::memory_order_relaxed);
++        }
++      }
++    });
++  }
++
++  while (ready_threads.load(std::memory_order_acquire) != kThreadCount) {
++    std::this_thread::yield();
++  }
++  start.store(true, std::memory_order_release);
++
++  for (auto& thread : threads) {
++    thread.join();
++  }
++
++  EXPECT_FALSE(failed.load(std::memory_order_relaxed));
++  EXPECT_EQ(table.size(), 0u);
++}
++
++class ReentrantValue final {
++ public:
++  ReentrantValue(SpiHandleTable<ReentrantValue>* table,
++                 std::atomic<uintptr_t>* inserted_handle,
++                 bool insert_on_destroy)
++      : table_(table),
++        inserted_handle_(inserted_handle),
++        insert_on_destroy_(insert_on_destroy) {}
++
++  ~ReentrantValue() {
++    if (insert_on_destroy_) {
++      inserted_handle_->store(
++          table_->Insert(std::make_shared<ReentrantValue>(
++              table_, inserted_handle_, false)),
++          std::memory_order_relaxed);
++    }
++  }
++
++ private:
++  SpiHandleTable<ReentrantValue>* table_;
++  std::atomic<uintptr_t>* inserted_handle_;
++  bool insert_on_destroy_;
++};
++
++TEST(SpiHandleTable, ReleaseDestroysOutsideTheLock) {
++  SpiHandleTable<ReentrantValue> table;
++  std::atomic<uintptr_t> inserted_handle = 0;
++  const uintptr_t handle = table.Insert(std::make_shared<ReentrantValue>(
++      &table, &inserted_handle, true));
++
++  ASSERT_NE(handle, 0u);
++  EXPECT_TRUE(table.Release(handle));
++
++  const uintptr_t reentrant_handle =
++      inserted_handle.load(std::memory_order_relaxed);
++  ASSERT_NE(reentrant_handle, 0u);
++  EXPECT_EQ(table.size(), 1u);
++  EXPECT_TRUE(table.Release(reentrant_handle));
++  EXPECT_EQ(table.size(), 0u);
++}
++
+ }  // namespace
+ }  // namespace flutter::testing
