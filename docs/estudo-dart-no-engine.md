@@ -539,6 +539,37 @@ S5.5, que poderá reduzir o número de chamadas por span. As medições, as
 causas das rodadas e as lições do método estão em
 [runtime-spi-s4f.md](medidas/runtime-spi-s4f.md).
 
+## S4g-1: Efeitos criados pelo SPI
+
+A S4g-1 faz `Gradient`, `ColorFilter`, `ImageFilter` e `Vertices` do `dart:ui`
+serem criados diretamente pela `FlutterSpiPaintEffectsApi`. Cada wrapper Dart
+passa a guardar somente o handle do SPI, liberando-o no destrutor e no
+`dispose`; `scene_builder.cc` e `canvas.cc` também consomem esses handles sem
+recriar pontes a partir de objetos `Dl*`. A ABI 0.19 acrescenta a igualdade de
+`ImageFilter`, preservando o resultado do `ImageFilter::equals` nativo,
+inclusive para filtros nulos.
+
+As fábricas do SPI mantêm o mesmo domínio de entrada das fábricas `Dl*`.
+Assim, um filtro sem efeito é representado por `NULL` com resultado de sucesso,
+os modos dinâmicos de blur continuam sendo resolvidos no consumidor e
+`compose` preserva a semântica dos filhos sem efeito. Gradientes mantêm a
+conversão de cores, stops opcionais e matriz 4×4 do caminho anterior; vertices
+mantêm as validações de tamanhos e índices.
+
+As pontes de conversão para color filter e vertices foram removidas
+(`SpiColorFilterFromDl` e `SpiVerticesFromDl`), e os caminhos comuns de
+`ImageFilter` e gradiente deixaram de usar `SpiImageFilterFromDl` e
+`SpiShaderFromColorSource`. Permanecem duas pontes para a S4g-2:
+`SpiShaderFromColorSource` ainda atende a criação de `ImageShader` e
+`FragmentShader`, e `SpiImageFilterFromDl` ainda converte o `ImageFilter`
+criado a partir de um fragment shader. A ponte `SpiPaintEffectsApi` apenas
+expõe a tabela de fábricas ao `lib/ui`; ela não reintroduz a criação dos quatro
+tipos por `Dl*`.
+
+O portão de efeitos ficou em +1,8% no `BM_DartEffectsFrame`, abaixo do limite
+de 5%. As comparações com o branch `develop` e os quatro benchmarks isolados
+estão em [runtime-spi-s4g1.md](medidas/runtime-spi-s4g1.md).
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos

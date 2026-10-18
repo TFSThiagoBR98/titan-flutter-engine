@@ -158,6 +158,14 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0148-test-engine-add-a-composite-frame-benchmark.patch` | Medir um quadro composto de cena, pintura, paths, canvas e texto para o portão integrado da S4f. | |
 | `0149-test-engine-stress-spi-handle-tables-across-threads.patch` | Fixar a corrida entre inserção, busca, liberação e destruição reentrante nas tabelas de handles do SPI. | |
 | `0150-fix-engine-lock-spi-handle-tables.patch` | Serializar o acesso às tabelas de handles entre engines e finalizadores, destruindo valores liberados fora da trava. | |
+| `0151-test-engine-add-the-runtime-spi-s4g1-effects-benchmark.patch` | Adicionar o benchmark de efeitos do `dart:ui` para o portão da S4g-1. | |
+| `0152-test-engine-add-s4g1-effects-parity-red-tests.patch` | Fixar os testes RED de paridade dos efeitos de pintura da S4g-1. | |
+| `0153-feat-engine-add-image-filter-equality-to-the-spi.patch` | Acrescentar igualdade de filtros de imagem à ABI 0.19 do Runtime SPI. | |
+| `0154-test-engine-cover-invalid-image-filter-equality-handles.patch` | Cobrir handles inválidos na igualdade de filtros de imagem. | |
+| `0155-fix-engine-reject-invalid-image-filter-equality-handles.patch` | Rejeitar handles inválidos na operação de igualdade de filtros de imagem. | |
+| `0156-feat-engine-create-dart-ui-effects-through-the-spi.patch` | Criar gradientes, filtros e vertices do `dart:ui` diretamente pela API de efeitos do SPI. | |
+| `0157-fix-engine-expose-paint-effects-api-to-dart-ui.patch` | Expor a API de efeitos de pintura ao `lib/ui` por uma ponte interna permitida. | |
+| `0158-fix-engine-update-effects-bridge-consumers.patch` | Atualizar os consumidores das pontes de efeitos removidas para manter os testes compilando. | |
 
 O fluxo é:
 
