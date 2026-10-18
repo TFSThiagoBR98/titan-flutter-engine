@@ -1,0 +1,245 @@
+# Why: measure a realistic composed frame that combines scene, canvas, and
+# text work.
+diff --git a/engine/src/flutter/shell/common/fixtures/shell_test.dart b/engine/src/flutter/shell/common/fixtures/shell_test.dart
+index cbf3e3b2be3..99aae3eff5b 100644
+--- a/engine/src/flutter/shell/common/fixtures/shell_test.dart
++++ b/engine/src/flutter/shell/common/fixtures/shell_test.dart
+@@ -76,6 +76,183 @@ void buildParagraphFrame() {
+   }
+ }
+ 
++Paragraph _buildCompositeTitleParagraph(int groupIndex) {
++  final ParagraphBuilder builder = ParagraphBuilder(
++    ParagraphStyle(textAlign: TextAlign.center),
++  );
++  builder.pushStyle(TextStyle(
++    fontSize: 14,
++    fontFamily: 'sans-serif',
++    color: Color(0xFF111827),
++  ));
++  builder.addText('Dashboard item ${groupIndex + 1}');
++  builder.pushStyle(TextStyle(
++    fontWeight: FontWeight.bold,
++    color: Color(0xFF2563EB),
++  ));
++  builder.addText(' ready');
++  builder.pop();
++  builder.pop();
++
++  final Paragraph paragraph = builder.build();
++  paragraph.layout(const ParagraphConstraints(width: 300));
++  return paragraph;
++}
++
++Picture _buildCompositeGroupPicture(int groupIndex) {
++  final PictureRecorder recorder = PictureRecorder();
++  final Canvas canvas = Canvas(
++    recorder,
++    const Rect.fromLTWH(0, 0, 320, 140),
++  );
++  final Paint backgroundPaint = Paint()..color = const Color(0xFFF8FAFC);
++  canvas.drawRRect(
++    RRect.fromRectAndRadius(
++      const Rect.fromLTWH(0, 0, 320, 140),
++      const Radius.circular(8),
++    ),
++    backgroundPaint,
++  );
++
++  final Path iconPath = Path()
++    ..moveTo(12, 12)
++    ..lineTo(28, 12)
++    ..lineTo(34, 22)
++    ..lineTo(24, 34)
++    ..lineTo(10, 30)
++    ..lineTo(6, 20)
++    ..close();
++  canvas.drawPath(iconPath, Paint()..color = const Color(0xFF2563EB));
++  canvas.drawRect(
++    const Rect.fromLTWH(48, 18, 92, 8),
++    Paint()..color = const Color(0xFF16A34A),
++  );
++  canvas.drawRect(
++    const Rect.fromLTWH(48, 34, 64, 6),
++    Paint()..color = const Color(0xFFCA8A04),
++  );
++  canvas.drawCircle(
++    const Offset(286, 26),
++    12,
++    Paint()..color = Color(0xFFDC2626 + (groupIndex % 3) * 0x00050505),
++  );
++
++  final Paragraph paragraph = _buildCompositeTitleParagraph(groupIndex);
++  canvas.drawParagraph(paragraph, const Offset(8, 72));
++  paragraph.dispose();
++  return recorder.endRecording();
++}
++
++Picture _buildCompositeBodyPicture() {
++  final ParagraphBuilder builder = ParagraphBuilder(ParagraphStyle(
++    maxLines: 3,
++    ellipsis: '…',
++  ));
++  builder.pushStyle(TextStyle(
++    fontSize: 15,
++    fontFamily: 'sans-serif',
++    color: Color(0xFF111827),
++  ));
++  builder.addText(
++    'A longer application summary describes the current workspace and the '
++    'items that need attention before the next frame is presented. ',
++  );
++  builder.pushStyle(TextStyle(fontWeight: FontWeight.w600));
++  builder.addText(
++    'Important updates remain visible while the surrounding cards are '
++    'recomposed for the user.',
++  );
++  builder.pop();
++  builder.pushStyle(TextStyle(fontStyle: FontStyle.italic));
++  builder.addText(
++    'Recent activity and helpful status details complete this realistic text '
++    'block for the composed frame benchmark.',
++  );
++  builder.pop();
++  builder.pop();
++
++  final Paragraph paragraph = builder.build();
++  paragraph.layout(const ParagraphConstraints(width: 620));
++  paragraph.computeLineMetrics();
++
++  final PictureRecorder recorder = PictureRecorder();
++  final Canvas canvas = Canvas(
++    recorder,
++    const Rect.fromLTWH(0, 0, 640, 100),
++  );
++  canvas.drawParagraph(paragraph, Offset.zero);
++  paragraph.dispose();
++  return recorder.endRecording();
++}
++
++List<OffsetEngineLayer?> _compositePreviousOffsetLayers = <OffsetEngineLayer?>[];
++List<ClipRectEngineLayer?> _compositePreviousClipRectLayers = <ClipRectEngineLayer?>[];
++List<OpacityEngineLayer?> _compositePreviousOpacityLayers = <OpacityEngineLayer?>[];
++
++@pragma('vm:entry-point')
++void buildCompositeFrame() {
++  const int groupCount = 20;
++
++  final SceneBuilder sceneBuilder = SceneBuilder();
++  final List<OffsetEngineLayer?> nextOffsetLayers = <OffsetEngineLayer?>[];
++  final List<ClipRectEngineLayer?> nextClipRectLayers = <ClipRectEngineLayer?>[];
++  final List<OpacityEngineLayer?> nextOpacityLayers = <OpacityEngineLayer?>[];
++  final List<Picture> pictures = <Picture>[];
++
++  for (int groupIndex = 0; groupIndex < groupCount; groupIndex++) {
++    final OffsetEngineLayer offsetLayer = sceneBuilder.pushOffset(
++      groupIndex.toDouble() * 4,
++      groupIndex.toDouble() * 2,
++      oldLayer: groupIndex < _compositePreviousOffsetLayers.length
++          ? _compositePreviousOffsetLayers[groupIndex]
++          : null,
++    );
++    final ClipRectEngineLayer clipRectLayer = sceneBuilder.pushClipRect(
++      const Rect.fromLTWH(0, 0, 320, 140),
++      oldLayer: groupIndex < _compositePreviousClipRectLayers.length
++          ? _compositePreviousClipRectLayers[groupIndex]
++          : null,
++    );
++    OpacityEngineLayer? opacityLayer;
++    if (groupIndex % 4 == 0) {
++      opacityLayer = sceneBuilder.pushOpacity(
++        220,
++        oldLayer: groupIndex < _compositePreviousOpacityLayers.length
++            ? _compositePreviousOpacityLayers[groupIndex]
++            : null,
++      );
++    }
++
++    final Picture picture = _buildCompositeGroupPicture(groupIndex);
++    sceneBuilder.addPicture(Offset.zero, picture);
++    pictures.add(picture);
++
++    if (opacityLayer != null) {
++      sceneBuilder.pop();
++    }
++    sceneBuilder.pop();
++    sceneBuilder.pop();
++
++    nextOffsetLayers.add(offsetLayer);
++    nextClipRectLayers.add(clipRectLayer);
++    nextOpacityLayers.add(opacityLayer);
++  }
++
++  final Picture bodyPicture = _buildCompositeBodyPicture();
++  sceneBuilder.addPicture(const Offset(12, 160), bodyPicture);
++  pictures.add(bodyPicture);
++
++  final Scene scene = sceneBuilder.build();
++  scene.dispose();
++  for (final Picture picture in pictures) {
++    picture.dispose();
++  }
++
++  _compositePreviousOffsetLayers = nextOffsetLayers;
++  _compositePreviousClipRectLayers = nextClipRectLayers;
++  _compositePreviousOpacityLayers = nextOpacityLayers;
++}
++
+ @Native<Void Function(Handle)>(symbol: 'NativeReportTimingsCallback')
+ external void nativeReportTimingsCallback(List<int> timings);
+ @Native<Void Function(Int64)>(symbol: 'NativeOnBeginFrame')
+diff --git a/engine/src/flutter/shell/common/shell_benchmarks.cc b/engine/src/flutter/shell/common/shell_benchmarks.cc
+index 9adf14628e3..62c1c958bd0 100644
+--- a/engine/src/flutter/shell/common/shell_benchmarks.cc
++++ b/engine/src/flutter/shell/common/shell_benchmarks.cc
+@@ -184,4 +184,50 @@ static void BM_DartParagraphFrame(benchmark::State& state) {
+ 
+ BENCHMARK(BM_DartParagraphFrame)->Unit(benchmark::kMicrosecond);
+ 
++static void BM_DartCompositeFrame(benchmark::State& state) {
++  ParagraphBenchmarkShell shell_test;
++  Settings settings = shell_test.CreateSettingsForFixture();
++  settings.icu_data_path = testing::IcuDataPathForTesting();
++  testing::InitializeIcuForTesting();
++  auto shell = shell_test.CreateShell(settings);
++  FML_CHECK(shell);
++
++  testing::ShellTest::PlatformViewNotifyCreated(shell.get());
++
++  auto configuration = RunConfiguration::InferFromSettings(settings);
++  configuration.SetEntrypoint("mainNotifyNative");
++
++  fml::AutoResetWaitableEvent startup_latch;
++  shell_test.AddFfiNativeCallback(
++      "NotifyNative", CREATE_FFI_LAMBDA([&startup_latch]() {
++        startup_latch.Signal();
++      }));
++  testing::ShellTest::RunEngine(shell.get(), std::move(configuration));
++  startup_latch.Wait();
++
++  while (state.KeepRunning()) {
++    fml::AutoResetWaitableEvent frame_latch;
++    fml::TaskRunner::RunNowOrPostTask(
++        shell->GetTaskRunners().GetUITaskRunner(),
++        [&shell, &frame_latch]() {
++          auto engine = shell->GetEngine();
++          FML_CHECK(engine);
++          const auto root_isolate = std::const_pointer_cast<DartIsolate>(
++              engine->GetRuntimeController()->GetRootIsolate().lock());
++          FML_CHECK(root_isolate);
++          tonic::DartState::Scope scope(root_isolate);
++          const Dart_Handle result = Dart_Invoke(
++              Dart_RootLibrary(),
++              Dart_NewStringFromCString("buildCompositeFrame"), 0, nullptr);
++          FML_CHECK(!Dart_IsError(result));
++          frame_latch.Signal();
++        });
++    frame_latch.Wait();
++  }
++
++  shell_test.DestroyShell(std::move(shell));
++}
++
++BENCHMARK(BM_DartCompositeFrame)->Unit(benchmark::kMicrosecond);
++
+ }  // namespace flutter
