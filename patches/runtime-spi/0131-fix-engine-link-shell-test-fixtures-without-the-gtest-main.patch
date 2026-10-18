@@ -1,0 +1,23 @@
+# Why: the paragraph benchmark reuses the shell test fixtures, and their gtest
+# main clashed with the benchmark main.
+diff --git a/engine/src/flutter/shell/common/BUILD.gn b/engine/src/flutter/shell/common/BUILD.gn
+index a0a0347eb7d..e758c725193 100644
+--- a/engine/src/flutter/shell/common/BUILD.gn
++++ b/engine/src/flutter/shell/common/BUILD.gn
+@@ -272,7 +272,7 @@ if (enable_unittests) {
+       "//flutter/runtime",
+       "//flutter/runtime_spi:runtime_spi_c_api",
+       "//flutter/shell/common",
+-      "//flutter/testing",
++      "//flutter/testing:testing_lib",
+     ]
+ 
+     deps = [
+@@ -367,6 +367,7 @@ if (enable_unittests) {
+       "//flutter/shell/common:base64",
+       "//flutter/shell/profiling:profiling_unittests",
+       "//flutter/shell/version",
++      "//flutter/testing",
+       "//flutter/testing:fixture_test",
+       "//flutter/third_party/googletest:gmock",
+     ]

@@ -1,0 +1,22 @@
+# Why: ShellTest is an abstract gtest fixture, so the benchmark needs a
+# subclass that defines TestBody.
+diff --git a/engine/src/flutter/shell/common/shell_benchmarks.cc b/engine/src/flutter/shell/common/shell_benchmarks.cc
+index 153574c8486..9adf14628e3 100644
+--- a/engine/src/flutter/shell/common/shell_benchmarks.cc
++++ b/engine/src/flutter/shell/common/shell_benchmarks.cc
+@@ -132,8 +132,14 @@ static void BM_ShellInitializationAndShutdown(benchmark::State& state) {
+ 
+ BENCHMARK(BM_ShellInitializationAndShutdown);
+ 
++// ShellTest is a gtest fixture; the benchmark only needs its shell helpers.
++class ParagraphBenchmarkShell final : public testing::ShellTest {
++ private:
++  void TestBody() override {}
++};
++
+ static void BM_DartParagraphFrame(benchmark::State& state) {
+-  testing::ShellTest shell_test;
++  ParagraphBenchmarkShell shell_test;
+   Settings settings = shell_test.CreateSettingsForFixture();
+   settings.icu_data_path = testing::IcuDataPathForTesting();
+   testing::InitializeIcuForTesting();
