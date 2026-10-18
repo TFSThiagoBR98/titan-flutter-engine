@@ -1,0 +1,102 @@
+# Why: Establish the realistic paragraph frame baseline required before moving
+# dart:ui text to the runtime SPI.
+diff --git a/engine/src/flutter/lib/ui/fixtures/ui_test.dart b/engine/src/flutter/lib/ui/fixtures/ui_test.dart
+index d790a5db508..0e4738bea7b 100644
+--- a/engine/src/flutter/lib/ui/fixtures/ui_test.dart
++++ b/engine/src/flutter/lib/ui/fixtures/ui_test.dart
+@@ -51,6 +51,58 @@ void buildPathFrame() {
+   }
+ }
+ 
++@pragma('vm:entry-point')
++void buildParagraphFrame() {
++  const int paragraphCount = 80;
++  const ParagraphStyle paragraphStyle = ParagraphStyle(
++    textAlign: TextAlign.center,
++    maxLines: 3,
++    ellipsis: '…',
++  );
++  const String firstSpanText = 'A compact paragraph with a colored span.';
++  const String secondSpanText = 'A weighted span keeps the layout realistic.';
++  const String thirdSpanText = 'Decorated text completes this benchmark line.';
++
++  for (int index = 0; index < paragraphCount; index++) {
++    final ParagraphBuilder builder = ParagraphBuilder(paragraphStyle);
++    builder.pushStyle(const TextStyle(
++      fontSize: 16,
++      fontFamily: 'sans-serif',
++      color: Color(0xFF111827),
++    ));
++    builder.pushStyle(const TextStyle(color: Color(0xFF2563EB)));
++    builder.addText(firstSpanText);
++    builder.pop();
++    builder.pushStyle(const TextStyle(fontWeight: FontWeight.w600));
++    builder.addText(secondSpanText);
++    builder.pop();
++    builder.pushStyle(const TextStyle(
++      letterSpacing: 0.5,
++      decoration: TextDecoration.underline,
++    ));
++    builder.addText(thirdSpanText);
++    builder.pop();
++    builder.pop();
++
++    final Paragraph paragraph = builder.build();
++    paragraph.layout(const ParagraphConstraints(width: 300));
++    paragraph.height;
++    paragraph.computeLineMetrics();
++    paragraph.getBoxesForRange(0, 20);
++    paragraph.getPositionForOffset(const Offset(50, 10));
++
++    final PictureRecorder recorder = PictureRecorder();
++    final Canvas canvas = Canvas(
++      recorder,
++      const Rect.fromLTWH(0, 0, 300, 100),
++    );
++    canvas.drawParagraph(paragraph, Offset.zero);
++    final Picture picture = recorder.endRecording();
++    paragraph.dispose();
++    picture.dispose();
++  }
++}
++
+ Picture _createScenePicture(Color color, double size) {
+   final PictureRecorder recorder = PictureRecorder();
+   final Canvas canvas = Canvas(recorder, Rect.fromLTWH(0, 0, size, size));
+diff --git a/engine/src/flutter/lib/ui/ui_benchmarks.cc b/engine/src/flutter/lib/ui/ui_benchmarks.cc
+index 45b0450fd3e..f8e823f896f 100644
+--- a/engine/src/flutter/lib/ui/ui_benchmarks.cc
++++ b/engine/src/flutter/lib/ui/ui_benchmarks.cc
+@@ -154,4 +154,32 @@ static void BM_DartSceneBuildFrame(benchmark::State& state) {
+ 
+ BENCHMARK(BM_DartSceneBuildFrame)->Unit(benchmark::kMicrosecond);
+ 
++static void BM_DartParagraphFrame(benchmark::State& state) {
++  ThreadHost thread_host(ThreadHost::ThreadHostConfig(
++      "test", ThreadHost::Type::kPlatform | ThreadHost::Type::kRaster |
++                  ThreadHost::Type::kIo | ThreadHost::Type::kUi));
++  TaskRunners task_runners("test", thread_host.platform_thread->GetTaskRunner(),
++                           thread_host.raster_thread->GetTaskRunner(),
++                           thread_host.ui_thread->GetTaskRunner(),
++                           thread_host.io_thread->GetTaskRunner());
++  Fixture fixture;
++  auto settings = fixture.CreateSettingsForFixture();
++  auto vm_ref = DartVMRef::Create(settings);
++  auto isolate =
++      testing::RunDartCodeInIsolate(vm_ref, settings, task_runners, "main", {},
++                                    testing::GetDefaultKernelFilePath(), {});
++
++  while (state.KeepRunning()) {
++    bool successful = isolate->RunInIsolateScope([&]() -> bool {
++      Dart_Handle result = Dart_Invoke(
++          Dart_RootLibrary(), Dart_NewStringFromCString("buildParagraphFrame"),
++          0, nullptr);
++      return !Dart_IsError(result);
++    });
++    FML_CHECK(successful);
++  }
++}
++
++BENCHMARK(BM_DartParagraphFrame)->Unit(benchmark::kMicrosecond);
++
+ }  // namespace flutter
