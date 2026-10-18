@@ -1,0 +1,2252 @@
+# Why: acquiring the paint ByteData on every draw cost 22% of the frame
+# recording; Dart now passes the paint as nine Uint64 words to the non-leaf
+# canvas natives and one DecodeSpiPaint holds the dart:ui encoding rules. Gate
+# (BM_DartCanvasRecordFrame, quiet host): base 524-527 us, t9 622 us, t11
+# 476-497 us (median 487 us, -7.6%).
+diff --git a/engine/src/flutter/lib/ui/fixtures/ui_test.dart b/engine/src/flutter/lib/ui/fixtures/ui_test.dart
+index d18d589d77a..df10c01a509 100644
+--- a/engine/src/flutter/lib/ui/fixtures/ui_test.dart
++++ b/engine/src/flutter/lib/ui/fixtures/ui_test.dart
+@@ -171,100 +171,110 @@ Future<void> recordEveryCanvasOp() async {
+   nestedCanvas.drawRect(const Rect.fromLTRB(1, 1, 2, 2), paint);
+   final Picture nestedPicture = nestedRecorder.endRecording();
+ 
+-  final PictureRecorder recorder = PictureRecorder();
+-  final Canvas canvas = Canvas(recorder, const Rect.fromLTRB(0, 0, 100, 100));
+-  canvas.save();
+-  canvas.saveLayer(const Rect.fromLTRB(0, 0, 90, 90), paint);
+-  canvas.drawPaint(paint);
+-  canvas.restore();
+-  canvas.restoreToCount(1);
+-  canvas.getSaveCount();
+-  canvas.save();
+-  canvas.translate(2, 3);
+-  canvas.scale(2, 3);
+-  canvas.rotate(1);
+-  canvas.skew(0.1, 0.2);
+-  canvas.transform(
+-    Float64List.fromList(<double>[
+-      1,
+-      0,
+-      0,
+-      0,
+-      0,
+-      1,
+-      0,
+-      0,
+-      0,
+-      0,
+-      1,
+-      0,
+-      2,
+-      3,
+-      0,
+-      1,
+-    ]),
+-  );
+-  canvas.getTransform();
+-  canvas.restore();
+-  canvas.save();
+-  canvas.clipRect(const Rect.fromLTRB(0, 0, 90, 90));
+-  canvas.clipRRect(rrect);
+-  canvas.clipRSuperellipse(rsuperellipse);
+-  canvas.clipPath(path);
+-  canvas.getLocalClipBounds();
+-  canvas.getDestinationClipBounds();
+-  canvas.restore();
+-  canvas.drawColor(const Color(0xFF112233), BlendMode.srcOver);
+-  canvas.drawLine(const Offset(1, 1), const Offset(4, 4), paint);
+-  canvas.drawRect(const Rect.fromLTRB(1, 1, 10, 10), paint);
+-  canvas.drawRRect(rrect, paint);
+-  canvas.drawDRRect(rrect, rrect, paint);
+-  canvas.drawRSuperellipse(rsuperellipse, paint);
+-  canvas.drawOval(const Rect.fromLTRB(1, 1, 10, 10), paint);
+-  canvas.drawCircle(const Offset(5, 5), 2, paint);
+-  canvas.drawArc(const Rect.fromLTRB(1, 1, 10, 10), 0, 1, true, paint);
+-  canvas.drawPath(path, paint);
+-  canvas.drawImage(image, Offset.zero, paint);
+-  canvas.drawImageRect(
+-    image,
+-    const Rect.fromLTRB(0, 0, 2, 2),
+-    const Rect.fromLTRB(10, 10, 20, 20),
+-    paint,
+-  );
+-  canvas.drawImageNine(
+-    image,
+-    const Rect.fromLTRB(0, 0, 1, 1),
+-    const Rect.fromLTRB(10, 10, 20, 20),
+-    paint,
+-  );
+-  canvas.drawPicture(nestedPicture);
+-  canvas.drawPoints(PointMode.points, <Offset>[Offset.zero], paint);
+-  canvas.drawVertices(vertices, BlendMode.srcOver, paint);
+-  canvas.drawAtlas(
+-    image,
+-    <RSTransform>[
+-      RSTransform.fromComponents(
+-        rotation: 0,
+-        scale: 1,
+-        anchorX: 0,
+-        anchorY: 0,
+-        translateX: 10,
+-        translateY: 10,
+-      ),
+-    ],
+-    <Rect>[const Rect.fromLTRB(0, 0, 2, 2)],
+-    null,
+-    null,
+-    null,
+-    paint,
+-  );
+-  canvas.drawShadow(path, const Color(0x55000000), 1, false);
++  void recordCanvasOperations(Canvas canvas, Paint targetPaint) {
++    canvas.save();
++    canvas.saveLayer(const Rect.fromLTRB(0, 0, 90, 90), targetPaint);
++    canvas.drawPaint(targetPaint);
++    canvas.restore();
++    canvas.restoreToCount(1);
++    canvas.getSaveCount();
++    canvas.save();
++    canvas.translate(2, 3);
++    canvas.scale(2, 3);
++    canvas.rotate(1);
++    canvas.skew(0.1, 0.2);
++    canvas.transform(
++      Float64List.fromList(<double>[
++        1,
++        0,
++        0,
++        0,
++        0,
++        1,
++        0,
++        0,
++        0,
++        0,
++        1,
++        0,
++        2,
++        3,
++        0,
++        1,
++      ]),
++    );
++    canvas.getTransform();
++    canvas.restore();
++    canvas.save();
++    canvas.clipRect(const Rect.fromLTRB(0, 0, 90, 90));
++    canvas.clipRRect(rrect);
++    canvas.clipRSuperellipse(rsuperellipse);
++    canvas.clipPath(path);
++    canvas.getLocalClipBounds();
++    canvas.getDestinationClipBounds();
++    canvas.restore();
++    canvas.drawColor(const Color(0xFF112233), BlendMode.srcOver);
++    canvas.drawLine(const Offset(1, 1), const Offset(4, 4), targetPaint);
++    canvas.drawRect(const Rect.fromLTRB(1, 1, 10, 10), targetPaint);
++    canvas.drawRRect(rrect, targetPaint);
++    canvas.drawDRRect(rrect, rrect, targetPaint);
++    canvas.drawRSuperellipse(rsuperellipse, targetPaint);
++    canvas.drawOval(const Rect.fromLTRB(1, 1, 10, 10), targetPaint);
++    canvas.drawCircle(const Offset(5, 5), 2, targetPaint);
++    canvas.drawArc(const Rect.fromLTRB(1, 1, 10, 10), 0, 1, true, targetPaint);
++    canvas.drawPath(path, targetPaint);
++    canvas.drawImage(image, Offset.zero, targetPaint);
++    canvas.drawImageRect(
++      image,
++      const Rect.fromLTRB(0, 0, 2, 2),
++      const Rect.fromLTRB(10, 10, 20, 20),
++      targetPaint,
++    );
++    canvas.drawImageNine(
++      image,
++      const Rect.fromLTRB(0, 0, 1, 1),
++      const Rect.fromLTRB(10, 10, 20, 20),
++      targetPaint,
++    );
++    canvas.drawPicture(nestedPicture);
++    canvas.drawPoints(PointMode.points, <Offset>[Offset.zero], targetPaint);
++    canvas.drawVertices(vertices, BlendMode.srcOver, targetPaint);
++    canvas.drawAtlas(
++      image,
++      <RSTransform>[
++        RSTransform.fromComponents(
++          rotation: 0,
++          scale: 1,
++          anchorX: 0,
++          anchorY: 0,
++          translateX: 10,
++          translateY: 10,
++        ),
++      ],
++      <Rect>[const Rect.fromLTRB(0, 0, 2, 2)],
++      null,
++      null,
++      null,
++      targetPaint,
++    );
++    canvas.drawShadow(path, const Color(0x55000000), 1, false);
++  }
+ 
+-  final Picture picture = recorder.endRecording();
++  Picture recordPicture(Paint targetPaint) {
++    final PictureRecorder recorder = PictureRecorder();
++    final Canvas canvas = Canvas(recorder, const Rect.fromLTRB(0, 0, 100, 100));
++    recordCanvasOperations(canvas, targetPaint);
++    return recorder.endRecording();
++  }
++
++  final Picture picture = recordPicture(paint);
++  final Picture shaderPicture = recordPicture(_realisticGradientPaint);
+   _validatePicture(picture);
++  _validatePicture(shaderPicture);
+   image.dispose();
+   nestedPicture.dispose();
+   picture.dispose();
++  shaderPicture.dispose();
+   _finish();
+ }
+ 
+diff --git a/engine/src/flutter/lib/ui/painting.dart b/engine/src/flutter/lib/ui/painting.dart
+index e1cada240c7..eda56808251 100644
+--- a/engine/src/flutter/lib/ui/painting.dart
++++ b/engine/src/flutter/lib/ui/painting.dart
+@@ -1324,6 +1324,8 @@ final class Paint {
+   @pragma('vm:entry-point')
+   final ByteData _data = ByteData(_kDataByteCount);
+ 
++  int _dataWord(int index) => _data.getUint64(index * 8, Endian.host);
++
+   // Must match //lib/ui/painting/paint.cc.
+   static const int _kIsAntiAliasIndex = 0;
+   static const int _kColorRedIndex = 1;
+@@ -1362,7 +1364,9 @@ final class Paint {
+   static const int _kInvertColorOffset = _kInvertColorIndex << 2;
+ 
+   // If you add more fields, remember to update _kDataByteCount.
+-  static const int _kDataByteCount = 68; // 4 * (last index + 1).
++  // The final four bytes are padding so the 68-byte encoding fits in nine
++  // native Uint64 arguments without allocating a temporary buffer.
++  static const int _kDataByteCount = 72;
+ 
+   // Binary format must match the deserialization code in paint.cc.
+   // C++ unit tests access this.
+@@ -7753,17 +7757,86 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+   @override
+   void saveLayer(Rect? bounds, Paint paint) {
+     if (bounds == null) {
+-      _saveLayerWithoutBounds(paint._objects, paint._data);
++      _saveLayerWithoutBounds(
++        paint._objects,
++        paint._dataWord(0),
++        paint._dataWord(1),
++        paint._dataWord(2),
++        paint._dataWord(3),
++        paint._dataWord(4),
++        paint._dataWord(5),
++        paint._dataWord(6),
++        paint._dataWord(7),
++        paint._dataWord(8),
++      );
+     } else {
+       assert(_rectIsValid(bounds));
+-      _saveLayer(bounds.left, bounds.top, bounds.right, bounds.bottom, paint._objects, paint._data);
++      _saveLayer(
++        bounds.left,
++        bounds.top,
++        bounds.right,
++        bounds.bottom,
++        paint._objects,
++        paint._dataWord(0),
++        paint._dataWord(1),
++        paint._dataWord(2),
++        paint._dataWord(3),
++        paint._dataWord(4),
++        paint._dataWord(5),
++        paint._dataWord(6),
++        paint._dataWord(7),
++        paint._dataWord(8),
++      );
+     }
+   }
+ 
+-  @Native<Void Function(Pointer<Void>, Handle, Handle)>(symbol: 'Canvas::saveLayerWithoutBounds')
+-  external void _saveLayerWithoutBounds(List<Object?>? paintObjects, ByteData paintData);
++  @Native<
++    Void Function(
++      Pointer<Void>,
++      Handle,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++    )
++  >(symbol: 'Canvas::saveLayerWithoutBounds')
++  external void _saveLayerWithoutBounds(
++    List<Object?>? paintObjects,
++    int w0,
++    int w1,
++    int w2,
++    int w3,
++    int w4,
++    int w5,
++    int w6,
++    int w7,
++    int w8,
++  );
+ 
+-  @Native<Void Function(Pointer<Void>, Double, Double, Double, Double, Handle, Handle)>(
++  @Native<
++    Void Function(
++      Pointer<Void>,
++      Double,
++      Double,
++      Double,
++      Double,
++      Handle,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++    )
++  >(
+     symbol: 'Canvas::saveLayer',
+   )
+   external void _saveLayer(
+@@ -7772,7 +7845,15 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+     double right,
+     double bottom,
+     List<Object?>? paintObjects,
+-    ByteData paintData,
++    int w0,
++    int w1,
++    int w2,
++    int w3,
++    int w4,
++    int w5,
++    int w6,
++    int w7,
++    int w8,
+   );
+ 
+   @override
+@@ -7907,10 +7988,43 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+   void drawLine(Offset p1, Offset p2, Paint paint) {
+     assert(_offsetIsValid(p1));
+     assert(_offsetIsValid(p2));
+-    _drawLine(p1.dx, p1.dy, p2.dx, p2.dy, paint._objects, paint._data);
++    _drawLine(
++      p1.dx,
++      p1.dy,
++      p2.dx,
++      p2.dy,
++      paint._objects,
++      paint._dataWord(0),
++      paint._dataWord(1),
++      paint._dataWord(2),
++      paint._dataWord(3),
++      paint._dataWord(4),
++      paint._dataWord(5),
++      paint._dataWord(6),
++      paint._dataWord(7),
++      paint._dataWord(8),
++    );
+   }
+ 
+-  @Native<Void Function(Pointer<Void>, Double, Double, Double, Double, Handle, Handle)>(
++  @Native<
++    Void Function(
++      Pointer<Void>,
++      Double,
++      Double,
++      Double,
++      Double,
++      Handle,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++    )
++  >(
+     symbol: 'Canvas::drawLine',
+   )
+   external void _drawLine(
+@@ -7919,27 +8033,104 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+     double x2,
+     double y2,
+     List<Object?>? paintObjects,
+-    ByteData paintData,
++    int w0,
++    int w1,
++    int w2,
++    int w3,
++    int w4,
++    int w5,
++    int w6,
++    int w7,
++    int w8,
+   );
+ 
+   @override
+   void drawPaint(Paint paint) {
+-    _drawPaint(paint._objects, paint._data);
++    _drawPaint(
++      paint._objects,
++      paint._dataWord(0),
++      paint._dataWord(1),
++      paint._dataWord(2),
++      paint._dataWord(3),
++      paint._dataWord(4),
++      paint._dataWord(5),
++      paint._dataWord(6),
++      paint._dataWord(7),
++      paint._dataWord(8),
++    );
+   }
+ 
+-  @Native<Void Function(Pointer<Void>, Handle, Handle)>(symbol: 'Canvas::drawPaint')
+-  external void _drawPaint(List<Object?>? paintObjects, ByteData paintData);
++  @Native<
++    Void Function(
++      Pointer<Void>,
++      Handle,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++    )
++  >(symbol: 'Canvas::drawPaint')
++  external void _drawPaint(
++    List<Object?>? paintObjects,
++    int w0,
++    int w1,
++    int w2,
++    int w3,
++    int w4,
++    int w5,
++    int w6,
++    int w7,
++    int w8,
++  );
+ 
+   @override
+   void drawRect(Rect rect, Paint paint) {
+     assert(_rectIsValid(rect));
+     rect = _sorted(rect);
+     if (paint.style != PaintingStyle.fill || !rect.isEmpty) {
+-      _drawRect(rect.left, rect.top, rect.right, rect.bottom, paint._objects, paint._data);
++      _drawRect(
++        rect.left,
++        rect.top,
++        rect.right,
++        rect.bottom,
++        paint._objects,
++        paint._dataWord(0),
++        paint._dataWord(1),
++        paint._dataWord(2),
++        paint._dataWord(3),
++        paint._dataWord(4),
++        paint._dataWord(5),
++        paint._dataWord(6),
++        paint._dataWord(7),
++        paint._dataWord(8),
++      );
+     }
+   }
+ 
+-  @Native<Void Function(Pointer<Void>, Double, Double, Double, Double, Handle, Handle)>(
++  @Native<
++    Void Function(
++      Pointer<Void>,
++      Double,
++      Double,
++      Double,
++      Double,
++      Handle,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++    )
++  >(
+     symbol: 'Canvas::drawRect',
+   )
+   external void _drawRect(
+@@ -7948,48 +8139,167 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+     double right,
+     double bottom,
+     List<Object?>? paintObjects,
+-    ByteData paintData,
++    int w0,
++    int w1,
++    int w2,
++    int w3,
++    int w4,
++    int w5,
++    int w6,
++    int w7,
++    int w8,
+   );
+ 
+   @override
+   void drawRRect(RRect rrect, Paint paint) {
+     assert(_rrectIsValid(rrect));
+-    _drawRRect(rrect._getValue32(), paint._objects, paint._data);
++    _drawRRect(
++      rrect._getValue32(),
++      paint._objects,
++      paint._dataWord(0),
++      paint._dataWord(1),
++      paint._dataWord(2),
++      paint._dataWord(3),
++      paint._dataWord(4),
++      paint._dataWord(5),
++      paint._dataWord(6),
++      paint._dataWord(7),
++      paint._dataWord(8),
++    );
+   }
+ 
+-  @Native<Void Function(Pointer<Void>, Handle, Handle, Handle)>(symbol: 'Canvas::drawRRect')
+-  external void _drawRRect(Float32List rrect, List<Object?>? paintObjects, ByteData paintData);
++  @Native<
++    Void Function(
++      Pointer<Void>,
++      Handle,
++      Handle,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++    )
++  >(symbol: 'Canvas::drawRRect')
++  external void _drawRRect(
++    Float32List rrect,
++    List<Object?>? paintObjects,
++    int w0,
++    int w1,
++    int w2,
++    int w3,
++    int w4,
++    int w5,
++    int w6,
++    int w7,
++    int w8,
++  );
+ 
+   @override
+   void drawDRRect(RRect outer, RRect inner, Paint paint) {
+     assert(_rrectIsValid(outer));
+     assert(_rrectIsValid(inner));
+-    _drawDRRect(outer._getValue32(), inner._getValue32(), paint._objects, paint._data);
++    _drawDRRect(
++      outer._getValue32(),
++      inner._getValue32(),
++      paint._objects,
++      paint._dataWord(0),
++      paint._dataWord(1),
++      paint._dataWord(2),
++      paint._dataWord(3),
++      paint._dataWord(4),
++      paint._dataWord(5),
++      paint._dataWord(6),
++      paint._dataWord(7),
++      paint._dataWord(8),
++    );
+   }
+ 
+-  @Native<Void Function(Pointer<Void>, Handle, Handle, Handle, Handle)>(
++  @Native<
++    Void Function(
++      Pointer<Void>,
++      Handle,
++      Handle,
++      Handle,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++    )
++  >(
+     symbol: 'Canvas::drawDRRect',
+   )
+   external void _drawDRRect(
+     Float32List outer,
+     Float32List inner,
+     List<Object?>? paintObjects,
+-    ByteData paintData,
++    int w0,
++    int w1,
++    int w2,
++    int w3,
++    int w4,
++    int w5,
++    int w6,
++    int w7,
++    int w8,
+   );
+ 
+   @override
+   void drawRSuperellipse(RSuperellipse rsuperellipse, Paint paint) {
+     assert(_rsuperellipseIsValid(rsuperellipse));
+-    _drawRSuperellipse(rsuperellipse._native(), paint._objects, paint._data);
++    _drawRSuperellipse(
++      rsuperellipse._native(),
++      paint._objects,
++      paint._dataWord(0),
++      paint._dataWord(1),
++      paint._dataWord(2),
++      paint._dataWord(3),
++      paint._dataWord(4),
++      paint._dataWord(5),
++      paint._dataWord(6),
++      paint._dataWord(7),
++      paint._dataWord(8),
++    );
+   }
+ 
+-  @Native<Void Function(Pointer<Void>, Pointer<Void>, Handle, Handle)>(
++  @Native<
++    Void Function(
++      Pointer<Void>,
++      Pointer<Void>,
++      Handle,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++    )
++  >(
+     symbol: 'Canvas::drawRSuperellipse',
+   )
+   external void _drawRSuperellipse(
+     _NativeRSuperellipse rsuperellipse,
+     List<Object?>? paintObjects,
+-    ByteData paintData,
++    int w0,
++    int w1,
++    int w2,
++    int w3,
++    int w4,
++    int w5,
++    int w6,
++    int w7,
++    int w8,
+   );
+ 
+   @override
+@@ -7997,11 +8307,44 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+     assert(_rectIsValid(rect));
+     rect = _sorted(rect);
+     if (paint.style != PaintingStyle.fill || !rect.isEmpty) {
+-      _drawOval(rect.left, rect.top, rect.right, rect.bottom, paint._objects, paint._data);
++      _drawOval(
++        rect.left,
++        rect.top,
++        rect.right,
++        rect.bottom,
++        paint._objects,
++        paint._dataWord(0),
++        paint._dataWord(1),
++        paint._dataWord(2),
++        paint._dataWord(3),
++        paint._dataWord(4),
++        paint._dataWord(5),
++        paint._dataWord(6),
++        paint._dataWord(7),
++        paint._dataWord(8),
++      );
+     }
+   }
+ 
+-  @Native<Void Function(Pointer<Void>, Double, Double, Double, Double, Handle, Handle)>(
++  @Native<
++    Void Function(
++      Pointer<Void>,
++      Double,
++      Double,
++      Double,
++      Double,
++      Handle,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++    )
++  >(
+     symbol: 'Canvas::drawOval',
+   )
+   external void _drawOval(
+@@ -8010,16 +8353,55 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+     double right,
+     double bottom,
+     List<Object?>? paintObjects,
+-    ByteData paintData,
++    int w0,
++    int w1,
++    int w2,
++    int w3,
++    int w4,
++    int w5,
++    int w6,
++    int w7,
++    int w8,
+   );
+ 
+   @override
+   void drawCircle(Offset c, double radius, Paint paint) {
+     assert(_offsetIsValid(c));
+-    _drawCircle(c.dx, c.dy, radius, paint._objects, paint._data);
++    _drawCircle(
++      c.dx,
++      c.dy,
++      radius,
++      paint._objects,
++      paint._dataWord(0),
++      paint._dataWord(1),
++      paint._dataWord(2),
++      paint._dataWord(3),
++      paint._dataWord(4),
++      paint._dataWord(5),
++      paint._dataWord(6),
++      paint._dataWord(7),
++      paint._dataWord(8),
++    );
+   }
+ 
+-  @Native<Void Function(Pointer<Void>, Double, Double, Double, Handle, Handle)>(
++  @Native<
++    Void Function(
++      Pointer<Void>,
++      Double,
++      Double,
++      Double,
++      Handle,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++    )
++  >(
+     symbol: 'Canvas::drawCircle',
+   )
+   external void _drawCircle(
+@@ -8027,7 +8409,15 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+     double y,
+     double radius,
+     List<Object?>? paintObjects,
+-    ByteData paintData,
++    int w0,
++    int w1,
++    int w2,
++    int w3,
++    int w4,
++    int w5,
++    int w6,
++    int w7,
++    int w8,
+   );
+ 
+   @override
+@@ -8042,7 +8432,15 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+       sweepAngle,
+       useCenter,
+       paint._objects,
+-      paint._data,
++      paint._dataWord(0),
++      paint._dataWord(1),
++      paint._dataWord(2),
++      paint._dataWord(3),
++      paint._dataWord(4),
++      paint._dataWord(5),
++      paint._dataWord(6),
++      paint._dataWord(7),
++      paint._dataWord(8),
+     );
+   }
+ 
+@@ -8057,7 +8455,15 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+       Double,
+       Bool,
+       Handle,
+-      Handle,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
+     )
+   >(symbol: 'Canvas::drawArc')
+   external void _drawArc(
+@@ -8069,16 +8475,63 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+     double sweepAngle,
+     bool useCenter,
+     List<Object?>? paintObjects,
+-    ByteData paintData,
++    int w0,
++    int w1,
++    int w2,
++    int w3,
++    int w4,
++    int w5,
++    int w6,
++    int w7,
++    int w8,
+   );
+ 
+   @override
+   void drawPath(Path path, Paint paint) {
+-    _drawPath(path as _NativePath, paint._objects, paint._data);
++    _drawPath(
++      path as _NativePath,
++      paint._objects,
++      paint._dataWord(0),
++      paint._dataWord(1),
++      paint._dataWord(2),
++      paint._dataWord(3),
++      paint._dataWord(4),
++      paint._dataWord(5),
++      paint._dataWord(6),
++      paint._dataWord(7),
++      paint._dataWord(8),
++    );
+   }
+ 
+-  @Native<Void Function(Pointer<Void>, Pointer<Void>, Handle, Handle)>(symbol: 'Canvas::drawPath')
+-  external void _drawPath(_NativePath path, List<Object?>? paintObjects, ByteData paintData);
++  @Native<
++    Void Function(
++      Pointer<Void>,
++      Pointer<Void>,
++      Handle,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++    )
++  >(symbol: 'Canvas::drawPath')
++  external void _drawPath(
++    _NativePath path,
++    List<Object?>? paintObjects,
++    int w0,
++    int w1,
++    int w2,
++    int w3,
++    int w4,
++    int w5,
++    int w6,
++    int w7,
++    int w8,
++  );
+ 
+   @override
+   void drawImage(Image image, Offset offset, Paint paint) {
+@@ -8089,7 +8542,15 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+       offset.dx,
+       offset.dy,
+       paint._objects,
+-      paint._data,
++      paint._dataWord(0),
++      paint._dataWord(1),
++      paint._dataWord(2),
++      paint._dataWord(3),
++      paint._dataWord(4),
++      paint._dataWord(5),
++      paint._dataWord(6),
++      paint._dataWord(7),
++      paint._dataWord(8),
+       paint.filterQuality.index,
+     );
+     if (error != null) {
+@@ -8097,7 +8558,25 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+     }
+   }
+ 
+-  @Native<Handle Function(Pointer<Void>, Pointer<Void>, Double, Double, Handle, Handle, Int32)>(
++  @Native<
++    Handle Function(
++      Pointer<Void>,
++      Pointer<Void>,
++      Double,
++      Double,
++      Handle,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Int32,
++    )
++  >(
+     symbol: 'Canvas::drawImage',
+   )
+   external String? _drawImage(
+@@ -8105,7 +8584,15 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+     double x,
+     double y,
+     List<Object?>? paintObjects,
+-    ByteData paintData,
++    int w0,
++    int w1,
++    int w2,
++    int w3,
++    int w4,
++    int w5,
++    int w6,
++    int w7,
++    int w8,
+     int filterQualityIndex,
+   );
+ 
+@@ -8125,7 +8612,15 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+       dst.right,
+       dst.bottom,
+       paint._objects,
+-      paint._data,
++      paint._dataWord(0),
++      paint._dataWord(1),
++      paint._dataWord(2),
++      paint._dataWord(3),
++      paint._dataWord(4),
++      paint._dataWord(5),
++      paint._dataWord(6),
++      paint._dataWord(7),
++      paint._dataWord(8),
+       paint.filterQuality.index,
+     );
+     if (error != null) {
+@@ -8146,7 +8641,15 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+       Double,
+       Double,
+       Handle,
+-      Handle,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
+       Int32,
+     )
+   >(symbol: 'Canvas::drawImageRect')
+@@ -8161,7 +8664,15 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+     double dstRight,
+     double dstBottom,
+     List<Object?>? paintObjects,
+-    ByteData paintData,
++    int w0,
++    int w1,
++    int w2,
++    int w3,
++    int w4,
++    int w5,
++    int w6,
++    int w7,
++    int w8,
+     int filterQualityIndex,
+   );
+ 
+@@ -8181,7 +8692,15 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+       dst.right,
+       dst.bottom,
+       paint._objects,
+-      paint._data,
++      paint._dataWord(0),
++      paint._dataWord(1),
++      paint._dataWord(2),
++      paint._dataWord(3),
++      paint._dataWord(4),
++      paint._dataWord(5),
++      paint._dataWord(6),
++      paint._dataWord(7),
++      paint._dataWord(8),
+       paint.filterQuality.index,
+     );
+     if (error != null) {
+@@ -8202,7 +8721,15 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+       Double,
+       Double,
+       Handle,
+-      Handle,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
+       Int32,
+     )
+   >(symbol: 'Canvas::drawImageNine')
+@@ -8217,7 +8744,15 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+     double dstRight,
+     double dstBottom,
+     List<Object?>? paintObjects,
+-    ByteData paintData,
++    int w0,
++    int w1,
++    int w2,
++    int w3,
++    int w4,
++    int w5,
++    int w6,
++    int w7,
++    int w8,
+     int filterQualityIndex,
+   );
+ 
+@@ -8241,7 +8776,20 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+ 
+   @override
+   void drawPoints(PointMode pointMode, List<Offset> points, Paint paint) {
+-    _drawPoints(paint._objects, paint._data, pointMode.index, _encodePointList(points));
++    _drawPoints(
++      paint._objects,
++      paint._dataWord(0),
++      paint._dataWord(1),
++      paint._dataWord(2),
++      paint._dataWord(3),
++      paint._dataWord(4),
++      paint._dataWord(5),
++      paint._dataWord(6),
++      paint._dataWord(7),
++      paint._dataWord(8),
++      pointMode.index,
++      _encodePointList(points),
++    );
+   }
+ 
+   @override
+@@ -8249,13 +8797,50 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+     if (points.length % 2 != 0) {
+       throw ArgumentError('"points" must have an even number of values.');
+     }
+-    _drawPoints(paint._objects, paint._data, pointMode.index, points);
++    _drawPoints(
++      paint._objects,
++      paint._dataWord(0),
++      paint._dataWord(1),
++      paint._dataWord(2),
++      paint._dataWord(3),
++      paint._dataWord(4),
++      paint._dataWord(5),
++      paint._dataWord(6),
++      paint._dataWord(7),
++      paint._dataWord(8),
++      pointMode.index,
++      points,
++    );
+   }
+ 
+-  @Native<Void Function(Pointer<Void>, Handle, Handle, Int32, Handle)>(symbol: 'Canvas::drawPoints')
++  @Native<
++    Void Function(
++      Pointer<Void>,
++      Handle,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Int32,
++      Handle,
++    )
++  >(symbol: 'Canvas::drawPoints')
+   external void _drawPoints(
+     List<Object?>? paintObjects,
+-    ByteData paintData,
++    int w0,
++    int w1,
++    int w2,
++    int w3,
++    int w4,
++    int w5,
++    int w6,
++    int w7,
++    int w8,
+     int pointMode,
+     Float32List points,
+   );
+@@ -8263,17 +8848,54 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+   @override
+   void drawVertices(Vertices vertices, BlendMode blendMode, Paint paint) {
+     assert(!vertices.debugDisposed);
+-    _drawVertices(vertices, blendMode.index, paint._objects, paint._data);
++    _drawVertices(
++      vertices,
++      blendMode.index,
++      paint._objects,
++      paint._dataWord(0),
++      paint._dataWord(1),
++      paint._dataWord(2),
++      paint._dataWord(3),
++      paint._dataWord(4),
++      paint._dataWord(5),
++      paint._dataWord(6),
++      paint._dataWord(7),
++      paint._dataWord(8),
++    );
+   }
+ 
+-  @Native<Void Function(Pointer<Void>, Pointer<Void>, Int32, Handle, Handle)>(
++  @Native<
++    Void Function(
++      Pointer<Void>,
++      Pointer<Void>,
++      Int32,
++      Handle,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++    )
++  >(
+     symbol: 'Canvas::drawVertices',
+   )
+   external void _drawVertices(
+     Vertices vertices,
+     int blendMode,
+     List<Object?>? paintObjects,
+-    ByteData paintData,
++    int w0,
++    int w1,
++    int w2,
++    int w3,
++    int w4,
++    int w5,
++    int w6,
++    int w7,
++    int w8,
+   );
+ 
+   @override
+@@ -8328,7 +8950,15 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+ 
+     final String? error = _drawAtlas(
+       paint._objects,
+-      paint._data,
++      paint._dataWord(0),
++      paint._dataWord(1),
++      paint._dataWord(2),
++      paint._dataWord(3),
++      paint._dataWord(4),
++      paint._dataWord(5),
++      paint._dataWord(6),
++      paint._dataWord(7),
++      paint._dataWord(8),
+       qualityIndex,
+       atlas._image,
+       rstTransformBuffer,
+@@ -8371,7 +9001,15 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+ 
+     final String? error = _drawAtlas(
+       paint._objects,
+-      paint._data,
++      paint._dataWord(0),
++      paint._dataWord(1),
++      paint._dataWord(2),
++      paint._dataWord(3),
++      paint._dataWord(4),
++      paint._dataWord(5),
++      paint._dataWord(6),
++      paint._dataWord(7),
++      paint._dataWord(8),
+       qualityIndex,
+       atlas._image,
+       rstTransforms,
+@@ -8390,7 +9028,15 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+     Handle Function(
+       Pointer<Void>,
+       Handle,
+-      Handle,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
++      Uint64,
+       Int32,
+       Pointer<Void>,
+       Handle,
+@@ -8402,7 +9048,15 @@ base class _NativeCanvas extends NativeFieldWrapperClass1 implements Canvas {
+   >(symbol: 'Canvas::drawAtlas')
+   external String? _drawAtlas(
+     List<Object?>? paintObjects,
+-    ByteData paintData,
++    int w0,
++    int w1,
++    int w2,
++    int w3,
++    int w4,
++    int w5,
++    int w6,
++    int w7,
++    int w8,
+     int filterQualityIndex,
+     _Image atlas,
+     Float32List rstTransforms,
+diff --git a/engine/src/flutter/lib/ui/painting/canvas.cc b/engine/src/flutter/lib/ui/painting/canvas.cc
+index 823f09c1c14..e3c3efb1e0d 100644
+--- a/engine/src/flutter/lib/ui/painting/canvas.cc
++++ b/engine/src/flutter/lib/ui/painting/canvas.cc
+@@ -51,6 +51,18 @@ FlutterSpiPaint ToSpiPaint(const Paint& paint) {
+   return spi_paint;
+ }
+ 
++PaintWords MakePaintWords(uint64_t w0,
++                          uint64_t w1,
++                          uint64_t w2,
++                          uint64_t w3,
++                          uint64_t w4,
++                          uint64_t w5,
++                          uint64_t w6,
++                          uint64_t w7,
++                          uint64_t w8) {
++  return {{w0, w1, w2, w3, w4, w5, w6, w7, w8}};
++}
++
+ }  // namespace
+ 
+ IMPLEMENT_WRAPPERTYPEINFO(ui, Canvas);
+@@ -88,8 +100,16 @@ void Canvas::save() {
+ }
+ 
+ void Canvas::saveLayerWithoutBounds(Dart_Handle paint_objects,
+-                                    Dart_Handle paint_data) {
+-  Paint paint(paint_objects, paint_data);
++                                    uint64_t w0,
++                                    uint64_t w1,
++                                    uint64_t w2,
++                                    uint64_t w3,
++                                    uint64_t w4,
++                                    uint64_t w5,
++                                    uint64_t w6,
++                                    uint64_t w7,
++                                    uint64_t w8) {
++  Paint paint(paint_objects, MakePaintWords(w0, w1, w2, w3, w4, w5, w6, w7, w8));
+ 
+   FML_DCHECK(paint.isNotNull());
+   if (recorder_ != nullptr) {
+@@ -104,8 +124,16 @@ void Canvas::saveLayer(double left,
+                        double right,
+                        double bottom,
+                        Dart_Handle paint_objects,
+-                       Dart_Handle paint_data) {
+-  Paint paint(paint_objects, paint_data);
++                       uint64_t w0,
++                       uint64_t w1,
++                       uint64_t w2,
++                       uint64_t w3,
++                       uint64_t w4,
++                       uint64_t w5,
++                       uint64_t w6,
++                       uint64_t w7,
++                       uint64_t w8) {
++  Paint paint(paint_objects, MakePaintWords(w0, w1, w2, w3, w4, w5, w6, w7, w8));
+ 
+   FML_DCHECK(paint.isNotNull());
+   DlRect bounds = DlRect::MakeLTRB(SafeNarrow(left), SafeNarrow(top),
+@@ -264,8 +292,16 @@ void Canvas::drawLine(double x1,
+                       double x2,
+                       double y2,
+                       Dart_Handle paint_objects,
+-                      Dart_Handle paint_data) {
+-  Paint paint(paint_objects, paint_data);
++                      uint64_t w0,
++                      uint64_t w1,
++                      uint64_t w2,
++                      uint64_t w3,
++                      uint64_t w4,
++                      uint64_t w5,
++                      uint64_t w6,
++                      uint64_t w7,
++                      uint64_t w8) {
++  Paint paint(paint_objects, MakePaintWords(w0, w1, w2, w3, w4, w5, w6, w7, w8));
+ 
+   FML_DCHECK(paint.isNotNull());
+   if (recorder_ != nullptr) {
+@@ -276,8 +312,17 @@ void Canvas::drawLine(double x1,
+   }
+ }
+ 
+-void Canvas::drawPaint(Dart_Handle paint_objects, Dart_Handle paint_data) {
+-  Paint paint(paint_objects, paint_data);
++void Canvas::drawPaint(Dart_Handle paint_objects,
++                       uint64_t w0,
++                       uint64_t w1,
++                       uint64_t w2,
++                       uint64_t w3,
++                       uint64_t w4,
++                       uint64_t w5,
++                       uint64_t w6,
++                       uint64_t w7,
++                       uint64_t w8) {
++  Paint paint(paint_objects, MakePaintWords(w0, w1, w2, w3, w4, w5, w6, w7, w8));
+ 
+   FML_DCHECK(paint.isNotNull());
+   if (recorder_ != nullptr) {
+@@ -296,8 +341,16 @@ void Canvas::drawRect(double left,
+                       double right,
+                       double bottom,
+                       Dart_Handle paint_objects,
+-                      Dart_Handle paint_data) {
+-  Paint paint(paint_objects, paint_data);
++                      uint64_t w0,
++                      uint64_t w1,
++                      uint64_t w2,
++                      uint64_t w3,
++                      uint64_t w4,
++                      uint64_t w5,
++                      uint64_t w6,
++                      uint64_t w7,
++                      uint64_t w8) {
++  Paint paint(paint_objects, MakePaintWords(w0, w1, w2, w3, w4, w5, w6, w7, w8));
+ 
+   FML_DCHECK(paint.isNotNull());
+   if (recorder_ != nullptr) {
+@@ -310,8 +363,16 @@ void Canvas::drawRect(double left,
+ 
+ void Canvas::drawRRect(const RRect& rrect,
+                        Dart_Handle paint_objects,
+-                       Dart_Handle paint_data) {
+-  Paint paint(paint_objects, paint_data);
++                       uint64_t w0,
++                       uint64_t w1,
++                       uint64_t w2,
++                       uint64_t w3,
++                       uint64_t w4,
++                       uint64_t w5,
++                       uint64_t w6,
++                       uint64_t w7,
++                       uint64_t w8) {
++  Paint paint(paint_objects, MakePaintWords(w0, w1, w2, w3, w4, w5, w6, w7, w8));
+ 
+   FML_DCHECK(paint.isNotNull());
+   if (recorder_ != nullptr) {
+@@ -324,8 +385,16 @@ void Canvas::drawRRect(const RRect& rrect,
+ void Canvas::drawDRRect(const RRect& outer,
+                         const RRect& inner,
+                         Dart_Handle paint_objects,
+-                        Dart_Handle paint_data) {
+-  Paint paint(paint_objects, paint_data);
++                        uint64_t w0,
++                        uint64_t w1,
++                        uint64_t w2,
++                        uint64_t w3,
++                        uint64_t w4,
++                        uint64_t w5,
++                        uint64_t w6,
++                        uint64_t w7,
++                        uint64_t w8) {
++  Paint paint(paint_objects, MakePaintWords(w0, w1, w2, w3, w4, w5, w6, w7, w8));
+ 
+   FML_DCHECK(paint.isNotNull());
+   if (recorder_ != nullptr) {
+@@ -339,8 +408,16 @@ void Canvas::drawDRRect(const RRect& outer,
+ 
+ void Canvas::drawRSuperellipse(const RSuperellipse* rse,
+                                Dart_Handle paint_objects,
+-                               Dart_Handle paint_data) {
+-  Paint paint(paint_objects, paint_data);
++                               uint64_t w0,
++                               uint64_t w1,
++                               uint64_t w2,
++                               uint64_t w3,
++                               uint64_t w4,
++                               uint64_t w5,
++                               uint64_t w6,
++                               uint64_t w7,
++                               uint64_t w8) {
++  Paint paint(paint_objects, MakePaintWords(w0, w1, w2, w3, w4, w5, w6, w7, w8));
+ 
+   FML_DCHECK(paint.isNotNull());
+   if (recorder_ != nullptr) {
+@@ -356,8 +433,16 @@ void Canvas::drawOval(double left,
+                       double right,
+                       double bottom,
+                       Dart_Handle paint_objects,
+-                      Dart_Handle paint_data) {
+-  Paint paint(paint_objects, paint_data);
++                      uint64_t w0,
++                      uint64_t w1,
++                      uint64_t w2,
++                      uint64_t w3,
++                      uint64_t w4,
++                      uint64_t w5,
++                      uint64_t w6,
++                      uint64_t w7,
++                      uint64_t w8) {
++  Paint paint(paint_objects, MakePaintWords(w0, w1, w2, w3, w4, w5, w6, w7, w8));
+ 
+   FML_DCHECK(paint.isNotNull());
+   if (recorder_ != nullptr) {
+@@ -372,8 +457,16 @@ void Canvas::drawCircle(double x,
+                         double y,
+                         double radius,
+                         Dart_Handle paint_objects,
+-                        Dart_Handle paint_data) {
+-  Paint paint(paint_objects, paint_data);
++                        uint64_t w0,
++                        uint64_t w1,
++                        uint64_t w2,
++                        uint64_t w3,
++                        uint64_t w4,
++                        uint64_t w5,
++                        uint64_t w6,
++                        uint64_t w7,
++                        uint64_t w8) {
++  Paint paint(paint_objects, MakePaintWords(w0, w1, w2, w3, w4, w5, w6, w7, w8));
+ 
+   FML_DCHECK(paint.isNotNull());
+   if (recorder_ != nullptr) {
+@@ -392,8 +485,16 @@ void Canvas::drawArc(double left,
+                      double sweepAngle,
+                      bool useCenter,
+                      Dart_Handle paint_objects,
+-                     Dart_Handle paint_data) {
+-  Paint paint(paint_objects, paint_data);
++                     uint64_t w0,
++                     uint64_t w1,
++                     uint64_t w2,
++                     uint64_t w3,
++                     uint64_t w4,
++                     uint64_t w5,
++                     uint64_t w6,
++                     uint64_t w7,
++                     uint64_t w8) {
++  Paint paint(paint_objects, MakePaintWords(w0, w1, w2, w3, w4, w5, w6, w7, w8));
+ 
+   FML_DCHECK(paint.isNotNull());
+   if (recorder_ != nullptr) {
+@@ -408,14 +509,22 @@ void Canvas::drawArc(double left,
+ 
+ void Canvas::drawPath(const CanvasPath* path,
+                       Dart_Handle paint_objects,
+-                      Dart_Handle paint_data) {
++                      uint64_t w0,
++                      uint64_t w1,
++                      uint64_t w2,
++                      uint64_t w3,
++                      uint64_t w4,
++                      uint64_t w5,
++                      uint64_t w6,
++                      uint64_t w7,
++                      uint64_t w8) {
+   if (!path) {
+     Dart_ThrowException(
+         ToDart("Canvas.drawPath called with non-genuine Path."));
+     return;
+   }
+   if (recorder_ != nullptr) {
+-    Paint paint(paint_objects, paint_data);
++    Paint paint(paint_objects, MakePaintWords(w0, w1, w2, w3, w4, w5, w6, w7, w8));
+     FML_DCHECK(paint.isNotNull());
+     FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+     SpiSceneApi()->canvas_draw_path(recorder_, path->spi_handle(), &spi_paint);
+@@ -426,9 +535,17 @@ Dart_Handle Canvas::drawImage(const CanvasImage* image,
+                               double x,
+                               double y,
+                               Dart_Handle paint_objects,
+-                              Dart_Handle paint_data,
++                              uint64_t w0,
++                              uint64_t w1,
++                              uint64_t w2,
++                              uint64_t w3,
++                              uint64_t w4,
++                              uint64_t w5,
++                              uint64_t w6,
++                              uint64_t w7,
++                              uint64_t w8,
+                               int filterQualityIndex) {
+-  Paint paint(paint_objects, paint_data);
++  Paint paint(paint_objects, MakePaintWords(w0, w1, w2, w3, w4, w5, w6, w7, w8));
+ 
+   FML_DCHECK(paint.isNotNull());
+   if (!image) {
+@@ -463,9 +580,17 @@ Dart_Handle Canvas::drawImageRect(const CanvasImage* image,
+                                   double dst_right,
+                                   double dst_bottom,
+                                   Dart_Handle paint_objects,
+-                                  Dart_Handle paint_data,
++                                  uint64_t w0,
++                                  uint64_t w1,
++                                  uint64_t w2,
++                                  uint64_t w3,
++                                  uint64_t w4,
++                                  uint64_t w5,
++                                  uint64_t w6,
++                                  uint64_t w7,
++                                  uint64_t w8,
+                                   int filterQualityIndex) {
+-  Paint paint(paint_objects, paint_data);
++  Paint paint(paint_objects, MakePaintWords(w0, w1, w2, w3, w4, w5, w6, w7, w8));
+ 
+   FML_DCHECK(paint.isNotNull());
+   if (!image) {
+@@ -505,9 +630,17 @@ Dart_Handle Canvas::drawImageNine(const CanvasImage* image,
+                                   double dst_right,
+                                   double dst_bottom,
+                                   Dart_Handle paint_objects,
+-                                  Dart_Handle paint_data,
++                                  uint64_t w0,
++                                  uint64_t w1,
++                                  uint64_t w2,
++                                  uint64_t w3,
++                                  uint64_t w4,
++                                  uint64_t w5,
++                                  uint64_t w6,
++                                  uint64_t w7,
++                                  uint64_t w8,
+                                   int bitmapSamplingIndex) {
+-  Paint paint(paint_objects, paint_data);
++  Paint paint(paint_objects, MakePaintWords(w0, w1, w2, w3, w4, w5, w6, w7, w8));
+ 
+   FML_DCHECK(paint.isNotNull());
+   if (!image) {
+@@ -551,10 +684,18 @@ void Canvas::drawPicture(Picture* picture) {
+ }
+ 
+ void Canvas::drawPoints(Dart_Handle paint_objects,
+-                        Dart_Handle paint_data,
++                        uint64_t w0,
++                        uint64_t w1,
++                        uint64_t w2,
++                        uint64_t w3,
++                        uint64_t w4,
++                        uint64_t w5,
++                        uint64_t w6,
++                        uint64_t w7,
++                        uint64_t w8,
+                         DlPointMode point_mode,
+                         const tonic::Float32List& points) {
+-  Paint paint(paint_objects, paint_data);
++  Paint paint(paint_objects, MakePaintWords(w0, w1, w2, w3, w4, w5, w6, w7, w8));
+ 
+   static_assert(sizeof(DlPoint) == sizeof(float) * 2,
+                 "DlPoint doesn't use floats.");
+@@ -572,8 +713,16 @@ void Canvas::drawPoints(Dart_Handle paint_objects,
+ void Canvas::drawVertices(const Vertices* vertices,
+                           DlBlendMode blend_mode,
+                           Dart_Handle paint_objects,
+-                          Dart_Handle paint_data) {
+-  Paint paint(paint_objects, paint_data);
++                          uint64_t w0,
++                          uint64_t w1,
++                          uint64_t w2,
++                          uint64_t w3,
++                          uint64_t w4,
++                          uint64_t w5,
++                          uint64_t w6,
++                          uint64_t w7,
++                          uint64_t w8) {
++  Paint paint(paint_objects, MakePaintWords(w0, w1, w2, w3, w4, w5, w6, w7, w8));
+ 
+   if (!vertices) {
+     Dart_ThrowException(
+@@ -589,7 +738,15 @@ void Canvas::drawVertices(const Vertices* vertices,
+ }
+ 
+ Dart_Handle Canvas::drawAtlas(Dart_Handle paint_objects,
+-                              Dart_Handle paint_data,
++                              uint64_t w0,
++                              uint64_t w1,
++                              uint64_t w2,
++                              uint64_t w3,
++                              uint64_t w4,
++                              uint64_t w5,
++                              uint64_t w6,
++                              uint64_t w7,
++                              uint64_t w8,
+                               int filterQualityIndex,
+                               CanvasImage* atlas,
+                               Dart_Handle transforms_handle,
+@@ -597,7 +754,7 @@ Dart_Handle Canvas::drawAtlas(Dart_Handle paint_objects,
+                               Dart_Handle colors_handle,
+                               DlBlendMode blend_mode,
+                               Dart_Handle cull_rect_handle) {
+-  Paint paint(paint_objects, paint_data);
++  Paint paint(paint_objects, MakePaintWords(w0, w1, w2, w3, w4, w5, w6, w7, w8));
+ 
+   if (!atlas) {
+     return ToDart(
+diff --git a/engine/src/flutter/lib/ui/painting/canvas.h b/engine/src/flutter/lib/ui/painting/canvas.h
+index 50ea7b56d5e..aba2f895beb 100644
+--- a/engine/src/flutter/lib/ui/painting/canvas.h
++++ b/engine/src/flutter/lib/ui/painting/canvas.h
+@@ -36,14 +36,30 @@ class Canvas : public RefCountedDartWrappable<Canvas>, DisplayListOpFlags {
+ 
+   void save();
+   void saveLayerWithoutBounds(Dart_Handle paint_objects,
+-                              Dart_Handle paint_data);
++                              uint64_t w0,
++                              uint64_t w1,
++                              uint64_t w2,
++                              uint64_t w3,
++                              uint64_t w4,
++                              uint64_t w5,
++                              uint64_t w6,
++                              uint64_t w7,
++                              uint64_t w8);
+ 
+   void saveLayer(double left,
+                  double top,
+                  double right,
+                  double bottom,
+                  Dart_Handle paint_objects,
+-                 Dart_Handle paint_data);
++                 uint64_t w0,
++                 uint64_t w1,
++                 uint64_t w2,
++                 uint64_t w3,
++                 uint64_t w4,
++                 uint64_t w5,
++                 uint64_t w6,
++                 uint64_t w7,
++                 uint64_t w8);
+ 
+   void restore();
+   int getSaveCount();
+@@ -75,42 +91,107 @@ class Canvas : public RefCountedDartWrappable<Canvas>, DisplayListOpFlags {
+                 double x2,
+                 double y2,
+                 Dart_Handle paint_objects,
+-                Dart_Handle paint_data);
+-
+-  void drawPaint(Dart_Handle paint_objects, Dart_Handle paint_data);
++                uint64_t w0,
++                uint64_t w1,
++                uint64_t w2,
++                uint64_t w3,
++                uint64_t w4,
++                uint64_t w5,
++                uint64_t w6,
++                uint64_t w7,
++                uint64_t w8);
++
++  void drawPaint(Dart_Handle paint_objects,
++                 uint64_t w0,
++                 uint64_t w1,
++                 uint64_t w2,
++                 uint64_t w3,
++                 uint64_t w4,
++                 uint64_t w5,
++                 uint64_t w6,
++                 uint64_t w7,
++                 uint64_t w8);
+ 
+   void drawRect(double left,
+                 double top,
+                 double right,
+                 double bottom,
+                 Dart_Handle paint_objects,
+-                Dart_Handle paint_data);
++                uint64_t w0,
++                uint64_t w1,
++                uint64_t w2,
++                uint64_t w3,
++                uint64_t w4,
++                uint64_t w5,
++                uint64_t w6,
++                uint64_t w7,
++                uint64_t w8);
+ 
+   void drawRRect(const RRect& rrect,
+                  Dart_Handle paint_objects,
+-                 Dart_Handle paint_data);
++                 uint64_t w0,
++                 uint64_t w1,
++                 uint64_t w2,
++                 uint64_t w3,
++                 uint64_t w4,
++                 uint64_t w5,
++                 uint64_t w6,
++                 uint64_t w7,
++                 uint64_t w8);
+ 
+   void drawDRRect(const RRect& outer,
+                   const RRect& inner,
+                   Dart_Handle paint_objects,
+-                  Dart_Handle paint_data);
++                  uint64_t w0,
++                  uint64_t w1,
++                  uint64_t w2,
++                  uint64_t w3,
++                  uint64_t w4,
++                  uint64_t w5,
++                  uint64_t w6,
++                  uint64_t w7,
++                  uint64_t w8);
+ 
+   void drawRSuperellipse(const RSuperellipse* rse,
+                          Dart_Handle paint_objects,
+-                         Dart_Handle paint_data);
++                         uint64_t w0,
++                         uint64_t w1,
++                         uint64_t w2,
++                         uint64_t w3,
++                         uint64_t w4,
++                         uint64_t w5,
++                         uint64_t w6,
++                         uint64_t w7,
++                         uint64_t w8);
+ 
+   void drawOval(double left,
+                 double top,
+                 double right,
+                 double bottom,
+                 Dart_Handle paint_objects,
+-                Dart_Handle paint_data);
++                uint64_t w0,
++                uint64_t w1,
++                uint64_t w2,
++                uint64_t w3,
++                uint64_t w4,
++                uint64_t w5,
++                uint64_t w6,
++                uint64_t w7,
++                uint64_t w8);
+ 
+   void drawCircle(double x,
+                   double y,
+                   double radius,
+                   Dart_Handle paint_objects,
+-                  Dart_Handle paint_data);
++                  uint64_t w0,
++                  uint64_t w1,
++                  uint64_t w2,
++                  uint64_t w3,
++                  uint64_t w4,
++                  uint64_t w5,
++                  uint64_t w6,
++                  uint64_t w7,
++                  uint64_t w8);
+ 
+   void drawArc(double left,
+                double top,
+@@ -120,17 +201,41 @@ class Canvas : public RefCountedDartWrappable<Canvas>, DisplayListOpFlags {
+                double sweepAngle,
+                bool useCenter,
+                Dart_Handle paint_objects,
+-               Dart_Handle paint_data);
++               uint64_t w0,
++               uint64_t w1,
++               uint64_t w2,
++               uint64_t w3,
++               uint64_t w4,
++               uint64_t w5,
++               uint64_t w6,
++               uint64_t w7,
++               uint64_t w8);
+ 
+   void drawPath(const CanvasPath* path,
+                 Dart_Handle paint_objects,
+-                Dart_Handle paint_data);
++                uint64_t w0,
++                uint64_t w1,
++                uint64_t w2,
++                uint64_t w3,
++                uint64_t w4,
++                uint64_t w5,
++                uint64_t w6,
++                uint64_t w7,
++                uint64_t w8);
+ 
+   Dart_Handle drawImage(const CanvasImage* image,
+                         double x,
+                         double y,
+                         Dart_Handle paint_objects,
+-                        Dart_Handle paint_data,
++                        uint64_t w0,
++                        uint64_t w1,
++                        uint64_t w2,
++                        uint64_t w3,
++                        uint64_t w4,
++                        uint64_t w5,
++                        uint64_t w6,
++                        uint64_t w7,
++                        uint64_t w8,
+                         int filterQualityIndex);
+ 
+   Dart_Handle drawImageRect(const CanvasImage* image,
+@@ -143,7 +248,15 @@ class Canvas : public RefCountedDartWrappable<Canvas>, DisplayListOpFlags {
+                             double dst_right,
+                             double dst_bottom,
+                             Dart_Handle paint_objects,
+-                            Dart_Handle paint_data,
++                            uint64_t w0,
++                            uint64_t w1,
++                            uint64_t w2,
++                            uint64_t w3,
++                            uint64_t w4,
++                            uint64_t w5,
++                            uint64_t w6,
++                            uint64_t w7,
++                            uint64_t w8,
+                             int filterQualityIndex);
+ 
+   Dart_Handle drawImageNine(const CanvasImage* image,
+@@ -156,7 +269,15 @@ class Canvas : public RefCountedDartWrappable<Canvas>, DisplayListOpFlags {
+                             double dst_right,
+                             double dst_bottom,
+                             Dart_Handle paint_objects,
+-                            Dart_Handle paint_data,
++                            uint64_t w0,
++                            uint64_t w1,
++                            uint64_t w2,
++                            uint64_t w3,
++                            uint64_t w4,
++                            uint64_t w5,
++                            uint64_t w6,
++                            uint64_t w7,
++                            uint64_t w8,
+                             int bitmapSamplingIndex);
+ 
+   void drawPicture(Picture* picture);
+@@ -167,17 +288,41 @@ class Canvas : public RefCountedDartWrappable<Canvas>, DisplayListOpFlags {
+   // either need to process the paint argument first.
+ 
+   void drawPoints(Dart_Handle paint_objects,
+-                  Dart_Handle paint_data,
++                  uint64_t w0,
++                  uint64_t w1,
++                  uint64_t w2,
++                  uint64_t w3,
++                  uint64_t w4,
++                  uint64_t w5,
++                  uint64_t w6,
++                  uint64_t w7,
++                  uint64_t w8,
+                   DlPointMode point_mode,
+                   const tonic::Float32List& points);
+ 
+   void drawVertices(const Vertices* vertices,
+                     DlBlendMode blend_mode,
+                     Dart_Handle paint_objects,
+-                    Dart_Handle paint_data);
++                    uint64_t w0,
++                    uint64_t w1,
++                    uint64_t w2,
++                    uint64_t w3,
++                    uint64_t w4,
++                    uint64_t w5,
++                    uint64_t w6,
++                    uint64_t w7,
++                    uint64_t w8);
+ 
+   Dart_Handle drawAtlas(Dart_Handle paint_objects,
+-                        Dart_Handle paint_data,
++                        uint64_t w0,
++                        uint64_t w1,
++                        uint64_t w2,
++                        uint64_t w3,
++                        uint64_t w4,
++                        uint64_t w5,
++                        uint64_t w6,
++                        uint64_t w7,
++                        uint64_t w8,
+                         int filterQualityIndex,
+                         CanvasImage* atlas,
+                         Dart_Handle transforms_handle,
+diff --git a/engine/src/flutter/lib/ui/painting/canvas_spi_unittests.cc b/engine/src/flutter/lib/ui/painting/canvas_spi_unittests.cc
+index bc6e2d9adc4..e5b21b553d9 100644
+--- a/engine/src/flutter/lib/ui/painting/canvas_spi_unittests.cc
++++ b/engine/src/flutter/lib/ui/painting/canvas_spi_unittests.cc
+@@ -2,6 +2,7 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#include <algorithm>
+ #include <vector>
+ 
+ #include "flutter/display_list/display_list.h"
+@@ -27,6 +28,18 @@ class PathRecorder final : public IgnoreAttributeDispatchHelper,
+   std::vector<DlPath> paths;
+ };
+ 
++// Attribute ops (kSet*) come first in DisplayListOpType, before kSave.
++std::vector<DisplayListOpType> WithoutAttributeOps(
++    const std::vector<DisplayListOpType>& ops) {
++  std::vector<DisplayListOpType> result;
++  for (DisplayListOpType op : ops) {
++    if (op >= DisplayListOpType::kSave) {
++      result.push_back(op);
++    }
++  }
++  return result;
++}
++
+ class CanvasSpiTest : public ShellTest {
+  protected:
+   void RegisterCallbacks() {
+@@ -50,6 +63,7 @@ class CanvasSpiTest : public ShellTest {
+                index++) {
+             op_types.push_back(display_list->GetOpType(index));
+           }
++          op_sequences.push_back(op_types);
+ 
+           PathRecorder path_recorder;
+           display_list->Dispatch(path_recorder);
+@@ -87,6 +101,7 @@ class CanvasSpiTest : public ShellTest {
+ 
+   fml::AutoResetWaitableEvent message_latch;
+   std::vector<DisplayListOpType> op_types;
++  std::vector<std::vector<DisplayListOpType>> op_sequences;
+   std::vector<DlPath> paths;
+ };
+ 
+@@ -130,9 +145,19 @@ TEST_F(CanvasSpiTest, EveryCanvasOpReachesTheSpiRecorder) {
+       DisplayListOpType::kDrawShadow,
+   };
+ 
+-  ASSERT_EQ(op_types.size(), expected.size());
+-  for (size_t index = 0; index < expected.size(); index++) {
+-    EXPECT_EQ(op_types[index], expected[index]) << "op index " << index;
++  ASSERT_EQ(op_sequences.size(), 2u);
++  // The second run paints with a shader, which DisplayListBuilder records as
++  // an attribute op before the draw that uses it.
++  EXPECT_NE(std::find(op_sequences[1].begin(), op_sequences[1].end(),
++                      DisplayListOpType::kSetPodColorSource),
++            op_sequences[1].end());
++  for (const auto& sequence : op_sequences) {
++    const std::vector<DisplayListOpType> rendering_ops =
++        WithoutAttributeOps(sequence);
++    ASSERT_EQ(rendering_ops.size(), expected.size());
++    for (size_t index = 0; index < expected.size(); index++) {
++      EXPECT_EQ(rendering_ops[index], expected[index]) << "op index " << index;
++    }
+   }
+ }
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/paint.cc b/engine/src/flutter/lib/ui/painting/paint.cc
+index 6a219d822a8..5c5629a7b3b 100644
+--- a/engine/src/flutter/lib/ui/painting/paint.cc
++++ b/engine/src/flutter/lib/ui/painting/paint.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "flutter/lib/ui/painting/paint.h"
+ 
++#include <optional>
++
+ #include "flutter/display_list/dl_builder.h"
+ #include "flutter/fml/logging.h"
+ #include "flutter/lib/ui/floating_point.h"
+@@ -40,9 +42,9 @@ constexpr int kMaskFilterIndex = 13;
+ constexpr int kMaskFilterBlurStyleIndex = 14;
+ constexpr int kMaskFilterSigmaIndex = 15;
+ constexpr int kInvertColorIndex = 16;
+-constexpr size_t kDataByteCount = 68;  // 4 * (last index + 1)
+-static_assert(kDataByteCount == sizeof(uint32_t) * (kInvertColorIndex + 1),
+-              "kDataByteCount must match the size of the data array.");
++constexpr size_t kDataByteCount = 72;  // 4 * (last index + 1), plus padding.
++static_assert(kDataByteCount >= sizeof(uint32_t) * (kInvertColorIndex + 1),
++              "kDataByteCount must fit the data fields and padding.");
+ 
+ // Indices for objects.
+ constexpr int kShaderIndex = 0;
+@@ -83,6 +85,12 @@ DlColor ReadColor(const tonic::DartByteData& byte_data) {
+ Paint::Paint(Dart_Handle paint_objects, Dart_Handle paint_data)
+     : paint_objects_(paint_objects), paint_data_(paint_data) {}
+ 
++Paint::Paint(Dart_Handle paint_objects, const PaintWords& words)
++    : paint_objects_(paint_objects),
++      paint_data_(Dart_Null()),
++      paint_words_(words),
++      has_paint_words_(true) {}
++
+ const DlPaint* Paint::paint(DlPaint& paint,
+                             const DisplayListAttributeFlags& flags,
+                             DlTileMode tile_mode) const {
+@@ -215,31 +223,19 @@ void Paint::ToSpiPaint(FlutterSpiPaint* out) const {
+     return;
+   }
+ 
+-  tonic::DartByteData byte_data(paint_data_);
+-  FML_CHECK(byte_data.length_in_bytes() == kDataByteCount);
+-  const uint32_t* uint_data = static_cast<const uint32_t*>(byte_data.data());
+-  const float* float_data = static_cast<const float*>(byte_data.data());
++  const uint8_t* bytes = nullptr;
++  std::optional<tonic::DartByteData> byte_data;
++  if (has_paint_words_) {
++    bytes = reinterpret_cast<const uint8_t*>(paint_words_.words);
++  } else {
++    byte_data.emplace(paint_data_);
++    FML_CHECK(byte_data->length_in_bytes() == kDataByteCount);
++    bytes = static_cast<const uint8_t*>(byte_data->data());
++  }
++  DecodeSpiPaint(bytes, out);
+ 
+-  out->struct_size = sizeof(FlutterSpiPaint);
+-  out->color = {float_data[kColorRedIndex],
+-                float_data[kColorGreenIndex],
+-                float_data[kColorBlueIndex],
+-                1.f - float_data[kColorAlphaIndex],
+-                static_cast<int32_t>(uint_data[kColorSpaceIndex])};
+-  out->blend_mode =
+-      static_cast<int32_t>(uint_data[kBlendModeIndex] ^ kBlendModeDefault);
+-  out->style = static_cast<int32_t>(uint_data[kStyleIndex]);
+-  out->stroke_width = float_data[kStrokeWidthIndex];
+-  out->stroke_cap = static_cast<int32_t>(uint_data[kStrokeCapIndex]);
+-  out->stroke_join = static_cast<int32_t>(uint_data[kStrokeJoinIndex]);
+-  out->stroke_miter =
+-      float_data[kStrokeMiterLimitIndex] + kStrokeMiterLimitDefault;
+-  out->anti_alias = uint_data[kIsAntiAliasIndex] == 0;
+-  out->invert_colors = uint_data[kInvertColorIndex] != 0;
+-  out->filter_quality = static_cast<int32_t>(uint_data[kFilterQualityIndex]);
+-  out->has_mask_blur = false;
+-  out->mask_blur_style = kFlutterSpiBlurStyleNormal;
+-  out->mask_blur_sigma = 0.0f;
++  const uint32_t* uint_data = reinterpret_cast<const uint32_t*>(bytes);
++  const float* float_data = reinterpret_cast<const float*>(bytes);
+ 
+   Dart_Handle values[kObjectCount];
+   if (Dart_IsNull(paint_objects_)) {
+@@ -275,4 +271,36 @@ void Paint::ToSpiPaint(FlutterSpiPaint* out) const {
+   }
+ }
+ 
++void DecodeSpiPaint(const uint8_t* bytes, FlutterSpiPaint* out) {
++  FML_CHECK(bytes != nullptr);
++  FML_CHECK(out != nullptr);
++
++  const uint32_t* uint_data = reinterpret_cast<const uint32_t*>(bytes);
++  const float* float_data = reinterpret_cast<const float*>(bytes);
++
++  out->struct_size = sizeof(FlutterSpiPaint);
++  out->color = {float_data[kColorRedIndex],
++                float_data[kColorGreenIndex],
++                float_data[kColorBlueIndex],
++                1.f - float_data[kColorAlphaIndex],
++                static_cast<int32_t>(uint_data[kColorSpaceIndex])};
++  out->blend_mode =
++      static_cast<int32_t>(uint_data[kBlendModeIndex] ^ kBlendModeDefault);
++  out->style = static_cast<int32_t>(uint_data[kStyleIndex]);
++  out->stroke_width = float_data[kStrokeWidthIndex];
++  out->stroke_cap = static_cast<int32_t>(uint_data[kStrokeCapIndex]);
++  out->stroke_join = static_cast<int32_t>(uint_data[kStrokeJoinIndex]);
++  out->stroke_miter =
++      float_data[kStrokeMiterLimitIndex] + kStrokeMiterLimitDefault;
++  out->anti_alias = uint_data[kIsAntiAliasIndex] == 0;
++  out->invert_colors = uint_data[kInvertColorIndex] != 0;
++  out->filter_quality = static_cast<int32_t>(uint_data[kFilterQualityIndex]);
++  out->shader = nullptr;
++  out->color_filter = nullptr;
++  out->image_filter = nullptr;
++  out->has_mask_blur = false;
++  out->mask_blur_style = kFlutterSpiBlurStyleNormal;
++  out->mask_blur_sigma = 0.0f;
++}
++
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/paint.h b/engine/src/flutter/lib/ui/painting/paint.h
+index 300049162f2..024b21cee13 100644
+--- a/engine/src/flutter/lib/ui/painting/paint.h
++++ b/engine/src/flutter/lib/ui/painting/paint.h
+@@ -5,6 +5,8 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_PAINT_H_
+ #define FLUTTER_LIB_UI_PAINTING_PAINT_H_
+ 
++#include <cstdint>
++
+ #include "flutter/display_list/display_list.h"
+ #include "flutter/display_list/dl_op_flags.h"
+ #include "third_party/dart/runtime/include/dart_api.h"
+@@ -12,9 +14,16 @@
+ 
+ namespace flutter {
+ 
++struct PaintWords {
++  uint64_t words[9];
++};
++
++void DecodeSpiPaint(const uint8_t* bytes, FlutterSpiPaint* out);
++
+ class Paint {
+  public:
+   Paint(Dart_Handle paint_objects, Dart_Handle paint_data);
++  Paint(Dart_Handle paint_objects, const PaintWords& words);
+ 
+   const DlPaint* paint(DlPaint& paint,
+                        const DisplayListAttributeFlags& flags,
+@@ -22,12 +31,16 @@ class Paint {
+ 
+   void ToSpiPaint(FlutterSpiPaint* out) const;
+ 
+-  bool isNull() const { return Dart_IsNull(paint_data_); }
+-  bool isNotNull() const { return !Dart_IsNull(paint_data_); }
++  bool isNull() const {
++    return !has_paint_words_ && Dart_IsNull(paint_data_);
++  }
++  bool isNotNull() const { return !isNull(); }
+ 
+  private:
+   Dart_Handle paint_objects_;
+   Dart_Handle paint_data_;
++  PaintWords paint_words_ = {};
++  bool has_paint_words_ = false;
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/paint_unittests.cc b/engine/src/flutter/lib/ui/painting/paint_unittests.cc
+index 44711cb228a..ac6bd59aeab 100644
+--- a/engine/src/flutter/lib/ui/painting/paint_unittests.cc
++++ b/engine/src/flutter/lib/ui/painting/paint_unittests.cc
+@@ -2,6 +2,8 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#include <cstring>
++
+ #include "flutter/display_list/dl_op_flags.h"
+ #include "flutter/lib/ui/painting/paint.h"
+ #include "flutter/runtime_spi/scene/spi_paint.h"
+@@ -9,6 +11,7 @@
+ #include "flutter/shell/common/thread_host.h"
+ 
+ #include "flutter/testing/testing.h"
++#include "third_party/tonic/typed_data/dart_byte_data.h"
+ 
+ namespace flutter {
+ namespace testing {
+@@ -172,5 +175,62 @@ TEST_F(PaintTest, SpiPaintMatchesDartEncoding) {
+   ASSERT_NE(dl_paint.getMaskFilter(), nullptr);
+ }
+ 
++TEST_F(PaintTest, DecodeSpiPaintMatchesToSpiPaint) {
++  auto message_latch = std::make_shared<fml::AutoResetWaitableEvent>();
++  DlPaint byte_data_paint;
++  DlPaint scalar_paint;
++
++  auto native_to_spi_paint = [message_latch, &byte_data_paint,
++                              &scalar_paint](Dart_NativeArguments args) {
++    Dart_Handle dart_paint = Dart_GetNativeArgument(args, 0);
++    Dart_Handle paint_objects =
++        Dart_GetField(dart_paint, tonic::ToDart("_objects"));
++    Dart_Handle paint_data = Dart_GetField(dart_paint, tonic::ToDart("_data"));
++
++    Paint byte_data_path(paint_objects, paint_data);
++    FlutterSpiPaint byte_data_spi_paint = {};
++    byte_data_spi_paint.struct_size = sizeof(FlutterSpiPaint);
++    byte_data_path.ToSpiPaint(&byte_data_spi_paint);
++    byte_data_paint = ToDlPaint(byte_data_spi_paint, DlTileMode::kDecal);
++
++    tonic::DartByteData byte_data(paint_data);
++    PaintWords words = {};
++    std::memcpy(words.words, byte_data.data(), sizeof(words.words));
++    Paint scalar_path(paint_objects, words);
++    FlutterSpiPaint scalar_spi_paint = {};
++    scalar_spi_paint.struct_size = sizeof(FlutterSpiPaint);
++    scalar_path.ToSpiPaint(&scalar_spi_paint);
++    scalar_paint = ToDlPaint(scalar_spi_paint, DlTileMode::kDecal);
++
++    message_latch->Signal();
++  };
++
++  Settings settings = CreateSettingsForFixture();
++  TaskRunners task_runners("test",                  // label
++                           GetCurrentTaskRunner(),  // platform
++                           CreateNewThread(),       // raster
++                           CreateNewThread(),       // ui
++                           CreateNewThread()        // io
++  );
++
++  AddNativeCallback("ConvertPaintToSpiPaint",
++                    CREATE_NATIVE_ENTRY(native_to_spi_paint));
++
++  std::unique_ptr<Shell> shell = CreateShell(settings, task_runners);
++
++  ASSERT_TRUE(shell->IsSetup());
++  auto configuration = RunConfiguration::InferFromSettings(settings);
++  configuration.SetEntrypoint("convertPaintToSpiPaint");
++
++  shell->RunEngine(std::move(configuration), [](auto result) {
++    ASSERT_EQ(result, Engine::RunStatus::Success);
++  });
++
++  message_latch->Wait();
++  DestroyShell(std::move(shell), task_runners);
++
++  EXPECT_EQ(scalar_paint, byte_data_paint);
++}
++
+ }  // namespace testing
+ }  // namespace flutter
