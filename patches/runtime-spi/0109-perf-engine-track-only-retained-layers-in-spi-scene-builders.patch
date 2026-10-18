@@ -1,0 +1,48 @@
+# Why: avoid hashing and allocating a node for every pushed layer when only
+# retained layers need duplicate detection.
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
+index a0f497a86f7..583ef475a66 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
+@@ -4,9 +4,9 @@
+ 
+ #include "flutter/runtime_spi/scene/spi_scene_builder.h"
+ 
++#include <algorithm>
+ #include <cmath>
+ #include <memory>
+-#include <unordered_set>
+ #include <utility>
+ #include <vector>
+ 
+@@ -39,7 +39,7 @@ struct FlutterSpiSceneBuilder {
+   std::shared_ptr<flutter::ContainerLayer> root =
+       std::make_shared<flutter::ContainerLayer>();
+   std::vector<std::shared_ptr<flutter::ContainerLayer>> layer_stack = {root};
+-  std::unordered_set<flutter::Layer*> added_layers;
++  std::vector<flutter::Layer*> retained_layers;
+ };
+ 
+ namespace flutter {
+@@ -88,7 +88,6 @@ Clip ToClip(int32_t clip_behavior) {
+ void AddLayer(const std::shared_ptr<Layer>& layer,
+               const std::shared_ptr<FlutterSpiSceneBuilder>& builder) {
+   builder->layer_stack.back()->Add(layer);
+-  builder->added_layers.insert(layer.get());
+ }
+ 
+ void PushLayer(const std::shared_ptr<ContainerLayer>& layer,
+@@ -467,9 +466,12 @@ FlutterSpiResult SpiSceneAddRetained(FlutterSpiSceneBuilder* builder,
+   if (layer_value == nullptr) {
+     return kFlutterSpiInvalidHandle;
+   }
+-  if (builder_value->added_layers.contains(layer_value.get())) {
++  if (std::find(builder_value->retained_layers.begin(),
++                builder_value->retained_layers.end(),
++                layer_value.get()) != builder_value->retained_layers.end()) {
+     return kFlutterSpiInvalidArgument;
+   }
++  builder_value->retained_layers.push_back(layer_value.get());
+   AddLayer(layer_value, builder_value);
+   return kFlutterSpiOk;
+ }

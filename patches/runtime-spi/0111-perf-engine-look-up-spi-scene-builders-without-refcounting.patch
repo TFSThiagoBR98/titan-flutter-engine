@@ -1,0 +1,50 @@
+# Why: avoid copying the scene builder shared pointer on every scene API call
+# while retaining shared ownership in the handle table.
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
+index 583ef475a66..b6241d358d2 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
+@@ -60,9 +60,8 @@ Handle* MakeHandle(uintptr_t value) {
+   return reinterpret_cast<Handle*>(value);
+ }
+ 
+-std::shared_ptr<FlutterSpiSceneBuilder> FindBuilder(
+-    FlutterSpiSceneBuilder* builder) {
+-  return Builders().Find(HandleValue(builder));
++FlutterSpiSceneBuilder* FindBuilder(FlutterSpiSceneBuilder* builder) {
++  return Builders().FindRaw(HandleValue(builder));
+ }
+ 
+ std::vector<std::shared_ptr<ContainerLayer>>
+@@ -86,12 +85,12 @@ Clip ToClip(int32_t clip_behavior) {
+ }
+ 
+ void AddLayer(const std::shared_ptr<Layer>& layer,
+-              const std::shared_ptr<FlutterSpiSceneBuilder>& builder) {
++              FlutterSpiSceneBuilder* builder) {
+   builder->layer_stack.back()->Add(layer);
+ }
+ 
+ void PushLayer(const std::shared_ptr<ContainerLayer>& layer,
+-               const std::shared_ptr<FlutterSpiSceneBuilder>& builder) {
++               FlutterSpiSceneBuilder* builder) {
+   AddLayer(layer, builder);
+   builder->layer_stack.push_back(layer);
+ }
+@@ -445,14 +444,14 @@ FlutterSpiResult SpiSceneAssignOldLayer(FlutterSpiSceneBuilder* builder,
+   if (builder_value == nullptr) {
+     return kFlutterSpiInvalidHandle;
+   }
+-  const auto old_layer_value = SpiEngineLayerGet(old_layer);
++  Layer* old_layer_value = SpiEngineLayerGetRaw(old_layer);
+   if (old_layer_value == nullptr) {
+     return kFlutterSpiInvalidHandle;
+   }
+   if (builder_value->layer_stack.size() <= 1) {
+     return kFlutterSpiInvalidArgument;
+   }
+-  builder_value->layer_stack.back()->AssignOldLayer(old_layer_value.get());
++  builder_value->layer_stack.back()->AssignOldLayer(old_layer_value);
+   return kFlutterSpiOk;
+ }
+ 

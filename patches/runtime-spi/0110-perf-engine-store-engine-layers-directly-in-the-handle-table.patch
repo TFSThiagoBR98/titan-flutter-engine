@@ -1,0 +1,63 @@
+# Why: avoid allocating a wrapper object for every retained engine layer
+# handle while preserving shared ownership and raw lookup.
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_engine_layer.cc b/engine/src/flutter/runtime_spi/scene/spi_engine_layer.cc
+index 36bddef178a..3f44b2b0c64 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_engine_layer.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_engine_layer.cc
+@@ -5,22 +5,14 @@
+ #include "flutter/runtime_spi/scene/spi_engine_layer.h"
+ 
+ #include <cstdint>
+-#include <utility>
+ 
+ #include "flutter/runtime_spi/scene/spi_handle_table.h"
+ 
+-struct FlutterSpiEngineLayer {
+-  explicit FlutterSpiEngineLayer(std::shared_ptr<flutter::Layer> value)
+-      : layer(std::move(value)) {}
+-
+-  std::shared_ptr<flutter::Layer> layer;
+-};
+-
+ namespace flutter {
+ namespace {
+ 
+-SpiHandleTable<FlutterSpiEngineLayer>& EngineLayers() {
+-  static SpiHandleTable<FlutterSpiEngineLayer> layers;
++SpiHandleTable<Layer>& EngineLayers() {
++  static SpiHandleTable<Layer> layers;
+   return layers;
+ }
+ 
+@@ -39,13 +31,15 @@ FlutterSpiEngineLayer* SpiEngineLayerCreate(
+   if (layer == nullptr) {
+     return nullptr;
+   }
+-  return MakeHandle(
+-      EngineLayers().Insert(std::make_shared<FlutterSpiEngineLayer>(layer)));
++  return MakeHandle(EngineLayers().Insert(layer));
+ }
+ 
+ std::shared_ptr<Layer> SpiEngineLayerGet(FlutterSpiEngineLayer* layer) {
+-  const auto value = EngineLayers().Find(HandleValue(layer));
+-  return value == nullptr ? nullptr : value->layer;
++  return EngineLayers().Find(HandleValue(layer));
++}
++
++Layer* SpiEngineLayerGetRaw(FlutterSpiEngineLayer* layer) {
++  return EngineLayers().FindRaw(HandleValue(layer));
+ }
+ 
+ FlutterSpiResult SpiEngineLayerRelease(FlutterSpiEngineLayer* layer) {
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_engine_layer.h b/engine/src/flutter/runtime_spi/scene/spi_engine_layer.h
+index 9c3b083bf65..62263858884 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_engine_layer.h
++++ b/engine/src/flutter/runtime_spi/scene/spi_engine_layer.h
+@@ -15,6 +15,7 @@ namespace flutter {
+ FlutterSpiEngineLayer* SpiEngineLayerCreate(
+     const std::shared_ptr<Layer>& layer);
+ std::shared_ptr<Layer> SpiEngineLayerGet(FlutterSpiEngineLayer* layer);
++Layer* SpiEngineLayerGetRaw(FlutterSpiEngineLayer* layer);
+ FlutterSpiResult SpiEngineLayerRelease(FlutterSpiEngineLayer* layer);
+ 
+ }  // namespace flutter
