@@ -105,6 +105,23 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0095-fix-engine-include-the-path-type-in-measure-tests.patch` | Incluir a definição completa de `DlPath` no helper de paridade de medidas. | |
 | `0096-feat-engine-move-dart-ui-paths-to-runtime-spi.patch` | Fazer `CanvasPath` e `CanvasPathMeasure` possuírem handles da API de cena. | |
 | `0097-perf-engine-mutate-spi-paths-through-a-path-builder.patch` | Evitar reconstruir um `SkPathBuilder` completo a cada mutação de path. | |
+| `0098-test-engine-add-dart-ui-scene-build-benchmark.patch` | Estabelecer o benchmark de construção de cenas retidas do `dart:ui` para o portão da S4e. | |
+| `0099-test-engine-add-retained-scene-root-parity-tests.patch` | Fixar os testes RED de raiz retida reutilizável, ciclo de vida do builder e argumentos inválidos. | |
+| `0100-feat-engine-build-retained-scene-roots-through-the-spi.patch` | Acrescentar a ABI 0.17 para construir raízes retidas e criar cenas dimensionadas reutilizáveis. | |
+| `0101-fix-engine-avoid-rtti-in-retained-scene-root-creation.patch` | Manter a criação de raízes retidas compatível com as flags de build e nomear a ponte do SPI. | |
+| `0102-test-engine-expect-the-retained-root-nested-in-the-new-scene.patch` | Ajustar o teste ao container novo que envolve a raiz retida. | |
+| `0103-feat-engine-render-dart-ui-scenes-through-runtime-spi.patch` | Renderizar cenas do `dart:ui` por handles retidos do Runtime SPI. | |
+| `0104-fix-engine-finish-the-frame-when-a-view-renders-an-empty-scene.patch` | Preservar a conclusão do quadro sem submeter cenas SPI de tamanho zero. | |
+| `0105-test-engine-skip-empty-frames-before-creating-spi-scenes.patch` | Alinhar o helper de teste do Shell ao descarte de quadros vazios do Engine. | |
+| `0106-fix-engine-accept-null-filters-in-spi-filter-layers.patch` | Preservar camadas de passagem quando `dart:ui` fornece um filtro nulo. | |
+| `0107-refactor-engine-share-the-retained-layer-step-in-the-scene-builder.patch` | Manter cada push do `SceneBuilder` balanceado por um caminho único de retenção com erro explícito. | |
+| `0108-fix-engine-preserve-the-scene-builder-test-bridge.patch` | Manter os testes C++ do compositor compilando enquanto o SPI possui as camadas. | |
+| `0109-perf-engine-track-only-retained-layers-in-spi-scene-builders.patch` | Evitar hash e alocação para cada layer empurrado quando só os retidos exigem detecção de duplicata. | |
+| `0110-perf-engine-store-engine-layers-directly-in-the-handle-table.patch` | Evitar a alocação de um wrapper para cada handle de layer retido. | |
+| `0111-perf-engine-look-up-spi-scene-builders-without-refcounting.patch` | Evitar copiar o `shared_ptr` do builder em cada chamada da API de cena. | |
+| `0112-perf-engine-retain-the-last-spi-scene-layer-in-one-call.patch` | Combinar lookup e atribuição do layer antigo em uma operação SPI. | |
+| `0113-perf-engine-retain-pushed-dart-ui-layers-in-one-spi-call.patch` | Evitar chamadas separadas de handles ao reter cada layer empurrado pelo `dart:ui`. | |
+| `0114-perf-engine-convert-scene-transforms-once.patch` | Preencher a transformação do SPI diretamente dos valores da matriz Dart. | |
 
 O fluxo é:
 

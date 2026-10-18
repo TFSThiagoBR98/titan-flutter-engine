@@ -452,6 +452,36 @@ cada mutação. Depois da Task 5b, o builder passou a ser mantido no `SpiPath` e
 o portão ficou em −0,6% nos dois benchmarks. As duas medições completas estão
 em [runtime-spi-s4d2.md](medidas/runtime-spi-s4d2.md).
 
+## S4e: Compositing sobre a API de cena
+
+A S4e faz `SceneBuilder`, `EngineLayer` e `Scene` do `dart:ui` usarem a API
+de cena do Runtime SPI. O `SceneBuilder.build()` não conhece as dimensões da
+view, enquanto `scene_build` precisa de largura e altura e
+`submit_frame` consome a cena. O builder passa a produzir uma raiz retida;
+cada renderização ou snapshot cria uma cena nova, dimensionada para o uso, a
+partir dessa raiz compartilhada.
+
+A ABI 0.17 acrescenta `scene_build_root`, `scene_create_from_root` e
+`scene_retain_last_layer`. A raiz é um handle ref-counted que sobrevive ao
+builder e pode ser reutilizado em mais de uma view ou em quadros sucessivos.
+Assim, o caminho `RuntimeController::Render` cria uma cena com as métricas da
+view e chama `RenderScene`; a `DartRuntimeDelegateBridge` entrega essa cena
+diretamente a `submit_frame`, que continua responsável por consumi-la. Filtros
+nulos preservam a camada de passagem que o caminho original do `dart:ui`
+produzia.
+
+O armazenamento de `flow::Layer` no `Scene`, a pilha de layers do
+`SceneBuilder` e a ponte `SpiSceneFromLayerTree` saem do caminho de
+composição. Para `toImage` e `toImageSync`, a ponte temporária
+`SpiSceneTakeLayerTree` e `Picture::RasterizeLayerTreeToImage` permanecem até
+a S4g, quando os snapshots passarão para `scene_to_image`; as pontes internas
+de filtros, shaders e pictures também continuam até as migrações dessas áreas.
+
+O portão de desempenho foi aprovado em +2,0% no benchmark de construção de
+cenas. As três medições, as causas da regressão inicial e as otimizações de
+handles, retenção e matrizes estão em
+[runtime-spi-s4e.md](medidas/runtime-spi-s4e.md).
+
 ## Ciclo de vida e falhas
 
 O host cria, inicia, encerra e libera o backend. Uma falha recuperável encerra o runtime ativo e limpa os recursos;
