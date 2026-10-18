@@ -1,0 +1,185 @@
+# Why: Keep handle tables alive so wrappers can release handles after static
+# destruction starts during process shutdown.
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_color_filter.cc b/engine/src/flutter/runtime_spi/effects/spi_color_filter.cc
+index 17958e74a69..67b85fe4255 100644
+--- a/engine/src/flutter/runtime_spi/effects/spi_color_filter.cc
++++ b/engine/src/flutter/runtime_spi/effects/spi_color_filter.cc
+@@ -38,8 +38,7 @@ class SpiColorFilter final {
+ };
+ 
+ SpiHandleTable<SpiColorFilter>& ColorFilters() {
+-  static SpiHandleTable<SpiColorFilter> filters;
+-  return filters;
++  return LeakedHandleTable<SpiColorFilter>();
+ }
+ 
+ SpiColorFilter* FindColorFilter(FlutterSpiColorFilter* filter) {
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_image_filter.cc b/engine/src/flutter/runtime_spi/effects/spi_image_filter.cc
+index a6a5caf357d..26b4106ee03 100644
+--- a/engine/src/flutter/runtime_spi/effects/spi_image_filter.cc
++++ b/engine/src/flutter/runtime_spi/effects/spi_image_filter.cc
+@@ -42,8 +42,7 @@ class SpiImageFilter final {
+ };
+ 
+ SpiHandleTable<SpiImageFilter>& ImageFilters() {
+-  static SpiHandleTable<SpiImageFilter> filters;
+-  return filters;
++  return LeakedHandleTable<SpiImageFilter>();
+ }
+ 
+ SpiImageFilter* FindImageFilter(FlutterSpiImageFilter* filter) {
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_shader.cc b/engine/src/flutter/runtime_spi/effects/spi_shader.cc
+index 92b86ff03dd..8262fbc9a5b 100644
+--- a/engine/src/flutter/runtime_spi/effects/spi_shader.cc
++++ b/engine/src/flutter/runtime_spi/effects/spi_shader.cc
+@@ -40,8 +40,7 @@ class SpiShader final {
+ };
+ 
+ SpiHandleTable<SpiShader>& Shaders() {
+-  static SpiHandleTable<SpiShader> shaders;
+-  return shaders;
++  return LeakedHandleTable<SpiShader>();
+ }
+ 
+ SpiShader* FindShader(FlutterSpiShader* shader) {
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_vertices.cc b/engine/src/flutter/runtime_spi/effects/spi_vertices.cc
+index 1a8233f5edb..fbbc52ff7a1 100644
+--- a/engine/src/flutter/runtime_spi/effects/spi_vertices.cc
++++ b/engine/src/flutter/runtime_spi/effects/spi_vertices.cc
+@@ -30,8 +30,7 @@ Handle* MakeHandle(uintptr_t value) {
+ }
+ 
+ SpiHandleTable<DlVertices>& Vertices() {
+-  static SpiHandleTable<DlVertices> vertices;
+-  return vertices;
++  return LeakedHandleTable<DlVertices>();
+ }
+ 
+ std::shared_ptr<DlVertices> FindVertices(FlutterSpiVertices* vertices) {
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image.cc b/engine/src/flutter/runtime_spi/image/spi_image.cc
+index 4b2735a7582..b88ce41b9a3 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image.cc
+@@ -33,8 +33,7 @@ class SpiImage final {
+ };
+ 
+ SpiHandleTable<SpiImage>& Images() {
+-  static SpiHandleTable<SpiImage> images;
+-  return images;
++  return LeakedHandleTable<SpiImage>();
+ }
+ 
+ SpiImage* FindImage(FlutterSpiImage* image) {
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_codec.cc b/engine/src/flutter/runtime_spi/image/spi_image_codec.cc
+index b16b6e152ec..ab14c091fe9 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_codec.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_codec.cc
+@@ -221,8 +221,7 @@ class SpiImageCodec final : public std::enable_shared_from_this<SpiImageCodec> {
+ };
+ 
+ SpiHandleTable<SpiImageCodec>& Codecs() {
+-  static SpiHandleTable<SpiImageCodec> codecs;
+-  return codecs;
++  return LeakedHandleTable<SpiImageCodec>();
+ }
+ 
+ std::shared_ptr<SpiImageCodec> FindCodec(FlutterSpiCodec* codec) {
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+index 95970a18f8f..74c26a82ca6 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+@@ -121,23 +121,19 @@ class SpiPicture final {
+ };
+ 
+ SpiHandleTable<SpiPath>& Paths() {
+-  static SpiHandleTable<SpiPath> paths;
+-  return paths;
++  return LeakedHandleTable<SpiPath>();
+ }
+ 
+ SpiHandleTable<SpiPathMeasure>& PathMeasures() {
+-  static SpiHandleTable<SpiPathMeasure> path_measures;
+-  return path_measures;
++  return LeakedHandleTable<SpiPathMeasure>();
+ }
+ 
+ SpiHandleTable<SpiPictureRecorder>& Recorders() {
+-  static SpiHandleTable<SpiPictureRecorder> recorders;
+-  return recorders;
++  return LeakedHandleTable<SpiPictureRecorder>();
+ }
+ 
+ SpiHandleTable<SpiPicture>& Pictures() {
+-  static SpiHandleTable<SpiPicture> pictures;
+-  return pictures;
++  return LeakedHandleTable<SpiPicture>();
+ }
+ 
+ SpiPath* FindPath(FlutterSpiPath* path) {
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_engine_layer.cc b/engine/src/flutter/runtime_spi/scene/spi_engine_layer.cc
+index 3f44b2b0c64..11364ae3846 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_engine_layer.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_engine_layer.cc
+@@ -12,8 +12,7 @@ namespace flutter {
+ namespace {
+ 
+ SpiHandleTable<Layer>& EngineLayers() {
+-  static SpiHandleTable<Layer> layers;
+-  return layers;
++  return LeakedHandleTable<Layer>();
+ }
+ 
+ uintptr_t HandleValue(FlutterSpiEngineLayer* layer) {
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_handle_table.h b/engine/src/flutter/runtime_spi/scene/spi_handle_table.h
+index 95f3172e5d8..50c77a1e5ef 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_handle_table.h
++++ b/engine/src/flutter/runtime_spi/scene/spi_handle_table.h
+@@ -137,6 +137,14 @@ class SpiHandleTable final {
+   std::size_t active_count_ = 0;
+ };
+ 
++template <typename T>
++SpiHandleTable<T>& LeakedHandleTable() {
++  // Leaked on purpose: wrappers can release handles after static destruction
++  // starts.
++  static auto* table = new SpiHandleTable<T>();
++  return *table;
++}
++
+ }  // namespace flutter
+ 
+ #endif  // FLUTTER_RUNTIME_SPI_SCENE_SPI_HANDLE_TABLE_H_
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
+index 49b3a8b8f24..f7a4e5a3933 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
+@@ -46,8 +46,7 @@ namespace flutter {
+ namespace {
+ 
+ SpiHandleTable<FlutterSpiSceneBuilder>& Builders() {
+-  static SpiHandleTable<FlutterSpiSceneBuilder> builders;
+-  return builders;
++  return LeakedHandleTable<FlutterSpiSceneBuilder>();
+ }
+ 
+ template <typename Handle>
+diff --git a/engine/src/flutter/runtime_spi/text/spi_paragraph.cc b/engine/src/flutter/runtime_spi/text/spi_paragraph.cc
+index cf2f4565342..580ce982cd5 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_paragraph.cc
++++ b/engine/src/flutter/runtime_spi/text/spi_paragraph.cc
+@@ -122,13 +122,11 @@ class SpiParagraph final {
+ };
+ 
+ SpiHandleTable<SpiParagraphBuilder>& Builders() {
+-  static SpiHandleTable<SpiParagraphBuilder> builders;
+-  return builders;
++  return LeakedHandleTable<SpiParagraphBuilder>();
+ }
+ 
+ SpiHandleTable<SpiParagraph>& Paragraphs() {
+-  static SpiHandleTable<SpiParagraph> paragraphs;
+-  return paragraphs;
++  return LeakedHandleTable<SpiParagraph>();
+ }
+ 
+ SpiParagraphBuilder* FindBuilder(FlutterSpiParagraphBuilder* builder) {
