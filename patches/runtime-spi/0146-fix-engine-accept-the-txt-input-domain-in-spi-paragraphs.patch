@@ -1,0 +1,872 @@
+# Why: Preserve txt paragraph behavior for intrinsic layout and queries
+# instead of rejecting values that the framework legitimately passes.
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_text.h b/engine/src/flutter/runtime_spi/include/flutter_text.h
+index 89c4677c454..f9d7f7ab380 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_text.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_text.h
+@@ -248,11 +248,14 @@ struct FlutterSpiTextApi {
+   FlutterSpiResult (*paragraph_builder_push_style)(
+       FlutterSpiParagraphBuilder* builder,
+       const FlutterSpiTextStyle* style);
+-  FlutterSpiResult (*paragraph_builder_pop)(FlutterSpiParagraphBuilder* builder);
++  FlutterSpiResult (*paragraph_builder_pop)(
++      FlutterSpiParagraphBuilder* builder);
+   FlutterSpiResult (*paragraph_builder_add_text)(
+       FlutterSpiParagraphBuilder* builder,
+       const char* utf8,
+       size_t size);
++  // Placeholder values are passed through with the txt::ParagraphBuilder
++  // input domain.
+   FlutterSpiResult (*paragraph_builder_add_placeholder)(
+       FlutterSpiParagraphBuilder* builder,
+       float width,
+@@ -266,11 +269,14 @@ struct FlutterSpiTextApi {
+   FlutterSpiResult (*paragraph_builder_release)(
+       FlutterSpiParagraphBuilder* builder);
+ 
++  // The input domain matches txt::Paragraph, including non-finite widths.
+   FlutterSpiResult (*paragraph_layout)(FlutterSpiParagraph* paragraph,
+                                        double width);
++  // The query is valid before layout, as it is for txt::Paragraph.
+   FlutterSpiResult (*paragraph_get_metrics)(
+       FlutterSpiParagraph* paragraph,
+       FlutterSpiParagraphMetrics* out_metrics);
++  // The input domain matches txt::Paragraph, including start values after end.
+   FlutterSpiResult (*paragraph_get_rects_for_range)(
+       FlutterSpiParagraph* paragraph,
+       size_t start,
+@@ -280,53 +286,67 @@ struct FlutterSpiTextApi {
+       FlutterSpiTextBox* out,
+       size_t capacity,
+       size_t* count);
++  // The query is valid before layout, as it is for txt::Paragraph.
+   FlutterSpiResult (*paragraph_get_rects_for_placeholders)(
+       FlutterSpiParagraph* paragraph,
+       FlutterSpiTextBox* out,
+       size_t capacity,
+       size_t* count);
++  // The coordinate domain matches txt::Paragraph, including non-finite values.
+   FlutterSpiResult (*paragraph_get_glyph_position_at)(
+       FlutterSpiParagraph* paragraph,
+       double dx,
+       double dy,
+       size_t* offset,
+       int32_t* affinity);
+-  FlutterSpiResult (*paragraph_get_word_boundary)(FlutterSpiParagraph* paragraph,
+-                                                  size_t offset,
+-                                                  size_t* start,
+-                                                  size_t* end);
++  // The query is valid before layout, as it is for txt::Paragraph.
++  FlutterSpiResult (*paragraph_get_word_boundary)(
++      FlutterSpiParagraph* paragraph,
++      size_t offset,
++      size_t* start,
++      size_t* end);
++  // The query is valid before layout, as it is for txt::Paragraph.
+   FlutterSpiResult (*paragraph_get_line_metrics)(FlutterSpiParagraph* paragraph,
+                                                  FlutterSpiLineMetrics* out,
+                                                  size_t capacity,
+                                                  size_t* count);
++  // The query is valid before layout, as it is for txt::Paragraph.
+   FlutterSpiResult (*paragraph_get_glyph_info_at)(
+       FlutterSpiParagraph* paragraph,
+       size_t utf16_offset,
+       FlutterSpiGlyphInfo* out,
+       bool* found);
++  // The coordinate domain matches txt::Paragraph, including non-finite values.
+   FlutterSpiResult (*paragraph_get_closest_glyph_info)(
+       FlutterSpiParagraph* paragraph,
+       double dx,
+       double dy,
+       FlutterSpiGlyphInfo* out,
+       bool* found);
+-  FlutterSpiResult (*paragraph_get_line_boundary)(FlutterSpiParagraph* paragraph,
+-                                                  size_t utf16_offset,
+-                                                  int64_t* start,
+-                                                  int64_t* end);
++  // The query is valid before layout, as it is for txt::Paragraph.
++  FlutterSpiResult (*paragraph_get_line_boundary)(
++      FlutterSpiParagraph* paragraph,
++      size_t utf16_offset,
++      int64_t* start,
++      int64_t* end);
++  // Negative line numbers return found=false, as they do for txt::Paragraph.
+   FlutterSpiResult (*paragraph_get_line_metrics_at)(
+       FlutterSpiParagraph* paragraph,
+       int32_t line_number,
+       FlutterSpiLineMetrics* out,
+       bool* found);
++  // The query is valid before layout, as it is for txt::Paragraph.
+   FlutterSpiResult (*paragraph_get_line_count)(FlutterSpiParagraph* paragraph,
+                                                size_t* out);
++  // The query is valid before layout, as it is for txt::Paragraph.
+   FlutterSpiResult (*paragraph_get_line_number_at)(
+       FlutterSpiParagraph* paragraph,
+       size_t utf16_offset,
+       int32_t* out);
+   FlutterSpiResult (*paragraph_retain)(FlutterSpiParagraph* paragraph);
+   FlutterSpiResult (*paragraph_release)(FlutterSpiParagraph* paragraph);
++  // The input domain matches txt::Paragraph, including pre-layout and
++  // non-finite coordinates.
+   FlutterSpiResult (*canvas_draw_paragraph)(FlutterSpiPictureRecorder* recorder,
+                                             FlutterSpiParagraph* paragraph,
+                                             float x,
+diff --git a/engine/src/flutter/runtime_spi/text/spi_paragraph.cc b/engine/src/flutter/runtime_spi/text/spi_paragraph.cc
+index 028b1f4a238..cf2f4565342 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_paragraph.cc
++++ b/engine/src/flutter/runtime_spi/text/spi_paragraph.cc
+@@ -5,7 +5,6 @@
+ #include "flutter/runtime_spi/text/spi_paragraph.h"
+ 
+ #include <algorithm>
+-#include <cmath>
+ #include <cstdint>
+ #include <memory>
+ #include <string>
+@@ -37,7 +36,9 @@ class SpiParagraphBuilder final {
+                       const std::shared_ptr<txt::FontCollection>& fonts,
+                       bool impeller_enabled)
+       : builder_(txt::ParagraphBuilder::CreateSkiaBuilder(
+-            ToTxtParagraphStyle(&style), fonts, impeller_enabled)) {}
++            ToTxtParagraphStyle(&style),
++            fonts,
++            impeller_enabled)) {}
+ 
+   FlutterSpiResult PushStyle(const FlutterSpiTextStyle& style) {
+     builder_->PushStyle(ToTxtTextStyle(&style, builder_->PeekStyle()));
+@@ -73,18 +74,10 @@ class SpiParagraphBuilder final {
+   }
+ 
+   FlutterSpiResult AddPlaceholder(float width,
+-                                   float height,
+-                                   int32_t alignment,
+-                                   float baseline_offset,
+-                                   int32_t baseline) {
+-    if (!std::isfinite(width) || !std::isfinite(height) || width < 0.0f ||
+-        height < 0.0f || !std::isfinite(baseline_offset) ||
+-        alignment < static_cast<int32_t>(txt::PlaceholderAlignment::kBaseline) ||
+-        alignment > static_cast<int32_t>(txt::PlaceholderAlignment::kMiddle) ||
+-        baseline < static_cast<int32_t>(txt::TextBaseline::kAlphabetic) ||
+-        baseline > static_cast<int32_t>(txt::TextBaseline::kIdeographic)) {
+-      return kFlutterSpiInvalidArgument;
+-    }
++                                  float height,
++                                  int32_t alignment,
++                                  float baseline_offset,
++                                  int32_t baseline) {
+     txt::PlaceholderRun placeholder(
+         width, height, static_cast<txt::PlaceholderAlignment>(alignment),
+         static_cast<txt::TextBaseline>(baseline), baseline_offset);
+@@ -118,20 +111,14 @@ class SpiParagraph final {
+       : paragraph_(std::move(paragraph)) {}
+ 
+   FlutterSpiResult Layout(double width) {
+-    if (!std::isfinite(width) || width < 0.0) {
+-      return kFlutterSpiInvalidArgument;
+-    }
+     paragraph_->Layout(width);
+-    laid_out_ = true;
+     return kFlutterSpiOk;
+   }
+ 
+-  bool laid_out() const { return laid_out_; }
+   txt::Paragraph& paragraph() { return *paragraph_; }
+ 
+  private:
+   std::unique_ptr<txt::Paragraph> paragraph_;
+-  bool laid_out_ = false;
+ };
+ 
+ SpiHandleTable<SpiParagraphBuilder>& Builders() {
+@@ -152,10 +139,11 @@ SpiParagraph* FindParagraph(FlutterSpiParagraph* paragraph) {
+   return Paragraphs().FindRaw(HandleValue(paragraph));
+ }
+ 
+-FlutterSpiResult CopyTextBoxes(const std::vector<txt::Paragraph::TextBox>& boxes,
+-                               FlutterSpiTextBox* out,
+-                               size_t capacity,
+-                               size_t* count) {
++FlutterSpiResult CopyTextBoxes(
++    const std::vector<txt::Paragraph::TextBox>& boxes,
++    FlutterSpiTextBox* out,
++    size_t capacity,
++    size_t* count) {
+   if (count == nullptr || (capacity != 0 && out == nullptr)) {
+     return kFlutterSpiInvalidArgument;
+   }
+@@ -203,16 +191,6 @@ FlutterSpiResult CopyLineMetrics(const std::vector<txt::LineMetrics>& metrics,
+   return kFlutterSpiOk;
+ }
+ 
+-bool IsValidRectHeightStyle(int32_t value) {
+-  return value >= static_cast<int32_t>(txt::Paragraph::RectHeightStyle::kTight) &&
+-         value <= static_cast<int32_t>(txt::Paragraph::RectHeightStyle::kStrut);
+-}
+-
+-bool IsValidRectWidthStyle(int32_t value) {
+-  return value >= static_cast<int32_t>(txt::Paragraph::RectWidthStyle::kTight) &&
+-         value <= static_cast<int32_t>(txt::Paragraph::RectWidthStyle::kMax);
+-}
+-
+ }  // namespace
+ 
+ FlutterSpiResult SpiParagraphBuilderCreate(
+@@ -220,11 +198,12 @@ FlutterSpiResult SpiParagraphBuilderCreate(
+     bool impeller_enabled,
+     const FlutterSpiParagraphStyle* style,
+     FlutterSpiParagraphBuilder** out_builder) {
+-  if (font_collection == nullptr || style == nullptr || out_builder == nullptr) {
++  if (font_collection == nullptr || style == nullptr ||
++      out_builder == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+-  auto builder = std::make_shared<SpiParagraphBuilder>(
+-      *style, font_collection, impeller_enabled);
++  auto builder = std::make_shared<SpiParagraphBuilder>(*style, font_collection,
++                                                       impeller_enabled);
+   *out_builder = MakeHandle<FlutterSpiParagraphBuilder>(
+       Builders().Insert(std::move(builder)));
+   return kFlutterSpiOk;
+@@ -285,9 +264,8 @@ FlutterSpiResult SpiParagraphBuilderAddPlaceholder(
+                                        baseline_offset, baseline);
+ }
+ 
+-FlutterSpiResult SpiParagraphBuilderBuild(
+-    FlutterSpiParagraphBuilder* builder,
+-    FlutterSpiParagraph** out_paragraph) {
++FlutterSpiResult SpiParagraphBuilderBuild(FlutterSpiParagraphBuilder* builder,
++                                          FlutterSpiParagraph** out_paragraph) {
+   const auto builder_value = FindBuilder(builder);
+   if (builder_value == nullptr) {
+     return kFlutterSpiInvalidHandle;
+@@ -299,15 +277,16 @@ FlutterSpiResult SpiParagraphBuilderBuild(
+   if (paragraph == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+-  *out_paragraph = MakeHandle<FlutterSpiParagraph>(
+-      Paragraphs().Insert(std::make_shared<SpiParagraph>(std::move(paragraph))));
++  *out_paragraph = MakeHandle<FlutterSpiParagraph>(Paragraphs().Insert(
++      std::make_shared<SpiParagraph>(std::move(paragraph))));
+   Builders().Release(HandleValue(builder));
+   return kFlutterSpiOk;
+ }
+ 
+-FlutterSpiResult SpiParagraphBuilderRelease(FlutterSpiParagraphBuilder* builder) {
++FlutterSpiResult SpiParagraphBuilderRelease(
++    FlutterSpiParagraphBuilder* builder) {
+   return Builders().Release(HandleValue(builder)) ? kFlutterSpiOk
+-                                                   : kFlutterSpiInvalidHandle;
++                                                  : kFlutterSpiInvalidHandle;
+ }
+ 
+ FlutterSpiResult SpiParagraphLayout(FlutterSpiParagraph* paragraph,
+@@ -326,7 +305,7 @@ FlutterSpiResult SpiParagraphGetMetrics(
+   if (paragraph_value == nullptr) {
+     return kFlutterSpiInvalidHandle;
+   }
+-  if (!paragraph_value->laid_out() || out_metrics == nullptr ||
++  if (out_metrics == nullptr ||
+       out_metrics->struct_size < sizeof(FlutterSpiParagraphMetrics)) {
+     return kFlutterSpiInvalidArgument;
+   }
+@@ -346,27 +325,20 @@ FlutterSpiResult SpiParagraphGetMetrics(
+   return kFlutterSpiOk;
+ }
+ 
+-FlutterSpiResult SpiParagraphGetRectsForRange(
+-    FlutterSpiParagraph* paragraph,
+-    size_t start,
+-    size_t end,
+-    int32_t height_style,
+-    int32_t width_style,
+-    FlutterSpiTextBox* out,
+-    size_t capacity,
+-    size_t* count) {
++FlutterSpiResult SpiParagraphGetRectsForRange(FlutterSpiParagraph* paragraph,
++                                              size_t start,
++                                              size_t end,
++                                              int32_t height_style,
++                                              int32_t width_style,
++                                              FlutterSpiTextBox* out,
++                                              size_t capacity,
++                                              size_t* count) {
+   const auto paragraph_value = FindParagraph(paragraph);
+   if (paragraph_value == nullptr) {
+     return kFlutterSpiInvalidHandle;
+   }
+-  if (!paragraph_value->laid_out() || start > end ||
+-      !IsValidRectHeightStyle(height_style) ||
+-      !IsValidRectWidthStyle(width_style)) {
+-    return kFlutterSpiInvalidArgument;
+-  }
+   const auto boxes = paragraph_value->paragraph().GetRectsForRange(
+-      start, end,
+-      static_cast<txt::Paragraph::RectHeightStyle>(height_style),
++      start, end, static_cast<txt::Paragraph::RectHeightStyle>(height_style),
+       static_cast<txt::Paragraph::RectWidthStyle>(width_style));
+   return CopyTextBoxes(boxes, out, capacity, count);
+ }
+@@ -380,9 +352,6 @@ FlutterSpiResult SpiParagraphGetRectsForPlaceholders(
+   if (paragraph_value == nullptr) {
+     return kFlutterSpiInvalidHandle;
+   }
+-  if (!paragraph_value->laid_out()) {
+-    return kFlutterSpiInvalidArgument;
+-  }
+   return CopyTextBoxes(paragraph_value->paragraph().GetRectsForPlaceholders(),
+                        out, capacity, count);
+ }
+@@ -396,8 +365,7 @@ FlutterSpiResult SpiParagraphGetGlyphPositionAt(FlutterSpiParagraph* paragraph,
+   if (paragraph_value == nullptr) {
+     return kFlutterSpiInvalidHandle;
+   }
+-  if (!paragraph_value->laid_out() || !std::isfinite(dx) ||
+-      !std::isfinite(dy) || offset == nullptr || affinity == nullptr) {
++  if (offset == nullptr || affinity == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+   const auto position =
+@@ -415,7 +383,7 @@ FlutterSpiResult SpiParagraphGetWordBoundary(FlutterSpiParagraph* paragraph,
+   if (paragraph_value == nullptr) {
+     return kFlutterSpiInvalidHandle;
+   }
+-  if (!paragraph_value->laid_out() || start == nullptr || end == nullptr) {
++  if (start == nullptr || end == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+   const auto boundary = paragraph_value->paragraph().GetWordBoundary(offset);
+@@ -432,9 +400,6 @@ FlutterSpiResult SpiParagraphGetLineMetrics(FlutterSpiParagraph* paragraph,
+   if (paragraph_value == nullptr) {
+     return kFlutterSpiInvalidHandle;
+   }
+-  if (!paragraph_value->laid_out()) {
+-    return kFlutterSpiInvalidArgument;
+-  }
+   return CopyLineMetrics(paragraph_value->paragraph().GetLineMetrics(), out,
+                          capacity, count);
+ }
+@@ -447,13 +412,13 @@ FlutterSpiResult SpiParagraphGetGlyphInfoAt(FlutterSpiParagraph* paragraph,
+   if (paragraph_value == nullptr) {
+     return kFlutterSpiInvalidHandle;
+   }
+-  if (!paragraph_value->laid_out() || out == nullptr || found == nullptr) {
++  if (out == nullptr || found == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+ 
+   skia::textlayout::Paragraph::GlyphInfo glyph_info;
+-  *found = paragraph_value->paragraph().GetGlyphInfoAt(utf16_offset,
+-                                                        &glyph_info);
++  *found =
++      paragraph_value->paragraph().GetGlyphInfoAt(utf16_offset, &glyph_info);
+   if (!*found) {
+     return kFlutterSpiOk;
+   }
+@@ -464,8 +429,7 @@ FlutterSpiResult SpiParagraphGetGlyphInfoAt(FlutterSpiParagraph* paragraph,
+                           .bottom = glyph_info.fGraphemeLayoutBounds.fBottom},
+       .range_start = glyph_info.fGraphemeClusterTextRange.start,
+       .range_end = glyph_info.fGraphemeClusterTextRange.end,
+-      .is_ltr = glyph_info.fDirection ==
+-                skia::textlayout::TextDirection::kLtr,
++      .is_ltr = glyph_info.fDirection == skia::textlayout::TextDirection::kLtr,
+   };
+   return kFlutterSpiOk;
+ }
+@@ -479,8 +443,7 @@ FlutterSpiResult SpiParagraphGetClosestGlyphInfo(FlutterSpiParagraph* paragraph,
+   if (paragraph_value == nullptr) {
+     return kFlutterSpiInvalidHandle;
+   }
+-  if (!paragraph_value->laid_out() || !std::isfinite(dx) ||
+-      !std::isfinite(dy) || out == nullptr || found == nullptr) {
++  if (out == nullptr || found == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+ 
+@@ -497,8 +460,7 @@ FlutterSpiResult SpiParagraphGetClosestGlyphInfo(FlutterSpiParagraph* paragraph,
+                           .bottom = glyph_info.fGraphemeLayoutBounds.fBottom},
+       .range_start = glyph_info.fGraphemeClusterTextRange.start,
+       .range_end = glyph_info.fGraphemeClusterTextRange.end,
+-      .is_ltr = glyph_info.fDirection ==
+-                skia::textlayout::TextDirection::kLtr,
++      .is_ltr = glyph_info.fDirection == skia::textlayout::TextDirection::kLtr,
+   };
+   return kFlutterSpiOk;
+ }
+@@ -511,7 +473,7 @@ FlutterSpiResult SpiParagraphGetLineBoundary(FlutterSpiParagraph* paragraph,
+   if (paragraph_value == nullptr) {
+     return kFlutterSpiInvalidHandle;
+   }
+-  if (!paragraph_value->laid_out() || start == nullptr || end == nullptr) {
++  if (start == nullptr || end == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+ 
+@@ -529,15 +491,14 @@ FlutterSpiResult SpiParagraphGetLineBoundary(FlutterSpiParagraph* paragraph,
+ }
+ 
+ FlutterSpiResult SpiParagraphGetLineMetricsAt(FlutterSpiParagraph* paragraph,
+-                                               int32_t line_number,
+-                                               FlutterSpiLineMetrics* out,
+-                                               bool* found) {
++                                              int32_t line_number,
++                                              FlutterSpiLineMetrics* out,
++                                              bool* found) {
+   const auto paragraph_value = FindParagraph(paragraph);
+   if (paragraph_value == nullptr) {
+     return kFlutterSpiInvalidHandle;
+   }
+-  if (!paragraph_value->laid_out() || line_number < 0 || out == nullptr ||
+-      found == nullptr) {
++  if (out == nullptr || found == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+ 
+@@ -570,7 +531,7 @@ FlutterSpiResult SpiParagraphGetLineCount(FlutterSpiParagraph* paragraph,
+   if (paragraph_value == nullptr) {
+     return kFlutterSpiInvalidHandle;
+   }
+-  if (!paragraph_value->laid_out() || out == nullptr) {
++  if (out == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+   *out = paragraph_value->paragraph().GetNumberOfLines();
+@@ -584,7 +545,7 @@ FlutterSpiResult SpiParagraphGetLineNumberAt(FlutterSpiParagraph* paragraph,
+   if (paragraph_value == nullptr) {
+     return kFlutterSpiInvalidHandle;
+   }
+-  if (!paragraph_value->laid_out() || out == nullptr) {
++  if (out == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+   *out = paragraph_value->paragraph().GetLineNumberAt(utf16_offset);
+@@ -593,12 +554,13 @@ FlutterSpiResult SpiParagraphGetLineNumberAt(FlutterSpiParagraph* paragraph,
+ 
+ FlutterSpiResult SpiParagraphRetain(FlutterSpiParagraph* paragraph) {
+   return Paragraphs().Retain(HandleValue(paragraph)) ? kFlutterSpiOk
+-                                                      : kFlutterSpiInvalidHandle;
++                                                     : kFlutterSpiInvalidHandle;
+ }
+ 
+ FlutterSpiResult SpiParagraphRelease(FlutterSpiParagraph* paragraph) {
+-  return Paragraphs().Release(HandleValue(paragraph)) ? kFlutterSpiOk
+-                                                        : kFlutterSpiInvalidHandle;
++  return Paragraphs().Release(HandleValue(paragraph))
++             ? kFlutterSpiOk
++             : kFlutterSpiInvalidHandle;
+ }
+ 
+ FlutterSpiResult SpiParagraphPaint(FlutterSpiParagraph* paragraph,
+@@ -609,8 +571,7 @@ FlutterSpiResult SpiParagraphPaint(FlutterSpiParagraph* paragraph,
+   if (paragraph_value == nullptr) {
+     return kFlutterSpiInvalidHandle;
+   }
+-  if (!paragraph_value->laid_out() || builder == nullptr || !std::isfinite(x) ||
+-      !std::isfinite(y)) {
++  if (builder == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+   return paragraph_value->paragraph().Paint(builder, x, y)
+diff --git a/engine/src/flutter/runtime_spi/text/spi_paragraph_parity_unittests.cc b/engine/src/flutter/runtime_spi/text/spi_paragraph_parity_unittests.cc
+index c08f40fe6c3..9c5354fa3a7 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_paragraph_parity_unittests.cc
++++ b/engine/src/flutter/runtime_spi/text/spi_paragraph_parity_unittests.cc
+@@ -4,15 +4,15 @@
+ 
+ #include "flutter/runtime_spi/text/spi_paragraph.h"
+ 
+-#include <memory>
+ #include <limits>
++#include <memory>
+ #include <string>
+ #include <string_view>
+ 
+ #include "flutter/lib/ui/text/font_collection.h"
++#include "flutter/runtime_spi/testing/test_icu.h"
+ #include "flutter/runtime_spi/text/spi_font.h"
+ #include "flutter/runtime_spi/text/spi_text_style.h"
+-#include "flutter/runtime_spi/testing/test_icu.h"
+ #include "flutter/testing/testing.h"
+ #include "txt/paragraph_builder.h"
+ 
+@@ -74,8 +74,7 @@ class SpiParagraphTest : public ::testing::Test {
+     const FlutterSpiTextStyle text_style = TextStyle();
+     EXPECT_EQ(SpiParagraphBuilderPushStyle(builder, &text_style),
+               kFlutterSpiOk);
+-    EXPECT_EQ(SpiParagraphBuilderAddText(
+-                  builder, text.data(), text.size()),
++    EXPECT_EQ(SpiParagraphBuilderAddText(builder, text.data(), text.size()),
+               kFlutterSpiOk);
+     FlutterSpiParagraph* paragraph = nullptr;
+     EXPECT_EQ(SpiParagraphBuilderBuild(builder, &paragraph), kFlutterSpiOk);
+@@ -105,8 +104,9 @@ bool HasRenderedText(txt::Paragraph& paragraph) {
+          paragraph.GetNumberOfLines() > 0;
+ }
+ 
+-void ExpectGlyphInfoEqual(const FlutterSpiGlyphInfo& actual,
+-                          const skia::textlayout::Paragraph::GlyphInfo& expected) {
++void ExpectGlyphInfoEqual(
++    const FlutterSpiGlyphInfo& actual,
++    const skia::textlayout::Paragraph::GlyphInfo& expected) {
+   EXPECT_FLOAT_EQ(actual.grapheme_bounds.left,
+                   expected.fGraphemeLayoutBounds.fLeft);
+   EXPECT_FLOAT_EQ(actual.grapheme_bounds.top,
+@@ -126,10 +126,8 @@ void ExpectMetricsEqual(const FlutterSpiParagraphMetrics& actual,
+   EXPECT_DOUBLE_EQ(actual.width, expected.GetMaxWidth());
+   EXPECT_DOUBLE_EQ(actual.height, expected.GetHeight());
+   EXPECT_DOUBLE_EQ(actual.longest_line, expected.GetLongestLine());
+-  EXPECT_DOUBLE_EQ(actual.min_intrinsic_width,
+-                   expected.GetMinIntrinsicWidth());
+-  EXPECT_DOUBLE_EQ(actual.max_intrinsic_width,
+-                   expected.GetMaxIntrinsicWidth());
++  EXPECT_DOUBLE_EQ(actual.min_intrinsic_width, expected.GetMinIntrinsicWidth());
++  EXPECT_DOUBLE_EQ(actual.max_intrinsic_width, expected.GetMaxIntrinsicWidth());
+   EXPECT_DOUBLE_EQ(actual.alphabetic_baseline,
+                    expected.GetAlphabeticBaseline());
+   EXPECT_DOUBLE_EQ(actual.ideographic_baseline,
+@@ -144,8 +142,8 @@ TEST_F(SpiParagraphTest, MetricsMatchTxt) {
+   auto expected = BuildTxtParagraph(style, "Hello, SPI");
+   ASSERT_TRUE(HasRenderedText(*expected));
+ 
+-  FlutterSpiParagraphMetrics actual = {
+-      .struct_size = sizeof(FlutterSpiParagraphMetrics)};
++  FlutterSpiParagraphMetrics actual = {.struct_size =
++                                           sizeof(FlutterSpiParagraphMetrics)};
+   ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
+   ASSERT_EQ(SpiParagraphGetMetrics(paragraph, &actual), kFlutterSpiOk);
+   ExpectMetricsEqual(actual, *expected);
+@@ -157,9 +155,9 @@ TEST_F(SpiParagraphTest, RectsForRangeMatchTxt) {
+   auto* paragraph = BuildSpiParagraph(style, "Hello, SPI world");
+   auto expected = BuildTxtParagraph(style, "Hello, SPI world");
+   FlutterSpiTextBox actual[4] = {};
+-  const auto expected_boxes = expected->GetRectsForRange(
+-      1, 12, txt::Paragraph::RectHeightStyle::kTight,
+-      txt::Paragraph::RectWidthStyle::kMax);
++  const auto expected_boxes =
++      expected->GetRectsForRange(1, 12, txt::Paragraph::RectHeightStyle::kTight,
++                                 txt::Paragraph::RectWidthStyle::kMax);
+   ASSERT_TRUE(HasRenderedText(*expected));
+   ASSERT_FALSE(expected_boxes.empty());
+   size_t count = 0;
+@@ -208,11 +206,11 @@ TEST_F(SpiParagraphTest, AddTextUtf16MatchesUtf8) {
+             kFlutterSpiOk);
+   ASSERT_EQ(SpiParagraphBuilderPushStyle(utf16_builder, &text_style),
+             kFlutterSpiOk);
+-  ASSERT_EQ(SpiParagraphBuilderAddTextUtf16(
+-                utf16_builder,
+-                reinterpret_cast<const uint16_t*>(text_utf16.data()),
+-                text_utf16.size()),
+-            kFlutterSpiOk);
++  ASSERT_EQ(
++      SpiParagraphBuilderAddTextUtf16(
++          utf16_builder, reinterpret_cast<const uint16_t*>(text_utf16.data()),
++          text_utf16.size()),
++      kFlutterSpiOk);
+   FlutterSpiParagraph* utf16_paragraph = nullptr;
+   ASSERT_EQ(SpiParagraphBuilderBuild(utf16_builder, &utf16_paragraph),
+             kFlutterSpiOk);
+@@ -265,9 +263,9 @@ TEST_F(SpiParagraphTest, AddTextUtf16MatchesUtf8) {
+ TEST_F(SpiParagraphTest, PlaceholderRectsMatchTxt) {
+   const auto style = ParagraphStyle();
+   FlutterSpiParagraphBuilder* builder = nullptr;
+-  ASSERT_EQ(SpiParagraphBuilderCreate(TxtFontCollection(), false, &style,
+-                                      &builder),
+-            kFlutterSpiOk);
++  ASSERT_EQ(
++      SpiParagraphBuilderCreate(TxtFontCollection(), false, &style, &builder),
++      kFlutterSpiOk);
+   const auto text_style = TextStyle();
+   ASSERT_EQ(SpiParagraphBuilderPushStyle(builder, &text_style), kFlutterSpiOk);
+   ASSERT_EQ(SpiParagraphBuilderAddText(builder, "A", 1), kFlutterSpiOk);
+@@ -284,9 +282,9 @@ TEST_F(SpiParagraphTest, PlaceholderRectsMatchTxt) {
+       ToTxtParagraphStyle(&style), TxtFontCollection(), false);
+   expected_builder->PushStyle(ToTxtTextStyle(&text_style));
+   expected_builder->AddText(u"A");
+-  txt::PlaceholderRun placeholder(
+-      20.0, 10.0, txt::PlaceholderAlignment::kBaseline,
+-      txt::TextBaseline::kAlphabetic, 8.0);
++  txt::PlaceholderRun placeholder(20.0, 10.0,
++                                  txt::PlaceholderAlignment::kBaseline,
++                                  txt::TextBaseline::kAlphabetic, 8.0);
+   expected_builder->AddPlaceholder(placeholder);
+   expected_builder->AddText(u"B");
+   auto expected = expected_builder->Build();
+@@ -294,8 +292,7 @@ TEST_F(SpiParagraphTest, PlaceholderRectsMatchTxt) {
+   FlutterSpiTextBox actual[1] = {};
+   size_t count = 0;
+   ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
+-  ASSERT_EQ(SpiParagraphGetRectsForPlaceholders(paragraph, actual, 1,
+-                                                &count),
++  ASSERT_EQ(SpiParagraphGetRectsForPlaceholders(paragraph, actual, 1, &count),
+             kFlutterSpiOk);
+   expected->Layout(kLayoutWidth);
+   const auto expected_boxes = expected->GetRectsForPlaceholders();
+@@ -319,9 +316,8 @@ TEST_F(SpiParagraphTest, GlyphPositionMatchesTxt) {
+   const auto expected_position = expected->GetGlyphPositionAtCoordinate(26, 8);
+ 
+   ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
+-  ASSERT_EQ(SpiParagraphGetGlyphPositionAt(paragraph, 26, 8,
+-                                            &actual_offset,
+-                                            &actual_affinity),
++  ASSERT_EQ(SpiParagraphGetGlyphPositionAt(paragraph, 26, 8, &actual_offset,
++                                           &actual_affinity),
+             kFlutterSpiOk);
+   EXPECT_EQ(actual_offset, expected_position.position);
+   EXPECT_EQ(actual_affinity, static_cast<int32_t>(expected_position.affinity));
+@@ -338,9 +334,9 @@ TEST_F(SpiParagraphTest, WordBoundaryMatchesTxt) {
+   const auto expected_boundary = expected->GetWordBoundary(8);
+ 
+   ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
+-  ASSERT_EQ(SpiParagraphGetWordBoundary(paragraph, 8, &actual_start,
+-                                        &actual_end),
+-            kFlutterSpiOk);
++  ASSERT_EQ(
++      SpiParagraphGetWordBoundary(paragraph, 8, &actual_start, &actual_end),
++      kFlutterSpiOk);
+   EXPECT_EQ(actual_start, expected_boundary.start);
+   EXPECT_EQ(actual_end, expected_boundary.end);
+   EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
+@@ -377,7 +373,10 @@ TEST_F(SpiParagraphTest, LineMetricsMatchTxt) {
+ 
+ TEST_F(SpiParagraphTest, SurrogatePairOffsetsMatchTxt) {
+   const auto style = ParagraphStyle();
+-  constexpr std::string_view text = "A" "\xF0\x9F\x98\x80" "B";
++  constexpr std::string_view text =
++      "A"
++      "\xF0\x9F\x98\x80"
++      "B";
+   auto* paragraph = BuildSpiParagraph(style, text);
+   auto expected = BuildTxtParagraph(style, text);
+   ASSERT_TRUE(HasRenderedText(*expected));
+@@ -386,9 +385,8 @@ TEST_F(SpiParagraphTest, SurrogatePairOffsetsMatchTxt) {
+   const auto expected_position = expected->GetGlyphPositionAtCoordinate(30, 8);
+ 
+   ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
+-  ASSERT_EQ(SpiParagraphGetGlyphPositionAt(paragraph, 30, 8,
+-                                            &actual_offset,
+-                                            &actual_affinity),
++  ASSERT_EQ(SpiParagraphGetGlyphPositionAt(paragraph, 30, 8, &actual_offset,
++                                           &actual_affinity),
+             kFlutterSpiOk);
+   EXPECT_EQ(actual_offset, expected_position.position);
+   EXPECT_EQ(actual_affinity, static_cast<int32_t>(expected_position.affinity));
+@@ -433,8 +431,8 @@ TEST_F(SpiParagraphTest, NestedStylesMatchTxt) {
+   expected->Layout(kLayoutWidth);
+   ASSERT_TRUE(HasRenderedText(*expected));
+ 
+-  FlutterSpiParagraphMetrics actual = {
+-      .struct_size = sizeof(FlutterSpiParagraphMetrics)};
++  FlutterSpiParagraphMetrics actual = {.struct_size =
++                                           sizeof(FlutterSpiParagraphMetrics)};
+   ASSERT_EQ(SpiParagraphGetMetrics(paragraph, &actual), kFlutterSpiOk);
+   ExpectMetricsEqual(actual, *expected);
+   EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
+@@ -444,9 +442,9 @@ TEST_F(SpiParagraphTest, CountFirstPattern) {
+   const auto style = ParagraphStyle();
+   auto* paragraph = BuildSpiParagraph(style, "Hello, SPI world");
+   auto expected = BuildTxtParagraph(style, "Hello, SPI world");
+-  const auto expected_boxes = expected->GetRectsForRange(
+-      0, 5, txt::Paragraph::RectHeightStyle::kTight,
+-      txt::Paragraph::RectWidthStyle::kTight);
++  const auto expected_boxes =
++      expected->GetRectsForRange(0, 5, txt::Paragraph::RectHeightStyle::kTight,
++                                 txt::Paragraph::RectWidthStyle::kTight);
+   const auto& expected_line_metrics = expected->GetLineMetrics();
+   ASSERT_TRUE(HasRenderedText(*expected));
+   ASSERT_FALSE(expected_boxes.empty());
+@@ -484,9 +482,9 @@ TEST_F(SpiParagraphTest, CountFirstPattern) {
+ TEST_F(SpiParagraphTest, InvalidUtf8IsRejected) {
+   const auto style = ParagraphStyle();
+   FlutterSpiParagraphBuilder* builder = nullptr;
+-  ASSERT_EQ(SpiParagraphBuilderCreate(TxtFontCollection(), false, &style,
+-                                      &builder),
+-            kFlutterSpiOk);
++  ASSERT_EQ(
++      SpiParagraphBuilderCreate(TxtFontCollection(), false, &style, &builder),
++      kFlutterSpiOk);
+   const auto text_style = TextStyle();
+   ASSERT_EQ(SpiParagraphBuilderPushStyle(builder, &text_style), kFlutterSpiOk);
+   constexpr char invalid[] = "\xC3\x28";
+@@ -507,11 +505,11 @@ TEST_F(SpiParagraphTest, LayoutAcceptsInfiniteWidth) {
+   auto expected = expected_builder->Build();
+   expected->Layout(std::numeric_limits<double>::infinity());
+ 
+-  FlutterSpiParagraphMetrics actual = {
+-      .struct_size = sizeof(FlutterSpiParagraphMetrics)};
+-  ASSERT_EQ(SpiParagraphLayout(paragraph,
+-                               std::numeric_limits<double>::infinity()),
+-            kFlutterSpiOk);
++  FlutterSpiParagraphMetrics actual = {.struct_size =
++                                           sizeof(FlutterSpiParagraphMetrics)};
++  ASSERT_EQ(
++      SpiParagraphLayout(paragraph, std::numeric_limits<double>::infinity()),
++      kFlutterSpiOk);
+   ASSERT_EQ(SpiParagraphGetMetrics(paragraph, &actual), kFlutterSpiOk);
+   ExpectMetricsEqual(actual, *expected);
+   EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
+@@ -528,16 +526,16 @@ TEST_F(SpiParagraphTest, QueriesBeforeLayoutMatchTxt) {
+   expected_builder->AddText(u"Hello");
+   auto expected = expected_builder->Build();
+ 
+-  FlutterSpiParagraphMetrics metrics = {
+-      .struct_size = sizeof(FlutterSpiParagraphMetrics)};
++  FlutterSpiParagraphMetrics metrics = {.struct_size =
++                                            sizeof(FlutterSpiParagraphMetrics)};
+   ASSERT_EQ(SpiParagraphGetMetrics(paragraph, &metrics), kFlutterSpiOk);
+   ExpectMetricsEqual(metrics, *expected);
+ 
+   FlutterSpiLineMetrics actual_line = {};
+   size_t actual_count = 0;
+-  ASSERT_EQ(SpiParagraphGetLineMetrics(paragraph, &actual_line, 1,
+-                                       &actual_count),
+-            kFlutterSpiOk);
++  ASSERT_EQ(
++      SpiParagraphGetLineMetrics(paragraph, &actual_line, 1, &actual_count),
++      kFlutterSpiOk);
+   const auto& expected_lines = expected->GetLineMetrics();
+   ASSERT_EQ(actual_count, expected_lines.size());
+   if (!expected_lines.empty()) {
+@@ -555,15 +553,14 @@ TEST_F(SpiParagraphTest, RectsForRangeWithStartAfterEndMatchesTxt) {
+   auto expected = BuildTxtParagraph(style, "Hello, SPI world");
+   const auto height_style = txt::Paragraph::RectHeightStyle::kTight;
+   const auto width_style = txt::Paragraph::RectWidthStyle::kTight;
+-  const auto expected_boxes = expected->GetRectsForRange(
+-      5, 1, height_style, width_style);
++  const auto expected_boxes =
++      expected->GetRectsForRange(5, 1, height_style, width_style);
+   size_t actual_count = 0;
+ 
+   ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
+   ASSERT_EQ(SpiParagraphGetRectsForRange(
+                 paragraph, 5, 1, static_cast<int32_t>(height_style),
+-                static_cast<int32_t>(width_style), nullptr, 0,
+-                &actual_count),
++                static_cast<int32_t>(width_style), nullptr, 0, &actual_count),
+             kFlutterSpiOk);
+   EXPECT_EQ(actual_count, expected_boxes.size());
+   EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
+@@ -579,9 +576,9 @@ TEST_F(SpiParagraphTest, LineMetricsAtNegativeLineIsNotFound) {
+ 
+   ASSERT_FALSE(expected->GetLineMetricsAt(-1, &expected_line));
+   ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
+-  ASSERT_EQ(SpiParagraphGetLineMetricsAt(paragraph, -1, &actual_line,
+-                                         &actual_found),
+-            kFlutterSpiOk);
++  ASSERT_EQ(
++      SpiParagraphGetLineMetricsAt(paragraph, -1, &actual_line, &actual_found),
++      kFlutterSpiOk);
+   EXPECT_FALSE(actual_found);
+   EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
+ }
+@@ -608,9 +605,9 @@ TEST_F(SpiParagraphTest, GlyphPositionAtInfiniteOffsetMatchesTxt) {
+ TEST_F(SpiParagraphTest, PlaceholderWithNegativeSizeMatchesTxt) {
+   const auto style = ParagraphStyle();
+   FlutterSpiParagraphBuilder* builder = nullptr;
+-  ASSERT_EQ(SpiParagraphBuilderCreate(TxtFontCollection(), false, &style,
+-                                       &builder),
+-            kFlutterSpiOk);
++  ASSERT_EQ(
++      SpiParagraphBuilderCreate(TxtFontCollection(), false, &style, &builder),
++      kFlutterSpiOk);
+   ASSERT_EQ(SpiParagraphBuilderAddPlaceholder(
+                 builder, -20.0f, 10.0f,
+                 static_cast<int32_t>(txt::PlaceholderAlignment::kBaseline),
+@@ -621,9 +618,9 @@ TEST_F(SpiParagraphTest, PlaceholderWithNegativeSizeMatchesTxt) {
+ 
+   auto expected_builder = txt::ParagraphBuilder::CreateSkiaBuilder(
+       ToTxtParagraphStyle(&style), TxtFontCollection(), false);
+-  txt::PlaceholderRun placeholder(
+-      -20.0, 10.0, txt::PlaceholderAlignment::kBaseline,
+-      txt::TextBaseline::kAlphabetic, 0.0);
++  txt::PlaceholderRun placeholder(-20.0, 10.0,
++                                  txt::PlaceholderAlignment::kBaseline,
++                                  txt::TextBaseline::kAlphabetic, 0.0);
+   expected_builder->AddPlaceholder(placeholder);
+   auto expected = expected_builder->Build();
+ 
+@@ -648,9 +645,9 @@ TEST_F(SpiParagraphTest, PlaceholderWithNegativeSizeMatchesTxt) {
+ TEST_F(SpiParagraphTest, BuildConsumesBuilder) {
+   const auto style = ParagraphStyle();
+   FlutterSpiParagraphBuilder* builder = nullptr;
+-  ASSERT_EQ(SpiParagraphBuilderCreate(TxtFontCollection(), false, &style,
+-                                      &builder),
+-            kFlutterSpiOk);
++  ASSERT_EQ(
++      SpiParagraphBuilderCreate(TxtFontCollection(), false, &style, &builder),
++      kFlutterSpiOk);
+   const auto text_style = TextStyle();
+   ASSERT_EQ(SpiParagraphBuilderPushStyle(builder, &text_style), kFlutterSpiOk);
+   ASSERT_EQ(SpiParagraphBuilderAddText(builder, "Hello", 5), kFlutterSpiOk);
+@@ -671,9 +668,9 @@ TEST_F(SpiParagraphTest, GlyphInfoAt) {
+   ASSERT_TRUE(HasRenderedText(*expected));
+   ASSERT_TRUE(expected->GetGlyphInfoAt(1, &expected_info));
+   ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
+-  ASSERT_EQ(SpiParagraphGetGlyphInfoAt(paragraph, 1, &actual_info,
+-                                       &actual_found),
+-            kFlutterSpiOk);
++  ASSERT_EQ(
++      SpiParagraphGetGlyphInfoAt(paragraph, 1, &actual_info, &actual_found),
++      kFlutterSpiOk);
+   ASSERT_TRUE(actual_found);
+   ExpectGlyphInfoEqual(actual_info, expected_info);
+   EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
+@@ -691,7 +688,7 @@ TEST_F(SpiParagraphTest, ClosestGlyphInfo) {
+   ASSERT_TRUE(expected->GetClosestGlyphInfoAtCoordinate(26, 8, &expected_info));
+   ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
+   ASSERT_EQ(SpiParagraphGetClosestGlyphInfo(paragraph, 26, 8, &actual_info,
+-                                             &actual_found),
++                                            &actual_found),
+             kFlutterSpiOk);
+   ASSERT_TRUE(actual_found);
+   ExpectGlyphInfoEqual(actual_info, expected_info);
+@@ -708,9 +705,9 @@ TEST_F(SpiParagraphTest, LineBoundary) {
+ 
+   ASSERT_TRUE(HasRenderedText(*expected));
+   ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
+-  ASSERT_EQ(SpiParagraphGetLineBoundary(paragraph, 1, &actual_start,
+-                                        &actual_end),
+-            kFlutterSpiOk);
++  ASSERT_EQ(
++      SpiParagraphGetLineBoundary(paragraph, 1, &actual_start, &actual_end),
++      kFlutterSpiOk);
+   EXPECT_EQ(actual_start, static_cast<int64_t>(metrics[0].start_index));
+   EXPECT_EQ(actual_end, static_cast<int64_t>(metrics[0].end_index));
+   EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
+@@ -723,9 +720,9 @@ TEST_F(SpiParagraphTest, LineBoundaryOutsideReturnsMinusOne) {
+   int64_t actual_end = 0;
+ 
+   ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
+-  ASSERT_EQ(SpiParagraphGetLineBoundary(paragraph, 1000, &actual_start,
+-                                        &actual_end),
+-            kFlutterSpiOk);
++  ASSERT_EQ(
++      SpiParagraphGetLineBoundary(paragraph, 1000, &actual_start, &actual_end),
++      kFlutterSpiOk);
+   EXPECT_EQ(actual_start, -1);
+   EXPECT_EQ(actual_end, -1);
+   EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
+@@ -742,9 +739,9 @@ TEST_F(SpiParagraphTest, LineMetricsAt) {
+   ASSERT_TRUE(HasRenderedText(*expected));
+   ASSERT_TRUE(expected->GetLineMetricsAt(0, &expected_line));
+   ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
+-  ASSERT_EQ(SpiParagraphGetLineMetricsAt(paragraph, 0, &actual_line,
+-                                         &actual_found),
+-            kFlutterSpiOk);
++  ASSERT_EQ(
++      SpiParagraphGetLineMetricsAt(paragraph, 0, &actual_line, &actual_found),
++      kFlutterSpiOk);
+   ASSERT_TRUE(actual_found);
+   EXPECT_EQ(actual_line.start_index, expected_line.fStartIndex);
+   EXPECT_EQ(actual_line.end_index, expected_line.fEndIndex);
+@@ -767,9 +764,9 @@ TEST_F(SpiParagraphTest, LineMetricsAtMissingLine) {
+   bool actual_found = true;
+ 
+   ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
+-  ASSERT_EQ(SpiParagraphGetLineMetricsAt(paragraph, 100, &actual_line,
+-                                         &actual_found),
+-            kFlutterSpiOk);
++  ASSERT_EQ(
++      SpiParagraphGetLineMetricsAt(paragraph, 100, &actual_line, &actual_found),
++      kFlutterSpiOk);
+   EXPECT_FALSE(actual_found);
+   EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
+ }

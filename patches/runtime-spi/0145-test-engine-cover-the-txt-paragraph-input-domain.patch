@@ -1,0 +1,174 @@
+# Why: Lock the SPI paragraph contract to the input values accepted by txt
+# before changing the runtime implementation.
+diff --git a/engine/src/flutter/runtime_spi/text/spi_paragraph_parity_unittests.cc b/engine/src/flutter/runtime_spi/text/spi_paragraph_parity_unittests.cc
+index 34fc575fe12..c08f40fe6c3 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_paragraph_parity_unittests.cc
++++ b/engine/src/flutter/runtime_spi/text/spi_paragraph_parity_unittests.cc
+@@ -5,6 +5,7 @@
+ #include "flutter/runtime_spi/text/spi_paragraph.h"
+ 
+ #include <memory>
++#include <limits>
+ #include <string>
+ #include <string_view>
+ 
+@@ -494,19 +495,156 @@ TEST_F(SpiParagraphTest, InvalidUtf8IsRejected) {
+   EXPECT_EQ(SpiParagraphBuilderRelease(builder), kFlutterSpiOk);
+ }
+ 
+-TEST_F(SpiParagraphTest, QueriesBeforeLayoutAreRejected) {
++TEST_F(SpiParagraphTest, LayoutAcceptsInfiniteWidth) {
++  const auto style = ParagraphStyle();
++  auto* paragraph = BuildSpiParagraph(style, "Hello, SPI world");
++
++  auto expected_builder = txt::ParagraphBuilder::CreateSkiaBuilder(
++      ToTxtParagraphStyle(&style), TxtFontCollection(), false);
++  const auto text_style = TextStyle();
++  expected_builder->PushStyle(ToTxtTextStyle(&text_style));
++  expected_builder->AddText(u"Hello, SPI world");
++  auto expected = expected_builder->Build();
++  expected->Layout(std::numeric_limits<double>::infinity());
++
++  FlutterSpiParagraphMetrics actual = {
++      .struct_size = sizeof(FlutterSpiParagraphMetrics)};
++  ASSERT_EQ(SpiParagraphLayout(paragraph,
++                               std::numeric_limits<double>::infinity()),
++            kFlutterSpiOk);
++  ASSERT_EQ(SpiParagraphGetMetrics(paragraph, &actual), kFlutterSpiOk);
++  ExpectMetricsEqual(actual, *expected);
++  EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
++}
++
++TEST_F(SpiParagraphTest, QueriesBeforeLayoutMatchTxt) {
+   const auto style = ParagraphStyle();
+   auto* paragraph = BuildSpiParagraph(style, "Hello");
++
++  auto expected_builder = txt::ParagraphBuilder::CreateSkiaBuilder(
++      ToTxtParagraphStyle(&style), TxtFontCollection(), false);
++  const auto text_style = TextStyle();
++  expected_builder->PushStyle(ToTxtTextStyle(&text_style));
++  expected_builder->AddText(u"Hello");
++  auto expected = expected_builder->Build();
++
+   FlutterSpiParagraphMetrics metrics = {
+       .struct_size = sizeof(FlutterSpiParagraphMetrics)};
++  ASSERT_EQ(SpiParagraphGetMetrics(paragraph, &metrics), kFlutterSpiOk);
++  ExpectMetricsEqual(metrics, *expected);
+ 
+-  EXPECT_EQ(SpiParagraphGetMetrics(paragraph, &metrics),
+-            kFlutterSpiInvalidArgument);
++  FlutterSpiLineMetrics actual_line = {};
++  size_t actual_count = 0;
++  ASSERT_EQ(SpiParagraphGetLineMetrics(paragraph, &actual_line, 1,
++                                       &actual_count),
++            kFlutterSpiOk);
++  const auto& expected_lines = expected->GetLineMetrics();
++  ASSERT_EQ(actual_count, expected_lines.size());
++  if (!expected_lines.empty()) {
++    EXPECT_EQ(actual_line.start_index, expected_lines[0].start_index);
++    EXPECT_EQ(actual_line.end_index, expected_lines[0].end_index);
++  }
+   EXPECT_EQ(SpiParagraphGetWordBoundary(paragraph, 0, nullptr, nullptr),
+             kFlutterSpiInvalidArgument);
+   EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
+ }
+ 
++TEST_F(SpiParagraphTest, RectsForRangeWithStartAfterEndMatchesTxt) {
++  const auto style = ParagraphStyle();
++  auto* paragraph = BuildSpiParagraph(style, "Hello, SPI world");
++  auto expected = BuildTxtParagraph(style, "Hello, SPI world");
++  const auto height_style = txt::Paragraph::RectHeightStyle::kTight;
++  const auto width_style = txt::Paragraph::RectWidthStyle::kTight;
++  const auto expected_boxes = expected->GetRectsForRange(
++      5, 1, height_style, width_style);
++  size_t actual_count = 0;
++
++  ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
++  ASSERT_EQ(SpiParagraphGetRectsForRange(
++                paragraph, 5, 1, static_cast<int32_t>(height_style),
++                static_cast<int32_t>(width_style), nullptr, 0,
++                &actual_count),
++            kFlutterSpiOk);
++  EXPECT_EQ(actual_count, expected_boxes.size());
++  EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
++}
++
++TEST_F(SpiParagraphTest, LineMetricsAtNegativeLineIsNotFound) {
++  const auto style = ParagraphStyle();
++  auto* paragraph = BuildSpiParagraph(style, "Hello, SPI world");
++  auto expected = BuildTxtParagraph(style, "Hello, SPI world");
++  skia::textlayout::LineMetrics expected_line = {};
++  FlutterSpiLineMetrics actual_line = {};
++  bool actual_found = true;
++
++  ASSERT_FALSE(expected->GetLineMetricsAt(-1, &expected_line));
++  ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
++  ASSERT_EQ(SpiParagraphGetLineMetricsAt(paragraph, -1, &actual_line,
++                                         &actual_found),
++            kFlutterSpiOk);
++  EXPECT_FALSE(actual_found);
++  EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
++}
++
++TEST_F(SpiParagraphTest, GlyphPositionAtInfiniteOffsetMatchesTxt) {
++  const auto style = ParagraphStyle();
++  auto* paragraph = BuildSpiParagraph(style, "Hello, SPI world");
++  auto expected = BuildTxtParagraph(style, "Hello, SPI world");
++  const auto expected_position = expected->GetGlyphPositionAtCoordinate(
++      std::numeric_limits<double>::infinity(), 0.0);
++  size_t actual_offset = 0;
++  int32_t actual_affinity = 0;
++
++  ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
++  ASSERT_EQ(SpiParagraphGetGlyphPositionAt(
++                paragraph, std::numeric_limits<double>::infinity(), 0.0,
++                &actual_offset, &actual_affinity),
++            kFlutterSpiOk);
++  EXPECT_EQ(actual_offset, expected_position.position);
++  EXPECT_EQ(actual_affinity, static_cast<int32_t>(expected_position.affinity));
++  EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
++}
++
++TEST_F(SpiParagraphTest, PlaceholderWithNegativeSizeMatchesTxt) {
++  const auto style = ParagraphStyle();
++  FlutterSpiParagraphBuilder* builder = nullptr;
++  ASSERT_EQ(SpiParagraphBuilderCreate(TxtFontCollection(), false, &style,
++                                       &builder),
++            kFlutterSpiOk);
++  ASSERT_EQ(SpiParagraphBuilderAddPlaceholder(
++                builder, -20.0f, 10.0f,
++                static_cast<int32_t>(txt::PlaceholderAlignment::kBaseline),
++                0.0f, static_cast<int32_t>(txt::TextBaseline::kAlphabetic)),
++            kFlutterSpiOk);
++  FlutterSpiParagraph* paragraph = nullptr;
++  ASSERT_EQ(SpiParagraphBuilderBuild(builder, &paragraph), kFlutterSpiOk);
++
++  auto expected_builder = txt::ParagraphBuilder::CreateSkiaBuilder(
++      ToTxtParagraphStyle(&style), TxtFontCollection(), false);
++  txt::PlaceholderRun placeholder(
++      -20.0, 10.0, txt::PlaceholderAlignment::kBaseline,
++      txt::TextBaseline::kAlphabetic, 0.0);
++  expected_builder->AddPlaceholder(placeholder);
++  auto expected = expected_builder->Build();
++
++  ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
++  expected->Layout(kLayoutWidth);
++  const auto expected_boxes = expected->GetRectsForPlaceholders();
++  FlutterSpiTextBox actual_box = {};
++  size_t actual_count = 0;
++  ASSERT_EQ(SpiParagraphGetRectsForPlaceholders(paragraph, &actual_box, 1,
++                                                &actual_count),
++            kFlutterSpiOk);
++  ASSERT_EQ(actual_count, expected_boxes.size());
++  if (!expected_boxes.empty()) {
++    EXPECT_FLOAT_EQ(actual_box.rect.left, expected_boxes[0].rect.left());
++    EXPECT_FLOAT_EQ(actual_box.rect.top, expected_boxes[0].rect.top());
++    EXPECT_FLOAT_EQ(actual_box.rect.right, expected_boxes[0].rect.right());
++    EXPECT_FLOAT_EQ(actual_box.rect.bottom, expected_boxes[0].rect.bottom());
++  }
++  EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
++}
++
+ TEST_F(SpiParagraphTest, BuildConsumesBuilder) {
+   const auto style = ParagraphStyle();
+   FlutterSpiParagraphBuilder* builder = nullptr;
