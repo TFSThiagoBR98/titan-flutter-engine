@@ -1,0 +1,319 @@
+# Why: establish the expected ABI 0.18 behavior before implementing masked
+# styles and paragraph queries.
+diff --git a/engine/src/flutter/runtime_spi/text/spi_paragraph_parity_unittests.cc b/engine/src/flutter/runtime_spi/text/spi_paragraph_parity_unittests.cc
+index 6e3329495c8..2120837d95d 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_paragraph_parity_unittests.cc
++++ b/engine/src/flutter/runtime_spi/text/spi_paragraph_parity_unittests.cc
+@@ -104,6 +104,22 @@ bool HasRenderedText(txt::Paragraph& paragraph) {
+          paragraph.GetNumberOfLines() > 0;
+ }
+ 
++void ExpectGlyphInfoEqual(const FlutterSpiGlyphInfo& actual,
++                          const skia::textlayout::Paragraph::GlyphInfo& expected) {
++  EXPECT_FLOAT_EQ(actual.grapheme_bounds.left,
++                  expected.fGraphemeLayoutBounds.fLeft);
++  EXPECT_FLOAT_EQ(actual.grapheme_bounds.top,
++                  expected.fGraphemeLayoutBounds.fTop);
++  EXPECT_FLOAT_EQ(actual.grapheme_bounds.right,
++                  expected.fGraphemeLayoutBounds.fRight);
++  EXPECT_FLOAT_EQ(actual.grapheme_bounds.bottom,
++                  expected.fGraphemeLayoutBounds.fBottom);
++  EXPECT_EQ(actual.range_start, expected.fGraphemeClusterTextRange.start);
++  EXPECT_EQ(actual.range_end, expected.fGraphemeClusterTextRange.end);
++  EXPECT_EQ(actual.is_ltr,
++            expected.fDirection == skia::textlayout::TextDirection::kLtr);
++}
++
+ void ExpectMetricsEqual(const FlutterSpiParagraphMetrics& actual,
+                         txt::Paragraph& expected) {
+   EXPECT_DOUBLE_EQ(actual.width, expected.GetMaxWidth());
+@@ -429,5 +445,146 @@ TEST_F(SpiParagraphTest, BuildConsumesBuilder) {
+   EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
+ }
+ 
++TEST_F(SpiParagraphTest, GlyphInfoAt) {
++  const auto style = ParagraphStyle();
++  auto* paragraph = BuildSpiParagraph(style, "Hello, SPI world");
++  auto expected = BuildTxtParagraph(style, "Hello, SPI world");
++  skia::textlayout::Paragraph::GlyphInfo expected_info = {};
++  FlutterSpiGlyphInfo actual_info = {};
++  bool actual_found = false;
++
++  ASSERT_TRUE(HasRenderedText(*expected));
++  ASSERT_TRUE(expected->GetGlyphInfoAt(1, &expected_info));
++  ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
++  ASSERT_EQ(SpiParagraphGetGlyphInfoAt(paragraph, 1, &actual_info,
++                                       &actual_found),
++            kFlutterSpiOk);
++  ASSERT_TRUE(actual_found);
++  ExpectGlyphInfoEqual(actual_info, expected_info);
++  EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
++}
++
++TEST_F(SpiParagraphTest, ClosestGlyphInfo) {
++  const auto style = ParagraphStyle();
++  auto* paragraph = BuildSpiParagraph(style, "Hello, SPI world");
++  auto expected = BuildTxtParagraph(style, "Hello, SPI world");
++  skia::textlayout::Paragraph::GlyphInfo expected_info = {};
++  FlutterSpiGlyphInfo actual_info = {};
++  bool actual_found = false;
++
++  ASSERT_TRUE(HasRenderedText(*expected));
++  ASSERT_TRUE(expected->GetClosestGlyphInfoAtCoordinate(26, 8, &expected_info));
++  ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
++  ASSERT_EQ(SpiParagraphGetClosestGlyphInfo(paragraph, 26, 8, &actual_info,
++                                             &actual_found),
++            kFlutterSpiOk);
++  ASSERT_TRUE(actual_found);
++  ExpectGlyphInfoEqual(actual_info, expected_info);
++  EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
++}
++
++TEST_F(SpiParagraphTest, LineBoundary) {
++  const auto style = ParagraphStyle();
++  auto* paragraph = BuildSpiParagraph(style, "Hello, SPI world");
++  auto expected = BuildTxtParagraph(style, "Hello, SPI world");
++  const auto& metrics = expected->GetLineMetrics();
++  int64_t actual_start = -1;
++  int64_t actual_end = -1;
++
++  ASSERT_TRUE(HasRenderedText(*expected));
++  ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
++  ASSERT_EQ(SpiParagraphGetLineBoundary(paragraph, 1, &actual_start,
++                                        &actual_end),
++            kFlutterSpiOk);
++  EXPECT_EQ(actual_start, static_cast<int64_t>(metrics[0].start_index));
++  EXPECT_EQ(actual_end, static_cast<int64_t>(metrics[0].end_index));
++  EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
++}
++
++TEST_F(SpiParagraphTest, LineBoundaryOutsideReturnsMinusOne) {
++  const auto style = ParagraphStyle();
++  auto* paragraph = BuildSpiParagraph(style, "Hello, SPI world");
++  int64_t actual_start = 0;
++  int64_t actual_end = 0;
++
++  ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
++  ASSERT_EQ(SpiParagraphGetLineBoundary(paragraph, 1000, &actual_start,
++                                        &actual_end),
++            kFlutterSpiOk);
++  EXPECT_EQ(actual_start, -1);
++  EXPECT_EQ(actual_end, -1);
++  EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
++}
++
++TEST_F(SpiParagraphTest, LineMetricsAt) {
++  const auto style = ParagraphStyle();
++  auto* paragraph = BuildSpiParagraph(style, "Hello, SPI world");
++  auto expected = BuildTxtParagraph(style, "Hello, SPI world");
++  skia::textlayout::LineMetrics expected_line = {};
++  FlutterSpiLineMetrics actual_line = {};
++  bool actual_found = false;
++
++  ASSERT_TRUE(HasRenderedText(*expected));
++  ASSERT_TRUE(expected->GetLineMetricsAt(0, &expected_line));
++  ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
++  ASSERT_EQ(SpiParagraphGetLineMetricsAt(paragraph, 0, &actual_line,
++                                         &actual_found),
++            kFlutterSpiOk);
++  ASSERT_TRUE(actual_found);
++  EXPECT_EQ(actual_line.start_index, expected_line.fStartIndex);
++  EXPECT_EQ(actual_line.end_index, expected_line.fEndIndex);
++  EXPECT_EQ(actual_line.hard_break, expected_line.fHardBreak);
++  EXPECT_DOUBLE_EQ(actual_line.ascent, expected_line.fAscent);
++  EXPECT_DOUBLE_EQ(actual_line.descent, expected_line.fDescent);
++  EXPECT_DOUBLE_EQ(actual_line.unscaled_ascent, expected_line.fUnscaledAscent);
++  EXPECT_DOUBLE_EQ(actual_line.height, expected_line.fHeight);
++  EXPECT_DOUBLE_EQ(actual_line.width, expected_line.fWidth);
++  EXPECT_DOUBLE_EQ(actual_line.left, expected_line.fLeft);
++  EXPECT_DOUBLE_EQ(actual_line.baseline, expected_line.fBaseline);
++  EXPECT_EQ(actual_line.line_number, expected_line.fLineNumber);
++  EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
++}
++
++TEST_F(SpiParagraphTest, LineMetricsAtMissingLine) {
++  const auto style = ParagraphStyle();
++  auto* paragraph = BuildSpiParagraph(style, "Hello, SPI world");
++  FlutterSpiLineMetrics actual_line = {};
++  bool actual_found = true;
++
++  ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
++  ASSERT_EQ(SpiParagraphGetLineMetricsAt(paragraph, 100, &actual_line,
++                                         &actual_found),
++            kFlutterSpiOk);
++  EXPECT_FALSE(actual_found);
++  EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
++}
++
++TEST_F(SpiParagraphTest, LineCount) {
++  const auto style = ParagraphStyle();
++  auto* paragraph = BuildSpiParagraph(style, "Hello, SPI world");
++  auto expected = BuildTxtParagraph(style, "Hello, SPI world");
++  size_t actual_count = 0;
++
++  ASSERT_TRUE(HasRenderedText(*expected));
++  ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
++  ASSERT_EQ(SpiParagraphGetLineCount(paragraph, &actual_count), kFlutterSpiOk);
++  EXPECT_EQ(actual_count, expected->GetNumberOfLines());
++  EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
++}
++
++TEST_F(SpiParagraphTest, LineNumberAt) {
++  const auto style = ParagraphStyle();
++  auto* paragraph = BuildSpiParagraph(style, "Hello, SPI world");
++  auto expected = BuildTxtParagraph(style, "Hello, SPI world");
++  int32_t actual_line = -1;
++
++  ASSERT_TRUE(HasRenderedText(*expected));
++  ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
++  ASSERT_EQ(SpiParagraphGetLineNumberAt(paragraph, 1, &actual_line),
++            kFlutterSpiOk);
++  EXPECT_EQ(actual_line, expected->GetLineNumberAt(1));
++  EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
++}
++
+ }  // namespace
+ }  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/text/spi_text_style_unittests.cc b/engine/src/flutter/runtime_spi/text/spi_text_style_unittests.cc
+index 96e533a2fdd..291c24986d9 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_text_style_unittests.cc
++++ b/engine/src/flutter/runtime_spi/text/spi_text_style_unittests.cc
+@@ -200,5 +200,138 @@ TEST(SpiTextStyle, OlderParagraphStructUsesTxtDefaults) {
+   EXPECT_EQ(result.ellipsis, defaults.ellipsis);
+ }
+ 
++TEST(SpiTextStyle, LeadingDistributionComesFromChildMask) {
++  const FlutterSpiTextStyle input = {
++      .struct_size = sizeof(FlutterSpiTextStyle),
++      .half_leading = true,
++      .set_fields = kFlutterSpiTextStyleFieldLeadingDistribution,
++  };
++
++  const txt::TextStyle result = ToTxtTextStyle(&input);
++
++  EXPECT_TRUE(result.half_leading);
++}
++
++TEST(SpiTextStyle, HeightNoneClearsOverride) {
++  const FlutterSpiTextStyle input = {
++      .struct_size = sizeof(FlutterSpiTextStyle),
++      .height = 0.0f,
++      .set_fields = kFlutterSpiTextStyleFieldHeight,
++  };
++
++  const txt::TextStyle result = ToTxtTextStyle(&input);
++
++  EXPECT_FALSE(result.has_height_override);
++}
++
++TEST(SpiTextStyle, ParagraphSetFieldsMatchDartDecoding) {
++  const FlutterSpiParagraphStyle input = {
++      .struct_size = sizeof(FlutterSpiParagraphStyle),
++      .text_align = kFlutterSpiTextAlignJustify,
++      .text_direction = kFlutterSpiTextDirectionLtr,
++      .max_lines = 3,
++      .font_family = "Roboto",
++      .font_size = 20.0f,
++      .height = 1.5f,
++      .text_height_behavior = kFlutterSpiTextHeightBehaviorDisableLastDescent,
++      .font_weight = 600,
++      .font_style = kFlutterSpiFontStyleItalic,
++      .strut_enabled = true,
++      .strut_font_size = 18.0f,
++      .strut_height = 1.25f,
++      .strut_leading = 0.5f,
++      .strut_force_height = true,
++      .ellipsis = "...",
++      .locale = "en-US",
++      .set_fields = kFlutterSpiParagraphStyleFieldTextAlign |
++                    kFlutterSpiParagraphStyleFieldTextDirection |
++                    kFlutterSpiParagraphStyleFieldFontWeight |
++                    kFlutterSpiParagraphStyleFieldFontStyle |
++                    kFlutterSpiParagraphStyleFieldMaxLines |
++                    kFlutterSpiParagraphStyleFieldTextHeightBehavior |
++                    kFlutterSpiParagraphStyleFieldFontFamily |
++                    kFlutterSpiParagraphStyleFieldFontSize |
++                    kFlutterSpiParagraphStyleFieldHeight |
++                    kFlutterSpiParagraphStyleFieldStrutStyle |
++                    kFlutterSpiParagraphStyleFieldEllipsis |
++                    kFlutterSpiParagraphStyleFieldLocale,
++      .render_soft_hyphens = true,
++      .strut_set_fields = kFlutterSpiStrutStyleFieldFontSize |
++                          kFlutterSpiStrutStyleFieldHeight |
++                          kFlutterSpiStrutStyleFieldLeading |
++                          kFlutterSpiStrutStyleFieldForceStrutHeight,
++      .strut_font_weight = 500,
++      .strut_font_style = kFlutterSpiFontStyleNormal,
++      .strut_half_leading = true,
++  };
++
++  const txt::ParagraphStyle result = ToTxtParagraphStyle(&input);
++
++  EXPECT_EQ(result.text_align, txt::TextAlign::justify);
++  EXPECT_EQ(result.text_direction, txt::TextDirection::ltr);
++  EXPECT_EQ(result.max_lines, 3u);
++  EXPECT_EQ(result.font_family, "Roboto");
++  EXPECT_DOUBLE_EQ(result.font_size, 20.0);
++  EXPECT_DOUBLE_EQ(result.height, 1.5);
++  EXPECT_TRUE(result.has_height_override);
++  EXPECT_EQ(result.text_height_behavior,
++            txt::TextHeightBehavior::kDisableLastDescent);
++  EXPECT_EQ(result.font_weight, 600);
++  EXPECT_EQ(result.font_style, txt::FontStyle::italic);
++  EXPECT_TRUE(result.strut_enabled);
++  EXPECT_EQ(result.strut_font_size, 18.0);
++  EXPECT_DOUBLE_EQ(result.strut_height, 1.25);
++  EXPECT_DOUBLE_EQ(result.strut_leading, 0.5);
++  EXPECT_TRUE(result.force_strut_height);
++  EXPECT_EQ(result.ellipsis, u"...");
++  EXPECT_EQ(result.locale, "en-US");
++  EXPECT_TRUE(result.render_soft_hyphens);
++  EXPECT_EQ(result.strut_font_weight, 500);
++  EXPECT_EQ(result.strut_font_style, txt::FontStyle::normal);
++  EXPECT_TRUE(result.strut_half_leading);
++}
++
++TEST(SpiTextStyle, StrutSetFieldsMatchDecodeStrut) {
++  const FlutterSpiParagraphStyle input = {
++      .struct_size = sizeof(FlutterSpiParagraphStyle),
++      .strut_enabled = true,
++      .strut_font_size = 18.0f,
++      .strut_height = 1.25f,
++      .strut_leading = 0.5f,
++      .strut_force_height = true,
++      .set_fields = kFlutterSpiParagraphStyleFieldStrutStyle,
++      .strut_set_fields = kFlutterSpiStrutStyleFieldFontSize |
++                          kFlutterSpiStrutStyleFieldHeight |
++                          kFlutterSpiStrutStyleFieldLeading |
++                          kFlutterSpiStrutStyleFieldForceStrutHeight,
++  };
++
++  const txt::ParagraphStyle result = ToTxtParagraphStyle(&input);
++
++  EXPECT_TRUE(result.strut_enabled);
++  EXPECT_DOUBLE_EQ(result.strut_font_size, 18.0);
++  EXPECT_DOUBLE_EQ(result.strut_height, 1.25);
++  EXPECT_DOUBLE_EQ(result.strut_leading, 0.5);
++  EXPECT_TRUE(result.force_strut_height);
++}
++
++TEST(SpiTextStyle, StructWithoutSetFieldsKeepsAllFields) {
++  const char* families[] = {"Roboto"};
++  const FlutterSpiTextStyle input = {
++      .struct_size = sizeof(FlutterSpiTextStyle),
++      .font_families = families,
++      .font_family_count = 1,
++      .font_size = 22.0f,
++      .height = 1.75f,
++  };
++
++  const txt::TextStyle result = ToTxtTextStyle(&input);
++
++  EXPECT_EQ(result.font_families, (std::vector<std::string>{"Roboto"}));
++  EXPECT_DOUBLE_EQ(result.font_size, 22.0);
++  EXPECT_DOUBLE_EQ(result.height, 1.75);
++  EXPECT_TRUE(result.has_height_override);
++}
++
+ }  // namespace
+ }  // namespace flutter::testing

@@ -1,0 +1,172 @@
+# Why: preserve ABI 0.17 full-field decoding for zeroed 0.18 structs while
+# making dart:ui masks opt-in.
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_text.h b/engine/src/flutter/runtime_spi/include/flutter_text.h
+index a508292c20b..123d35121ba 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_text.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_text.h
+@@ -61,6 +61,12 @@ typedef enum {
+   kFlutterSpiTextHeightBehaviorDisableAll = 3,
+ } FlutterSpiTextHeightBehavior;
+ 
++enum {
++  // The mask fields are active only when this bit is set. Without it, all
++  // fields retain the ABI 0.17 behavior.
++  kFlutterSpiStyleFieldsMasked = 1u << 31,
++};
++
+ enum {
+   // These masks use the same bit positions as the dart:ui encoding.
+   kFlutterSpiTextStyleFieldLeadingDistribution = 1u << 0,
+diff --git a/engine/src/flutter/runtime_spi/text/spi_text_style.cc b/engine/src/flutter/runtime_spi/text/spi_text_style.cc
+index 8a9bf7ae16c..8f23361a5c0 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_text_style.cc
++++ b/engine/src/flutter/runtime_spi/text/spi_text_style.cc
+@@ -133,12 +133,14 @@ void SetHeight(float height, double* destination, bool* has_override) {
+ 
+ bool HasSetFields(const FlutterSpiTextStyle& style) {
+   return HasField(style, offsetof(FlutterSpiTextStyle, set_fields),
+-                  sizeof(style.set_fields));
++                  sizeof(style.set_fields)) &&
++         (style.set_fields & kFlutterSpiStyleFieldsMasked) != 0;
+ }
+ 
+ bool HasSetFields(const FlutterSpiParagraphStyle& style) {
+   return HasField(style, offsetof(FlutterSpiParagraphStyle, set_fields),
+-                  sizeof(style.set_fields));
++                  sizeof(style.set_fields)) &&
++         (style.set_fields & kFlutterSpiStyleFieldsMasked) != 0;
+ }
+ 
+ bool HasField(uint32_t fields, uint32_t field) {
+@@ -158,15 +160,16 @@ void ApplyStrutStyle(const FlutterSpiParagraphStyle& style,
+   }
+ 
+   result->strut_enabled = true;
+-  const uint32_t strut_fields =
++  const bool has_strut_set_fields =
+       HasField(style, offsetof(FlutterSpiParagraphStyle, strut_set_fields),
+-               sizeof(style.strut_set_fields))
+-          ? style.strut_set_fields
+-          : kAllStrutStyleFields;
++               sizeof(style.strut_set_fields)) &&
++      (style.strut_set_fields & kFlutterSpiStyleFieldsMasked) != 0;
++  const uint32_t strut_fields =
++      has_strut_set_fields ? style.strut_set_fields : kAllStrutStyleFields;
+ 
+-  result->strut_half_leading =
+-      HasField(strut_fields,
+-               kFlutterSpiStrutStyleFieldLeadingDistribution);
++  if (HasField(strut_fields, kFlutterSpiStrutStyleFieldLeadingDistribution)) {
++    result->strut_half_leading = style.strut_half_leading;
++  }
+   if (HasField(strut_fields, kFlutterSpiStrutStyleFieldFontWeight)) {
+     result->strut_font_weight = style.strut_font_weight;
+   }
+diff --git a/engine/src/flutter/runtime_spi/text/spi_text_style_unittests.cc b/engine/src/flutter/runtime_spi/text/spi_text_style_unittests.cc
+index c0b6ee3ad7c..9442d588438 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_text_style_unittests.cc
++++ b/engine/src/flutter/runtime_spi/text/spi_text_style_unittests.cc
+@@ -88,26 +88,6 @@ TEST(SpiTextStyle, ConvertsEveryField) {
+       .feature_count = 1,
+       .variations = &kVariation,
+       .variation_count = 1,
+-      .set_fields = kFlutterSpiTextStyleFieldLeadingDistribution |
+-                    kFlutterSpiTextStyleFieldColor |
+-                    kFlutterSpiTextStyleFieldDecoration |
+-                    kFlutterSpiTextStyleFieldDecorationColor |
+-                    kFlutterSpiTextStyleFieldDecorationStyle |
+-                    kFlutterSpiTextStyleFieldFontWeight |
+-                    kFlutterSpiTextStyleFieldFontStyle |
+-                    kFlutterSpiTextStyleFieldTextBaseline |
+-                    kFlutterSpiTextStyleFieldDecorationThickness |
+-                    kFlutterSpiTextStyleFieldFontFamily |
+-                    kFlutterSpiTextStyleFieldFontSize |
+-                    kFlutterSpiTextStyleFieldLetterSpacing |
+-                    kFlutterSpiTextStyleFieldWordSpacing |
+-                    kFlutterSpiTextStyleFieldHeight |
+-                    kFlutterSpiTextStyleFieldLocale |
+-                    kFlutterSpiTextStyleFieldBackground |
+-                    kFlutterSpiTextStyleFieldForeground |
+-                    kFlutterSpiTextStyleFieldShadows |
+-                    kFlutterSpiTextStyleFieldFontFeatures |
+-                    kFlutterSpiTextStyleFieldFontVariations,
+   };
+ 
+   const txt::TextStyle result = ToTxtTextStyle(&input);
+@@ -176,23 +156,6 @@ TEST(SpiTextStyle, ConvertsParagraphStyleFields) {
+       .strut_force_height = true,
+       .ellipsis = "...",
+       .locale = "en-US",
+-      .set_fields = kFlutterSpiParagraphStyleFieldTextAlign |
+-                    kFlutterSpiParagraphStyleFieldTextDirection |
+-                    kFlutterSpiParagraphStyleFieldFontWeight |
+-                    kFlutterSpiParagraphStyleFieldFontStyle |
+-                    kFlutterSpiParagraphStyleFieldMaxLines |
+-                    kFlutterSpiParagraphStyleFieldTextHeightBehavior |
+-                    kFlutterSpiParagraphStyleFieldFontFamily |
+-                    kFlutterSpiParagraphStyleFieldFontSize |
+-                    kFlutterSpiParagraphStyleFieldHeight |
+-                    kFlutterSpiParagraphStyleFieldStrutStyle |
+-                    kFlutterSpiParagraphStyleFieldEllipsis |
+-                    kFlutterSpiParagraphStyleFieldLocale,
+-      .strut_set_fields = kFlutterSpiStrutStyleFieldFontFamily |
+-                          kFlutterSpiStrutStyleFieldFontSize |
+-                          kFlutterSpiStrutStyleFieldHeight |
+-                          kFlutterSpiStrutStyleFieldLeading |
+-                          kFlutterSpiStrutStyleFieldForceStrutHeight,
+   };
+ 
+   const txt::ParagraphStyle result = ToTxtParagraphStyle(&input);
+@@ -241,7 +204,8 @@ TEST(SpiTextStyle, LeadingDistributionComesFromChildMask) {
+   const FlutterSpiTextStyle input = {
+       .struct_size = sizeof(FlutterSpiTextStyle),
+       .half_leading = true,
+-      .set_fields = kFlutterSpiTextStyleFieldLeadingDistribution,
++      .set_fields = kFlutterSpiStyleFieldsMasked |
++                    kFlutterSpiTextStyleFieldLeadingDistribution,
+   };
+ 
+   const txt::TextStyle result = ToTxtTextStyle(&input);
+@@ -253,7 +217,8 @@ TEST(SpiTextStyle, HeightNoneClearsOverride) {
+   const FlutterSpiTextStyle input = {
+       .struct_size = sizeof(FlutterSpiTextStyle),
+       .height = 0.0f,
+-      .set_fields = kFlutterSpiTextStyleFieldHeight,
++      .set_fields = kFlutterSpiStyleFieldsMasked |
++                    kFlutterSpiTextStyleFieldHeight,
+   };
+ 
+   const txt::TextStyle result = ToTxtTextStyle(&input);
+@@ -280,7 +245,8 @@ TEST(SpiTextStyle, ParagraphSetFieldsMatchDartDecoding) {
+       .strut_force_height = true,
+       .ellipsis = "...",
+       .locale = "en-US",
+-      .set_fields = kFlutterSpiParagraphStyleFieldTextAlign |
++      .set_fields = kFlutterSpiStyleFieldsMasked |
++                    kFlutterSpiParagraphStyleFieldTextAlign |
+                     kFlutterSpiParagraphStyleFieldTextDirection |
+                     kFlutterSpiParagraphStyleFieldFontWeight |
+                     kFlutterSpiParagraphStyleFieldFontStyle |
+@@ -293,7 +259,8 @@ TEST(SpiTextStyle, ParagraphSetFieldsMatchDartDecoding) {
+                     kFlutterSpiParagraphStyleFieldEllipsis |
+                     kFlutterSpiParagraphStyleFieldLocale,
+       .render_soft_hyphens = true,
+-      .strut_set_fields = kFlutterSpiStrutStyleFieldFontSize |
++      .strut_set_fields = kFlutterSpiStyleFieldsMasked |
++                          kFlutterSpiStrutStyleFieldFontSize |
+                           kFlutterSpiStrutStyleFieldHeight |
+                           kFlutterSpiStrutStyleFieldLeading |
+                           kFlutterSpiStrutStyleFieldForceStrutHeight,
+@@ -336,8 +303,10 @@ TEST(SpiTextStyle, StrutSetFieldsMatchDecodeStrut) {
+       .strut_height = 1.25f,
+       .strut_leading = 0.5f,
+       .strut_force_height = true,
+-      .set_fields = kFlutterSpiParagraphStyleFieldStrutStyle,
+-      .strut_set_fields = kFlutterSpiStrutStyleFieldFontSize |
++      .set_fields = kFlutterSpiStyleFieldsMasked |
++                    kFlutterSpiParagraphStyleFieldStrutStyle,
++      .strut_set_fields = kFlutterSpiStyleFieldsMasked |
++                          kFlutterSpiStrutStyleFieldFontSize |
+                           kFlutterSpiStrutStyleFieldHeight |
+                           kFlutterSpiStrutStyleFieldLeading |
+                           kFlutterSpiStrutStyleFieldForceStrutHeight,

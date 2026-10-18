@@ -1,0 +1,31 @@
+# Why: preserve the values decoded from dart:ui strut data for the ABI 0.18
+# style bridge.
+diff --git a/engine/src/flutter/runtime_spi/text/spi_text_style.cc b/engine/src/flutter/runtime_spi/text/spi_text_style.cc
+index 8f23361a5c0..ab4b274615f 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_text_style.cc
++++ b/engine/src/flutter/runtime_spi/text/spi_text_style.cc
+@@ -167,16 +167,19 @@ void ApplyStrutStyle(const FlutterSpiParagraphStyle& style,
+   const uint32_t strut_fields =
+       has_strut_set_fields ? style.strut_set_fields : kAllStrutStyleFields;
+ 
+-  if (HasField(strut_fields, kFlutterSpiStrutStyleFieldLeadingDistribution)) {
+-    result->strut_half_leading = style.strut_half_leading;
+-  }
+-  if (HasField(strut_fields, kFlutterSpiStrutStyleFieldFontWeight)) {
++  if (HasField(style, offsetof(FlutterSpiParagraphStyle, strut_font_weight),
++               sizeof(style.strut_font_weight))) {
+     result->strut_font_weight = style.strut_font_weight;
+   }
+-  if (HasField(strut_fields, kFlutterSpiStrutStyleFieldFontStyle)) {
++  if (HasField(style, offsetof(FlutterSpiParagraphStyle, strut_font_style),
++               sizeof(style.strut_font_style))) {
+     result->strut_font_style =
+         static_cast<txt::FontStyle>(style.strut_font_style);
+   }
++  if (HasField(style, offsetof(FlutterSpiParagraphStyle, strut_half_leading),
++               sizeof(style.strut_half_leading))) {
++    result->strut_half_leading = style.strut_half_leading;
++  }
+   if (HasField(strut_fields, kFlutterSpiStrutStyleFieldFontFamily)) {
+     ReplaceFamilies(style.strut_font_families,
+                     style.strut_font_family_count,
