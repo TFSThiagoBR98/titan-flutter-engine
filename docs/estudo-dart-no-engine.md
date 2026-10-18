@@ -539,6 +539,36 @@ S5.5, que poderá reduzir o número de chamadas por span. As medições, as
 causas das rodadas e as lições do método estão em
 [runtime-spi-s4f.md](medidas/runtime-spi-s4f.md).
 
+## Tabelas de handles entre threads
+
+O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos
+wrappers e à tabela de handles era serializado pelo isolate e pela thread de
+UI que os possuía. A migração para o Runtime SPI muda esse contexto: vários
+engines podem coexistir no mesmo processo, e finalizadores do GC do Dart podem
+liberar handles fora da thread de UI. Uma inserção, busca ou liberação
+concorrente podia então acessar `entries_` e `free_slots_` durante uma
+realocação ou reutilização de slot.
+
+Foram consideradas três opções:
+
+1. Colocar um `std::mutex` em cada tabela global de handles, preservando a ABI
+   e o armazenamento compartilhado por tipo.
+2. Manter uma tabela separada por engine, evitando a disputa entre engines,
+   mas exigindo resolver a propriedade de objetos de cena cujo engine pode ser
+   nulo e o acesso dos finalizadores fora da thread de UI.
+3. Restringir cada processo a um único engine, eliminando a concorrência por
+   construção, mas incompatibilizando `Spawn`, `FlutterEngineGroup`, embedders
+   com vários engines e os testes paralelos previstos.
+
+A decisão foi a primeira opção: cada `SpiHandleTable<T>` possui sua própria
+trava, e todas as operações públicas protegem o acesso às entradas e à lista
+de slots livres. `Release` move o `shared_ptr` para fora da região protegida
+antes de destruir o valor, porque um destrutor pode voltar ao SPI. A ABI e as
+regras de propriedade dos handles permanecem inalteradas.
+
+O custo medido e a candidata de otimização estão registrados em
+[runtime-spi-handle-locks.md](medidas/runtime-spi-handle-locks.md).
+
 ## Ciclo de vida e falhas
 
 O host cria, inicia, encerra e libera o backend. Uma falha recuperável encerra o runtime ativo e limpa os recursos;

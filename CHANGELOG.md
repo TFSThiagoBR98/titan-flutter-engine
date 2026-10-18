@@ -89,6 +89,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime SPI S4d-2: `Path` e `PathMeasure` do `dart:ui` passam a usar a API de cena do SPI; a ABI 0.16 acrescenta a geometria de paths, operações derivadas e medidas de contornos sobre `SkPath`.
 - Runtime SPI S4e: `SceneBuilder`, `EngineLayer` e `Scene` do `dart:ui` passam a usar a API de cena do SPI; a ABI 0.17 acrescenta `scene_build_root`, `scene_create_from_root` e `scene_retain_last_layer`, e filtros nulos geram camadas de passagem.
 - Runtime SPI S4f: `ParagraphBuilder`, `Paragraph` e fontes do `dart:ui` passam a usar a API de texto do SPI; a ABI 0.18 acrescenta as máscaras de estilo ativadas por `kFlutterSpiStyleFieldsMasked`, seis consultas de parágrafo, `add_text_utf16` e `ellipsis_utf16`, corrige a escolha do caminho Impeller nos parágrafos, aceita o domínio de entrada do `txt` (inclusive largura infinita, evitando o abort no primeiro layout) e mantém as tabelas de handles vivas até o fim do processo.
+- Runtime SPI: tabelas de handles seguras entre threads com um `std::mutex` por tabela; inserções, buscas, retenções, liberações e a contagem de entradas deixam de disputar estruturas sem sincronização, e os destrutores de valores liberados continuam fora da trava.
 - Runtime SPI S4b: o Shell deixa de depender da VM do Dart; os handlers do service
   protocol ficam no core e são servidos pelo VM service através da tabela de extensões (ABI 0.11).
 - Runtime SPI S4a: o engine chama as funções que só existem com Dart (microtasks, deferred libraries, código de retorno,

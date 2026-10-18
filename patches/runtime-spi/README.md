@@ -156,6 +156,8 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0146-fix-engine-accept-the-txt-input-domain-in-spi-paragraphs.patch` | Fazer os parágrafos do SPI aceitarem o mesmo domínio de entrada que o `txt`, inclusive antes do layout e com largura infinita. | |
 | `0147-fix-engine-keep-spi-handle-tables-alive-until-process-exit.patch` | Manter as tabelas de handles vivas até o fim do processo para liberar wrappers durante a destruição estática. | |
 | `0148-test-engine-add-a-composite-frame-benchmark.patch` | Medir um quadro composto de cena, pintura, paths, canvas e texto para o portão integrado da S4f. | |
+| `0149-test-engine-stress-spi-handle-tables-across-threads.patch` | Fixar a corrida entre inserção, busca, liberação e destruição reentrante nas tabelas de handles do SPI. | |
+| `0150-fix-engine-lock-spi-handle-tables.patch` | Serializar o acesso às tabelas de handles entre engines e finalizadores, destruindo valores liberados fora da trava. | |
 
 O fluxo é:
 

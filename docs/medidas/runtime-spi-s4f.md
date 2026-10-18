@@ -65,9 +65,8 @@ permaneceram dentro do limite em todas as rodadas.
   base do texto isolado e a do quadro composto não devem ser inferidas de um
   binário já exportado com uma série diferente de patches.
 
-Durante os testes aninhados de EGL do `tools/ci.sh engine`, foi usado o EGL
-da Mesa por meio de `__EGL_VENDOR_LIBRARY_FILENAMES`, porque o EGL da NVIDIA
-do host passou a devolver `BadAlloc` nesse cenário.
+O `tools/ci.sh` já fixa o EGL da Mesa (`with_software_gl`); o `BadAlloc` do
+NVIDIA só aparece ao rodar o binário de teste à mão, sem esse ambiente.
 
 Os brutos das medições estão em `.build_flutter/bench/s4f-ab6.txt`,
 `.build_flutter/bench/s4f-text-ab.txt` e
