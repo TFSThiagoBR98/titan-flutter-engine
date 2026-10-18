@@ -1,0 +1,35 @@
+# Why: decodeImageFromPixelsSync only works with Impeller and the benchmark
+# shell runs on Skia, so the fixture threw in both the base and the S4g-2
+# builds.
+diff --git a/engine/src/flutter/shell/common/fixtures/shell_test.dart b/engine/src/flutter/shell/common/fixtures/shell_test.dart
+index 11acaf037c3..7b82d5fa9d1 100644
+--- a/engine/src/flutter/shell/common/fixtures/shell_test.dart
++++ b/engine/src/flutter/shell/common/fixtures/shell_test.dart
+@@ -80,17 +80,18 @@ void buildParagraphFrame() {
+ void buildImageFrame() {
+   const imageSize = 32;
+   const imageCount = 8;
+-  final pixels = Uint8List(imageSize * imageSize * 4);
+-  for (var pixelIndex = 0; pixelIndex < pixels.length; pixelIndex += 4) {
+-    pixels[pixelIndex] = 0x25;
+-    pixels[pixelIndex + 1] = 0x63;
+-    pixels[pixelIndex + 2] = 0xEB;
+-    pixels[pixelIndex + 3] = 0xFF;
+-  }
+-
++  // decodeImageFromPixelsSync only works with Impeller; the benchmark shell runs
++  // on Skia, so the synchronous images come from Picture.toImageSync.
+   final images = <Image>[];
+   for (var index = 0; index < imageCount; index++) {
+-    images.add(decodeImageFromPixelsSync(pixels, imageSize, imageSize, PixelFormat.rgba8888));
++    final sourceRecorder = PictureRecorder();
++    Canvas(sourceRecorder).drawRect(
++      const Rect.fromLTWH(0, 0, imageSize + 0.0, imageSize + 0.0),
++      Paint()..color = Color(0xFF2563EB + index),
++    );
++    final source = sourceRecorder.endRecording();
++    images.add(source.toImageSync(imageSize, imageSize));
++    source.dispose();
+   }
+ 
+   final recorder = PictureRecorder();
