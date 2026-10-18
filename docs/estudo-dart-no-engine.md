@@ -505,6 +505,14 @@ linha, contagem de linhas e número da linha. O texto e a reticência também
 podem atravessar a fronteira em UTF-16 (`add_text_utf16` e `ellipsis_utf16`),
 evitando a conversão UTF-16 → UTF-8 → UTF-16 no caminho quente.
 
+A reticência passou a usar `ellipsis_utf16` diretamente quando o estilo Dart a
+fornece, eliminando a conversão temporária por UTF-8. O core também preserva
+o domínio de entrada do `txt`: layout com largura infinita, consultas antes
+do layout, intervalos invertidos e valores de glifo ou placeholder que o
+`txt` aceita chegam ao mesmo caminho, em vez de serem rejeitados pelo SPI.
+Essa paridade corrigiu o abort observado no primeiro layout dos apps com
+framework durante `tools/ci.sh engine`.
+
 Para carregar fontes, o cliente da `PlatformConfiguration` e o
 `RuntimeDelegate` passam a expor `GetSpiEngine()` no lugar de
 `GetFontCollection()`. A ponte `SpiEngineFontCollection` sai do caminho do
@@ -513,9 +521,23 @@ Para carregar fontes, o cliente da `PlatformConfiguration` e o
 camadas e imagens que pertencem às fases posteriores permanecem fora desta
 migração.
 
-O portão de texto foi aprovado com +4,7% no quadro realista, dentro do limite
-de 5%. As cinco medições, as causas das rodadas e as lições do método estão
-em [runtime-spi-s4f.md](medidas/runtime-spi-s4f.md).
+As tabelas internas de handles do SPI são alocadas intencionalmente e ficam
+vivas até o fim do processo. Assim, wrappers liberados durante a destruição
+estática não tentam acessar uma tabela que já foi destruída; a regra de
+propriedade dos handles e a ABI permanecem inalteradas.
+
+O benchmark composto da Task 1c combina, no mesmo quadro, construção de
+cenas retidas, operações de `Canvas`/`Path`/`Paint` e parágrafos curtos e
+longos. Ele representa melhor o custo integrado das migrações do que o
+benchmark de texto isolado.
+
+O benchmark de texto isolado ficou entre +4,9% e +5,9% no A/B de dez rodadas,
+enquanto o quadro composto ficou em +5,5%. O usuário decidiu aceitar e
+integrar o resultado composto; o custo restante, cerca de 130 ns por chamada
+do SPI e aproximadamente nove chamadas para um parágrafo curto, fica para a
+S5.5, que poderá reduzir o número de chamadas por span. As medições, as
+causas das rodadas e as lições do método estão em
+[runtime-spi-s4f.md](medidas/runtime-spi-s4f.md).
 
 ## Ciclo de vida e falhas
 

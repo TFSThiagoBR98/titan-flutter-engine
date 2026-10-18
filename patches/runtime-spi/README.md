@@ -152,6 +152,10 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0142-perf-engine-resolve-the-spi-text-table-once.patch` | Resolver uma vez a tabela de texto do SPI no caminho do `lib/ui`. | |
 | `0143-test-engine-cover-utf-16-paragraph-ellipsis.patch` | Cobrir a paridade da reticência UTF-16 nos estilos de parágrafo. | |
 | `0144-perf-engine-accept-utf-16-ellipsis-in-spi-paragraph-styles.patch` | Aceitar reticência UTF-16 nos estilos de parágrafo da ABI 0.18. | |
+| `0145-test-engine-cover-the-txt-paragraph-input-domain.patch` | Fixar a paridade do domínio de entrada do `txt` em layout, consultas, métricas, glifos e placeholders. | |
+| `0146-fix-engine-accept-the-txt-input-domain-in-spi-paragraphs.patch` | Fazer os parágrafos do SPI aceitarem o mesmo domínio de entrada que o `txt`, inclusive antes do layout e com largura infinita. | |
+| `0147-fix-engine-keep-spi-handle-tables-alive-until-process-exit.patch` | Manter as tabelas de handles vivas até o fim do processo para liberar wrappers durante a destruição estática. | |
+| `0148-test-engine-add-a-composite-frame-benchmark.patch` | Medir um quadro composto de cena, pintura, paths, canvas e texto para o portão integrado da S4f. | |
 
 O fluxo é:
 
