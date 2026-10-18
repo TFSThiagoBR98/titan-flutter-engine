@@ -1,0 +1,16 @@
+# Why: the retained root is nested in the builder's new container.
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_builder_parity_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_scene_builder_parity_unittests.cc
+index 8be594fa642..3a368f66b02 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_scene_builder_parity_unittests.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_builder_parity_unittests.cc
+@@ -260,7 +260,9 @@ TEST_F(SpiSceneBuilderTest, RootOutlivesBuilderAndScenes) {
+ 
+   FlutterSpiScene* scene = nullptr;
+   ASSERT_EQ(api()->scene_create_from_root(root, 100, 80, &scene), kFlutterSpiOk);
+-  const std::string expected_trace = SceneTraceFor(scene);
++  const std::string expected_trace =
++      "scene 100x80\ncontainer\n  container\n    transform [1 0 0 0 0 1 0 0 0 0 1 0 3 4 0 1]\n"
++      "      opacity 128 5 6\n";
+   ASSERT_EQ(SpiSceneRelease(scene), kFlutterSpiOk);
+ 
+   FlutterSpiSceneBuilder* builder = nullptr;
