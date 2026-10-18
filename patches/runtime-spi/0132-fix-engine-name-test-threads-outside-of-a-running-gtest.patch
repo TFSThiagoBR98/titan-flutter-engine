@@ -1,0 +1,18 @@
+# Why: the shell paragraph benchmark builds a ShellTest without a current
+# gtest, and the thread name lookup dereferenced a null test info.
+diff --git a/engine/src/flutter/testing/testing.cc b/engine/src/flutter/testing/testing.cc
+index 6fb2f4e33ff..bf2b64037a0 100644
+--- a/engine/src/flutter/testing/testing.cc
++++ b/engine/src/flutter/testing/testing.cc
+@@ -12,7 +12,10 @@
+ namespace flutter::testing {
+ 
+ std::string GetCurrentTestName() {
+-  return ::testing::UnitTest::GetInstance()->current_test_info()->name();
++  const ::testing::TestInfo* test_info =
++      ::testing::UnitTest::GetInstance()->current_test_info();
++  // Benchmarks reuse the test fixtures outside of a running gtest.
++  return test_info == nullptr ? "benchmark" : test_info->name();
+ }
+ 
+ std::string GetDefaultKernelFilePath() {
