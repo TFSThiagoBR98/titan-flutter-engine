@@ -1,0 +1,47 @@
+# Why: keep existing C++ compositor tests compiling while the runtime SPI owns
+# layer storage.
+diff --git a/engine/src/flutter/lib/ui/compositing/scene_builder.cc b/engine/src/flutter/lib/ui/compositing/scene_builder.cc
+index 8c8d7b59260..5fe9e09f136 100644
+--- a/engine/src/flutter/lib/ui/compositing/scene_builder.cc
++++ b/engine/src/flutter/lib/ui/compositing/scene_builder.cc
+@@ -63,6 +63,10 @@ SceneBuilder::~SceneBuilder() {
+   }
+ }
+ 
++std::vector<std::shared_ptr<ContainerLayer>> SceneBuilder::layer_stack() const {
++  return SpiSceneBuilderLayerStackForTesting(builder_);
++}
++
+ void SceneBuilder::RetainLayer(
+     Dart_Handle layer_handle,
+     FlutterSpiEngineLayer* spi_layer,
+diff --git a/engine/src/flutter/lib/ui/compositing/scene_builder.h b/engine/src/flutter/lib/ui/compositing/scene_builder.h
+index c0427a159a2..6176ad6b71b 100644
+--- a/engine/src/flutter/lib/ui/compositing/scene_builder.h
++++ b/engine/src/flutter/lib/ui/compositing/scene_builder.h
+@@ -7,6 +7,7 @@
+ 
+ #include <cstdint>
+ #include <memory>
++#include <vector>
+ 
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "flutter/lib/ui/painting/color_filter.h"
+@@ -22,6 +23,8 @@
+ 
+ namespace flutter {
+ 
++class ContainerLayer;
++
+ class SceneBuilder : public RefCountedDartWrappable<SceneBuilder> {
+   DEFINE_WRAPPERTYPEINFO();
+   FML_FRIEND_MAKE_REF_COUNTED(SceneBuilder);
+@@ -123,6 +126,8 @@ class SceneBuilder : public RefCountedDartWrappable<SceneBuilder> {
+ 
+   void build(Dart_Handle scene_handle);
+ 
++  std::vector<std::shared_ptr<ContainerLayer>> layer_stack() const;
++
+  private:
+   SceneBuilder();
+ 

@@ -1,0 +1,171 @@
+# Why: preserve pass-through filter layers when dart:ui supplies a null
+# filter.
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_scene.h b/engine/src/flutter/runtime_spi/include/flutter_scene.h
+index d4e14e94562..530d6b8b98e 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_scene.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_scene.h
+@@ -353,12 +353,15 @@ struct FlutterSpiSceneApi {
+       FlutterSpiSceneBuilder* builder,
+       const FlutterSpiRRect* shape,
+       int32_t clip_behavior);
++  // A NULL filter pushes a layer without a filter.
+   FlutterSpiResult (*scene_push_color_filter)(FlutterSpiSceneBuilder* builder,
+                                               FlutterSpiColorFilter* filter);
++  // A NULL filter pushes a layer without a filter.
+   FlutterSpiResult (*scene_push_image_filter)(FlutterSpiSceneBuilder* builder,
+                                               FlutterSpiImageFilter* filter,
+                                               float dx,
+                                               float dy);
++  // A NULL filter pushes a layer without a filter.
+   FlutterSpiResult (*scene_push_backdrop_filter)(
+       FlutterSpiSceneBuilder* builder,
+       FlutterSpiImageFilter* filter,
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
+index 596bc1d2018..a0f497a86f7 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
+@@ -279,7 +279,7 @@ FlutterSpiResult SpiScenePushColorFilter(FlutterSpiSceneBuilder* builder,
+   if (builder_value == nullptr) {
+     return kFlutterSpiInvalidHandle;
+   }
+-  if (filter_value == nullptr) {
++  if (filter != nullptr && filter_value == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+   PushLayer(std::make_shared<ColorFilterLayer>(filter_value), builder_value);
+@@ -298,7 +298,7 @@ FlutterSpiResult SpiScenePushImageFilter(FlutterSpiSceneBuilder* builder,
+     return kFlutterSpiInvalidArgument;
+   }
+   const auto filter_value = SpiImageFilterResolve(filter, DlTileMode::kDecal);
+-  if (filter_value == nullptr) {
++  if (filter != nullptr && filter_value == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+   PushLayer(std::make_shared<ImageFilterLayer>(filter_value, DlPoint(dx, dy)),
+@@ -319,7 +319,7 @@ FlutterSpiResult SpiScenePushBackdropFilter(FlutterSpiSceneBuilder* builder,
+     return kFlutterSpiInvalidArgument;
+   }
+   const auto filter_value = SpiImageFilterResolve(filter, DlTileMode::kMirror);
+-  if (filter_value == nullptr) {
++  if (filter != nullptr && filter_value == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+   PushLayer(
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_builder_parity_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_scene_builder_parity_unittests.cc
+index 3a368f66b02..f3225e3105e 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_scene_builder_parity_unittests.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_builder_parity_unittests.cc
+@@ -9,11 +9,14 @@
+ 
+ #include "flutter/display_list/dl_builder.h"
+ #include "flutter/display_list/geometry/dl_path_builder.h"
++#include "flutter/flow/layers/backdrop_filter_layer.h"
+ #include "flutter/flow/layers/clip_path_layer.h"
+ #include "flutter/flow/layers/clip_rect_layer.h"
+ #include "flutter/flow/layers/clip_rrect_layer.h"
++#include "flutter/flow/layers/color_filter_layer.h"
+ #include "flutter/flow/layers/container_layer.h"
+ #include "flutter/flow/layers/display_list_layer.h"
++#include "flutter/flow/layers/image_filter_layer.h"
+ #include "flutter/flow/layers/layer_tree.h"
+ #include "flutter/flow/layers/opacity_layer.h"
+ #include "flutter/flow/layers/transform_layer.h"
+@@ -310,5 +313,55 @@ TEST_F(SpiSceneBuilderTest, InvalidRootArgumentsAreRejected) {
+   EXPECT_EQ(api()->engine_layer_release(root), kFlutterSpiOk);
+ }
+ 
++TEST_F(SpiSceneBuilderTest, NullColorFilterPushesPassThroughLayer) {
++  FlutterSpiSceneBuilder* builder = nullptr;
++  ASSERT_EQ(api()->scene_builder_create(engine(), &builder), kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_push_color_filter(builder, nullptr), kFlutterSpiOk);
++
++  FlutterSpiScene* scene = nullptr;
++  ASSERT_EQ(api()->scene_build(builder, 100, 80, &scene), kFlutterSpiOk);
++
++  auto expected_root = std::make_shared<ContainerLayer>();
++  expected_root->Add(std::make_shared<ColorFilterLayer>(nullptr));
++  auto expected = std::make_shared<LayerTree>(expected_root, DlISize(100, 80));
++  EXPECT_EQ(SceneTrace(*scene->layer_tree), SceneTrace(*expected));
++  EXPECT_EQ(SpiSceneRelease(scene), kFlutterSpiOk);
++}
++
++TEST_F(SpiSceneBuilderTest, NullImageFilterPushesPassThroughLayer) {
++  FlutterSpiSceneBuilder* builder = nullptr;
++  ASSERT_EQ(api()->scene_builder_create(engine(), &builder), kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_push_image_filter(builder, nullptr, 4.0f, 5.0f),
++            kFlutterSpiOk);
++
++  FlutterSpiScene* scene = nullptr;
++  ASSERT_EQ(api()->scene_build(builder, 100, 80, &scene), kFlutterSpiOk);
++
++  auto expected_root = std::make_shared<ContainerLayer>();
++  expected_root->Add(
++      std::make_shared<ImageFilterLayer>(nullptr, DlPoint(4.0f, 5.0f)));
++  auto expected = std::make_shared<LayerTree>(expected_root, DlISize(100, 80));
++  EXPECT_EQ(SceneTrace(*scene->layer_tree), SceneTrace(*expected));
++  EXPECT_EQ(SpiSceneRelease(scene), kFlutterSpiOk);
++}
++
++TEST_F(SpiSceneBuilderTest, NullBackdropFilterPushesPassThroughLayer) {
++  FlutterSpiSceneBuilder* builder = nullptr;
++  ASSERT_EQ(api()->scene_builder_create(engine(), &builder), kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_push_backdrop_filter(
++                builder, nullptr, kFlutterSpiBlendModeScreen, false, 0),
++            kFlutterSpiOk);
++
++  FlutterSpiScene* scene = nullptr;
++  ASSERT_EQ(api()->scene_build(builder, 100, 80, &scene), kFlutterSpiOk);
++
++  auto expected_root = std::make_shared<ContainerLayer>();
++  expected_root->Add(std::make_shared<BackdropFilterLayer>(
++      nullptr, DlBlendMode::kScreen, std::nullopt));
++  auto expected = std::make_shared<LayerTree>(expected_root, DlISize(100, 80));
++  EXPECT_EQ(SceneTrace(*scene->layer_tree), SceneTrace(*expected));
++  EXPECT_EQ(SpiSceneRelease(scene), kFlutterSpiOk);
++}
++
+ }  // namespace
+ }  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_trace.cc b/engine/src/flutter/runtime_spi/scene/spi_scene_trace.cc
+index 9875ada354c..1fb62af9a4e 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_scene_trace.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_trace.cc
+@@ -499,7 +499,11 @@ void TraceLayer(const Layer& layer, std::string* output, int depth) {
+       color_filter != nullptr) {
+     output->append(indent);
+     output->append("color_filter ");
+-    AppendColorFilter(output, *color_filter->filter());
++    if (color_filter->filter() == nullptr) {
++      output->append("null");
++    } else {
++      AppendColorFilter(output, *color_filter->filter());
++    }
+     output->push_back('\n');
+     TraceChildren(*color_filter, output, depth + 1);
+     return;
+@@ -508,7 +512,11 @@ void TraceLayer(const Layer& layer, std::string* output, int depth) {
+       image_filter != nullptr) {
+     output->append(indent);
+     output->append("image_filter ");
+-    AppendImageFilter(output, *image_filter->filter());
++    if (image_filter->filter() == nullptr) {
++      output->append("null");
++    } else {
++      AppendImageFilter(output, *image_filter->filter());
++    }
+     output->append(" offset ");
+     AppendPoint(output, image_filter->offset());
+     output->push_back('\n');
+@@ -519,7 +527,11 @@ void TraceLayer(const Layer& layer, std::string* output, int depth) {
+       backdrop_filter != nullptr) {
+     output->append(indent);
+     output->append("backdrop_filter ");
+-    AppendImageFilter(output, *backdrop_filter->filter());
++    if (backdrop_filter->filter() == nullptr) {
++      output->append("null");
++    } else {
++      AppendImageFilter(output, *backdrop_filter->filter());
++    }
+     output->append(" blend ");
+     AppendNumber(output, static_cast<float>(backdrop_filter->blend_mode()));
+     output->append(" id ");
