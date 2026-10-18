@@ -166,6 +166,19 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0156-feat-engine-create-dart-ui-effects-through-the-spi.patch` | Criar gradientes, filtros e vertices do `dart:ui` diretamente pela API de efeitos do SPI. | |
 | `0157-fix-engine-expose-paint-effects-api-to-dart-ui.patch` | Expor a API de efeitos de pintura ao `lib/ui` por uma ponte interna permitida. | |
 | `0158-fix-engine-update-effects-bridge-consumers.patch` | Atualizar os consumidores das pontes de efeitos removidas para manter os testes compilando. | |
+| `0159-test-engine-add-runtime-spi-s4g2-image-benchmark.patch` | Adicionar o benchmark de imagens do `dart:ui` para o portão da S4g-2. | |
+| `0160-test-engine-add-runtime-spi-image-parity-red-tests.patch` | Fixar os testes RED de paridade das imagens e snapshots da S4g-2. | |
+| `0161-feat-engine-add-sync-pixel-images-color-space-and-snapshot-formats-to-the-spi.patch` | Acrescentar à ABI 0.20 a criação síncrona de pixels, o espaço de cor e o formato de snapshots. | |
+| `0162-fix-engine-encode-gpu-and-deferred-spi-images-like-dart-ui.patch` | Codificar imagens de GPU e diferidas pela mesma rasterização e readback do `dart:ui`. | |
+| `0163-test-engine-check-sync-pixel-images-by-size-and-drawing.patch` | Conferir imagens síncronas por tamanho e desenho no backend Skia e comparar bytes somente com Impeller. | |
+| `0164-feat-engine-move-dart-ui-images-to-runtime-spi.patch` | Mover imagens, snapshots, readback e `ImageShader` do `dart:ui` para handles do Runtime SPI. | |
+| `0165-fix-engine-route-ui-image-tests-through-spi-bridge.patch` | Atualizar os consumidores de teste da ponte de imagens do SPI. | |
+| `0166-fix-engine-adapt-gpu-image-consumers-to-spi-handles.patch` | Adaptar consumidores de imagens de GPU aos handles do SPI. | |
+| `0167-fix-engine-keep-gpu-image-bridge-within-ui-target.patch` | Manter a ponte de imagens de GPU no alvo de UI que a utiliza. | |
+| `0168-fix-engine-update-embedder-image-test-consumer.patch` | Atualizar o consumidor de imagens do teste do embedder. | |
+| `0169-fix-engine-fix-image-migration-compile-errors.patch` | Corrigir erros mecânicos de compilação restantes da migração de imagens. | |
+| `0170-fix-engine-fix-remaining-image-migration-compile-errors.patch` | Corrigir os diagnósticos mecânicos finais da migração de imagens. | |
+| `0171-test-engine-build-the-image-benchmark-images-with-toimagesync.patch` | Produzir as imagens do benchmark com `Picture.toImageSync`, compatível com o Shell Skia. | |
 
 O fluxo é:
 

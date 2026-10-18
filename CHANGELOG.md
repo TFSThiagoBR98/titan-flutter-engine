@@ -44,6 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime SPI S4c-1: ABI 0.12 com o contrato completo entre o engine e o runtime
   (telas, tempos de quadro, hit test, rota inicial, locale, deferred libraries, foco, assets e demais pedidos do
   runtime ao engine).
+- Runtime SPI S4g-2: `Image`, `Picture.toImage`, `Scene.toImage` e `ImageShader` do `dart:ui` passam a usar handles da
+  API de imagens do SPI; a ABI 0.20 acrescenta criação síncrona de imagens de pixels, espaço de cor e formato de
+  snapshot, enquanto codecs, descriptors, buffers, fragment programs e assets permanecem para a S4g-3.
 
 ### Fixed
 

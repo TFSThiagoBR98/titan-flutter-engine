@@ -570,6 +570,56 @@ O portão de efeitos ficou em +1,8% no `BM_DartEffectsFrame`, abaixo do limite
 de 5%. As comparações com o branch `develop` e os quatro benchmarks isolados
 estão em [runtime-spi-s4g1.md](medidas/runtime-spi-s4g1.md).
 
+## S4g-2: Imagens sobre o SPI
+
+A S4g-2 faz `Image`, `Picture.toImage`, `Scene.toImage`, `ImageShader` e o
+desenho de imagens do `dart:ui` usarem handles da `FlutterSpiImageApi`. O
+`CanvasImage` passa a ser dono de um `FlutterSpiImage*`, consultando tamanho e
+espaço de cor pela API e liberando o handle no destrutor e no `dispose`. O
+`toByteData` usa `image_to_bytes`, e `Picture.toImage`/`toImageSync` e
+`Scene.toImage`/`toImageSync` usam as operações de snapshot do SPI.
+
+A ABI 0.20 acrescenta, no fim da tabela de imagens, a criação síncrona a partir
+de pixels (`image_create_from_pixels_sync`), a consulta de espaço de cor
+(`image_get_color_space`) e o snapshot síncrono com formato explícito
+(`picture_to_image_sync_with_format`). Os enums do Dart e do SPI são mapeados
+por nome. As callbacks de bytes continuam sendo entregues na thread de UI,
+inclusive quando a leitura precisa rasterizar uma imagem de GPU ou diferida.
+
+O caminho de `image_to_bytes` foi completado com a lógica de
+`image_encoding.cc`, `image_encoding_skia.cc` e `image_encoding_impeller.cc`:
+imagens raster, de GPU e diferidas usam a mesma conversão para raster, os
+mesmos formatos de bytes e a mesma codificação PNG do caminho anterior. O
+comportamento de retenção também permanece: um `ImageShader` ou um `Picture`
+gravado mantém o handle vivo depois de um `Image.dispose()`.
+
+Duas correções da fase foram registradas durante a implementação. Primeiro, o
+readback do SPI passou a rasterizar imagens de GPU e diferidas, em vez de
+falhar quando `asSkiaImage()` não produzia uma imagem raster. Segundo, o teste
+de criação síncrona de pixels deixou de comparar bytes no fixture Skia: a
+imagem diferida desse caminho só existe no backend Impeller. O teste compara o
+tamanho, verifica que a imagem pode ser desenhada e só compara bytes quando o
+backend do teste é Impeller, com `GTEST_SKIP()` explícito nos demais casos.
+
+O fixture do benchmark também foi corrigido: `decodeImageFromPixelsSync` só
+está disponível com Impeller, enquanto o Shell do benchmark roda com Skia. As
+imagens passaram a ser produzidas por `Picture.toImageSync`, preservando o
+caminho síncrono medido e permitindo o A/B nos dois binários.
+
+O portão ficou em +0,1% no `BM_DartImageFrame`, dentro do limite de 5%. A
+tabela completa e os indicadores contra `develop` estão em
+[runtime-spi-s4g2.md](medidas/runtime-spi-s4g2.md). A medição estrutural do
+SPI permanece reservada para a S5.5, como decidido no portão.
+
+Ainda permanecem pontes para a S4g-3. Os produtores de imagens dos codecs
+(`Codec`, `MultiFrameCodec` e `SingleFrameCodec`), `ImageDescriptor`,
+`ImmutableBuffer`, o acesso a assets e os caminhos de `FragmentProgram`/
+`ReusableFragmentShader` continuam entregando `DlImage` ao `CanvasImage` por
+`SpiImageFromDlImage`. `SpiShaderFromColorSource` continua no
+`FragmentShader`, e `SpiImageFilterFromDl` continua no filtro criado a partir
+de fragment shader. Essas pontes são temporárias e não fazem parte dos
+caminhos de `Image`, snapshots e `ImageShader` migrados nesta fase.
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos
