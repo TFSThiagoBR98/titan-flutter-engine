@@ -158,6 +158,14 @@ if (-not (Test-Path $depotToolsDirectory)) {
     Invoke-Git @('clone', 'https://chromium.googlesource.com/chromium/tools/depot_tools.git', $depotToolsDirectory)
 }
 $env:PATH = "$depotToolsDirectory;$env:PATH"
+# DEPOT_TOOLS_UPDATE=0 also skips update_depot_tools.bat, which is what installs
+# the bundled Python on Windows; gn.bat cannot run without it.
+if (-not (Test-Path (Join-Path $depotToolsDirectory 'python3_bin_reldir.txt'))) {
+    & cmd.exe /c (Join-Path $depotToolsDirectory 'bootstrap\win_tools.bat')
+    if ($LASTEXITCODE -ne 0) {
+        throw "depot_tools bootstrap failed with exit code $LASTEXITCODE"
+    }
+}
 $gclientCommand = Join-Path $depotToolsDirectory 'gclient.bat'
 if (-not (Test-Path $gclientCommand)) {
     throw "gclient.bat is missing: $gclientCommand"
