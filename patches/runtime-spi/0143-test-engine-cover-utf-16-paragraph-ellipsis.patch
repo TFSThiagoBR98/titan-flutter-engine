@@ -1,0 +1,59 @@
+# Why: specify the UTF-16 ellipsis precedence and parity before adding the ABI
+# fields.
+diff --git a/engine/src/flutter/runtime_spi/text/spi_text_style_unittests.cc b/engine/src/flutter/runtime_spi/text/spi_text_style_unittests.cc
+index 9442d588438..36a884eba4b 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_text_style_unittests.cc
++++ b/engine/src/flutter/runtime_spi/text/spi_text_style_unittests.cc
+@@ -58,6 +58,7 @@ constexpr FlutterSpiFontFeature kFeature = {.tag = {'s', 'm', 'c', 'p'},
+                                              .value = 1};
+ constexpr FlutterSpiFontVariation kVariation = {.axis = {'w', 'g', 'h', 't'},
+                                                 .value = 650.0f};
++constexpr size_t kEllipsisUtf16Length = 1;
+ 
+ TEST(SpiTextStyle, ConvertsEveryField) {
+   const char* families[] = {"Roboto", "Noto Sans"};
+@@ -339,5 +340,44 @@ TEST(SpiTextStyle, StructWithoutSetFieldsKeepsAllFields) {
+   EXPECT_TRUE(result.has_height_override);
+ }
+ 
++TEST(SpiTextStyle, EllipsisUtf16MatchesUtf8) {
++  const uint16_t ellipsis_utf16[] = {0x2026};
++  const FlutterSpiParagraphStyle utf8_input = {
++      .struct_size = sizeof(FlutterSpiParagraphStyle),
++      .ellipsis = "\xE2\x80\xA6",
++      .set_fields = kFlutterSpiStyleFieldsMasked |
++                    kFlutterSpiParagraphStyleFieldEllipsis,
++  };
++  const FlutterSpiParagraphStyle utf16_input = {
++      .struct_size = sizeof(FlutterSpiParagraphStyle),
++      .ellipsis = "ignored",
++      .set_fields = kFlutterSpiStyleFieldsMasked |
++                    kFlutterSpiParagraphStyleFieldEllipsis,
++      .ellipsis_utf16 = ellipsis_utf16,
++      .ellipsis_utf16_length = kEllipsisUtf16Length,
++  };
++
++  const txt::ParagraphStyle utf8_result = ToTxtParagraphStyle(&utf8_input);
++  const txt::ParagraphStyle utf16_result = ToTxtParagraphStyle(&utf16_input);
++
++  EXPECT_EQ(utf16_result.ellipsis, utf8_result.ellipsis);
++}
++
++TEST(SpiTextStyle, EllipsisUtf16WinsOverUtf8) {
++  const uint16_t ellipsis_utf16[] = {0x2026};
++  const FlutterSpiParagraphStyle input = {
++      .struct_size = sizeof(FlutterSpiParagraphStyle),
++      .ellipsis = "...",
++      .set_fields = kFlutterSpiStyleFieldsMasked |
++                    kFlutterSpiParagraphStyleFieldEllipsis,
++      .ellipsis_utf16 = ellipsis_utf16,
++      .ellipsis_utf16_length = kEllipsisUtf16Length,
++  };
++
++  const txt::ParagraphStyle result = ToTxtParagraphStyle(&input);
++
++  EXPECT_EQ(result.ellipsis, u"\u2026");
++}
++
+ }  // namespace
+ }  // namespace flutter::testing
