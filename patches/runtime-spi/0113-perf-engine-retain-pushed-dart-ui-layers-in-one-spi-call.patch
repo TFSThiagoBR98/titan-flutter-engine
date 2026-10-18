@@ -1,0 +1,58 @@
+# Why: avoid separate SPI handle calls when retaining each pushed Dart UI
+# layer.
+diff --git a/engine/src/flutter/lib/ui/compositing/scene_builder.cc b/engine/src/flutter/lib/ui/compositing/scene_builder.cc
+index 5fe9e09f136..0d64dda7dbf 100644
+--- a/engine/src/flutter/lib/ui/compositing/scene_builder.cc
++++ b/engine/src/flutter/lib/ui/compositing/scene_builder.cc
+@@ -67,20 +67,6 @@ std::vector<std::shared_ptr<ContainerLayer>> SceneBuilder::layer_stack() const {
+   return SpiSceneBuilderLayerStackForTesting(builder_);
+ }
+ 
+-void SceneBuilder::RetainLayer(
+-    Dart_Handle layer_handle,
+-    FlutterSpiEngineLayer* spi_layer,
+-    const fml::RefPtr<EngineLayer>& old_layer) {
+-  if (spi_layer == nullptr) {
+-    return;
+-  }
+-
+-  EngineLayer::MakeRetained(layer_handle, spi_layer);
+-  if (old_layer && old_layer->spi_handle() != nullptr) {
+-    Api()->scene_assign_old_layer(builder_, old_layer->spi_handle());
+-  }
+-}
+-
+ void SceneBuilder::RetainPushedLayer(
+     FlutterSpiResult push_result,
+     Dart_Handle layer_handle,
+@@ -96,11 +82,14 @@ void SceneBuilder::RetainPushedLayer(
+     }
+   }
+ 
++  FlutterSpiEngineLayer* old_layer_handle =
++      old_layer ? old_layer->spi_handle() : nullptr;
+   FlutterSpiEngineLayer* spi_layer = nullptr;
+-  if (Api()->scene_take_last_layer(builder_, &spi_layer) != kFlutterSpiOk) {
++  if (Api()->scene_retain_last_layer(builder_, old_layer_handle, &spi_layer) !=
++      kFlutterSpiOk) {
+     return;
+   }
+-  RetainLayer(layer_handle, spi_layer, old_layer);
++  EngineLayer::MakeRetained(layer_handle, spi_layer);
+ }
+ 
+ void SceneBuilder::pushTransform(
+diff --git a/engine/src/flutter/lib/ui/compositing/scene_builder.h b/engine/src/flutter/lib/ui/compositing/scene_builder.h
+index 6176ad6b71b..095a95014e5 100644
+--- a/engine/src/flutter/lib/ui/compositing/scene_builder.h
++++ b/engine/src/flutter/lib/ui/compositing/scene_builder.h
+@@ -131,9 +131,6 @@ class SceneBuilder : public RefCountedDartWrappable<SceneBuilder> {
+  private:
+   SceneBuilder();
+ 
+-  void RetainLayer(Dart_Handle layer_handle,
+-                   FlutterSpiEngineLayer* spi_layer,
+-                   const fml::RefPtr<EngineLayer>& old_layer);
+   void RetainPushedLayer(
+       FlutterSpiResult push_result,
+       Dart_Handle layer_handle,

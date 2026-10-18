@@ -1,0 +1,42 @@
+# Why: populate the SPI transform directly from Dart matrix values without an
+# intermediate display-list matrix.
+diff --git a/engine/src/flutter/lib/ui/compositing/scene_builder.cc b/engine/src/flutter/lib/ui/compositing/scene_builder.cc
+index 0d64dda7dbf..3e3082dd7fc 100644
+--- a/engine/src/flutter/lib/ui/compositing/scene_builder.cc
++++ b/engine/src/flutter/lib/ui/compositing/scene_builder.cc
+@@ -11,7 +11,6 @@
+ #include "flutter/fml/logging.h"
+ #include "flutter/lib/ui/compositing/scene.h"
+ #include "flutter/lib/ui/floating_point.h"
+-#include "flutter/lib/ui/painting/matrix.h"
+ #include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "flutter/runtime_spi/effects/spi_color_filter.h"
+ #include "flutter/runtime_spi/effects/spi_image_filter.h"
+@@ -37,14 +36,6 @@ FlutterSpiRRect ToSpiRRect(const RoundRect& round_rect) {
+            {radii.bottom_left.width, radii.bottom_left.height}}};
+ }
+ 
+-FlutterSpiMatrix ToSpiMatrix(const DlMatrix& matrix) {
+-  FlutterSpiMatrix result;
+-  for (int index = 0; index < 16; index++) {
+-    result.m[index] = matrix.m[index];
+-  }
+-  return result;
+-}
+-
+ const FlutterSpiSceneApi* Api() {
+   return SpiSceneApi();
+ }
+@@ -96,8 +87,10 @@ void SceneBuilder::pushTransform(
+     Dart_Handle layer_handle,
+     tonic::Float64List& matrix4,
+     const fml::RefPtr<EngineLayer>& old_layer) {
+-  const DlMatrix matrix = ToDlMatrix(matrix4);
+-  const FlutterSpiMatrix spi_matrix = ToSpiMatrix(matrix);
++  FlutterSpiMatrix spi_matrix;
++  for (int index = 0; index < 16; index++) {
++    spi_matrix.m[index] = SafeNarrow(matrix4[index]);
++  }
+   matrix4.Release();
+ 
+   const FlutterSpiResult push_result =
