@@ -1,0 +1,312 @@
+# Why: expose SkContourMeasure iteration and derived path operations through
+# the versioned scene API.
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+index 9d5db5b869f..8b9accbe25f 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+@@ -16,6 +16,7 @@
+ #include "flutter/runtime_spi/scene/spi_handle_table.h"
+ #include "flutter/runtime_spi/scene/spi_paint.h"
+ #include "flutter/runtime_spi/scene/spi_path.h"
++#include "flutter/runtime_spi/scene/spi_path_measure.h"
+ #include "flutter/runtime_spi/scene/spi_scene_builder.h"
+ #include "flutter/runtime_spi/scene/spi_scene_trace.h"
+ #include "flutter/runtime_spi/text/spi_paragraph.h"
+@@ -123,6 +124,11 @@ SpiHandleTable<SpiPath>& Paths() {
+   return paths;
+ }
+ 
++SpiHandleTable<SpiPathMeasure>& PathMeasures() {
++  static SpiHandleTable<SpiPathMeasure> path_measures;
++  return path_measures;
++}
++
+ SpiHandleTable<SpiPictureRecorder>& Recorders() {
+   static SpiHandleTable<SpiPictureRecorder> recorders;
+   return recorders;
+@@ -137,6 +143,10 @@ SpiPath* FindPath(FlutterSpiPath* path) {
+   return Paths().FindRaw(HandleValue(path));
+ }
+ 
++SpiPathMeasure* FindPathMeasure(FlutterSpiPathMeasure* measure) {
++  return PathMeasures().FindRaw(HandleValue(measure));
++}
++
+ SpiPictureRecorder* FindRecorder(FlutterSpiPictureRecorder* recorder) {
+   return Recorders().FindRaw(HandleValue(recorder));
+ }
+@@ -657,6 +667,124 @@ FlutterSpiResult PathOp(FlutterSpiPath* a,
+   return StorePath(SpiPath(DlPath(result.value())), out);
+ }
+ 
++FlutterSpiResult PathMeasureCreate(FlutterSpiPath* path,
++                                   bool force_closed,
++                                   FlutterSpiPathMeasure** out) {
++  const auto path_value = FindPath(path);
++  if (path_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (out == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out = MakeHandle<FlutterSpiPathMeasure>(PathMeasures().Insert(
++      std::make_shared<SpiPathMeasure>(*path_value, force_closed)));
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult PathMeasureSetPath(FlutterSpiPathMeasure* measure,
++                                    FlutterSpiPath* path,
++                                    bool force_closed) {
++  const auto measure_value = FindPathMeasure(measure);
++  const auto path_value = FindPath(path);
++  if (measure_value == nullptr || path_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  measure_value->SetPath(*path_value, force_closed);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult PathMeasureGetLength(FlutterSpiPathMeasure* measure,
++                                      int32_t contour_index,
++                                      float* out) {
++  const auto measure_value = FindPathMeasure(measure);
++  if (measure_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (out == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out = measure_value->GetLength(contour_index);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult PathMeasureGetPosTan(FlutterSpiPathMeasure* measure,
++                                      int32_t contour_index,
++                                      float distance,
++                                      FlutterSpiPoint* out_position,
++                                      FlutterSpiPoint* out_tangent,
++                                      bool* out_ok) {
++  const auto measure_value = FindPathMeasure(measure);
++  if (measure_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (out_position == nullptr || out_tangent == nullptr || out_ok == nullptr ||
++      !std::isfinite(distance)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  SkPoint position;
++  SkVector tangent;
++  *out_ok = measure_value->GetPosTan(contour_index, distance, &position,
++                                     &tangent);
++  if (*out_ok) {
++    *out_position = {position.x(), position.y()};
++    *out_tangent = {tangent.x(), tangent.y()};
++  }
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult PathMeasureGetSegment(FlutterSpiPathMeasure* measure,
++                                       int32_t contour_index,
++                                       float start,
++                                       float end,
++                                       bool start_with_move_to,
++                                       FlutterSpiPath** out) {
++  const auto measure_value = FindPathMeasure(measure);
++  if (measure_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (out == nullptr || !std::isfinite(start) || !std::isfinite(end)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  SkPath segment;
++  if (!measure_value->GetSegment(contour_index, start, end,
++                                 start_with_move_to, &segment)) {
++    return StorePath(SpiPath(), out);
++  }
++  return StorePath(SpiPath(DlPath(segment)), out);
++}
++
++FlutterSpiResult PathMeasureIsClosed(FlutterSpiPathMeasure* measure,
++                                     int32_t contour_index,
++                                     bool* out) {
++  const auto measure_value = FindPathMeasure(measure);
++  if (measure_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (out == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out = measure_value->IsClosed(contour_index);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult PathMeasureNextContour(FlutterSpiPathMeasure* measure,
++                                        bool* out) {
++  const auto measure_value = FindPathMeasure(measure);
++  if (measure_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (out == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out = measure_value->NextContour();
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult PathMeasureRelease(FlutterSpiPathMeasure* measure) {
++  return ToResult(PathMeasures().Release(HandleValue(measure)));
++}
++
+ FlutterSpiResult PathRetain(FlutterSpiPath* path) {
+   return ToResult(Paths().Retain(HandleValue(path)));
+ }
+@@ -1381,14 +1509,14 @@ const FlutterSpiSceneApi kSceneApi = {
+     .path_shift = PathShift,
+     .path_transform = PathTransform,
+     .path_op = PathOp,
+-    .path_measure_create = nullptr,
+-    .path_measure_set_path = nullptr,
+-    .path_measure_get_length = nullptr,
+-    .path_measure_get_pos_tan = nullptr,
+-    .path_measure_get_segment = nullptr,
+-    .path_measure_is_closed = nullptr,
+-    .path_measure_next_contour = nullptr,
+-    .path_measure_release = nullptr,
++    .path_measure_create = PathMeasureCreate,
++    .path_measure_set_path = PathMeasureSetPath,
++    .path_measure_get_length = PathMeasureGetLength,
++    .path_measure_get_pos_tan = PathMeasureGetPosTan,
++    .path_measure_get_segment = PathMeasureGetSegment,
++    .path_measure_is_closed = PathMeasureIsClosed,
++    .path_measure_next_contour = PathMeasureNextContour,
++    .path_measure_release = PathMeasureRelease,
+ };
+ 
+ }  // namespace
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_path_measure.cc b/engine/src/flutter/runtime_spi/scene/spi_path_measure.cc
+new file mode 100644
+index 00000000000..8741f0f3752
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/scene/spi_path_measure.cc
+@@ -0,0 +1,73 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/scene/spi_path_measure.h"
++
++namespace flutter {
++
++SpiPathMeasure::SpiPathMeasure(const SpiPath& path, bool force_closed)
++    : path_measure_(
++          std::make_unique<SkContourMeasureIter>(path.sk_path(), force_closed,
++                                                 1)) {}
++
++void SpiPathMeasure::SetPath(const SpiPath& path, bool force_closed) {
++  path_measure_->reset(path.sk_path(), force_closed, 1);
++  measures_.clear();
++}
++
++float SpiPathMeasure::GetLength(int32_t contour_index) const {
++  if (contour_index < 0 ||
++      static_cast<size_t>(contour_index) >= measures_.size()) {
++    return -1;
++  }
++  return measures_[contour_index]->length();
++}
++
++bool SpiPathMeasure::GetPosTan(int32_t contour_index,
++                               float distance,
++                               SkPoint* position,
++                               SkVector* tangent) const {
++  if (contour_index < 0 ||
++      static_cast<size_t>(contour_index) >= measures_.size()) {
++    return false;
++  }
++  return measures_[contour_index]->getPosTan(distance, position, tangent);
++}
++
++bool SpiPathMeasure::GetSegment(int32_t contour_index,
++                                float start,
++                                float end,
++                                bool start_with_move_to,
++                                SkPath* path) const {
++  if (contour_index < 0 ||
++      static_cast<size_t>(contour_index) >= measures_.size()) {
++    return false;
++  }
++  SkPathBuilder path_builder;
++  if (!measures_[contour_index]->getSegment(start, end, &path_builder,
++                                            start_with_move_to)) {
++    return false;
++  }
++  *path = path_builder.detach();
++  return true;
++}
++
++bool SpiPathMeasure::IsClosed(int32_t contour_index) const {
++  if (contour_index < 0 ||
++      static_cast<size_t>(contour_index) >= measures_.size()) {
++    return false;
++  }
++  return measures_[contour_index]->isClosed();
++}
++
++bool SpiPathMeasure::NextContour() {
++  sk_sp<SkContourMeasure> measure = path_measure_->next();
++  if (measure == nullptr) {
++    return false;
++  }
++  measures_.push_back(std::move(measure));
++  return true;
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_path_measure.h b/engine/src/flutter/runtime_spi/scene/spi_path_measure.h
+new file mode 100644
+index 00000000000..360d7fe0710
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/scene/spi_path_measure.h
+@@ -0,0 +1,42 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_SCENE_SPI_PATH_MEASURE_H_
++#define FLUTTER_RUNTIME_SPI_SCENE_SPI_PATH_MEASURE_H_
++
++#include <cstdint>
++#include <memory>
++#include <vector>
++
++#include "flutter/runtime_spi/scene/spi_path.h"
++#include "third_party/skia/include/core/SkContourMeasure.h"
++
++namespace flutter {
++
++class SpiPathMeasure final {
++ public:
++  SpiPathMeasure(const SpiPath& path, bool force_closed);
++
++  void SetPath(const SpiPath& path, bool force_closed);
++  float GetLength(int32_t contour_index) const;
++  bool GetPosTan(int32_t contour_index,
++                 float distance,
++                 SkPoint* position,
++                 SkVector* tangent) const;
++  bool GetSegment(int32_t contour_index,
++                  float start,
++                  float end,
++                  bool start_with_move_to,
++                  SkPath* path) const;
++  bool IsClosed(int32_t contour_index) const;
++  bool NextContour();
++
++ private:
++  std::unique_ptr<SkContourMeasureIter> path_measure_;
++  std::vector<sk_sp<SkContourMeasure>> measures_;
++};
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_SCENE_SPI_PATH_MEASURE_H_

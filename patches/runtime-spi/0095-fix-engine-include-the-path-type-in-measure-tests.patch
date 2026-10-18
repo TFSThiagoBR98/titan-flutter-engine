@@ -1,0 +1,13 @@
+# Why: provide the complete DlPath definition required by the parity helper.
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_path_measure_parity_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_path_measure_parity_unittests.cc
+index 2af0138c545..313dfb05a59 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_path_measure_parity_unittests.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_path_measure_parity_unittests.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <memory>
+ 
++#include "flutter/display_list/geometry/dl_path.h"
+ #include "flutter/runtime_spi/include/flutter_scene.h"
+ #include "flutter/testing/testing.h"
+ #include "third_party/skia/include/core/SkContourMeasure.h"
