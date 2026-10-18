@@ -1,0 +1,58 @@
+# Why: keep the pre-existing path construction methods available while using
+# the correct Skia path-ops header.
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_path.cc b/engine/src/flutter/runtime_spi/scene/spi_path.cc
+index c9ee1f6d9a6..208ec79a0ac 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_path.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_path.cc
+@@ -9,8 +9,9 @@
+ #include <limits>
+ #include <utility>
+ 
++#include "flutter/display_list/geometry/dl_geometry_conversions.h"
+ #include "flutter/display_list/geometry/dl_path_builder.h"
+-#include "third_party/skia/include/core/SkPathOps.h"
++#include "third_party/skia/include/pathops/SkPathOps.h"
+ 
+ namespace flutter {
+ namespace {
+@@ -129,6 +130,26 @@ void SpiPath::RelativeCubicCurveTo(DlPoint control_point_1,
+   Commit(std::move(path_builder));
+ }
+ 
++void SpiPath::AddRect(const DlRect& rect) {
++  SkPathBuilder path_builder = MutablePath();
++  path_builder.addRect(SkRect::MakeLTRB(rect.GetLeft(), rect.GetTop(),
++                                        rect.GetRight(), rect.GetBottom()));
++  Commit(std::move(path_builder));
++}
++
++void SpiPath::AddOval(const DlRect& bounds) {
++  SkPathBuilder path_builder = MutablePath();
++  path_builder.addOval(SkRect::MakeLTRB(bounds.GetLeft(), bounds.GetTop(),
++                                        bounds.GetRight(), bounds.GetBottom()));
++  Commit(std::move(path_builder));
++}
++
++void SpiPath::AddRoundRect(const DlRoundRect& round_rect) {
++  SkPathBuilder path_builder = MutablePath();
++  path_builder.addRRect(ToSkRRect(round_rect));
++  Commit(std::move(path_builder));
++}
++
+ void SpiPath::ArcTo(const DlRect& oval,
+                     DlScalar start_angle,
+                     DlScalar sweep_angle,
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_path.h b/engine/src/flutter/runtime_spi/scene/spi_path.h
+index a83013d06a9..171be6667e1 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_path.h
++++ b/engine/src/flutter/runtime_spi/scene/spi_path.h
+@@ -38,6 +38,9 @@ class SpiPath final {
+   void RelativeCubicCurveTo(DlPoint control_point_1,
+                             DlPoint control_point_2,
+                             DlPoint point);
++  void AddRect(const DlRect& rect);
++  void AddOval(const DlRect& bounds);
++  void AddRoundRect(const DlRoundRect& round_rect);
+   void ArcTo(const DlRect& oval,
+              DlScalar start_angle,
+              DlScalar sweep_angle,

@@ -1,0 +1,612 @@
+# Why: freeze the ABI 0.16 path surface and make each new path operation fail
+# explicitly until the SkPath-backed implementation is present.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index ed4afa9d529..bb530e3c75b 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -231,6 +231,7 @@ if (enable_unittests) {
+       "scene/spi_handle_table_unittests.cc",
+       "scene/spi_canvas_parity_unittests.cc",
+       "scene/spi_path_unittests.cc",
++      "scene/spi_path_parity_unittests.cc",
+       "scene/spi_paint_unittests.cc",
+       "scene/spi_scene_builder_parity_unittests.cc",
+       "scene/spi_scene_layers_parity_unittests.cc",
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 5f53d2d416c..94ff0a3e2d8 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -786,7 +786,47 @@ SPI_EXPECT_OFFSET(FlutterSpiSceneApi, canvas_get_local_clip_bounds,
+                   sizeof(void*) == 8 ? 584 : 292);
+ SPI_EXPECT_OFFSET(FlutterSpiSceneApi, canvas_get_destination_clip_bounds,
+                   sizeof(void*) == 8 ? 592 : 296);
+-SPI_EXPECT_SIZE(FlutterSpiSceneApi, sizeof(void*) == 8 ? 600 : 300);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_relative_move_to,
++                  sizeof(void*) == 8 ? 600 : 300);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_relative_line_to,
++                  sizeof(void*) == 8 ? 608 : 304);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_relative_quad_to,
++                  sizeof(void*) == 8 ? 616 : 308);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_relative_conic_to,
++                  sizeof(void*) == 8 ? 624 : 312);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_relative_cubic_to,
++                  sizeof(void*) == 8 ? 632 : 316);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_arc_to,
++                  sizeof(void*) == 8 ? 640 : 320);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_arc_to_point,
++                  sizeof(void*) == 8 ? 648 : 324);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_relative_arc_to_point,
++                  sizeof(void*) == 8 ? 656 : 328);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_add_arc,
++                  sizeof(void*) == 8 ? 664 : 332);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_add_polygon,
++                  sizeof(void*) == 8 ? 672 : 336);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_add_rsuperellipse,
++                  sizeof(void*) == 8 ? 680 : 340);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_add_path,
++                  sizeof(void*) == 8 ? 688 : 344);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_reset,
++                  sizeof(void*) == 8 ? 696 : 348);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_get_fill_type,
++                  sizeof(void*) == 8 ? 704 : 352);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_contains,
++                  sizeof(void*) == 8 ? 712 : 356);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_get_bounds,
++                  sizeof(void*) == 8 ? 720 : 360);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_copy,
++                  sizeof(void*) == 8 ? 728 : 364);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_shift,
++                  sizeof(void*) == 8 ? 736 : 368);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_transform,
++                  sizeof(void*) == 8 ? 744 : 372);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_op,
++                  sizeof(void*) == 8 ? 752 : 376);
++SPI_EXPECT_SIZE(FlutterSpiSceneApi, sizeof(void*) == 8 ? 760 : 380);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiPixels, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiPixels, pixels,
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index 12826df1018..12b532faed8 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 15
++#define FLUTTER_SPI_VERSION_MINOR 16
+ 
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_scene.h b/engine/src/flutter/runtime_spi/include/flutter_scene.h
+index 78be0c5213f..47edce389f7 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_scene.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_scene.h
+@@ -64,6 +64,8 @@ typedef struct {
+   FlutterSpiPoint radii[4];
+ } FlutterSpiRRect;
+ 
++typedef FlutterSpiRRect FlutterSpiRSuperellipse;
++
+ typedef struct {
+   float m[16];
+ } FlutterSpiMatrix;
+@@ -141,6 +143,11 @@ enum {
+   kFlutterSpiClipAntiAliasWithSaveLayer,
+ };
+ 
++enum {
++  kFlutterSpiPathAddModeAppend = 0,
++  kFlutterSpiPathAddModeExtend = 1,
++};
++
+ typedef enum {
+   kFlutterSpiBlurStyleNormal = 0,
+   kFlutterSpiBlurStyleSolid,
+@@ -405,6 +412,88 @@ struct FlutterSpiSceneApi {
+   FlutterSpiResult (*canvas_get_destination_clip_bounds)(
+       FlutterSpiPictureRecorder* recorder,
+       FlutterSpiRect* out);
++  FlutterSpiResult (*path_relative_move_to)(FlutterSpiPath* path,
++                                            float dx,
++                                            float dy);
++  FlutterSpiResult (*path_relative_line_to)(FlutterSpiPath* path,
++                                            float dx,
++                                            float dy);
++  FlutterSpiResult (*path_relative_quad_to)(FlutterSpiPath* path,
++                                            float dx1,
++                                            float dy1,
++                                            float dx2,
++                                            float dy2);
++  FlutterSpiResult (*path_relative_conic_to)(FlutterSpiPath* path,
++                                             float dx1,
++                                             float dy1,
++                                             float dx2,
++                                             float dy2,
++                                             float weight);
++  FlutterSpiResult (*path_relative_cubic_to)(FlutterSpiPath* path,
++                                             float dx1,
++                                             float dy1,
++                                             float dx2,
++                                             float dy2,
++                                             float dx3,
++                                             float dy3);
++  FlutterSpiResult (*path_arc_to)(FlutterSpiPath* path,
++                                  const FlutterSpiRect* oval,
++                                  float start_radians,
++                                  float sweep_radians,
++                                  bool force_move_to);
++  FlutterSpiResult (*path_arc_to_point)(FlutterSpiPath* path,
++                                        float x,
++                                        float y,
++                                        float radius_x,
++                                        float radius_y,
++                                        float rotation_degrees,
++                                        bool large_arc,
++                                        bool clockwise);
++  FlutterSpiResult (*path_relative_arc_to_point)(FlutterSpiPath* path,
++                                                 float dx,
++                                                 float dy,
++                                                 float radius_x,
++                                                 float radius_y,
++                                                 float rotation_degrees,
++                                                 bool large_arc,
++                                                 bool clockwise);
++  FlutterSpiResult (*path_add_arc)(FlutterSpiPath* path,
++                                   const FlutterSpiRect* oval,
++                                   float start_radians,
++                                   float sweep_radians);
++  FlutterSpiResult (*path_add_polygon)(FlutterSpiPath* path,
++                                       const FlutterSpiPoint* points,
++                                       size_t count,
++                                       bool close);
++  FlutterSpiResult (*path_add_rsuperellipse)(
++      FlutterSpiPath* path,
++      const FlutterSpiRSuperellipse* rsuperellipse);
++  FlutterSpiResult (*path_add_path)(FlutterSpiPath* dst,
++                                    FlutterSpiPath* src,
++                                    float dx,
++                                    float dy,
++                                    const double* matrix4,
++                                    int32_t mode);
++  FlutterSpiResult (*path_reset)(FlutterSpiPath* path);
++  FlutterSpiResult (*path_get_fill_type)(FlutterSpiPath* path, int32_t* out);
++  FlutterSpiResult (*path_contains)(FlutterSpiPath* path,
++                                    float x,
++                                    float y,
++                                    bool* out);
++  FlutterSpiResult (*path_get_bounds)(FlutterSpiPath* path,
++                                      FlutterSpiRect* out);
++  FlutterSpiResult (*path_copy)(FlutterSpiPath* src, FlutterSpiPath** out);
++  FlutterSpiResult (*path_shift)(FlutterSpiPath* src,
++                                 float dx,
++                                 float dy,
++                                 FlutterSpiPath** out);
++  FlutterSpiResult (*path_transform)(FlutterSpiPath* src,
++                                     const double matrix4[16],
++                                     FlutterSpiPath** out);
++  FlutterSpiResult (*path_op)(FlutterSpiPath* a,
++                              FlutterSpiPath* b,
++                              int32_t operation,
++                              FlutterSpiPath** out);
+ };
+ 
+ #ifdef __cplusplus
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+index 5855c9e1223..11ca4e8dc85 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+@@ -1014,6 +1014,26 @@ const FlutterSpiSceneApi kSceneApi = {
+     .canvas_get_transform = CanvasGetTransform,
+     .canvas_get_local_clip_bounds = CanvasGetLocalClipBounds,
+     .canvas_get_destination_clip_bounds = CanvasGetDestinationClipBounds,
++    .path_relative_move_to = nullptr,
++    .path_relative_line_to = nullptr,
++    .path_relative_quad_to = nullptr,
++    .path_relative_conic_to = nullptr,
++    .path_relative_cubic_to = nullptr,
++    .path_arc_to = nullptr,
++    .path_arc_to_point = nullptr,
++    .path_relative_arc_to_point = nullptr,
++    .path_add_arc = nullptr,
++    .path_add_polygon = nullptr,
++    .path_add_rsuperellipse = nullptr,
++    .path_add_path = nullptr,
++    .path_reset = nullptr,
++    .path_get_fill_type = nullptr,
++    .path_contains = nullptr,
++    .path_get_bounds = nullptr,
++    .path_copy = nullptr,
++    .path_shift = nullptr,
++    .path_transform = nullptr,
++    .path_op = nullptr,
+ };
+ 
+ }  // namespace
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_path_parity_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_path_parity_unittests.cc
+new file mode 100644
+index 00000000000..c13a8ecc64a
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/scene/spi_path_parity_unittests.cc
+@@ -0,0 +1,339 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/scene/spi_canvas.h"
++
++#include <array>
++
++#include "flutter/display_list/geometry/dl_path_builder.h"
++#include "flutter/runtime_spi/include/flutter_scene.h"
++#include "flutter/testing/testing.h"
++#include "third_party/skia/include/core/SkPathBuilder.h"
++#include "third_party/skia/include/pathops/SkPathOps.h"
++
++namespace flutter::testing {
++namespace {
++
++constexpr float kPi = 3.14159265358979323846f;
++constexpr FlutterSpiRect kRect = {
++    .left = 1.0f, .top = 2.0f, .right = 30.0f, .bottom = 40.0f};
++constexpr FlutterSpiRSuperellipse kRSuperellipse = {
++    .rect = {.left = 1.0f, .top = 2.0f, .right = 30.0f, .bottom = 40.0f},
++    .radii = {{.x = 4.0f, .y = 5.0f},
++              {.x = 6.0f, .y = 7.0f},
++              {.x = 8.0f, .y = 9.0f},
++              {.x = 10.0f, .y = 11.0f}}};
++
++const FlutterSpiSceneApi* Api() {
++  return SpiSceneApi();
++}
++
++FlutterSpiPath* CreatePath() {
++  FlutterSpiPath* path = nullptr;
++  EXPECT_EQ(Api()->path_create(nullptr, &path), kFlutterSpiOk);
++  EXPECT_NE(path, nullptr);
++  return path;
++}
++
++void ExpectPathEquals(FlutterSpiPath* actual, const SkPath& expected) {
++  const DlPath* path = SpiPathForTesting(actual);
++  ASSERT_NE(path, nullptr);
++  EXPECT_EQ(path->GetSkPath(), expected);
++}
++
++TEST(SpiPathParity, RelativeMoveTo) {
++  ASSERT_NE(Api()->path_relative_move_to, nullptr);
++  FlutterSpiPath* path = CreatePath();
++  ASSERT_EQ(Api()->path_move_to(path, 1.0f, 2.0f), kFlutterSpiOk);
++  ASSERT_EQ(Api()->path_relative_move_to(path, 3.0f, 4.0f), kFlutterSpiOk);
++
++  SkPathBuilder expected;
++  expected.moveTo({1, 2}).rMoveTo({3, 4});
++  ExpectPathEquals(path, expected.detach());
++  EXPECT_EQ(Api()->path_release(path), kFlutterSpiOk);
++}
++
++TEST(SpiPathParity, RelativeLineTo) {
++  ASSERT_NE(Api()->path_relative_line_to, nullptr);
++  FlutterSpiPath* path = CreatePath();
++  ASSERT_EQ(Api()->path_move_to(path, 1.0f, 2.0f), kFlutterSpiOk);
++  ASSERT_EQ(Api()->path_relative_line_to(path, 3.0f, 4.0f), kFlutterSpiOk);
++
++  SkPathBuilder expected;
++  expected.moveTo({1, 2}).rLineTo({3, 4});
++  ExpectPathEquals(path, expected.detach());
++  EXPECT_EQ(Api()->path_release(path), kFlutterSpiOk);
++}
++
++TEST(SpiPathParity, RelativeQuadTo) {
++  ASSERT_NE(Api()->path_relative_quad_to, nullptr);
++  FlutterSpiPath* path = CreatePath();
++  ASSERT_EQ(Api()->path_move_to(path, 1.0f, 2.0f), kFlutterSpiOk);
++  ASSERT_EQ(Api()->path_relative_quad_to(path, 3, 4, 5, 6), kFlutterSpiOk);
++
++  SkPathBuilder expected;
++  expected.moveTo({1, 2}).rQuadTo({3, 4}, {5, 6});
++  ExpectPathEquals(path, expected.detach());
++  EXPECT_EQ(Api()->path_release(path), kFlutterSpiOk);
++}
++
++TEST(SpiPathParity, RelativeConicTo) {
++  ASSERT_NE(Api()->path_relative_conic_to, nullptr);
++  FlutterSpiPath* path = CreatePath();
++  ASSERT_EQ(Api()->path_move_to(path, 1.0f, 2.0f), kFlutterSpiOk);
++  ASSERT_EQ(Api()->path_relative_conic_to(path, 3, 4, 5, 6, 0.75f),
++            kFlutterSpiOk);
++
++  SkPathBuilder expected;
++  expected.moveTo({1, 2}).rConicTo({3, 4}, {5, 6}, 0.75f);
++  ExpectPathEquals(path, expected.detach());
++  EXPECT_EQ(Api()->path_release(path), kFlutterSpiOk);
++}
++
++TEST(SpiPathParity, RelativeCubicTo) {
++  ASSERT_NE(Api()->path_relative_cubic_to, nullptr);
++  FlutterSpiPath* path = CreatePath();
++  ASSERT_EQ(Api()->path_move_to(path, 1.0f, 2.0f), kFlutterSpiOk);
++  ASSERT_EQ(Api()->path_relative_cubic_to(path, 3, 4, 5, 6, 7, 8),
++            kFlutterSpiOk);
++
++  SkPathBuilder expected;
++  expected.moveTo({1, 2}).rCubicTo({3, 4}, {5, 6}, {7, 8});
++  ExpectPathEquals(path, expected.detach());
++  EXPECT_EQ(Api()->path_release(path), kFlutterSpiOk);
++}
++
++TEST(SpiPathParity, ArcTo) {
++  ASSERT_NE(Api()->path_arc_to, nullptr);
++  FlutterSpiPath* path = CreatePath();
++  ASSERT_EQ(Api()->path_arc_to(path, &kRect, 0.25f, -0.5f, true),
++            kFlutterSpiOk);
++
++  SkPathBuilder expected;
++  expected.arcTo(SkRect::MakeLTRB(1, 2, 30, 40), 0.25f * 180.0f / kPi,
++                 -0.5f * 180.0f / kPi, true);
++  ExpectPathEquals(path, expected.detach());
++  EXPECT_EQ(Api()->path_release(path), kFlutterSpiOk);
++}
++
++TEST(SpiPathParity, ArcToPoint) {
++  ASSERT_NE(Api()->path_arc_to_point, nullptr);
++  FlutterSpiPath* path = CreatePath();
++  ASSERT_EQ(Api()->path_move_to(path, 1.0f, 2.0f), kFlutterSpiOk);
++  ASSERT_EQ(Api()->path_arc_to_point(path, 20, 30, 4, 5, 15, true, true),
++            kFlutterSpiOk);
++
++  SkPathBuilder expected;
++  expected.moveTo({1, 2}).arcTo({4, 5}, 15,
++                                SkPathBuilder::kLarge_ArcSize,
++                                SkPathDirection::kCW, {20, 30});
++  ExpectPathEquals(path, expected.detach());
++  EXPECT_EQ(Api()->path_release(path), kFlutterSpiOk);
++}
++
++TEST(SpiPathParity, RelativeArcToPoint) {
++  ASSERT_NE(Api()->path_relative_arc_to_point, nullptr);
++  FlutterSpiPath* path = CreatePath();
++  ASSERT_EQ(Api()->path_move_to(path, 1.0f, 2.0f), kFlutterSpiOk);
++  ASSERT_EQ(Api()->path_relative_arc_to_point(path, 20, 30, 4, 5, 15, false,
++                                               false),
++            kFlutterSpiOk);
++
++  SkPathBuilder expected;
++  expected.moveTo({1, 2}).rArcTo({4, 5}, 15,
++                                 SkPathBuilder::kSmall_ArcSize,
++                                 SkPathDirection::kCCW, {20, 30});
++  ExpectPathEquals(path, expected.detach());
++  EXPECT_EQ(Api()->path_release(path), kFlutterSpiOk);
++}
++
++TEST(SpiPathParity, AddArc) {
++  ASSERT_NE(Api()->path_add_arc, nullptr);
++  FlutterSpiPath* path = CreatePath();
++  ASSERT_EQ(Api()->path_add_arc(path, &kRect, 0.25f, -0.5f), kFlutterSpiOk);
++
++  SkPathBuilder expected;
++  expected.addArc(SkRect::MakeLTRB(1, 2, 30, 40), 0.25f * 180.0f / kPi,
++                  -0.5f * 180.0f / kPi);
++  ExpectPathEquals(path, expected.detach());
++  EXPECT_EQ(Api()->path_release(path), kFlutterSpiOk);
++}
++
++TEST(SpiPathParity, AddPolygon) {
++  ASSERT_NE(Api()->path_add_polygon, nullptr);
++  FlutterSpiPath* path = CreatePath();
++  constexpr std::array<FlutterSpiPoint, 3> points = {
++      FlutterSpiPoint{1, 2}, FlutterSpiPoint{3, 4}, FlutterSpiPoint{5, 6}};
++  ASSERT_EQ(Api()->path_add_polygon(path, points.data(), points.size(), true),
++            kFlutterSpiOk);
++
++  SkPathBuilder expected;
++  expected.addPolygon({{{1, 2}, {3, 4}, {5, 6}}}, true);
++  ExpectPathEquals(path, expected.detach());
++  EXPECT_EQ(Api()->path_release(path), kFlutterSpiOk);
++}
++
++TEST(SpiPathParity, AddRSuperellipse) {
++  ASSERT_NE(Api()->path_add_rsuperellipse, nullptr);
++  FlutterSpiPath* path = CreatePath();
++  ASSERT_EQ(Api()->path_add_rsuperellipse(path, &kRSuperellipse),
++            kFlutterSpiOk);
++
++  const auto expected_rse = DlRoundSuperellipse::MakeRectRadii(
++      DlRect::MakeLTRB(1, 2, 30, 40),
++      {.top_left = {4, 5},
++       .top_right = {6, 7},
++       .bottom_left = {10, 11},
++       .bottom_right = {8, 9}});
++  DlPathBuilder expected_builder;
++  expected_builder.AddRoundSuperellipse(expected_rse);
++  ExpectPathEquals(path, expected_builder.TakePath().GetSkPath());
++  EXPECT_EQ(Api()->path_release(path), kFlutterSpiOk);
++}
++
++TEST(SpiPathParity, AddPathExtendWithMatrix) {
++  ASSERT_NE(Api()->path_add_path, nullptr);
++  FlutterSpiPath* destination = CreatePath();
++  FlutterSpiPath* source = CreatePath();
++  ASSERT_EQ(Api()->path_move_to(destination, 1, 2), kFlutterSpiOk);
++  ASSERT_EQ(Api()->path_line_to(destination, 3, 4), kFlutterSpiOk);
++  ASSERT_EQ(Api()->path_add_rect(source, &kRect), kFlutterSpiOk);
++  constexpr double matrix4[16] = {
++      1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 3, 0, 1};
++  ASSERT_EQ(Api()->path_add_path(destination, source, 4, 5, matrix4,
++                                 kFlutterSpiPathAddModeExtend),
++            kFlutterSpiOk);
++
++  SkMatrix matrix = SkMatrix::I();
++  matrix.setTranslateX(6);
++  matrix.setTranslateY(8);
++  SkPathBuilder expected;
++  expected.moveTo({1, 2}).lineTo({3, 4}).addPath(
++      SkPath::Rect(SkRect::MakeLTRB(1, 2, 30, 40)), matrix,
++      SkPath::kExtend_AddPathMode);
++  ExpectPathEquals(destination, expected.detach());
++  EXPECT_EQ(Api()->path_release(source), kFlutterSpiOk);
++  EXPECT_EQ(Api()->path_release(destination), kFlutterSpiOk);
++}
++
++TEST(SpiPathParity, Reset) {
++  ASSERT_NE(Api()->path_reset, nullptr);
++  FlutterSpiPath* path = CreatePath();
++  ASSERT_EQ(Api()->path_add_rect(path, &kRect), kFlutterSpiOk);
++  ASSERT_EQ(Api()->path_reset(path), kFlutterSpiOk);
++  ExpectPathEquals(path, SkPath());
++  EXPECT_EQ(Api()->path_release(path), kFlutterSpiOk);
++}
++
++TEST(SpiPathParity, GetFillType) {
++  ASSERT_NE(Api()->path_get_fill_type, nullptr);
++  FlutterSpiPath* path = CreatePath();
++  ASSERT_EQ(Api()->path_set_fill_type(path, kFlutterSpiFillTypeEvenOdd),
++            kFlutterSpiOk);
++  int32_t fill_type = -1;
++  ASSERT_EQ(Api()->path_get_fill_type(path, &fill_type), kFlutterSpiOk);
++  EXPECT_EQ(fill_type, kFlutterSpiFillTypeEvenOdd);
++  EXPECT_EQ(Api()->path_release(path), kFlutterSpiOk);
++}
++
++TEST(SpiPathParity, ContainsMatchesSkPath) {
++  ASSERT_NE(Api()->path_contains, nullptr);
++  FlutterSpiPath* path = CreatePath();
++  ASSERT_EQ(Api()->path_add_rect(path, &kRect), kFlutterSpiOk);
++  bool contains = false;
++  ASSERT_EQ(Api()->path_contains(path, 10, 20, &contains), kFlutterSpiOk);
++  EXPECT_EQ(contains, SkPath::Rect(SkRect::MakeLTRB(1, 2, 30, 40))
++                          .contains({10, 20}));
++  EXPECT_EQ(Api()->path_release(path), kFlutterSpiOk);
++}
++
++TEST(SpiPathParity, BoundsMatchSkPath) {
++  ASSERT_NE(Api()->path_get_bounds, nullptr);
++  FlutterSpiPath* path = CreatePath();
++  ASSERT_EQ(Api()->path_add_rect(path, &kRect), kFlutterSpiOk);
++  FlutterSpiRect bounds = {};
++  ASSERT_EQ(Api()->path_get_bounds(path, &bounds), kFlutterSpiOk);
++  const SkRect expected = SkPath::Rect(SkRect::MakeLTRB(1, 2, 30, 40))
++                              .getBounds();
++  EXPECT_FLOAT_EQ(bounds.left, expected.left());
++  EXPECT_FLOAT_EQ(bounds.top, expected.top());
++  EXPECT_FLOAT_EQ(bounds.right, expected.right());
++  EXPECT_FLOAT_EQ(bounds.bottom, expected.bottom());
++  EXPECT_EQ(Api()->path_release(path), kFlutterSpiOk);
++}
++
++TEST(SpiPathParity, CopyMakesANewPath) {
++  ASSERT_NE(Api()->path_copy, nullptr);
++  FlutterSpiPath* source = CreatePath();
++  ASSERT_EQ(Api()->path_add_rect(source, &kRect), kFlutterSpiOk);
++  FlutterSpiPath* copy = nullptr;
++  ASSERT_EQ(Api()->path_copy(source, &copy), kFlutterSpiOk);
++  ASSERT_NE(copy, source);
++  ExpectPathEquals(copy, SkPath::Rect(SkRect::MakeLTRB(1, 2, 30, 40)));
++  EXPECT_EQ(Api()->path_release(copy), kFlutterSpiOk);
++  EXPECT_EQ(Api()->path_release(source), kFlutterSpiOk);
++}
++
++TEST(SpiPathParity, ShiftMakesANewPath) {
++  ASSERT_NE(Api()->path_shift, nullptr);
++  FlutterSpiPath* source = CreatePath();
++  ASSERT_EQ(Api()->path_add_rect(source, &kRect), kFlutterSpiOk);
++  FlutterSpiPath* shifted = nullptr;
++  ASSERT_EQ(Api()->path_shift(source, 5, 6, &shifted), kFlutterSpiOk);
++  ExpectPathEquals(shifted,
++                   SkPath::Rect(SkRect::MakeLTRB(1, 2, 30, 40))
++                       .makeOffset(5, 6));
++  EXPECT_EQ(Api()->path_release(shifted), kFlutterSpiOk);
++  EXPECT_EQ(Api()->path_release(source), kFlutterSpiOk);
++}
++
++TEST(SpiPathParity, TransformMakesANewPath) {
++  ASSERT_NE(Api()->path_transform, nullptr);
++  FlutterSpiPath* source = CreatePath();
++  ASSERT_EQ(Api()->path_add_rect(source, &kRect), kFlutterSpiOk);
++  constexpr double matrix4[16] = {
++      2, 0, 0, 0, 0, 3, 0, 0, 0, 0, 1, 0, 5, 6, 0, 1};
++  FlutterSpiPath* transformed = nullptr;
++  ASSERT_EQ(Api()->path_transform(source, matrix4, &transformed), kFlutterSpiOk);
++  ExpectPathEquals(transformed,
++                   SkPath::Rect(SkRect::MakeLTRB(1, 2, 30, 40)).makeTransform(
++                       SkMatrix::MakeAll(2, 0, 5, 0, 3, 6, 0, 0, 1)));
++  EXPECT_EQ(Api()->path_release(transformed), kFlutterSpiOk);
++  EXPECT_EQ(Api()->path_release(source), kFlutterSpiOk);
++}
++
++TEST(SpiPathParity, PathOpUnion) {
++  ASSERT_NE(Api()->path_op, nullptr);
++  FlutterSpiPath* first = CreatePath();
++  FlutterSpiPath* second = CreatePath();
++  ASSERT_EQ(Api()->path_add_rect(first, &kRect), kFlutterSpiOk);
++  const FlutterSpiRect second_rect = {20, 10, 40, 50};
++  ASSERT_EQ(Api()->path_add_rect(second, &second_rect), kFlutterSpiOk);
++  FlutterSpiPath* result = nullptr;
++  ASSERT_EQ(Api()->path_op(first, second, kUnion_SkPathOp, &result),
++            kFlutterSpiOk);
++  const auto expected = Op(
++      SkPath::Rect(SkRect::MakeLTRB(1, 2, 30, 40)),
++      SkPath::Rect(SkRect::MakeLTRB(20, 10, 40, 50)), kUnion_SkPathOp);
++  ASSERT_TRUE(expected.has_value());
++  ExpectPathEquals(result, expected.value());
++  EXPECT_EQ(Api()->path_release(result), kFlutterSpiOk);
++  EXPECT_EQ(Api()->path_release(second), kFlutterSpiOk);
++  EXPECT_EQ(Api()->path_release(first), kFlutterSpiOk);
++}
++
++TEST(SpiPathParity, PathOpFailureReturnsNoHandle) {
++  ASSERT_NE(Api()->path_op, nullptr);
++  FlutterSpiPath* first = CreatePath();
++  FlutterSpiPath* second = CreatePath();
++  FlutterSpiPath* result = nullptr;
++  EXPECT_EQ(Api()->path_op(first, second, 99, &result),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(result, nullptr);
++  EXPECT_EQ(Api()->path_release(second), kFlutterSpiOk);
++  EXPECT_EQ(Api()->path_release(first), kFlutterSpiOk);
++}
++
++}  // namespace
++}  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index 3fc6278c37e..3c19184178b 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -93,7 +93,7 @@ TEST(SpiAbi, ImageEnumValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawUnmodified, 2);
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawExtendedRGBA128, 3);
+   EXPECT_EQ(kFlutterSpiImageByteFormatPNG, 4);
+-  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 15);
++  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 16);
+ }
+ 
+ TEST(SpiAbi, SemanticsLayoutIsFrozen) {
+@@ -683,7 +683,27 @@ TEST(SpiAbi, SceneApiLayoutIsFrozen) {
+                     584, 292);
+   EXPECT_SPI_OFFSET(FlutterSpiSceneApi, canvas_get_destination_clip_bounds,
+                     592, 296);
+-  EXPECT_EQ(sizeof(FlutterSpiSceneApi), sizeof(void*) == 8 ? 600u : 300u);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_relative_move_to, 600, 300);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_relative_line_to, 608, 304);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_relative_quad_to, 616, 308);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_relative_conic_to, 624, 312);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_relative_cubic_to, 632, 316);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_arc_to, 640, 320);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_arc_to_point, 648, 324);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_relative_arc_to_point, 656, 328);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_add_arc, 664, 332);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_add_polygon, 672, 336);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_add_rsuperellipse, 680, 340);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_add_path, 688, 344);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_reset, 696, 348);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_get_fill_type, 704, 352);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_contains, 712, 356);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_get_bounds, 720, 360);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_copy, 728, 364);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_shift, 736, 368);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_transform, 744, 372);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_op, 752, 376);
++  EXPECT_EQ(sizeof(FlutterSpiSceneApi), sizeof(void*) == 8 ? 760u : 380u);
+ }
+ 
+ TEST(SpiAbi, ImageLayoutIsFrozen) {
