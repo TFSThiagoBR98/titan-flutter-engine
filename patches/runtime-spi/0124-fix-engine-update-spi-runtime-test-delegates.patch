@@ -1,0 +1,30 @@
+# Why: keep SPI engine handle declarations in the global C namespace and
+# update the runtime delegate mock after the interface change.
+diff --git a/engine/src/flutter/lib/ui/window/platform_configuration.h b/engine/src/flutter/lib/ui/window/platform_configuration.h
+index d675e5e5df7..f09127513fb 100644
+--- a/engine/src/flutter/lib/ui/window/platform_configuration.h
++++ b/engine/src/flutter/lib/ui/window/platform_configuration.h
+@@ -25,8 +25,9 @@
+ #include "third_party/tonic/dart_persistent_value.h"
+ #include "third_party/tonic/typed_data/dart_byte_data.h"
+ 
+-namespace flutter {
+ struct FlutterSpiEngine;
++
++namespace flutter {
+ class FontCollection;
+ class PlatformMessage;
+ class PlatformMessageHandler;
+diff --git a/engine/src/flutter/shell/common/engine_unittests.cc b/engine/src/flutter/shell/common/engine_unittests.cc
+index f5f28fea55c..b9e8f0c001a 100644
+--- a/engine/src/flutter/shell/common/engine_unittests.cc
++++ b/engine/src/flutter/shell/common/engine_unittests.cc
+@@ -131,7 +131,7 @@ class MockRuntimeDelegate : public RuntimeDelegate {
+               HandlePlatformMessage,
+               (std::unique_ptr<PlatformMessage>),
+               (override));
+-  MOCK_METHOD(FontCollection&, GetFontCollection, (), (override));
++  MOCK_METHOD(FlutterSpiEngine*, GetSpiEngine, (), (override));
+   MOCK_METHOD(std::shared_ptr<AssetManager>, GetAssetManager, (), (override));
+   MOCK_METHOD(void, OnRootIsolateCreated, (), (override));
+   MOCK_METHOD(void,
