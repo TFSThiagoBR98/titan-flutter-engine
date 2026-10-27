@@ -1,0 +1,191 @@
+# Why: Keep asset lookup and byte copying off the UI thread while preserving
+# UI-thread callbacks and the existing fallback when no concurrent worker is
+# available.
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+index 1562daf621c..2b4c375abe1 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+@@ -137,9 +137,11 @@ SpiRuntimeBackend::SpiRuntimeBackend(
+     fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
+     fml::RefPtr<SkiaUnrefQueue> unref_queue,
+     bool impeller_enabled,
+-    std::shared_future<impeller::RuntimeStageBackend> runtime_stage_backend)
++    std::shared_future<impeller::RuntimeStageBackend> runtime_stage_backend,
++    std::shared_ptr<fml::ConcurrentTaskRunner> concurrent_worker_task_runner)
+     : runtime_delegate_(runtime_delegate),
+       task_runners_(task_runners),
++      concurrent_worker_task_runner_(std::move(concurrent_worker_task_runner)),
+       io_manager_(std::move(io_manager)),
+       table_(table),
+       engine_api_(SpiEngineApi::Create()),
+@@ -212,25 +214,37 @@ FlutterSpiResult SpiRuntimeBackend::ReadAsset(
+   }
+   const std::shared_ptr<AssetManager> asset_manager =
+       runtime_delegate_.GetAssetManager();
+-  if (asset_manager == nullptr) {
+-    task_runners_.GetUITaskRunner()->PostTask([callback, user_data] {
+-      callback(user_data, kFlutterSpiInternalError, nullptr, 0);
++  auto post_result = [ui_task_runner = task_runners_.GetUITaskRunner(),
++                      callback, user_data](FlutterSpiResult result,
++                                           std::vector<uint8_t> bytes) {
++    ui_task_runner->PostTask([callback, user_data, result,
++                              bytes = std::move(bytes)]() mutable {
++      const uint8_t* data = result == kFlutterSpiOk ? bytes.data() : nullptr;
++      callback(user_data, result, data, bytes.size());
+     });
++  };
++  if (asset_manager == nullptr) {
++    post_result(kFlutterSpiInternalError, {});
+     return kFlutterSpiOk;
+   }
+-  std::unique_ptr<fml::Mapping> mapping = asset_manager->GetAsMapping(name);
+-  if (mapping == nullptr) {
+-    task_runners_.GetUITaskRunner()->PostTask([callback, user_data] {
+-      callback(user_data, kFlutterSpiInvalidArgument, nullptr, 0);
+-    });
+-    return kFlutterSpiOk;
++
++  const std::string asset_name(name);
++  auto read_asset = [asset_manager, asset_name, post_result]() mutable {
++    std::unique_ptr<fml::Mapping> mapping =
++        asset_manager->GetAsMapping(asset_name);
++    if (mapping == nullptr) {
++      post_result(kFlutterSpiInvalidArgument, {});
++      return;
++    }
++    std::vector<uint8_t> bytes(mapping->GetMapping(),
++                               mapping->GetMapping() + mapping->GetSize());
++    post_result(kFlutterSpiOk, std::move(bytes));
++  };
++  if (concurrent_worker_task_runner_ != nullptr) {
++    concurrent_worker_task_runner_->PostTask(std::move(read_asset));
++  } else {
++    read_asset();
+   }
+-  std::vector<uint8_t> bytes(mapping->GetMapping(),
+-                             mapping->GetMapping() + mapping->GetSize());
+-  task_runners_.GetUITaskRunner()->PostTask(
+-      [callback, user_data, bytes = std::move(bytes)]() mutable {
+-        callback(user_data, kFlutterSpiOk, bytes.data(), bytes.size());
+-      });
+   return kFlutterSpiOk;
+ }
+ 
+@@ -974,10 +988,10 @@ FlutterSpiResult SpiRuntimeBackend::PictureToImageSyncWithFormat(
+ }
+ 
+ FlutterSpiResult SpiRuntimeBackend::SceneToImage(FlutterSpiScene* scene,
+-                                                int32_t width,
+-                                                int32_t height,
+-                                                FlutterSpiImageCallback callback,
+-                                                void* user_data) {
++    int32_t width,
++    int32_t height,
++    FlutterSpiImageCallback callback,
++    void* user_data) {
+   if (stop_requested_) {
+     return kFlutterSpiInternalError;
+   }
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.h b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+index 431ad7f4eec..9939192dac5 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.h
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+@@ -14,6 +14,7 @@
+ #include <vector>
+ 
+ #include "flutter/common/task_runners.h"
++#include "flutter/fml/concurrent_message_loop.h"
+ #include "flutter/fml/time/time_point.h"
+ #include "flutter/lib/ui/semantics/custom_accessibility_action.h"
+ #include "flutter/lib/ui/window/platform_message_response.h"
+@@ -62,7 +63,9 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+                     fml::RefPtr<SkiaUnrefQueue> unref_queue = nullptr,
+                     bool impeller_enabled = false,
+                     std::shared_future<impeller::RuntimeStageBackend>
+-                        runtime_stage_backend = {});
++                        runtime_stage_backend = {},
++                    std::shared_ptr<fml::ConcurrentTaskRunner>
++                        concurrent_worker_task_runner = nullptr);
+   ~SpiRuntimeBackend() override;
+ 
+   std::unique_ptr<RuntimeBackend> Clone() const override;
+@@ -207,6 +210,7 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+ 
+   RuntimeDelegate& runtime_delegate_;
+   TaskRunners task_runners_;
++  std::shared_ptr<fml::ConcurrentTaskRunner> concurrent_worker_task_runner_;
+   fml::WeakPtr<IOManager> io_manager_;
+   FlutterSpiRuntimeTable table_ = {};
+   FlutterSpiEngineApi engine_api_ = {};
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc
+index 432895c817d..3134fc3a5ab 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc
+@@ -57,7 +57,8 @@ std::unique_ptr<RuntimeBackend> SpiRuntimeBackendFactory::Create(
+                                              std::move(snapshot_delegate),
+                                              std::move(unref_queue),
+                                              settings.enable_impeller,
+-                                             runtime_stage_backend);
++                                             runtime_stage_backend,
++                                             GetConcurrentWorkerTaskRunner());
+ }
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc b/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
+index 1feb938d799..2983457cf9d 100644
+--- a/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
++++ b/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
+@@ -82,7 +82,8 @@ std::unique_ptr<RuntimeBackend> DartRuntimeBackendFactory::Create(
+       std::move(backend_image_decoder),
+       std::move(backend_image_generator_registry),
+       std::move(backend_snapshot_delegate), std::move(backend_unref_queue),
+-      settings.enable_impeller, runtime_stage_backend);
++      settings.enable_impeller, runtime_stage_backend,
++      (*vm_)->GetConcurrentWorkerTaskRunner());
+   runtime.release();
+   return backend;
+ }
+@@ -123,7 +124,8 @@ std::unique_ptr<RuntimeBackend> DartRuntimeBackendFactory::Spawn(
+       std::move(backend_io_manager),
+       std::move(backend_image_decoder),
+       std::move(backend_image_generator_registry),
+-      std::move(backend_snapshot_delegate), nullptr, settings.enable_impeller);
++      std::move(backend_snapshot_delegate), nullptr, settings.enable_impeller,
++      {}, GetConcurrentWorkerTaskRunner());
+   runtime.release();
+   return backend;
+ }
+diff --git a/engine/src/flutter/shell/common/engine.cc b/engine/src/flutter/shell/common/engine.cc
+index b59664fb4de..80a681f6a79 100644
+--- a/engine/src/flutter/shell/common/engine.cc
++++ b/engine/src/flutter/shell/common/engine.cc
+@@ -66,7 +66,9 @@ std::unique_ptr<RuntimeBackend> MakeDartRuntimeBackend(
+     fml::WeakPtr<IOManager> io_manager,
+     fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
+     fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
+-        image_generator_registry) {
++        image_generator_registry,
++    const std::shared_ptr<fml::ConcurrentTaskRunner>&
++        concurrent_worker_task_runner) {
+   auto delegate_bridge = std::make_unique<DartRuntimeDelegateBridge>();
+   auto runtime = std::make_unique<FlutterDartRuntime>(
+       std::move(controller), std::move(delegate_bridge), settings,
+@@ -74,7 +76,8 @@ std::unique_ptr<RuntimeBackend> MakeDartRuntimeBackend(
+   auto backend = std::make_unique<SpiRuntimeBackend>(
+       runtime_delegate, task_runners, runtime->table(),
+       std::move(io_manager),
+-      std::move(image_decoder), std::move(image_generator_registry));
++      std::move(image_decoder), std::move(image_generator_registry),
++      concurrent_worker_task_runner);
+   runtime.release();
+   return backend;
+ }
+@@ -107,7 +110,7 @@ Engine::Engine(
+   runtime_backend_ = MakeDartRuntimeBackend(
+       *this, task_runners, std::move(runtime_controller), settings,
+       root_isolate_create_callback_, io_manager, image_decoder_->GetWeakPtr(),
+-      image_generator_registry_.GetWeakPtr());
++      image_generator_registry_.GetWeakPtr(), image_decoder_task_runner);
+ }
+ 
+ Engine::Engine(
