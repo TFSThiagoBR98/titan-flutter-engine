@@ -1,0 +1,38 @@
+# Why: keep the test-only task drain compatible with the engine warning-as-
+# error build without changing its behavior.
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
+index 2dbd2d2d878..a0fc42ecf9a 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
+@@ -190,6 +190,13 @@ void CaptureAssetRead(void* user_data,
+   }
+ }
+ 
++void RunPendingTasks() {
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wdeprecated-declarations"
++  fml::MessageLoop::GetCurrent().RunExpiredTasksNow();
++#pragma clang diagnostic pop
++}
++
+ struct LaunchRootIsolateCapture {
+   void* run_configuration = nullptr;
+   size_t call_count = 0;
+@@ -1095,7 +1102,7 @@ TEST_F(SpiRuntimeBackendTest, SpiAsset_ReadsAnExistingAsset) {
+   EXPECT_EQ(runtime->engine_api->asset_read(runtime->engine, "asset.txt",
+                                              CaptureAssetRead, &capture),
+             kFlutterSpiOk);
+-  fml::MessageLoop::GetCurrent().RunExpiredTasksNow();
++  RunPendingTasks();
+   ASSERT_TRUE(capture.called);
+   EXPECT_EQ(capture.result, kFlutterSpiOk);
+   EXPECT_EQ(std::string(capture.bytes.begin(), capture.bytes.end()),
+@@ -1112,7 +1119,7 @@ TEST_F(SpiRuntimeBackendTest, SpiAsset_MissingAssetReportsAnError) {
+   EXPECT_EQ(runtime->engine_api->asset_read(runtime->engine, "missing.txt",
+                                              CaptureAssetRead, &capture),
+             kFlutterSpiOk);
+-  fml::MessageLoop::GetCurrent().RunExpiredTasksNow();
++  RunPendingTasks();
+   ASSERT_TRUE(capture.called);
+   EXPECT_EQ(capture.result, kFlutterSpiInvalidArgument);
+   EXPECT_TRUE(capture.bytes.empty());
