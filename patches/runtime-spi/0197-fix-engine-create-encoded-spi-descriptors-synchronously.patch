@@ -1,0 +1,290 @@
+# Why: Preserve ImageDescriptor.encoded's synchronous invalid-data error
+# contract and avoid posting Dart exceptions from a callback.
+diff --git a/engine/src/flutter/lib/ui/painting/image_descriptor.cc b/engine/src/flutter/lib/ui/painting/image_descriptor.cc
+index 97ffb69a555..9db1e4ac9f1 100644
+--- a/engine/src/flutter/lib/ui/painting/image_descriptor.cc
++++ b/engine/src/flutter/lib/ui/painting/image_descriptor.cc
+@@ -12,7 +12,6 @@
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+-#include "third_party/tonic/dart_persistent_value.h"
+ #include "third_party/tonic/logging/dart_invoke.h"
+ 
+ namespace flutter {
+@@ -36,41 +35,6 @@ ImageDescriptor::~ImageDescriptor() {
+   }
+ }
+ 
+-namespace {
+-
+-struct DescriptorCallbackContext {
+-  std::unique_ptr<tonic::DartPersistentValue> descriptor_handle;
+-  std::unique_ptr<tonic::DartPersistentValue> callback;
+-};
+-
+-void CompleteEncodedDescriptor(void* user_data,
+-                               FlutterSpiResult result,
+-                               FlutterSpiImageDescriptor* descriptor) {
+-  auto context = std::unique_ptr<DescriptorCallbackContext>(
+-      static_cast<DescriptorCallbackContext*>(user_data));
+-  auto dart_state = context->callback->dart_state().lock();
+-  if (!dart_state) {
+-    if (descriptor != nullptr) {
+-      SpiImageApi()->image_descriptor_release(descriptor);
+-    }
+-    return;
+-  }
+-  tonic::DartState::Scope scope(dart_state);
+-  if (result != kFlutterSpiOk || descriptor == nullptr) {
+-    if (descriptor != nullptr) {
+-      SpiImageApi()->image_descriptor_release(descriptor);
+-    }
+-    Dart_ThrowException(tonic::ToDart("Invalid image data"));
+-    return;
+-  }
+-  auto image_descriptor = fml::MakeRefCounted<ImageDescriptor>(descriptor);
+-  image_descriptor->AssociateWithDartWrapper(
+-      context->descriptor_handle->value());
+-  tonic::DartInvoke(context->callback->value(), {Dart_TypeVoid()});
+-}
+-
+-}  // namespace
+-
+ Dart_Handle ImageDescriptor::initEncoded(Dart_Handle descriptor_handle,
+                                          ImmutableBuffer* immutable_buffer,
+                                          Dart_Handle callback_handle) {
+@@ -84,17 +48,18 @@ Dart_Handle ImageDescriptor::initEncoded(Dart_Handle descriptor_handle,
+ 
+   auto* dart_state = UIDartState::Current();
+   auto data = immutable_buffer->data();
+-  auto* context = new DescriptorCallbackContext{
+-      std::make_unique<tonic::DartPersistentValue>(dart_state, descriptor_handle),
+-      std::make_unique<tonic::DartPersistentValue>(dart_state, callback_handle)};
++  FlutterSpiImageDescriptor* spi_descriptor = nullptr;
+   const FlutterSpiResult result = SpiImageApi()->image_descriptor_create_encoded(
+       CanvasImage::GetSpiEngine(), static_cast<const uint8_t*>(data->bytes()),
+-      data->size(), CompleteEncodedDescriptor, context);
+-  if (result != kFlutterSpiOk) {
+-    delete context;
++      data->size(), &spi_descriptor);
++  if (result != kFlutterSpiOk || spi_descriptor == nullptr) {
+     return tonic::ToDart("Invalid image data");
+   }
+ 
++  auto image_descriptor = fml::MakeRefCounted<ImageDescriptor>(spi_descriptor);
++  image_descriptor->AssociateWithDartWrapper(descriptor_handle);
++  tonic::DartState::Scope scope(dart_state);
++  tonic::DartInvoke(callback_handle, {Dart_TypeVoid()});
+   return Dart_Null();
+ }
+ 
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_codec_unittests.cc b/engine/src/flutter/runtime_spi/image/spi_image_codec_unittests.cc
+index 827a896fcf9..fec8ac7e38e 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_codec_unittests.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_codec_unittests.cc
+@@ -54,7 +54,6 @@ struct BytesCallbackState {
+ };
+ 
+ struct DescriptorCallbackState {
+-  fml::AutoResetWaitableEvent completed;
+   FlutterSpiResult result = kFlutterSpiInternalError;
+   FlutterSpiImageDescriptor* descriptor = nullptr;
+ };
+@@ -71,15 +70,6 @@ void CaptureBytes(void* user_data,
+   state->completed.Signal();
+ }
+ 
+-void CaptureDescriptor(void* user_data,
+-                       FlutterSpiResult result,
+-                       FlutterSpiImageDescriptor* descriptor) {
+-  auto* state = static_cast<DescriptorCallbackState*>(user_data);
+-  state->result = result;
+-  state->descriptor = descriptor;
+-  state->completed.Signal();
+-}
+-
+ void PostSync(const fml::RefPtr<fml::TaskRunner>& task_runner,
+               const fml::closure& task) {
+   fml::AutoResetWaitableEvent completed;
+@@ -270,12 +260,11 @@ class SpiImageCodecTest : public ShellTest {
+   void CreateEncodedDescriptor(const sk_sp<SkData>& data,
+                                DescriptorCallbackState* state) {
+     PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
+-      EXPECT_EQ(runtime_->engine_api->image->image_descriptor_create_encoded(
+-                    runtime_->engine, data->bytes(), data->size(),
+-                    CaptureDescriptor, state),
+-                kFlutterSpiOk);
++      state->result =
++          runtime_->engine_api->image->image_descriptor_create_encoded(
++              runtime_->engine, data->bytes(), data->size(),
++              &state->descriptor);
+     });
+-    state->completed.Wait();
+   }
+ 
+   void RegisterSinglePixelImageDecoder() {
+@@ -583,16 +572,14 @@ TEST_F(SpiImageCodecTest,
+   const FlutterSpiImageApi* api = runtime_->engine_api->image;
+   ASSERT_NE(api, nullptr);
+   ASSERT_NE(api->image_descriptor_create_encoded, nullptr);
+-  DescriptorCallbackState state;
++  FlutterSpiImageDescriptor* descriptor = nullptr;
++  FlutterSpiResult result = kFlutterSpiOk;
+   PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
+-    EXPECT_EQ(runtime_->engine_api->image->image_descriptor_create_encoded(
+-                  runtime_->engine, bytes, sizeof(bytes), CaptureDescriptor,
+-                  &state),
+-              kFlutterSpiOk);
++    result = runtime_->engine_api->image->image_descriptor_create_encoded(
++        runtime_->engine, bytes, sizeof(bytes), &descriptor);
+   });
+-  state.completed.Wait();
+-  EXPECT_EQ(state.result, kFlutterSpiInvalidArgument);
+-  EXPECT_EQ(state.descriptor, nullptr);
++  EXPECT_EQ(result, kFlutterSpiInvalidArgument);
++  EXPECT_EQ(descriptor, nullptr);
+ }
+ 
+ TEST_F(SpiImageCodecTest, InstantiateCodecUsesRegisteredDecoders) {
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_decoding.cc b/engine/src/flutter/runtime_spi/image/spi_image_decoding.cc
+index 0a30d519084..071556711d6 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_decoding.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_decoding.cc
+@@ -116,22 +116,6 @@ FlutterSpiResult SpiImageDecoding::ValidateCallback(
+   return callback == nullptr ? kFlutterSpiInvalidArgument : kFlutterSpiOk;
+ }
+ 
+-void SpiImageDecoding::PostDescriptorResult(
+-    FlutterSpiImageDescriptorCallback callback,
+-    void* user_data,
+-    FlutterSpiResult result,
+-    FlutterSpiImageDescriptor* descriptor) {
+-  const auto weak_this = weak_factory_.GetWeakPtr();
+-  ui_task_runner_->PostTask([weak_this, callback, user_data, result,
+-                             descriptor]() {
+-    if (!weak_this) {
+-      delete descriptor;
+-      return;
+-    }
+-    callback(user_data, result, result == kFlutterSpiOk ? descriptor : nullptr);
+-  });
+-}
+-
+ void SpiImageDecoding::PostResult(FlutterSpiImageCallback callback,
+                                   void* user_data,
+                                   FlutterSpiResult result,
+@@ -240,21 +224,18 @@ FlutterSpiResult SpiImageDecoding::CreateEncodedDescriptor(
+     const uint8_t* data,
+     size_t size,
+     const TaskRunners& task_runners,
+-    FlutterSpiImageDescriptorCallback callback,
+-    void* user_data) {
+-  if (callback == nullptr || data == nullptr || size == 0) {
++    FlutterSpiImageDescriptor** out) {
++  if (data == nullptr || size == 0 || out == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
++  *out = nullptr;
+   if (!registry_) {
+-    PostDescriptorResult(callback, user_data, kFlutterSpiInternalError, nullptr);
+-    return kFlutterSpiOk;
++    return kFlutterSpiInternalError;
+   }
+   auto data_descriptor = ImageDescriptorData::MakeEncoded(
+       SkData::MakeWithCopy(data, size), *registry_);
+   if (data_descriptor == nullptr) {
+-    PostDescriptorResult(callback, user_data, kFlutterSpiInvalidArgument,
+-                         nullptr);
+-    return kFlutterSpiOk;
++    return kFlutterSpiInvalidArgument;
+   }
+   auto* descriptor = new (std::nothrow) FlutterSpiImageDescriptor{
+       .data = std::move(data_descriptor),
+@@ -262,10 +243,9 @@ FlutterSpiResult SpiImageDecoding::CreateEncodedDescriptor(
+       .task_runners = task_runners,
+   };
+   if (descriptor == nullptr) {
+-    PostDescriptorResult(callback, user_data, kFlutterSpiInternalError, nullptr);
+-    return kFlutterSpiOk;
++    return kFlutterSpiInternalError;
+   }
+-  PostDescriptorResult(callback, user_data, kFlutterSpiOk, descriptor);
++  *out = descriptor;
+   return kFlutterSpiOk;
+ }
+ 
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_decoding.h b/engine/src/flutter/runtime_spi/image/spi_image_decoding.h
+index cd4c82e8336..6c669c7dbbf 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_decoding.h
++++ b/engine/src/flutter/runtime_spi/image/spi_image_decoding.h
+@@ -59,8 +59,7 @@ class SpiImageDecoding final {
+       const uint8_t* data,
+       size_t size,
+       const TaskRunners& task_runners,
+-      FlutterSpiImageDescriptorCallback callback,
+-      void* user_data);
++      FlutterSpiImageDescriptor** out);
+   FlutterSpiResult CreateRawDescriptor(const FlutterSpiPixels* pixels,
+                                        const TaskRunners& task_runners,
+                                        FlutterSpiImageDescriptor** out);
+@@ -73,10 +72,6 @@ class SpiImageDecoding final {
+                   void* user_data,
+                   FlutterSpiResult result,
+                   sk_sp<DlImage> image);
+-  void PostDescriptorResult(FlutterSpiImageDescriptorCallback callback,
+-                            void* user_data,
+-                            FlutterSpiResult result,
+-                            FlutterSpiImageDescriptor* descriptor);
+ 
+   fml::TaskRunnerAffineWeakPtr<ImageDecoder> decoder_;
+   fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry> registry_;
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_image.h b/engine/src/flutter/runtime_spi/include/flutter_image.h
+index 3c0d7640bd3..36ab66af1f4 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_image.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_image.h
+@@ -68,11 +68,6 @@ typedef void (*FlutterSpiBytesCallback)(void* user_data,
+                                         const uint8_t* bytes,
+                                         size_t size);
+ 
+-typedef void (*FlutterSpiImageDescriptorCallback)(
+-    void* user_data,
+-    FlutterSpiResult result,
+-    FlutterSpiImageDescriptor* descriptor);
+-
+ typedef void (*FlutterSpiFrameCallback)(void* user_data,
+                                         FlutterSpiResult result,
+                                         FlutterSpiImage* image,
+@@ -188,8 +183,7 @@ typedef struct FlutterSpiImageApi {
+       FlutterSpiEngine* engine,
+       const uint8_t* data,
+       size_t size,
+-      FlutterSpiImageDescriptorCallback callback,
+-      void* user_data);
++      FlutterSpiImageDescriptor** out_descriptor);
+   FlutterSpiResult (*image_descriptor_create_raw)(
+       FlutterSpiEngine* engine,
+       const FlutterSpiPixels* pixels,
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index 2f23db3c272..3bf014a7a29 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -187,7 +187,7 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+           SpiEngineApi::PictureToImageSyncWithFormat,
+       .image_descriptor_create_encoded =
+           [](FlutterSpiEngine* engine, const uint8_t* data, size_t size,
+-             FlutterSpiImageDescriptorCallback callback, void* user_data) {
++             FlutterSpiImageDescriptor** out_descriptor) {
+             if (engine == nullptr || engine->backend == nullptr) {
+               return kFlutterSpiInvalidArgument;
+             }
+@@ -195,8 +195,7 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+               return kFlutterSpiWrongThread;
+             }
+             return engine->backend->image_decoding_->CreateEncodedDescriptor(
+-                data, size, engine->backend->task_runners_, callback,
+-                user_data);
++                data, size, engine->backend->task_runners_, out_descriptor);
+           },
+       .image_descriptor_create_raw =
+           [](FlutterSpiEngine* engine, const FlutterSpiPixels* pixels,

@@ -1,0 +1,63 @@
+# Why: Reproduce the synchronous ImageDescriptor.encoded error contract before
+# the SPI fix.
+diff --git a/engine/src/flutter/shell/common/fixtures/shell_test.dart b/engine/src/flutter/shell/common/fixtures/shell_test.dart
+index c2f8d30e51b..8dc18a9d9f7 100644
+--- a/engine/src/flutter/shell/common/fixtures/shell_test.dart
++++ b/engine/src/flutter/shell/common/fixtures/shell_test.dart
+@@ -563,6 +563,20 @@ void canRegisterImageDecoders() {
+   );
+ }
+ 
++@pragma('vm:entry-point')
++Future<void> imageDescriptorEncodedRejectsInvalidDataSynchronously() async {
++  final buffer = await ImmutableBuffer.fromUint8List(
++    Uint8List.fromList(<int>[1, 2, 3, 4]),
++  );
++  try {
++    ImageDescriptor.encoded(buffer);
++  } catch (error) {
++    notifyMessage(error.toString());
++  } finally {
++    buffer.dispose();
++  }
++}
++
+ @Native<Void Function(Handle)>(symbol: 'NotifyLocalTime')
+ external void notifyLocalTime(String string);
+ 
+diff --git a/engine/src/flutter/shell/common/shell_unittests.cc b/engine/src/flutter/shell/common/shell_unittests.cc
+index 9f9429af315..560b979e9cf 100644
+--- a/engine/src/flutter/shell/common/shell_unittests.cc
++++ b/engine/src/flutter/shell/common/shell_unittests.cc
+@@ -2601,6 +2601,31 @@ TEST_F(ShellTest, CanRegisterImageDecoders) {
+   DestroyShell(std::move(shell));
+ }
+ 
++TEST_F(ShellTest, ImageDescriptorEncodedRejectsInvalidDataSynchronously) {
++  std::string message;
++  fml::AutoResetWaitableEvent message_latch;
++  AddFfiNativeCallback(
++      "NotifyMessage", CREATE_FFI_LAMBDA([&](Dart_Handle message_handle) {
++        message = tonic::DartConverter<std::string>::FromDart(message_handle);
++        message_latch.Signal();
++      }));
++
++  auto settings = CreateSettingsForFixture();
++  auto configuration = RunConfiguration::InferFromSettings(settings);
++  configuration.SetEntrypoint(
++      "imageDescriptorEncodedRejectsInvalidDataSynchronously");
++  std::unique_ptr<Shell> shell = CreateShell(settings);
++  ASSERT_NE(shell.get(), nullptr);
++
++  RunEngine(shell.get(), std::move(configuration));
++  const bool received_message = message_latch.WaitWithTimeout(
++      fml::TimeDelta::FromSeconds(10));
++  DestroyShell(std::move(shell));
++
++  ASSERT_TRUE(received_message);
++  EXPECT_EQ(message, "Exception: Invalid image data");
++}
++
+ TEST_F(ShellTest, OnServiceProtocolGetSkSLsWorks) {
+   fml::ScopedTemporaryDirectory base_dir;
+   ASSERT_TRUE(base_dir.fd().is_valid());
