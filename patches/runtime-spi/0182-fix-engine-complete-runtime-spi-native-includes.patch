@@ -1,0 +1,43 @@
+# Why: resolve the missing declarations and local name collision reported by
+# the S4g-3 build.
+diff --git a/engine/src/flutter/lib/ui/painting/codec.cc b/engine/src/flutter/lib/ui/painting/codec.cc
+index fe161c4c08c..3e7f50cb284 100644
+--- a/engine/src/flutter/lib/ui/painting/codec.cc
++++ b/engine/src/flutter/lib/ui/painting/codec.cc
+@@ -5,6 +5,7 @@
+ #include "flutter/lib/ui/painting/codec.h"
+ 
+ #include "flutter/lib/ui/painting/image.h"
++#include "flutter/runtime_spi/image/spi_image.h"
+ #include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+ #include "third_party/tonic/dart_library_natives.h"
+diff --git a/engine/src/flutter/lib/ui/painting/immutable_buffer.cc b/engine/src/flutter/lib/ui/painting/immutable_buffer.cc
+index 8a0c636726d..5c925e80fc1 100644
+--- a/engine/src/flutter/lib/ui/painting/immutable_buffer.cc
++++ b/engine/src/flutter/lib/ui/painting/immutable_buffer.cc
+@@ -102,10 +102,10 @@ Dart_Handle ImmutableBuffer::initFromAsset(Dart_Handle raw_buffer_handle,
+   auto* buffer_handle =
+       new tonic::DartPersistentValue(dart_state, raw_buffer_handle);
+   auto* context = new AssetReadContext{callback, buffer_handle};
+-  const FlutterSpiResult result = SpiEngineAssetRead(
++  const FlutterSpiResult spi_result = SpiEngineAssetRead(
+       dart_state->platform_configuration()->client()->GetSpiEngine(),
+       asset_name.c_str(), ImmutableBuffer::CompleteAssetRead, context);
+-  if (result != kFlutterSpiOk) {
++  if (spi_result != kFlutterSpiOk) {
+     delete callback;
+     delete buffer_handle;
+     delete context;
+diff --git a/engine/src/flutter/lib/ui/painting/immutable_buffer.h b/engine/src/flutter/lib/ui/painting/immutable_buffer.h
+index e4317bf8dcf..ab282ad5771 100644
+--- a/engine/src/flutter/lib/ui/painting/immutable_buffer.h
++++ b/engine/src/flutter/lib/ui/painting/immutable_buffer.h
+@@ -9,6 +9,7 @@
+ 
+ #include "flutter/fml/macros.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
++#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
+ #include "third_party/skia/include/core/SkData.h"
+ #include "third_party/tonic/dart_library_natives.h"
+ #include "third_party/tonic/logging/dart_invoke.h"
