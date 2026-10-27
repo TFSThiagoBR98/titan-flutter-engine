@@ -1,0 +1,254 @@
+# Why: keep lib/ui within GN visibility while using the public SPI tables.
+diff --git a/engine/src/flutter/lib/ui/painting/fragment_program.cc b/engine/src/flutter/lib/ui/painting/fragment_program.cc
+index bf562df944b..9b2109ee698 100644
+--- a/engine/src/flutter/lib/ui/painting/fragment_program.cc
++++ b/engine/src/flutter/lib/ui/painting/fragment_program.cc
+@@ -11,7 +11,7 @@
+ #include "flutter/lib/ui/painting/runtime_effect_loader.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/lib/ui/window/platform_configuration.h"
+-#include "flutter/runtime_spi/spi_engine_api.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ 
+ #include "third_party/tonic/converter/dart_converter.h"
+ 
+@@ -23,20 +23,20 @@ std::string FragmentProgram::initFromAsset(const std::string& asset_name) {
+   FML_TRACE_EVENT("flutter", "FragmentProgram::initFromAsset", "asset",
+                   asset_name);
+   UIDartState* ui_dart_state = UIDartState::Current();
+-  const auto api = SpiEngineApi::Create();
++  const auto* fragment_api = SpiFragmentApi();
+   if (spi_program_ != nullptr) {
+-    api.fragment->program_release(spi_program_);
++    fragment_api->program_release(spi_program_);
+     spi_program_ = nullptr;
+   }
+   char* error = nullptr;
+-  const FlutterSpiResult result = api.fragment->program_from_asset(
++  const FlutterSpiResult result = fragment_api->program_from_asset(
+       ui_dart_state->platform_configuration()->client()->GetSpiEngine(),
+       asset_name.c_str(), &spi_program_, &error);
+   if (result != kFlutterSpiOk || spi_program_ == nullptr) {
+     std::string message = error == nullptr ? "Failed to load fragment program"
+                                            : error;
+-    if (error != nullptr && api.free_string != nullptr) {
+-      api.free_string(
++    if (error != nullptr) {
++      SpiEngineFreeString(
+           ui_dart_state->platform_configuration()->client()->GetSpiEngine(),
+           error);
+     }
+@@ -46,7 +46,7 @@ std::string FragmentProgram::initFromAsset(const std::string& asset_name) {
+   size_t uniform_count = 0;
+   size_t float_count = 0;
+   size_t sampler_count = 0;
+-  if (api.fragment->program_get_counts(
++  if (fragment_api->program_get_counts(
+           spi_program_, &uniform_count, &float_count, &sampler_count) !=
+       kFlutterSpiOk) {
+     return "Failed to inspect fragment program.";
+@@ -56,7 +56,7 @@ std::string FragmentProgram::initFromAsset(const std::string& asset_name) {
+   FML_DCHECK(!Dart_IsError(uniform_info));
+   for (size_t i = 0; i < uniform_count; ++i) {
+     FlutterSpiUniformInfo uniform_description = {};
+-    if (api.fragment->program_get_uniform(spi_program_, i,
++    if (fragment_api->program_get_uniform(spi_program_, i,
+                                           &uniform_description) !=
+         kFlutterSpiOk) {
+       return "Failed to inspect fragment uniform.";
+@@ -137,7 +137,7 @@ FragmentProgram::FragmentProgram() = default;
+ 
+ FragmentProgram::~FragmentProgram() {
+   if (spi_program_ != nullptr) {
+-    SpiEngineApi::Create().fragment->program_release(spi_program_);
++    SpiFragmentApi()->program_release(spi_program_);
+   }
+ }
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/fragment_shader.cc b/engine/src/flutter/lib/ui/painting/fragment_shader.cc
+index e0fa8200b6a..d8b0a99a1ab 100644
+--- a/engine/src/flutter/lib/ui/painting/fragment_shader.cc
++++ b/engine/src/flutter/lib/ui/painting/fragment_shader.cc
+@@ -11,7 +11,7 @@
+ #include "flutter/display_list/effects/dl_color_source.h"
+ #include "flutter/lib/ui/painting/fragment_program.h"
+ #include "flutter/lib/ui/painting/image_filter.h"
+-#include "flutter/runtime_spi/spi_engine_api.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "flutter/runtime_spi/effects/spi_shader.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+@@ -39,10 +39,10 @@ int ToSpiFilterQuality(DlImageSampling sampling) {
+ void UpdateUniforms(FlutterSpiFragmentShader* shader,
+                     const SkData& uniform_data,
+                     size_t float_count) {
+-  const auto api = SpiEngineApi::Create();
++  const auto* api = SpiFragmentApi();
+   const auto* values = static_cast<const float*>(uniform_data.data());
+   for (size_t index = 0; index < float_count; index++) {
+-    api.fragment->shader_set_float(shader, index, values[index]);
++    api->shader_set_float(shader, index, values[index]);
+   }
+ }
+ 
+@@ -56,10 +56,10 @@ ReusableFragmentShader::ReusableFragmentShader(
+       uniform_data_(SkData::MakeUninitialized(
+           (float_count + 2 * sampler_count) * sizeof(float))),
+       float_count_(float_count) {
+-  const auto api = SpiEngineApi::Create();
++  const auto* api = SpiFragmentApi();
+   if (program_ == nullptr || program_->spi_handle() == nullptr ||
+-      api.fragment->shader_create(program_->spi_handle(),
+-                                   &spi_fragment_shader_) != kFlutterSpiOk) {
++      api->shader_create(program_->spi_handle(), &spi_fragment_shader_) !=
++          kFlutterSpiOk) {
+     spi_fragment_shader_ = nullptr;
+   }
+ }
+@@ -90,7 +90,7 @@ bool ReusableFragmentShader::ValidateSamplers() {
+     return false;
+   }
+   bool valid = false;
+-  return SpiEngineApi::Create().fragment->shader_validate_samplers(
++  return SpiFragmentApi()->shader_validate_samplers(
+              spi_fragment_shader_, &valid) == kFlutterSpiOk &&
+          valid;
+ }
+@@ -109,9 +109,9 @@ void ReusableFragmentShader::SetImageSampler(Dart_Handle index_handle,
+     Dart_ThrowException(tonic::ToDart("Image has been disposed"));
+     return;
+   }
+-  const auto api = SpiEngineApi::Create();
++  const auto* api = SpiFragmentApi();
+   if (spi_fragment_shader_ == nullptr ||
+-      api.fragment->shader_set_image_sampler(
++      api->shader_set_image_sampler(
+           spi_fragment_shader_, index, image->spi_handle(),
+           filterQualityIndex <= 0 ? kFlutterSpiFilterQualityNone
+                                   : filterQualityIndex) != kFlutterSpiOk) {
+@@ -129,10 +129,10 @@ FlutterSpiImageFilter* ReusableFragmentShader::as_image_filter(
+   if (spi_fragment_shader_ == nullptr) {
+     return nullptr;
+   }
+-  const auto api = SpiEngineApi::Create();
++  const auto* api = SpiFragmentApi();
+   UpdateUniforms(spi_fragment_shader_, *uniform_data_, float_count_);
+   FlutterSpiImageFilter* filter = nullptr;
+-  if (api.fragment->shader_to_image_filter(
++  if (api->shader_to_image_filter(
+           spi_fragment_shader_, ToSpiFilterQuality(input_sampling), &filter) !=
+       kFlutterSpiOk) {
+     return nullptr;
+@@ -156,7 +156,7 @@ bool ReusableFragmentShader::ValidateImageFilter() {
+     return false;
+   }
+   bool valid = false;
+-  return SpiEngineApi::Create().fragment->shader_validate_image_filter(
++  return SpiFragmentApi()->shader_validate_image_filter(
+              spi_fragment_shader_, &valid) == kFlutterSpiOk &&
+          valid;
+ }
+@@ -167,7 +167,7 @@ void ReusableFragmentShader::Dispose() {
+     spi_shader_ = nullptr;
+   }
+   if (spi_fragment_shader_ != nullptr) {
+-    SpiEngineApi::Create().fragment->shader_release(spi_fragment_shader_);
++    SpiFragmentApi()->shader_release(spi_fragment_shader_);
+     spi_fragment_shader_ = nullptr;
+   }
+   uniform_data_.reset();
+@@ -177,10 +177,10 @@ void ReusableFragmentShader::Dispose() {
+ 
+ FlutterSpiShader* ReusableFragmentShader::spi_handle() const {
+   if (spi_shader_ == nullptr && spi_fragment_shader_ != nullptr) {
+-    const auto api = SpiEngineApi::Create();
++    const auto* api = SpiFragmentApi();
+     UpdateUniforms(spi_fragment_shader_, *uniform_data_, float_count_);
+-    api.fragment->shader_to_shader(spi_fragment_shader_,
+-                                   kFlutterSpiFilterQualityLow, &spi_shader_);
++    api->shader_to_shader(spi_fragment_shader_, kFlutterSpiFilterQualityLow,
++                          &spi_shader_);
+   }
+   return spi_shader_;
+ }
+@@ -190,7 +190,7 @@ ReusableFragmentShader::~ReusableFragmentShader() {
+     SpiShaderRelease(spi_shader_);
+   }
+   if (spi_fragment_shader_ != nullptr) {
+-    SpiEngineApi::Create().fragment->shader_release(spi_fragment_shader_);
++    SpiFragmentApi()->shader_release(spi_fragment_shader_);
+   }
+ }
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/immutable_buffer.cc b/engine/src/flutter/lib/ui/painting/immutable_buffer.cc
+index 7eb479a3fad..8a0c636726d 100644
+--- a/engine/src/flutter/lib/ui/painting/immutable_buffer.cc
++++ b/engine/src/flutter/lib/ui/painting/immutable_buffer.cc
+@@ -10,7 +10,7 @@
+ #include "flutter/fml/make_copyable.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/lib/ui/window/platform_configuration.h"
+-#include "flutter/runtime_spi/spi_engine_api.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+@@ -102,8 +102,7 @@ Dart_Handle ImmutableBuffer::initFromAsset(Dart_Handle raw_buffer_handle,
+   auto* buffer_handle =
+       new tonic::DartPersistentValue(dart_state, raw_buffer_handle);
+   auto* context = new AssetReadContext{callback, buffer_handle};
+-  const auto api = SpiEngineApi::Create();
+-  const FlutterSpiResult result = api.asset_read(
++  const FlutterSpiResult result = SpiEngineAssetRead(
+       dart_state->platform_configuration()->client()->GetSpiEngine(),
+       asset_name.c_str(), ImmutableBuffer::CompleteAssetRead, context);
+   if (result != kFlutterSpiOk) {
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
+index 307344d66f4..4609a3418e5 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
+@@ -28,6 +28,24 @@ const FlutterSpiImageApi* SpiImageApi() {
+   return SpiEngineApi::Create().image;
+ }
+ 
++const FlutterSpiFragmentApi* SpiFragmentApi() {
++  return SpiEngineApi::Create().fragment;
++}
++
++FlutterSpiResult SpiEngineAssetRead(FlutterSpiEngine* engine,
++                                    const char* name,
++                                    FlutterSpiBytesCallback callback,
++                                    void* user_data) {
++  return SpiEngineApi::Create().asset_read(engine, name, callback, user_data);
++}
++
++void SpiEngineFreeString(FlutterSpiEngine* engine, char* value) {
++  const auto api = SpiEngineApi::Create();
++  if (api.free_string != nullptr && value != nullptr) {
++    api.free_string(engine, value);
++  }
++}
++
+ sk_sp<DlImage> SpiImageToDlImage(FlutterSpiImage* image) {
+   return SpiImageGet(image);
+ }
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+index 4704ad806bd..8fa99ad6d4a 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+@@ -27,6 +27,15 @@ const FlutterSpiPaintEffectsApi* SpiPaintEffectsApi();
+ 
+ const FlutterSpiImageApi* SpiImageApi();
+ 
++const FlutterSpiFragmentApi* SpiFragmentApi();
++
++FlutterSpiResult SpiEngineAssetRead(FlutterSpiEngine* engine,
++                                   const char* name,
++                                   FlutterSpiBytesCallback callback,
++                                   void* user_data);
++
++void SpiEngineFreeString(FlutterSpiEngine* engine, char* value);
++
+ sk_sp<DlImage> SpiImageToDlImage(FlutterSpiImage*);
+ 
+ // Temporary bridge until S4e moves picture ownership behind dart:ui SPI.
