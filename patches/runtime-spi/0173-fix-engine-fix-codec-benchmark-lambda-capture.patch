@@ -1,0 +1,15 @@
+# Why: remove the unused frame latch capture rejected by the engine's
+# warnings-as-errors build.
+diff --git a/engine/src/flutter/shell/common/shell_benchmarks.cc b/engine/src/flutter/shell/common/shell_benchmarks.cc
+index 5f7bbb1a1f2..02a241cfbbf 100644
+--- a/engine/src/flutter/shell/common/shell_benchmarks.cc
++++ b/engine/src/flutter/shell/common/shell_benchmarks.cc
+@@ -228,7 +228,7 @@ static void BM_DartCodecFrame(benchmark::State& state) {
+         }));
+     fml::TaskRunner::RunNowOrPostTask(
+         shell->GetTaskRunners().GetUITaskRunner(),
+-        [&shell, &frame_latch]() {
++        [&shell]() {
+           auto engine = shell->GetEngine();
+           FML_CHECK(engine);
+           const auto root_isolate = std::const_pointer_cast<DartIsolate>(
