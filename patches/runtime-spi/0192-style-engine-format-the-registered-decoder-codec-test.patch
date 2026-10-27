@@ -1,0 +1,17 @@
+# Why: keep the registered decoder codec test formatted according to the
+# engine style.
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_codec_unittests.cc b/engine/src/flutter/runtime_spi/image/spi_image_codec_unittests.cc
+index e63588987fb..827a896fcf9 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_codec_unittests.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_codec_unittests.cc
+@@ -151,7 +151,9 @@ class SinglePixelImageGenerator final : public ImageGenerator {
+     return {std::nullopt, 0, SkCodecAnimation::DisposalMethod::kKeep};
+   }
+ 
+-  SkISize GetScaledDimensions(float scale) override { return SkISize::Make(1, 1); }
++  SkISize GetScaledDimensions(float scale) override {
++    return SkISize::Make(1, 1);
++  }
+ 
+   bool GetPixels(const SkImageInfo& info,
+                  void* pixels,
