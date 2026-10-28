@@ -1,0 +1,1811 @@
+# Why: make dart:ui use the runtime-installed SPI table instead of recreating
+# engine API accessors.
+diff --git a/engine/src/flutter/lib/ui/compositing/scene.cc b/engine/src/flutter/lib/ui/compositing/scene.cc
+index 12fdedaea7a..1bd9e57e157 100644
+--- a/engine/src/flutter/lib/ui/compositing/scene.cc
++++ b/engine/src/flutter/lib/ui/compositing/scene.cc
+@@ -9,10 +9,9 @@
+ #include "flutter/fml/trace_event.h"
+ #include "flutter/lib/ui/painting/image.h"
+ #include "flutter/lib/ui/painting/picture.h"
++#include "flutter/lib/ui/spi_api.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/lib/ui/window/platform_configuration.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+-#include "flutter/runtime_spi/scene/spi_canvas.h"
+ #include "flutter/runtime_spi/spi_scene.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+@@ -55,7 +54,7 @@ Scene::Scene(FlutterSpiEngineLayer* root_layer) : root_(root_layer) {}
+ 
+ Scene::~Scene() {
+   if (root_ != nullptr) {
+-    SpiSceneApi()->engine_layer_release(root_);
++    SpiApi().scene->engine_layer_release(root_);
+   }
+ }
+ 
+@@ -65,7 +64,7 @@ bool Scene::valid() {
+ 
+ void Scene::dispose() {
+   if (root_ != nullptr) {
+-    SpiSceneApi()->engine_layer_release(root_);
++    SpiApi().scene->engine_layer_release(root_);
+     root_ = nullptr;
+   }
+   ClearDartWrapper();
+@@ -76,7 +75,7 @@ FlutterSpiScene* Scene::CreateSpiScene(uint32_t width, uint32_t height) {
+     return nullptr;
+   }
+   FlutterSpiScene* scene = nullptr;
+-  if (SpiSceneApi()->scene_create_from_root(root_, width, height, &scene) !=
++  if (SpiApi().scene->scene_create_from_root(root_, width, height, &scene) !=
+       kFlutterSpiOk) {
+     return nullptr;
+   }
+@@ -95,7 +94,7 @@ Dart_Handle Scene::toImageSync(uint32_t width,
+   FlutterSpiScene* scene = CreateSpiScene(width, height);
+   FlutterSpiImage* image = nullptr;
+   if (scene == nullptr ||
+-      SpiImageApi()->scene_to_image_sync(CanvasImage::GetSpiEngine(), scene,
++      SpiApi().image->scene_to_image_sync(CanvasImage::GetSpiEngine(), scene,
+                                          static_cast<int32_t>(width),
+                                          static_cast<int32_t>(height), &image) !=
+           kFlutterSpiOk ||
+@@ -132,7 +131,7 @@ Dart_Handle Scene::toImage(uint32_t width,
+   }
+   auto* callback = new tonic::DartPersistentValue(
+       tonic::DartState::Current(), raw_image_callback);
+-  const FlutterSpiResult result = SpiImageApi()->scene_to_image(
++  const FlutterSpiResult result = SpiApi().image->scene_to_image(
+       CanvasImage::GetSpiEngine(), scene, static_cast<int32_t>(width),
+       static_cast<int32_t>(height), InvokeImageCallback, callback);
+   SpiSceneRelease(scene);
+diff --git a/engine/src/flutter/lib/ui/compositing/scene_builder.cc b/engine/src/flutter/lib/ui/compositing/scene_builder.cc
+index 752040aae99..e0e80883e7f 100644
+--- a/engine/src/flutter/lib/ui/compositing/scene_builder.cc
++++ b/engine/src/flutter/lib/ui/compositing/scene_builder.cc
+@@ -11,7 +11,7 @@
+ #include "flutter/fml/logging.h"
+ #include "flutter/lib/ui/compositing/scene.h"
+ #include "flutter/lib/ui/floating_point.h"
+-#include "flutter/runtime_spi/scene/spi_canvas.h"
++#include "flutter/lib/ui/spi_api.h"
+ #include "flutter/runtime_spi/scene/spi_scene_builder.h"
+ 
+ namespace flutter {
+@@ -33,7 +33,7 @@ FlutterSpiRRect ToSpiRRect(const RoundRect& round_rect) {
+ }
+ 
+ const FlutterSpiSceneApi* Api() {
+-  return SpiSceneApi();
++  return SpiApi().scene;
+ }
+ 
+ }  // namespace
+diff --git a/engine/src/flutter/lib/ui/painting/canvas.cc b/engine/src/flutter/lib/ui/painting/canvas.cc
+index db628b87a3d..e044eae9371 100644
+--- a/engine/src/flutter/lib/ui/painting/canvas.cc
++++ b/engine/src/flutter/lib/ui/painting/canvas.cc
+@@ -10,12 +10,11 @@
+ #include "flutter/lib/ui/painting/image.h"
+ #include "flutter/lib/ui/painting/image_filter.h"
+ #include "flutter/lib/ui/painting/paint.h"
++#include "flutter/lib/ui/spi_api.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/lib/ui/window/platform_configuration.h"
+ #include "flutter/runtime_spi/effects/spi_vertices.h"
+ #include "flutter/runtime_spi/image/spi_image_canvas.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+-#include "flutter/runtime_spi/scene/spi_canvas.h"
+ #include "flutter/runtime_spi/scene/spi_geometry.h"
+ 
+ using tonic::ToDart;
+@@ -95,7 +94,7 @@ Canvas::~Canvas() {}
+ 
+ void Canvas::save() {
+   if (recorder_ != nullptr) {
+-    SpiSceneApi()->canvas_save(recorder_);
++    SpiApi().scene->canvas_save(recorder_);
+   }
+ }
+ 
+@@ -115,7 +114,7 @@ void Canvas::saveLayerWithoutBounds(Dart_Handle paint_objects,
+   if (recorder_ != nullptr) {
+     FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+     TRACE_EVENT0("flutter", "ui.Canvas::saveLayer (Recorded)");
+-    SpiSceneApi()->canvas_save_layer(recorder_, nullptr, &spi_paint);
++    SpiApi().scene->canvas_save_layer(recorder_, nullptr, &spi_paint);
+   }
+ }
+ 
+@@ -142,20 +141,20 @@ void Canvas::saveLayer(double left,
+     FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+     TRACE_EVENT0("flutter", "ui.Canvas::saveLayer (Recorded)");
+     FlutterSpiRect spi_bounds = ToSpiRect(bounds);
+-    SpiSceneApi()->canvas_save_layer(recorder_, &spi_bounds, &spi_paint);
++    SpiApi().scene->canvas_save_layer(recorder_, &spi_bounds, &spi_paint);
+   }
+ }
+ 
+ void Canvas::restore() {
+   if (recorder_ != nullptr) {
+-    SpiSceneApi()->canvas_restore(recorder_);
++    SpiApi().scene->canvas_restore(recorder_);
+   }
+ }
+ 
+ int Canvas::getSaveCount() {
+   if (recorder_ != nullptr) {
+     int32_t count = 0;
+-    SpiSceneApi()->canvas_get_save_count(recorder_, &count);
++    SpiApi().scene->canvas_get_save_count(recorder_, &count);
+     return count;
+   } else {
+     return 0;
+@@ -164,31 +163,31 @@ int Canvas::getSaveCount() {
+ 
+ void Canvas::restoreToCount(int count) {
+   if (recorder_ != nullptr && count < getSaveCount()) {
+-    SpiSceneApi()->canvas_restore_to_count(recorder_, count);
++    SpiApi().scene->canvas_restore_to_count(recorder_, count);
+   }
+ }
+ 
+ void Canvas::translate(double dx, double dy) {
+   if (recorder_ != nullptr) {
+-    SpiSceneApi()->canvas_translate(recorder_, SafeNarrow(dx), SafeNarrow(dy));
++    SpiApi().scene->canvas_translate(recorder_, SafeNarrow(dx), SafeNarrow(dy));
+   }
+ }
+ 
+ void Canvas::scale(double sx, double sy) {
+   if (recorder_ != nullptr) {
+-    SpiSceneApi()->canvas_scale(recorder_, SafeNarrow(sx), SafeNarrow(sy));
++    SpiApi().scene->canvas_scale(recorder_, SafeNarrow(sx), SafeNarrow(sy));
+   }
+ }
+ 
+ void Canvas::rotate(double radians) {
+   if (recorder_ != nullptr) {
+-    SpiSceneApi()->canvas_rotate(recorder_, SafeNarrow(radians));
++    SpiApi().scene->canvas_rotate(recorder_, SafeNarrow(radians));
+   }
+ }
+ 
+ void Canvas::skew(double sx, double sy) {
+   if (recorder_ != nullptr) {
+-    SpiSceneApi()->canvas_skew(recorder_, SafeNarrow(sx), SafeNarrow(sy));
++    SpiApi().scene->canvas_skew(recorder_, SafeNarrow(sx), SafeNarrow(sy));
+   }
+ }
+ 
+@@ -198,14 +197,14 @@ void Canvas::transform(const tonic::Float64List& matrix4) {
+     for (size_t index = 0; index < 16; ++index) {
+       spi_matrix.m[index] = SafeNarrow(matrix4[index]);
+     }
+-    SpiSceneApi()->canvas_transform(recorder_, &spi_matrix);
++    SpiApi().scene->canvas_transform(recorder_, &spi_matrix);
+   }
+ }
+ 
+ void Canvas::getTransform(Dart_Handle matrix4_handle) {
+   if (recorder_ != nullptr) {
+     double matrix[16] = {};
+-    SpiSceneApi()->canvas_get_transform(recorder_, matrix);
++    SpiApi().scene->canvas_get_transform(recorder_, matrix);
+     auto matrix4 = tonic::Float64List(matrix4_handle);
+     for (int i = 0; i < 16; i++) {
+       matrix4[i] = matrix[i];
+@@ -222,7 +221,7 @@ void Canvas::clipRect(double left,
+   if (recorder_ != nullptr) {
+     FlutterSpiRect rect = {SafeNarrow(left), SafeNarrow(top), SafeNarrow(right),
+                            SafeNarrow(bottom)};
+-    SpiSceneApi()->canvas_clip_rect(recorder_, &rect,
++    SpiApi().scene->canvas_clip_rect(recorder_, &rect,
+                                     static_cast<int32_t>(clipOp), doAntiAlias);
+   }
+ }
+@@ -230,7 +229,7 @@ void Canvas::clipRect(double left,
+ void Canvas::clipRRect(const RRect& rrect, bool doAntiAlias) {
+   if (recorder_ != nullptr) {
+     FlutterSpiRRect spi_rrect = ToSpiRRect(rrect.rrect);
+-    SpiSceneApi()->canvas_clip_rrect(recorder_, &spi_rrect,
++    SpiApi().scene->canvas_clip_rrect(recorder_, &spi_rrect,
+                                      kFlutterSpiClipOpIntersect, doAntiAlias);
+   }
+ }
+@@ -238,7 +237,7 @@ void Canvas::clipRRect(const RRect& rrect, bool doAntiAlias) {
+ void Canvas::clipRSuperellipse(const RSuperellipse* rse, bool doAntiAlias) {
+   if (recorder_ != nullptr) {
+     FlutterSpiRRect spi_rrect = ToSpiRRect(rse->rsuperellipse());
+-    SpiSceneApi()->canvas_clip_rsuperellipse(
++    SpiApi().scene->canvas_clip_rsuperellipse(
+         recorder_, &spi_rrect, kFlutterSpiClipOpIntersect, doAntiAlias);
+   }
+ }
+@@ -250,7 +249,7 @@ void Canvas::clipPath(const CanvasPath* path, bool doAntiAlias) {
+     return;
+   }
+   if (recorder_ != nullptr) {
+-    SpiSceneApi()->canvas_clip_path(recorder_, path->spi_handle(),
++    SpiApi().scene->canvas_clip_path(recorder_, path->spi_handle(),
+                                     kFlutterSpiClipOpIntersect, doAntiAlias);
+   }
+ }
+@@ -259,7 +258,7 @@ void Canvas::getDestinationClipBounds(Dart_Handle rect_handle) {
+   if (recorder_ != nullptr) {
+     auto rect = tonic::Float64List(rect_handle);
+     FlutterSpiRect bounds = {};
+-    SpiSceneApi()->canvas_get_destination_clip_bounds(recorder_, &bounds);
++    SpiApi().scene->canvas_get_destination_clip_bounds(recorder_, &bounds);
+     rect[0] = bounds.left;
+     rect[1] = bounds.top;
+     rect[2] = bounds.right;
+@@ -271,7 +270,7 @@ void Canvas::getLocalClipBounds(Dart_Handle rect_handle) {
+   if (recorder_ != nullptr) {
+     auto rect = tonic::Float64List(rect_handle);
+     FlutterSpiRect bounds = {};
+-    SpiSceneApi()->canvas_get_local_clip_bounds(recorder_, &bounds);
++    SpiApi().scene->canvas_get_local_clip_bounds(recorder_, &bounds);
+     rect[0] = bounds.left;
+     rect[1] = bounds.top;
+     rect[2] = bounds.right;
+@@ -282,7 +281,7 @@ void Canvas::getLocalClipBounds(Dart_Handle rect_handle) {
+ void Canvas::drawColor(uint32_t color, DlBlendMode blend_mode) {
+   if (recorder_ != nullptr) {
+     FlutterSpiColor spi_color = ToSpiColor(DlColor(color));
+-    SpiSceneApi()->canvas_draw_color(recorder_, &spi_color,
++    SpiApi().scene->canvas_draw_color(recorder_, &spi_color,
+                                      static_cast<int32_t>(blend_mode));
+   }
+ }
+@@ -308,7 +307,7 @@ void Canvas::drawLine(double x1,
+     FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+     FlutterSpiPoint start = {SafeNarrow(x1), SafeNarrow(y1)};
+     FlutterSpiPoint end = {SafeNarrow(x2), SafeNarrow(y2)};
+-    SpiSceneApi()->canvas_draw_line(recorder_, &start, &end, &spi_paint);
++    SpiApi().scene->canvas_draw_line(recorder_, &start, &end, &spi_paint);
+   }
+ }
+ 
+@@ -332,7 +331,7 @@ void Canvas::drawPaint(Dart_Handle paint_objects,
+       // present that cannot be replaced by an DlColorFilter.
+       TRACE_EVENT0("flutter", "ui.Canvas::saveLayer (Recorded)");
+     }
+-    SpiSceneApi()->canvas_draw_paint(recorder_, &spi_paint);
++    SpiApi().scene->canvas_draw_paint(recorder_, &spi_paint);
+   }
+ }
+ 
+@@ -357,7 +356,7 @@ void Canvas::drawRect(double left,
+     FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+     FlutterSpiRect rect = {SafeNarrow(left), SafeNarrow(top), SafeNarrow(right),
+                            SafeNarrow(bottom)};
+-    SpiSceneApi()->canvas_draw_rect(recorder_, &rect, &spi_paint);
++    SpiApi().scene->canvas_draw_rect(recorder_, &rect, &spi_paint);
+   }
+ }
+ 
+@@ -378,7 +377,7 @@ void Canvas::drawRRect(const RRect& rrect,
+   if (recorder_ != nullptr) {
+     FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+     FlutterSpiRRect spi_rrect = ToSpiRRect(rrect.rrect);
+-    SpiSceneApi()->canvas_draw_rrect(recorder_, &spi_rrect, &spi_paint);
++    SpiApi().scene->canvas_draw_rrect(recorder_, &spi_rrect, &spi_paint);
+   }
+ }
+ 
+@@ -401,7 +400,7 @@ void Canvas::drawDRRect(const RRect& outer,
+     FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+     FlutterSpiRRect spi_outer = ToSpiRRect(outer.rrect);
+     FlutterSpiRRect spi_inner = ToSpiRRect(inner.rrect);
+-    SpiSceneApi()->canvas_draw_drrect(recorder_, &spi_outer, &spi_inner,
++    SpiApi().scene->canvas_draw_drrect(recorder_, &spi_outer, &spi_inner,
+                                       &spi_paint);
+   }
+ }
+@@ -423,7 +422,7 @@ void Canvas::drawRSuperellipse(const RSuperellipse* rse,
+   if (recorder_ != nullptr) {
+     FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+     FlutterSpiRRect spi_rrect = ToSpiRRect(rse->rsuperellipse());
+-    SpiSceneApi()->canvas_draw_rsuperellipse(recorder_, &spi_rrect,
++    SpiApi().scene->canvas_draw_rsuperellipse(recorder_, &spi_rrect,
+                                              &spi_paint);
+   }
+ }
+@@ -449,7 +448,7 @@ void Canvas::drawOval(double left,
+     FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+     FlutterSpiRect rect = {SafeNarrow(left), SafeNarrow(top), SafeNarrow(right),
+                            SafeNarrow(bottom)};
+-    SpiSceneApi()->canvas_draw_oval(recorder_, &rect, &spi_paint);
++    SpiApi().scene->canvas_draw_oval(recorder_, &rect, &spi_paint);
+   }
+ }
+ 
+@@ -472,7 +471,7 @@ void Canvas::drawCircle(double x,
+   if (recorder_ != nullptr) {
+     FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+     FlutterSpiPoint center = {SafeNarrow(x), SafeNarrow(y)};
+-    SpiSceneApi()->canvas_draw_circle(recorder_, &center, SafeNarrow(radius),
++    SpiApi().scene->canvas_draw_circle(recorder_, &center, SafeNarrow(radius),
+                                       &spi_paint);
+   }
+ }
+@@ -501,7 +500,7 @@ void Canvas::drawArc(double left,
+     FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+     FlutterSpiRect rect = {SafeNarrow(left), SafeNarrow(top), SafeNarrow(right),
+                            SafeNarrow(bottom)};
+-    SpiSceneApi()->canvas_draw_arc(recorder_, &rect, SafeNarrow(startAngle),
++    SpiApi().scene->canvas_draw_arc(recorder_, &rect, SafeNarrow(startAngle),
+                                    SafeNarrow(sweepAngle), useCenter,
+                                    &spi_paint);
+   }
+@@ -527,7 +526,7 @@ void Canvas::drawPath(const CanvasPath* path,
+     Paint paint(paint_objects, MakePaintWords(w0, w1, w2, w3, w4, w5, w6, w7, w8));
+     FML_DCHECK(paint.isNotNull());
+     FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+-    SpiSceneApi()->canvas_draw_path(recorder_, path->spi_handle(), &spi_paint);
++    SpiApi().scene->canvas_draw_path(recorder_, path->spi_handle(), &spi_paint);
+   }
+ }
+ 
+@@ -662,7 +661,7 @@ void Canvas::drawPicture(Picture* picture) {
+     return;
+   }
+   if (recorder_ != nullptr && picture->spi_handle() != nullptr) {
+-    SpiSceneApi()->canvas_draw_picture(recorder_, picture->spi_handle());
++    SpiApi().scene->canvas_draw_picture(recorder_, picture->spi_handle());
+   } else {
+     FML_DCHECK(false);
+   }
+@@ -688,7 +687,7 @@ void Canvas::drawPoints(Dart_Handle paint_objects,
+   FML_DCHECK(paint.isNotNull());
+   if (recorder_ != nullptr) {
+     FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+-    SpiSceneApi()->canvas_draw_points(
++    SpiApi().scene->canvas_draw_points(
+         recorder_, static_cast<int32_t>(point_mode),
+         reinterpret_cast<const FlutterSpiPoint*>(points.data()),
+         points.num_elements() / 2, &spi_paint);
+@@ -805,7 +804,7 @@ void Canvas::drawShadow(const CanvasPath* path,
+   }
+   if (recorder_ != nullptr) {
+     FlutterSpiColor spi_color = ToSpiColor(DlColor(color));
+-    SpiSceneApi()->canvas_draw_shadow(recorder_, path->spi_handle(), &spi_color,
++    SpiApi().scene->canvas_draw_shadow(recorder_, path->spi_handle(), &spi_color,
+                                       SafeNarrow(elevation),
+                                       transparentOccluder, dpr);
+   }
+diff --git a/engine/src/flutter/lib/ui/painting/codec.cc b/engine/src/flutter/lib/ui/painting/codec.cc
+index 3e7f50cb284..b7bb19ec112 100644
+--- a/engine/src/flutter/lib/ui/painting/codec.cc
++++ b/engine/src/flutter/lib/ui/painting/codec.cc
+@@ -5,8 +5,8 @@
+ #include "flutter/lib/ui/painting/codec.h"
+ 
+ #include "flutter/lib/ui/painting/image.h"
++#include "flutter/lib/ui/spi_api.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+ #include "third_party/tonic/dart_library_natives.h"
+ #include "third_party/tonic/dart_persistent_value.h"
+@@ -58,7 +58,7 @@ void InvokeFrameCallback(void* user_data,
+ 
+ Codec::~Codec() {
+   if (spi_codec_ != nullptr) {
+-    SpiImageApi()->codec_release(spi_codec_);
++    SpiApi().image->codec_release(spi_codec_);
+   }
+ }
+ 
+@@ -68,7 +68,7 @@ int Codec::frameCount() const {
+   }
+   int32_t frame_count = 0;
+   int32_t repetition_count = 0;
+-  if (SpiImageApi()->codec_get_info(spi_codec_, &frame_count,
++  if (SpiApi().image->codec_get_info(spi_codec_, &frame_count,
+                                     &repetition_count) != kFlutterSpiOk) {
+     return 0;
+   }
+@@ -81,7 +81,7 @@ int Codec::repetitionCount() const {
+   }
+   int32_t frame_count = 0;
+   int32_t repetition_count = 0;
+-  if (SpiImageApi()->codec_get_info(spi_codec_, &frame_count,
++  if (SpiApi().image->codec_get_info(spi_codec_, &frame_count,
+                                     &repetition_count) != kFlutterSpiOk) {
+     return 0;
+   }
+@@ -100,7 +100,7 @@ Dart_Handle Codec::getNextFrame(Dart_Handle callback_handle) {
+   auto* context = new CodecFrameContext{
+       fml::RefPtr<Codec>(this),
+       std::make_unique<tonic::DartPersistentValue>(dart_state, callback_handle)};
+-  const FlutterSpiResult result = SpiImageApi()->codec_get_next_frame(
++  const FlutterSpiResult result = SpiApi().image->codec_get_next_frame(
+       spi_codec_, InvokeFrameCallback, context);
+   if (result != kFlutterSpiOk) {
+     delete context;
+@@ -111,7 +111,7 @@ Dart_Handle Codec::getNextFrame(Dart_Handle callback_handle) {
+ 
+ void Codec::dispose() {
+   if (spi_codec_ != nullptr) {
+-    SpiImageApi()->codec_release(spi_codec_);
++    SpiApi().image->codec_release(spi_codec_);
+     spi_codec_ = nullptr;
+   }
+   ClearDartWrapper();
+diff --git a/engine/src/flutter/lib/ui/painting/color_filter.cc b/engine/src/flutter/lib/ui/painting/color_filter.cc
+index 2b1cf0b533d..a9ac574c63c 100644
+--- a/engine/src/flutter/lib/ui/painting/color_filter.cc
++++ b/engine/src/flutter/lib/ui/painting/color_filter.cc
+@@ -5,7 +5,7 @@
+ #include "flutter/lib/ui/painting/color_filter.h"
+ 
+ #include "flutter/runtime_spi/effects/spi_color_filter.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
++#include "flutter/lib/ui/spi_api.h"
+ 
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+@@ -20,7 +20,7 @@ IMPLEMENT_WRAPPERTYPEINFO(ui, ColorFilter);
+ namespace {
+ 
+ const FlutterSpiPaintEffectsApi* EffectsApi() {
+-  return SpiPaintEffectsApi();
++  return SpiApi().paint_effects;
+ }
+ 
+ }  // namespace
+diff --git a/engine/src/flutter/lib/ui/painting/engine_layer.cc b/engine/src/flutter/lib/ui/painting/engine_layer.cc
+index b6ddef8dc12..1e2462967c6 100644
+--- a/engine/src/flutter/lib/ui/painting/engine_layer.cc
++++ b/engine/src/flutter/lib/ui/painting/engine_layer.cc
+@@ -4,8 +4,8 @@
+ 
+ #include "flutter/lib/ui/painting/engine_layer.h"
+ 
++#include "flutter/lib/ui/spi_api.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+-#include "flutter/runtime_spi/scene/spi_canvas.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+@@ -20,13 +20,13 @@ EngineLayer::EngineLayer(FlutterSpiEngineLayer* spi_layer)
+ 
+ EngineLayer::~EngineLayer() {
+   if (spi_layer_ != nullptr) {
+-    SpiSceneApi()->engine_layer_release(spi_layer_);
++    SpiApi().scene->engine_layer_release(spi_layer_);
+   }
+ }
+ 
+ void EngineLayer::dispose() {
+   if (spi_layer_ != nullptr) {
+-    SpiSceneApi()->engine_layer_release(spi_layer_);
++    SpiApi().scene->engine_layer_release(spi_layer_);
+     spi_layer_ = nullptr;
+   }
+   ClearDartWrapper();
+diff --git a/engine/src/flutter/lib/ui/painting/fragment_program.cc b/engine/src/flutter/lib/ui/painting/fragment_program.cc
+index 6418f031473..0d0bc61be0b 100644
+--- a/engine/src/flutter/lib/ui/painting/fragment_program.cc
++++ b/engine/src/flutter/lib/ui/painting/fragment_program.cc
+@@ -9,9 +9,9 @@
+ #include "flutter/assets/asset_manager.h"
+ #include "flutter/fml/trace_event.h"
+ #include "flutter/lib/ui/painting/runtime_effect_loader.h"
++#include "flutter/lib/ui/spi_api.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/lib/ui/window/platform_configuration.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ 
+ #include "third_party/tonic/converter/dart_converter.h"
+ 
+@@ -23,7 +23,7 @@ std::string FragmentProgram::initFromAsset(const std::string& asset_name) {
+   FML_TRACE_EVENT("flutter", "FragmentProgram::initFromAsset", "asset",
+                   asset_name);
+   UIDartState* ui_dart_state = UIDartState::Current();
+-  const auto* fragment_api = SpiFragmentApi();
++  const auto* fragment_api = SpiApi().fragment;
+   if (spi_program_ != nullptr) {
+     fragment_api->program_release(spi_program_);
+     spi_program_ = nullptr;
+@@ -36,7 +36,7 @@ std::string FragmentProgram::initFromAsset(const std::string& asset_name) {
+     std::string message = error == nullptr ? "Failed to load fragment program"
+                                            : error;
+     if (error != nullptr) {
+-      SpiEngineFreeString(
++      SpiApi().free_string(
+           ui_dart_state->platform_configuration()->client()->GetSpiEngine(),
+           error);
+     }
+@@ -137,7 +137,7 @@ FragmentProgram::FragmentProgram() = default;
+ 
+ FragmentProgram::~FragmentProgram() {
+   if (spi_program_ != nullptr) {
+-    SpiFragmentApi()->program_release(spi_program_);
++    SpiApi().fragment->program_release(spi_program_);
+   }
+ }
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/fragment_shader.cc b/engine/src/flutter/lib/ui/painting/fragment_shader.cc
+index 36f2f0dc878..ac935125942 100644
+--- a/engine/src/flutter/lib/ui/painting/fragment_shader.cc
++++ b/engine/src/flutter/lib/ui/painting/fragment_shader.cc
+@@ -11,7 +11,7 @@
+ #include "flutter/display_list/effects/dl_color_source.h"
+ #include "flutter/lib/ui/painting/fragment_program.h"
+ #include "flutter/lib/ui/painting/image_filter.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
++#include "flutter/lib/ui/spi_api.h"
+ #include "flutter/runtime_spi/effects/spi_shader.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+@@ -39,7 +39,7 @@ int ToSpiFilterQuality(DlImageSampling sampling) {
+ void UpdateUniforms(FlutterSpiFragmentShader* shader,
+                     const SkData& uniform_data,
+                     size_t float_count) {
+-  const auto* api = SpiFragmentApi();
++  const auto* api = SpiApi().fragment;
+   const auto* values = static_cast<const float*>(uniform_data.data());
+   for (size_t index = 0; index < float_count; index++) {
+     api->shader_set_float(shader, index, values[index]);
+@@ -57,7 +57,7 @@ ReusableFragmentShader::ReusableFragmentShader(
+           (float_count + 2 * sampler_count) * sizeof(float))),
+       float_count_(float_count),
+       sampler_count_(sampler_count) {
+-  const auto* api = SpiFragmentApi();
++  const auto* api = SpiApi().fragment;
+   if (!program_ || program_->spi_handle() == nullptr ||
+       api->shader_create(program_->spi_handle(), &spi_fragment_shader_) !=
+           kFlutterSpiOk) {
+@@ -91,7 +91,7 @@ bool ReusableFragmentShader::ValidateSamplers() {
+     return false;
+   }
+   bool valid = false;
+-  return SpiFragmentApi()->shader_validate_samplers(
++  return SpiApi().fragment->shader_validate_samplers(
+              spi_fragment_shader_, &valid) == kFlutterSpiOk &&
+          valid;
+ }
+@@ -110,7 +110,7 @@ void ReusableFragmentShader::SetImageSampler(Dart_Handle index_handle,
+     Dart_ThrowException(tonic::ToDart("Image has been disposed"));
+     return;
+   }
+-  const auto* api = SpiFragmentApi();
++  const auto* api = SpiApi().fragment;
+   if (spi_fragment_shader_ == nullptr ||
+       api->shader_set_image_sampler(
+           spi_fragment_shader_, index, image->spi_handle(),
+@@ -130,7 +130,7 @@ FlutterSpiImageFilter* ReusableFragmentShader::as_image_filter(
+   if (spi_fragment_shader_ == nullptr) {
+     return nullptr;
+   }
+-  const auto* api = SpiFragmentApi();
++  const auto* api = SpiApi().fragment;
+   UpdateUniforms(spi_fragment_shader_, *uniform_data_, float_count_);
+   FlutterSpiImageFilter* filter = nullptr;
+   if (api->shader_to_image_filter(
+@@ -157,7 +157,7 @@ bool ReusableFragmentShader::ValidateImageFilter() {
+     return false;
+   }
+   bool valid = false;
+-  return SpiFragmentApi()->shader_validate_image_filter(
++  return SpiApi().fragment->shader_validate_image_filter(
+              spi_fragment_shader_, &valid) == kFlutterSpiOk &&
+          valid;
+ }
+@@ -168,7 +168,7 @@ void ReusableFragmentShader::Dispose() {
+     spi_shader_ = nullptr;
+   }
+   if (spi_fragment_shader_ != nullptr) {
+-    SpiFragmentApi()->shader_release(spi_fragment_shader_);
++    SpiApi().fragment->shader_release(spi_fragment_shader_);
+     spi_fragment_shader_ = nullptr;
+   }
+   uniform_data_.reset();
+@@ -178,7 +178,7 @@ void ReusableFragmentShader::Dispose() {
+ 
+ FlutterSpiShader* ReusableFragmentShader::spi_handle() const {
+   if (spi_shader_ == nullptr && spi_fragment_shader_ != nullptr) {
+-    const auto* api = SpiFragmentApi();
++    const auto* api = SpiApi().fragment;
+     UpdateUniforms(spi_fragment_shader_, *uniform_data_, float_count_);
+     api->shader_to_shader(spi_fragment_shader_, kFlutterSpiFilterQualityLow,
+                           &spi_shader_);
+@@ -191,7 +191,7 @@ ReusableFragmentShader::~ReusableFragmentShader() {
+     SpiShaderRelease(spi_shader_);
+   }
+   if (spi_fragment_shader_ != nullptr) {
+-    SpiFragmentApi()->shader_release(spi_fragment_shader_);
++    SpiApi().fragment->shader_release(spi_fragment_shader_);
+   }
+ }
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/gradient.cc b/engine/src/flutter/lib/ui/painting/gradient.cc
+index 1eb2ec79961..e0a7393c8c7 100644
+--- a/engine/src/flutter/lib/ui/painting/gradient.cc
++++ b/engine/src/flutter/lib/ui/painting/gradient.cc
+@@ -7,8 +7,8 @@
+ #include <vector>
+ 
+ #include "flutter/lib/ui/floating_point.h"
++#include "flutter/lib/ui/spi_api.h"
+ #include "flutter/runtime_spi/effects/spi_shader.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+@@ -24,7 +24,7 @@ IMPLEMENT_WRAPPERTYPEINFO(ui, Gradient);
+ namespace {
+ 
+ const FlutterSpiPaintEffectsApi* EffectsApi() {
+-  return SpiPaintEffectsApi();
++  return SpiApi().paint_effects;
+ }
+ 
+ FlutterSpiMatrix ToSpiMatrix(const tonic::Float64List& matrix4) {
+diff --git a/engine/src/flutter/lib/ui/painting/image.cc b/engine/src/flutter/lib/ui/painting/image.cc
+index aa5f6cee8c6..a38d2169cea 100644
+--- a/engine/src/flutter/lib/ui/painting/image.cc
++++ b/engine/src/flutter/lib/ui/painting/image.cc
+@@ -10,10 +10,10 @@
+ 
+ #include "flutter/display_list/image/dl_image.h"
+ #include "flutter/lib/ui/painting/image_encoding.h"
++#include "flutter/lib/ui/spi_api.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/lib/ui/window/platform_configuration.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
+ 
+@@ -59,7 +59,7 @@ sk_sp<DlImage> CanvasImage::GetDlImageForGpu() const {
+ int CanvasImage::width() {
+   int32_t width = 0;
+   int32_t height = 0;
+-  if (spi_image_ == nullptr || SpiImageApi()->image_get_size(
++  if (spi_image_ == nullptr || SpiApi().image->image_get_size(
+                                    spi_image_, &width, &height) !=
+                                    kFlutterSpiOk) {
+     return 0;
+@@ -70,7 +70,7 @@ int CanvasImage::width() {
+ int CanvasImage::height() {
+   int32_t width = 0;
+   int32_t height = 0;
+-  if (spi_image_ == nullptr || SpiImageApi()->image_get_size(
++  if (spi_image_ == nullptr || SpiApi().image->image_get_size(
+                                    spi_image_, &width, &height) !=
+                                    kFlutterSpiOk) {
+     return 0;
+@@ -98,7 +98,7 @@ void CanvasImage::dispose() {
+ int CanvasImage::colorSpace() {
+   int32_t color_space = 0;
+   if (spi_image_ == nullptr ||
+-      SpiImageApi()->image_get_color_space(spi_image_, &color_space) !=
++      SpiApi().image->image_get_color_space(spi_image_, &color_space) !=
+           kFlutterSpiOk) {
+     return ColorSpace::kSRGB;
+   }
+@@ -165,7 +165,7 @@ const char* DoDecodeImageFromPixelsSync(Dart_Handle pixels_handle,
+       .pixel_format = pixel_format,
+   };
+   FlutterSpiImage* image = nullptr;
+-  if (SpiImageApi()->image_create_from_pixels_sync(
++  if (SpiApi().image->image_create_from_pixels_sync(
+           CanvasImage::GetSpiEngine(), &spi_pixels, nullptr, &image) !=
+               kFlutterSpiOk ||
+       image == nullptr) {
+diff --git a/engine/src/flutter/lib/ui/painting/image_descriptor.cc b/engine/src/flutter/lib/ui/painting/image_descriptor.cc
+index 85ff4aa5880..44e2959a5a7 100644
+--- a/engine/src/flutter/lib/ui/painting/image_descriptor.cc
++++ b/engine/src/flutter/lib/ui/painting/image_descriptor.cc
+@@ -9,8 +9,8 @@
+ #include "flutter/fml/trace_event.h"
+ #include "flutter/lib/ui/painting/multi_frame_codec.h"
+ #include "flutter/lib/ui/painting/single_frame_codec.h"
++#include "flutter/lib/ui/spi_api.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+ #include "third_party/tonic/logging/dart_invoke.h"
+ 
+@@ -31,7 +31,7 @@ ImageDescriptor::ImageDescriptor(sk_sp<SkData> buffer,
+ 
+ ImageDescriptor::~ImageDescriptor() {
+   if (spi_descriptor_ != nullptr) {
+-    SpiImageApi()->image_descriptor_release(spi_descriptor_);
++    SpiApi().image->image_descriptor_release(spi_descriptor_);
+   }
+ }
+ 
+@@ -49,7 +49,7 @@ Dart_Handle ImageDescriptor::initEncoded(Dart_Handle descriptor_handle,
+   auto* dart_state = UIDartState::Current();
+   auto data = immutable_buffer->data();
+   FlutterSpiImageDescriptor* spi_descriptor = nullptr;
+-  const FlutterSpiResult result = SpiImageApi()->image_descriptor_create_encoded(
++  const FlutterSpiResult result = SpiApi().image->image_descriptor_create_encoded(
+       CanvasImage::GetSpiEngine(), static_cast<const uint8_t*>(data->bytes()),
+       data->size(), &spi_descriptor);
+   if (result != kFlutterSpiOk || spi_descriptor == nullptr) {
+@@ -100,7 +100,7 @@ void ImageDescriptor::initRaw(Dart_Handle descriptor_handle,
+       .pixel_format = static_cast<int32_t>(image_descriptor_pixel_format),
+   };
+   FlutterSpiImageDescriptor* spi_descriptor = nullptr;
+-  if (SpiImageApi()->image_descriptor_create_raw(
++  if (SpiApi().image->image_descriptor_create_raw(
+           CanvasImage::GetSpiEngine(), &pixels, &spi_descriptor) !=
+           kFlutterSpiOk ||
+       spi_descriptor == nullptr) {
+@@ -123,7 +123,7 @@ void ImageDescriptor::instantiateCodec(Dart_Handle codec_handle,
+   };
+   FlutterSpiCodec* spi_codec = nullptr;
+   if (spi_descriptor_ == nullptr ||
+-      SpiImageApi()->image_descriptor_instantiate_codec(
++      SpiApi().image->image_descriptor_instantiate_codec(
+           spi_descriptor_, &options, &spi_codec) !=
+           kFlutterSpiOk ||
+       spi_codec == nullptr) {
+@@ -136,7 +136,7 @@ void ImageDescriptor::instantiateCodec(Dart_Handle codec_handle,
+ 
+ void ImageDescriptor::dispose() {
+   if (spi_descriptor_ != nullptr) {
+-    SpiImageApi()->image_descriptor_release(spi_descriptor_);
++    SpiApi().image->image_descriptor_release(spi_descriptor_);
+     spi_descriptor_ = nullptr;
+   }
+   data_.reset();
+@@ -148,7 +148,7 @@ int ImageDescriptor::width() const {
+     int32_t width = 0;
+     int32_t height = 0;
+     int32_t bytes_per_pixel = 0;
+-    SpiImageApi()->image_descriptor_get_info(spi_descriptor_, &width, &height,
++    SpiApi().image->image_descriptor_get_info(spi_descriptor_, &width, &height,
+                                              &bytes_per_pixel);
+     return width;
+   }
+@@ -160,7 +160,7 @@ int ImageDescriptor::height() const {
+     int32_t width = 0;
+     int32_t height = 0;
+     int32_t bytes_per_pixel = 0;
+-    SpiImageApi()->image_descriptor_get_info(spi_descriptor_, &width, &height,
++    SpiApi().image->image_descriptor_get_info(spi_descriptor_, &width, &height,
+                                              &bytes_per_pixel);
+     return height;
+   }
+@@ -172,7 +172,7 @@ int ImageDescriptor::bytesPerPixel() const {
+     int32_t width = 0;
+     int32_t height = 0;
+     int32_t bytes_per_pixel = 0;
+-    SpiImageApi()->image_descriptor_get_info(spi_descriptor_, &width, &height,
++    SpiApi().image->image_descriptor_get_info(spi_descriptor_, &width, &height,
+                                              &bytes_per_pixel);
+     return bytes_per_pixel;
+   }
+diff --git a/engine/src/flutter/lib/ui/painting/image_encoding.cc b/engine/src/flutter/lib/ui/painting/image_encoding.cc
+index 0d15233d137..f69040ce767 100644
+--- a/engine/src/flutter/lib/ui/painting/image_encoding.cc
++++ b/engine/src/flutter/lib/ui/painting/image_encoding.cc
+@@ -9,8 +9,8 @@
+ 
+ #include "flutter/lib/ui/painting/image.h"
+ #include "flutter/lib/ui/painting/image_readback.h"
++#include "flutter/lib/ui/spi_api.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/tonic/dart_persistent_value.h"
+ #include "third_party/tonic/logging/dart_invoke.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
+@@ -101,7 +101,7 @@ Dart_Handle EncodeImage(CanvasImage* canvas_image,
+ 
+   auto* callback = new DartPersistentValue(tonic::DartState::Current(),
+                                            callback_handle);
+-  const FlutterSpiResult result = SpiImageApi()->image_to_bytes(
++  const FlutterSpiResult result = SpiApi().image->image_to_bytes(
+       CanvasImage::GetSpiEngine(), canvas_image->spi_handle(), spi_format,
+       InvokeSpiBytesCallback, callback);
+   if (result != kFlutterSpiOk) {
+diff --git a/engine/src/flutter/lib/ui/painting/image_filter.cc b/engine/src/flutter/lib/ui/painting/image_filter.cc
+index 49bdcd6c309..4da7ac4c5e1 100644
+--- a/engine/src/flutter/lib/ui/painting/image_filter.cc
++++ b/engine/src/flutter/lib/ui/painting/image_filter.cc
+@@ -5,7 +5,7 @@
+ #include "flutter/lib/ui/painting/image_filter.h"
+ 
+ #include "flutter/runtime_spi/effects/spi_image_filter.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
++#include "flutter/lib/ui/spi_api.h"
+ 
+ #include "display_list/dl_sampling_options.h"
+ #include "flutter/lib/ui/floating_point.h"
+@@ -25,7 +25,7 @@ IMPLEMENT_WRAPPERTYPEINFO(ui, ImageFilter);
+ namespace {
+ 
+ const FlutterSpiPaintEffectsApi* EffectsApi() {
+-  return SpiPaintEffectsApi();
++  return SpiApi().paint_effects;
+ }
+ 
+ FlutterSpiMatrix ToSpiMatrix(const tonic::Float64List& matrix4) {
+diff --git a/engine/src/flutter/lib/ui/painting/image_shader.cc b/engine/src/flutter/lib/ui/painting/image_shader.cc
+index 71da8b06027..25b1d374f85 100644
+--- a/engine/src/flutter/lib/ui/painting/image_shader.cc
++++ b/engine/src/flutter/lib/ui/painting/image_shader.cc
+@@ -5,10 +5,10 @@
+ #include "flutter/lib/ui/painting/image_shader.h"
+ 
+ #include "flutter/lib/ui/floating_point.h"
++#include "flutter/lib/ui/spi_api.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/runtime_spi/effects/spi_shader.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+@@ -47,7 +47,7 @@ Dart_Handle ImageShader::initWithImage(CanvasImage* image,
+   matrix4.Release();
+   sampling_is_locked_ = filter_quality_index >= 0;
+   const FlutterSpiResult result =
+-      SpiPaintEffectsApi()->shader_image(
++      SpiApi().paint_effects->shader_image(
+           CanvasImage::GetSpiEngine(), image_, static_cast<int32_t>(tmx),
+           static_cast<int32_t>(tmy), filter_quality_index, &matrix,
+           &spi_shader_);
+diff --git a/engine/src/flutter/lib/ui/painting/immutable_buffer.cc b/engine/src/flutter/lib/ui/painting/immutable_buffer.cc
+index 5c925e80fc1..54b1b711054 100644
+--- a/engine/src/flutter/lib/ui/painting/immutable_buffer.cc
++++ b/engine/src/flutter/lib/ui/painting/immutable_buffer.cc
+@@ -8,9 +8,9 @@
+ 
+ #include "flutter/fml/file.h"
+ #include "flutter/fml/make_copyable.h"
++#include "flutter/lib/ui/spi_api.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/lib/ui/window/platform_configuration.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+@@ -102,7 +102,7 @@ Dart_Handle ImmutableBuffer::initFromAsset(Dart_Handle raw_buffer_handle,
+   auto* buffer_handle =
+       new tonic::DartPersistentValue(dart_state, raw_buffer_handle);
+   auto* context = new AssetReadContext{callback, buffer_handle};
+-  const FlutterSpiResult spi_result = SpiEngineAssetRead(
++  const FlutterSpiResult spi_result = SpiApi().asset_read(
+       dart_state->platform_configuration()->client()->GetSpiEngine(),
+       asset_name.c_str(), ImmutableBuffer::CompleteAssetRead, context);
+   if (spi_result != kFlutterSpiOk) {
+diff --git a/engine/src/flutter/lib/ui/painting/path.cc b/engine/src/flutter/lib/ui/painting/path.cc
+index cf4cd073bc0..193cc725a56 100644
+--- a/engine/src/flutter/lib/ui/painting/path.cc
++++ b/engine/src/flutter/lib/ui/painting/path.cc
+@@ -8,6 +8,7 @@
+ 
+ #include "flutter/lib/ui/floating_point.h"
+ #include "flutter/lib/ui/painting/matrix.h"
++#include "flutter/lib/ui/spi_api.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/runtime_spi/scene/spi_canvas.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+@@ -44,14 +45,14 @@ typedef CanvasPath Path;
+ IMPLEMENT_WRAPPERTYPEINFO(ui, Path);
+ 
+ CanvasPath::CanvasPath() {
+-  SpiSceneApi()->path_create(nullptr, &spi_path_);
++  SpiApi().scene->path_create(nullptr, &spi_path_);
+   SpiPathSetVolatile(
+       spi_path_, !UIDartState::Current()->IsDeterministicRenderingEnabled());
+ }
+ 
+ CanvasPath::~CanvasPath() {
+   if (spi_path_ != nullptr) {
+-    SpiSceneApi()->path_release(spi_path_);
++    SpiApi().scene->path_release(spi_path_);
+   }
+ }
+ 
+@@ -63,34 +64,34 @@ void CanvasPath::CreateFrom(Dart_Handle path_handle, const SkPath& src) {
+ }
+ 
+ void CanvasPath::ReplacePath(FlutterSpiPath* path) {
+-  SpiSceneApi()->path_release(spi_path_);
++  SpiApi().scene->path_release(spi_path_);
+   spi_path_ = path;
+ }
+ 
+ int CanvasPath::getFillType() {
+   int32_t fill_type = kFlutterSpiFillTypeNonZero;
+-  SpiSceneApi()->path_get_fill_type(spi_path_, &fill_type);
++  SpiApi().scene->path_get_fill_type(spi_path_, &fill_type);
+   return fill_type;
+ }
+ 
+ void CanvasPath::setFillType(int fill_type) {
+-  SpiSceneApi()->path_set_fill_type(spi_path_, fill_type);
++  SpiApi().scene->path_set_fill_type(spi_path_, fill_type);
+ }
+ 
+ void CanvasPath::moveTo(double x, double y) {
+-  SpiSceneApi()->path_move_to(spi_path_, SafeNarrow(x), SafeNarrow(y));
++  SpiApi().scene->path_move_to(spi_path_, SafeNarrow(x), SafeNarrow(y));
+ }
+ 
+ void CanvasPath::relativeMoveTo(double x, double y) {
+-  SpiSceneApi()->path_relative_move_to(spi_path_, SafeNarrow(x), SafeNarrow(y));
++  SpiApi().scene->path_relative_move_to(spi_path_, SafeNarrow(x), SafeNarrow(y));
+ }
+ 
+ void CanvasPath::lineTo(double x, double y) {
+-  SpiSceneApi()->path_line_to(spi_path_, SafeNarrow(x), SafeNarrow(y));
++  SpiApi().scene->path_line_to(spi_path_, SafeNarrow(x), SafeNarrow(y));
+ }
+ 
+ void CanvasPath::relativeLineTo(double x, double y) {
+-  SpiSceneApi()->path_relative_line_to(spi_path_, SafeNarrow(x),
++  SpiApi().scene->path_relative_line_to(spi_path_, SafeNarrow(x),
+                                        SafeNarrow(y));
+ }
+ 
+@@ -98,7 +99,7 @@ void CanvasPath::quadraticBezierTo(double x1,
+                                    double y1,
+                                    double x2,
+                                    double y2) {
+-  SpiSceneApi()->path_quad_to(spi_path_, SafeNarrow(x1), SafeNarrow(y1),
++  SpiApi().scene->path_quad_to(spi_path_, SafeNarrow(x1), SafeNarrow(y1),
+                               SafeNarrow(x2), SafeNarrow(y2));
+ }
+ 
+@@ -106,7 +107,7 @@ void CanvasPath::relativeQuadraticBezierTo(double x1,
+                                            double y1,
+                                            double x2,
+                                            double y2) {
+-  SpiSceneApi()->path_relative_quad_to(spi_path_, SafeNarrow(x1),
++  SpiApi().scene->path_relative_quad_to(spi_path_, SafeNarrow(x1),
+                                        SafeNarrow(y1), SafeNarrow(x2),
+                                        SafeNarrow(y2));
+ }
+@@ -117,7 +118,7 @@ void CanvasPath::cubicTo(double x1,
+                          double y2,
+                          double x3,
+                          double y3) {
+-  SpiSceneApi()->path_cubic_to(spi_path_, SafeNarrow(x1), SafeNarrow(y1),
++  SpiApi().scene->path_cubic_to(spi_path_, SafeNarrow(x1), SafeNarrow(y1),
+                                SafeNarrow(x2), SafeNarrow(y2), SafeNarrow(x3),
+                                SafeNarrow(y3));
+ }
+@@ -128,7 +129,7 @@ void CanvasPath::relativeCubicTo(double x1,
+                                  double y2,
+                                  double x3,
+                                  double y3) {
+-  SpiSceneApi()->path_relative_cubic_to(
++  SpiApi().scene->path_relative_cubic_to(
+       spi_path_, SafeNarrow(x1), SafeNarrow(y1), SafeNarrow(x2), SafeNarrow(y2),
+       SafeNarrow(x3), SafeNarrow(y3));
+ }
+@@ -138,7 +139,7 @@ void CanvasPath::conicTo(double x1,
+                          double x2,
+                          double y2,
+                          double w) {
+-  SpiSceneApi()->path_conic_to(spi_path_, SafeNarrow(x1), SafeNarrow(y1),
++  SpiApi().scene->path_conic_to(spi_path_, SafeNarrow(x1), SafeNarrow(y1),
+                                SafeNarrow(x2), SafeNarrow(y2), SafeNarrow(w));
+ }
+ 
+@@ -147,7 +148,7 @@ void CanvasPath::relativeConicTo(double x1,
+                                  double x2,
+                                  double y2,
+                                  double w) {
+-  SpiSceneApi()->path_relative_conic_to(
++  SpiApi().scene->path_relative_conic_to(
+       spi_path_, SafeNarrow(x1), SafeNarrow(y1), SafeNarrow(x2), SafeNarrow(y2),
+       SafeNarrow(w));
+ }
+@@ -161,7 +162,7 @@ void CanvasPath::arcTo(double left,
+                        bool forceMoveTo) {
+   const FlutterSpiRect oval = {SafeNarrow(left), SafeNarrow(top),
+                                SafeNarrow(right), SafeNarrow(bottom)};
+-  SpiSceneApi()->path_arc_to(spi_path_, &oval,
++  SpiApi().scene->path_arc_to(spi_path_, &oval,
+                              SafeNarrow(startAngle) / kRadiansToDegrees,
+                              SafeNarrow(sweepAngle) / kRadiansToDegrees,
+                              forceMoveTo);
+@@ -174,7 +175,7 @@ void CanvasPath::arcToPoint(double arcEndX,
+                             double xAxisRotation,
+                             bool isLargeArc,
+                             bool isClockwiseDirection) {
+-  SpiSceneApi()->path_arc_to_point(
++  SpiApi().scene->path_arc_to_point(
+       spi_path_, SafeNarrow(arcEndX), SafeNarrow(arcEndY), SafeNarrow(radiusX),
+       SafeNarrow(radiusY), SafeNarrow(xAxisRotation), isLargeArc,
+       isClockwiseDirection);
+@@ -187,7 +188,7 @@ void CanvasPath::relativeArcToPoint(double arcEndDeltaX,
+                                     double xAxisRotation,
+                                     bool isLargeArc,
+                                     bool isClockwiseDirection) {
+-  SpiSceneApi()->path_relative_arc_to_point(
++  SpiApi().scene->path_relative_arc_to_point(
+       spi_path_, SafeNarrow(arcEndDeltaX), SafeNarrow(arcEndDeltaY),
+       SafeNarrow(radiusX), SafeNarrow(radiusY), SafeNarrow(xAxisRotation),
+       isLargeArc, isClockwiseDirection);
+@@ -196,13 +197,13 @@ void CanvasPath::relativeArcToPoint(double arcEndDeltaX,
+ void CanvasPath::addRect(double left, double top, double right, double bottom) {
+   const FlutterSpiRect rect = {SafeNarrow(left), SafeNarrow(top),
+                                SafeNarrow(right), SafeNarrow(bottom)};
+-  SpiSceneApi()->path_add_rect(spi_path_, &rect);
++  SpiApi().scene->path_add_rect(spi_path_, &rect);
+ }
+ 
+ void CanvasPath::addOval(double left, double top, double right, double bottom) {
+   const FlutterSpiRect bounds = {SafeNarrow(left), SafeNarrow(top),
+                                  SafeNarrow(right), SafeNarrow(bottom)};
+-  SpiSceneApi()->path_add_oval(spi_path_, &bounds);
++  SpiApi().scene->path_add_oval(spi_path_, &bounds);
+ }
+ 
+ void CanvasPath::addArc(double left,
+@@ -213,26 +214,26 @@ void CanvasPath::addArc(double left,
+                         double sweepAngle) {
+   const FlutterSpiRect oval = {SafeNarrow(left), SafeNarrow(top),
+                                SafeNarrow(right), SafeNarrow(bottom)};
+-  SpiSceneApi()->path_add_arc(spi_path_, &oval,
++  SpiApi().scene->path_add_arc(spi_path_, &oval,
+                               SafeNarrow(startAngle) / kRadiansToDegrees,
+                               SafeNarrow(sweepAngle) / kRadiansToDegrees);
+ }
+ 
+ void CanvasPath::addPolygon(const tonic::Float32List& points, bool close) {
+-  SpiSceneApi()->path_add_polygon(
++  SpiApi().scene->path_add_polygon(
+       spi_path_, reinterpret_cast<const FlutterSpiPoint*>(points.data()),
+       points.num_elements() / 2, close);
+ }
+ 
+ void CanvasPath::addRRect(const RRect& rrect) {
+   const FlutterSpiRRect spi_rrect = ToSpiRRect(rrect.rrect);
+-  SpiSceneApi()->path_add_rrect(spi_path_, &spi_rrect);
++  SpiApi().scene->path_add_rrect(spi_path_, &spi_rrect);
+ }
+ 
+ void CanvasPath::addRSuperellipse(const RSuperellipse* rsuperellipse) {
+   const FlutterSpiRSuperellipse spi_rsuperellipse =
+       ToSpiRRect(rsuperellipse->rsuperellipse());
+-  SpiSceneApi()->path_add_rsuperellipse(spi_path_, &spi_rsuperellipse);
++  SpiApi().scene->path_add_rsuperellipse(spi_path_, &spi_rsuperellipse);
+ }
+ 
+ void CanvasPath::addPath(CanvasPath* path, double dx, double dy) {
+@@ -240,7 +241,7 @@ void CanvasPath::addPath(CanvasPath* path, double dx, double dy) {
+     Dart_ThrowException(ToDart("Path.addPath called with non-genuine Path."));
+     return;
+   }
+-  SpiSceneApi()->path_add_path(spi_path_, path->spi_handle(), SafeNarrow(dx),
++  SpiApi().scene->path_add_path(spi_path_, path->spi_handle(), SafeNarrow(dx),
+                                SafeNarrow(dy), nullptr,
+                                kFlutterSpiPathAddModeAppend);
+ }
+@@ -258,7 +259,7 @@ void CanvasPath::addPathWithMatrix(CanvasPath* path,
+     return;
+   }
+ 
+-  SpiSceneApi()->path_add_path(spi_path_, path->spi_handle(), SafeNarrow(dx),
++  SpiApi().scene->path_add_path(spi_path_, path->spi_handle(), SafeNarrow(dx),
+                                SafeNarrow(dy), matrix4.data(),
+                                kFlutterSpiPathAddModeAppend);
+   matrix4.Release();
+@@ -270,7 +271,7 @@ void CanvasPath::extendWithPath(CanvasPath* path, double dx, double dy) {
+         ToDart("Path.extendWithPath called with non-genuine Path."));
+     return;
+   }
+-  SpiSceneApi()->path_add_path(spi_path_, path->spi_handle(), SafeNarrow(dx),
++  SpiApi().scene->path_add_path(spi_path_, path->spi_handle(), SafeNarrow(dx),
+                                SafeNarrow(dy), nullptr,
+                                kFlutterSpiPathAddModeExtend);
+ }
+@@ -288,23 +289,23 @@ void CanvasPath::extendWithPathAndMatrix(CanvasPath* path,
+     return;
+   }
+ 
+-  SpiSceneApi()->path_add_path(spi_path_, path->spi_handle(), SafeNarrow(dx),
++  SpiApi().scene->path_add_path(spi_path_, path->spi_handle(), SafeNarrow(dx),
+                                SafeNarrow(dy), matrix4.data(),
+                                kFlutterSpiPathAddModeExtend);
+   matrix4.Release();
+ }
+ 
+ void CanvasPath::close() {
+-  SpiSceneApi()->path_close(spi_path_);
++  SpiApi().scene->path_close(spi_path_);
+ }
+ 
+ void CanvasPath::reset() {
+-  SpiSceneApi()->path_reset(spi_path_);
++  SpiApi().scene->path_reset(spi_path_);
+ }
+ 
+ bool CanvasPath::contains(double x, double y) {
+   bool result = false;
+-  SpiSceneApi()->path_contains(spi_path_, SafeNarrow(x), SafeNarrow(y),
++  SpiApi().scene->path_contains(spi_path_, SafeNarrow(x), SafeNarrow(y),
+                                &result);
+   return result;
+ }
+@@ -312,7 +313,7 @@ bool CanvasPath::contains(double x, double y) {
+ void CanvasPath::shift(Dart_Handle path_handle, double dx, double dy) {
+   fml::RefPtr<CanvasPath> path = Create(path_handle);
+   FlutterSpiPath* shifted = nullptr;
+-  if (SpiSceneApi()->path_shift(spi_path_, SafeNarrow(dx), SafeNarrow(dy),
++  if (SpiApi().scene->path_shift(spi_path_, SafeNarrow(dx), SafeNarrow(dy),
+                                 &shifted) == kFlutterSpiOk) {
+     path->ReplacePath(shifted);
+   }
+@@ -322,7 +323,7 @@ void CanvasPath::transform(Dart_Handle path_handle,
+                            Dart_Handle matrix4_handle) {
+   tonic::Float64List matrix4(matrix4_handle);
+   FlutterSpiPath* transformed = nullptr;
+-  const FlutterSpiResult result = SpiSceneApi()->path_transform(
++  const FlutterSpiResult result = SpiApi().scene->path_transform(
+       spi_path_, matrix4.data(), &transformed);
+   matrix4.Release();
+   if (result == kFlutterSpiOk) {
+@@ -334,7 +335,7 @@ void CanvasPath::transform(Dart_Handle path_handle,
+ tonic::Float32List CanvasPath::getBounds() {
+   tonic::Float32List rect(Dart_NewTypedData(Dart_TypedData_kFloat32, 4));
+   FlutterSpiRect bounds = {};
+-  SpiSceneApi()->path_get_bounds(spi_path_, &bounds);
++  SpiApi().scene->path_get_bounds(spi_path_, &bounds);
+   rect[0] = bounds.left;
+   rect[1] = bounds.top;
+   rect[2] = bounds.right;
+@@ -345,7 +346,7 @@ tonic::Float32List CanvasPath::getBounds() {
+ bool CanvasPath::op(CanvasPath* path1, CanvasPath* path2, int operation) {
+   FlutterSpiPath* result = nullptr;
+   const FlutterSpiResult spi_result =
+-      SpiSceneApi()->path_op(path1->spi_handle(), path2->spi_handle(),
++      SpiApi().scene->path_op(path1->spi_handle(), path2->spi_handle(),
+                              operation, &result);
+   if (spi_result != kFlutterSpiOk) {
+     return false;
+@@ -356,7 +357,7 @@ bool CanvasPath::op(CanvasPath* path1, CanvasPath* path2, int operation) {
+ 
+ void CanvasPath::clone(Dart_Handle path_handle) {
+   FlutterSpiPath* copy = nullptr;
+-  if (SpiSceneApi()->path_copy(spi_path_, &copy) == kFlutterSpiOk) {
++  if (SpiApi().scene->path_copy(spi_path_, &copy) == kFlutterSpiOk) {
+     fml::RefPtr<CanvasPath> path = Create(path_handle);
+     path->ReplacePath(copy);
+   }
+diff --git a/engine/src/flutter/lib/ui/painting/path_measure.cc b/engine/src/flutter/lib/ui/painting/path_measure.cc
+index 5129b160efe..2995d82a825 100644
+--- a/engine/src/flutter/lib/ui/painting/path_measure.cc
++++ b/engine/src/flutter/lib/ui/painting/path_measure.cc
+@@ -5,6 +5,7 @@
+ #include "flutter/lib/ui/painting/path_measure.h"
+ 
+ #include "flutter/lib/ui/floating_point.h"
++#include "flutter/lib/ui/spi_api.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/runtime_spi/scene/spi_canvas.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+@@ -26,13 +27,13 @@ void CanvasPathMeasure::Create(Dart_Handle wrapper,
+   FlutterSpiPath* empty_path = nullptr;
+   FlutterSpiPath* path_handle = path == nullptr ? empty_path : path->spi_handle();
+   if (path_handle == nullptr) {
+-    SpiSceneApi()->path_create(nullptr, &empty_path);
++    SpiApi().scene->path_create(nullptr, &empty_path);
+     path_handle = empty_path;
+   }
+-  SpiSceneApi()->path_measure_create(path_handle, forceClosed,
++  SpiApi().scene->path_measure_create(path_handle, forceClosed,
+                                      &path_measure->path_measure_);
+   if (empty_path != nullptr) {
+-    SpiSceneApi()->path_release(empty_path);
++    SpiApi().scene->path_release(empty_path);
+   }
+   path_measure->AssociateWithDartWrapper(wrapper);
+ }
+@@ -41,18 +42,18 @@ CanvasPathMeasure::CanvasPathMeasure() = default;
+ 
+ CanvasPathMeasure::~CanvasPathMeasure() {
+   if (path_measure_ != nullptr) {
+-    SpiSceneApi()->path_measure_release(path_measure_);
++    SpiApi().scene->path_measure_release(path_measure_);
+   }
+ }
+ 
+ void CanvasPathMeasure::setPath(const CanvasPath* path, bool isClosed) {
+-  SpiSceneApi()->path_measure_set_path(path_measure_, path->spi_handle(),
++  SpiApi().scene->path_measure_set_path(path_measure_, path->spi_handle(),
+                                        isClosed);
+ }
+ 
+ double CanvasPathMeasure::getLength(int contour_index) {
+   float length = -1.0f;
+-  SpiSceneApi()->path_measure_get_length(path_measure_, contour_index, &length);
++  SpiApi().scene->path_measure_get_length(path_measure_, contour_index, &length);
+   return length;
+ }
+ 
+@@ -64,7 +65,7 @@ tonic::Float32List CanvasPathMeasure::getPosTan(int contour_index,
+   FlutterSpiPoint position = {};
+   FlutterSpiPoint tangent = {};
+   bool success = false;
+-  SpiSceneApi()->path_measure_get_pos_tan(
++  SpiApi().scene->path_measure_get_pos_tan(
+       path_measure_, contour_index, SafeNarrow(distance), &position, &tangent,
+       &success);
+   if (success) {
+@@ -83,7 +84,7 @@ void CanvasPathMeasure::getSegment(Dart_Handle path_handle,
+                                    double stop_d,
+                                    bool start_with_move_to) {
+   FlutterSpiPath* segment = nullptr;
+-  SpiSceneApi()->path_measure_get_segment(
++  SpiApi().scene->path_measure_get_segment(
+       path_measure_, contour_index, SafeNarrow(start_d), SafeNarrow(stop_d),
+       start_with_move_to, &segment);
+   if (segment == nullptr) {
+@@ -92,18 +93,18 @@ void CanvasPathMeasure::getSegment(Dart_Handle path_handle,
+   }
+ 
+   CanvasPath::CreateFrom(path_handle, SpiPathDlPath(segment).GetSkPath());
+-  SpiSceneApi()->path_release(segment);
++  SpiApi().scene->path_release(segment);
+ }
+ 
+ bool CanvasPathMeasure::isClosed(int contour_index) {
+   bool closed = false;
+-  SpiSceneApi()->path_measure_is_closed(path_measure_, contour_index, &closed);
++  SpiApi().scene->path_measure_is_closed(path_measure_, contour_index, &closed);
+   return closed;
+ }
+ 
+ bool CanvasPathMeasure::nextContour() {
+   bool has_next_contour = false;
+-  SpiSceneApi()->path_measure_next_contour(path_measure_, &has_next_contour);
++  SpiApi().scene->path_measure_next_contour(path_measure_, &has_next_contour);
+   return has_next_contour;
+ }
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/picture.cc b/engine/src/flutter/lib/ui/painting/picture.cc
+index d226d449d4a..1ca3e60dbf5 100644
+--- a/engine/src/flutter/lib/ui/painting/picture.cc
++++ b/engine/src/flutter/lib/ui/painting/picture.cc
+@@ -10,9 +10,8 @@
+ #include "flutter/fml/make_copyable.h"
+ #include "flutter/lib/ui/painting/canvas.h"
+ #include "flutter/lib/ui/painting/image_snapshot.h"
++#include "flutter/lib/ui/spi_api.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+-#include "flutter/runtime_spi/scene/spi_canvas.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+@@ -74,7 +73,7 @@ Picture::Picture(FlutterSpiPicture* spi_picture) : spi_picture_(spi_picture) {}
+ 
+ Picture::~Picture() {
+   if (spi_picture_ != nullptr) {
+-    SpiSceneApi()->picture_release(spi_picture_);
++    SpiApi().scene->picture_release(spi_picture_);
+   }
+ }
+ 
+@@ -89,7 +88,7 @@ Dart_Handle Picture::toImage(uint32_t width,
+   }
+   auto* callback = new tonic::DartPersistentValue(
+       tonic::DartState::Current(), raw_image_callback);
+-  const FlutterSpiResult result = SpiImageApi()->picture_to_image(
++  const FlutterSpiResult result = SpiApi().image->picture_to_image(
+       CanvasImage::GetSpiEngine(), spi_picture_, static_cast<int32_t>(width),
+       static_cast<int32_t>(height), InvokeImageCallback, callback);
+   if (result != kFlutterSpiOk) {
+@@ -108,7 +107,7 @@ void Picture::toImageSync(uint32_t width,
+     return;
+   }
+   FlutterSpiImage* image = nullptr;
+-  if (SpiImageApi()->picture_to_image_sync_with_format(
++  if (SpiApi().image->picture_to_image_sync_with_format(
+           CanvasImage::GetSpiEngine(), spi_picture_, static_cast<int32_t>(width),
+           static_cast<int32_t>(height), pixel_format, &image) != kFlutterSpiOk ||
+       image == nullptr) {
+@@ -148,7 +147,7 @@ void Picture::RasterizeToImageSync(sk_sp<DisplayList> display_list,
+ 
+ void Picture::dispose() {
+   if (spi_picture_ != nullptr) {
+-    SpiSceneApi()->picture_release(spi_picture_);
++    SpiApi().scene->picture_release(spi_picture_);
+     spi_picture_ = nullptr;
+   }
+   ClearDartWrapper();
+diff --git a/engine/src/flutter/lib/ui/painting/picture_recorder.cc b/engine/src/flutter/lib/ui/painting/picture_recorder.cc
+index 3d7f6557d08..8539adf49c7 100644
+--- a/engine/src/flutter/lib/ui/painting/picture_recorder.cc
++++ b/engine/src/flutter/lib/ui/painting/picture_recorder.cc
+@@ -6,7 +6,7 @@
+ 
+ #include "flutter/lib/ui/painting/canvas.h"
+ #include "flutter/lib/ui/painting/picture.h"
+-#include "flutter/runtime_spi/scene/spi_canvas.h"
++#include "flutter/lib/ui/spi_api.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+@@ -26,14 +26,14 @@ PictureRecorder::PictureRecorder() {}
+ 
+ PictureRecorder::~PictureRecorder() {
+   if (spi_recorder_ != nullptr) {
+-    SpiSceneApi()->recorder_release(spi_recorder_);
++    SpiApi().scene->recorder_release(spi_recorder_);
+   }
+ }
+ 
+ FlutterSpiPictureRecorder* PictureRecorder::BeginRecording(DlRect bounds) {
+   FlutterSpiRect spi_bounds = {bounds.GetLeft(), bounds.GetTop(),
+                                bounds.GetRight(), bounds.GetBottom()};
+-  if (SpiSceneApi()->recorder_create(nullptr, &spi_bounds, &spi_recorder_) !=
++  if (SpiApi().scene->recorder_create(nullptr, &spi_bounds, &spi_recorder_) !=
+       kFlutterSpiOk) {
+     spi_recorder_ = nullptr;
+   }
+@@ -46,7 +46,7 @@ void PictureRecorder::endRecording(Dart_Handle dart_picture) {
+   }
+ 
+   FlutterSpiPicture* picture = nullptr;
+-  if (SpiSceneApi()->recorder_finish(spi_recorder_, &picture) !=
++  if (SpiApi().scene->recorder_finish(spi_recorder_, &picture) !=
+       kFlutterSpiOk) {
+     return;
+   }
+diff --git a/engine/src/flutter/lib/ui/painting/vertices.cc b/engine/src/flutter/lib/ui/painting/vertices.cc
+index a7280a1967a..0a05e6281a8 100644
+--- a/engine/src/flutter/lib/ui/painting/vertices.cc
++++ b/engine/src/flutter/lib/ui/painting/vertices.cc
+@@ -6,9 +6,9 @@
+ 
+ #include <vector>
+ 
++#include "flutter/lib/ui/spi_api.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/runtime_spi/effects/spi_vertices.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+ #include "third_party/tonic/dart_library_natives.h"
+ 
+@@ -19,7 +19,7 @@ IMPLEMENT_WRAPPERTYPEINFO(ui, Vertices);
+ namespace {
+ 
+ const FlutterSpiPaintEffectsApi* EffectsApi() {
+-  return SpiPaintEffectsApi();
++  return SpiApi().paint_effects;
+ }
+ 
+ std::vector<FlutterSpiColor> ToSpiColors(const tonic::Int32List& colors) {
+diff --git a/engine/src/flutter/lib/ui/semantics/semantics_update_builder.cc b/engine/src/flutter/lib/ui/semantics/semantics_update_builder.cc
+index 406669ab17c..4677959d7fe 100644
+--- a/engine/src/flutter/lib/ui/semantics/semantics_update_builder.cc
++++ b/engine/src/flutter/lib/ui/semantics/semantics_update_builder.cc
+@@ -9,9 +9,9 @@
+ #include "flutter/fml/logging.h"
+ #include "flutter/lib/ui/floating_point.h"
+ #include "flutter/lib/ui/semantics/semantics_flags.h"
++#include "flutter/lib/ui/spi_api.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/lib/ui/window/platform_configuration.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+@@ -90,7 +90,7 @@ IMPLEMENT_WRAPPERTYPEINFO(ui, SemanticsUpdateBuilder);
+ SemanticsUpdateBuilder::SemanticsUpdateBuilder() {
+   FlutterSpiEngine* engine =
+       UIDartState::Current()->platform_configuration()->client()->GetSpiEngine();
+-  api_ = SpiEngineSemanticsApi(engine);
++  api_ = SpiApi().semantics;
+   FML_CHECK(api_ != nullptr);
+   FML_CHECK(api_->update_builder_create(engine, &builder_) == kFlutterSpiOk);
+ }
+diff --git a/engine/src/flutter/lib/ui/text/font_collection.cc b/engine/src/flutter/lib/ui/text/font_collection.cc
+index cbbe22b90c3..2ca6943dc70 100644
+--- a/engine/src/flutter/lib/ui/text/font_collection.cc
++++ b/engine/src/flutter/lib/ui/text/font_collection.cc
+@@ -9,9 +9,9 @@
+ #include <utility>
+ 
+ #include "flutter/lib/ui/text/asset_manager_font_provider.h"
++#include "flutter/lib/ui/spi_api.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/lib/ui/window/platform_configuration.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "flutter/runtime/test_font_data.h"
+ #include "rapidjson/document.h"
+ #include "rapidjson/rapidjson.h"
+@@ -166,7 +166,7 @@ void LoadFontFromList(Dart_Handle font_data_handle,
+                       std::string family_name) {
+   tonic::Uint8List font_data(font_data_handle);
+   UIDartState::ThrowIfUIOperationsProhibited();
+-  SpiEngineFontLoad(
++  SpiApi().text->font_load(
+       UIDartState::Current()->platform_configuration()->client()->GetSpiEngine(),
+       font_data.data(), font_data.num_elements(), family_name.c_str());
+ 
+diff --git a/engine/src/flutter/lib/ui/text/paragraph.cc b/engine/src/flutter/lib/ui/text/paragraph.cc
+index daec27d697d..4c811e1b3dd 100644
+--- a/engine/src/flutter/lib/ui/text/paragraph.cc
++++ b/engine/src/flutter/lib/ui/text/paragraph.cc
+@@ -9,7 +9,7 @@
+ #include <vector>
+ 
+ #include "flutter/fml/logging.h"
+-#include "flutter/lib/ui/text/spi_text_api.h"
++#include "flutter/lib/ui/spi_api.h"
+ #include "third_party/dart/runtime/include/dart_api.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+@@ -25,7 +25,7 @@ constexpr size_t kInitialQueryCapacity = 16;
+ FlutterSpiParagraphMetrics GetMetrics(FlutterSpiParagraph* paragraph) {
+   FlutterSpiParagraphMetrics metrics = {};
+   metrics.struct_size = sizeof(FlutterSpiParagraphMetrics);
+-  FML_CHECK(TextApi()->paragraph_get_metrics(paragraph, &metrics) ==
++  FML_CHECK(SpiApi().text->paragraph_get_metrics(paragraph, &metrics) ==
+             kFlutterSpiOk);
+   return metrics;
+ }
+@@ -66,7 +66,7 @@ std::vector<FlutterSpiTextBox> GetRectsForRange(FlutterSpiParagraph* paragraph,
+   return QueryParagraphList<FlutterSpiTextBox>(
+       [paragraph, start, end, height_style, width_style](
+           FlutterSpiTextBox* boxes, size_t capacity, size_t* count) {
+-        return TextApi()->paragraph_get_rects_for_range(
++        return SpiApi().text->paragraph_get_rects_for_range(
+             paragraph, start, end, height_style, width_style, boxes, capacity,
+             count);
+       });
+@@ -76,7 +76,7 @@ std::vector<FlutterSpiTextBox> GetRectsForPlaceholders(
+     FlutterSpiParagraph* paragraph) {
+   return QueryParagraphList<FlutterSpiTextBox>(
+       [paragraph](FlutterSpiTextBox* boxes, size_t capacity, size_t* count) {
+-        return TextApi()->paragraph_get_rects_for_placeholders(
++        return SpiApi().text->paragraph_get_rects_for_placeholders(
+             paragraph, boxes, capacity, count);
+       });
+ }
+@@ -86,7 +86,7 @@ std::vector<FlutterSpiLineMetrics> GetLineMetrics(
+   return QueryParagraphList<FlutterSpiLineMetrics>(
+       [paragraph](FlutterSpiLineMetrics* metrics, size_t capacity,
+                   size_t* count) {
+-        return TextApi()->paragraph_get_line_metrics(paragraph, metrics,
++        return SpiApi().text->paragraph_get_line_metrics(paragraph, metrics,
+                                                      capacity, count);
+       });
+ }
+@@ -100,7 +100,7 @@ Paragraph::Paragraph(FlutterSpiParagraph* paragraph)
+ 
+ Paragraph::~Paragraph() {
+   if (m_paragraph_ != nullptr) {
+-    FML_CHECK(TextApi()->paragraph_release(m_paragraph_) == kFlutterSpiOk);
++    FML_CHECK(SpiApi().text->paragraph_release(m_paragraph_) == kFlutterSpiOk);
+   }
+ }
+ 
+@@ -137,7 +137,7 @@ bool Paragraph::didExceedMaxLines() {
+ }
+ 
+ void Paragraph::layout(double width) {
+-  FML_CHECK(TextApi()->paragraph_layout(m_paragraph_, width) == kFlutterSpiOk);
++  FML_CHECK(SpiApi().text->paragraph_layout(m_paragraph_, width) == kFlutterSpiOk);
+ }
+ 
+ void Paragraph::paint(Canvas* canvas, double x, double y) {
+@@ -145,7 +145,7 @@ void Paragraph::paint(Canvas* canvas, double x, double y) {
+     // disposed.
+     return;
+   }
+-  FML_CHECK(TextApi()->canvas_draw_paragraph(
++  FML_CHECK(SpiApi().text->canvas_draw_paragraph(
+                 canvas->recorder(), m_paragraph_, static_cast<float>(x),
+                 static_cast<float>(y)) == kFlutterSpiOk);
+ }
+@@ -165,7 +165,7 @@ tonic::Float32List Paragraph::getRectsForPlaceholders() {
+ Dart_Handle Paragraph::getPositionForOffset(double dx, double dy) {
+   size_t offset = 0;
+   int32_t affinity = 0;
+-  FML_CHECK(TextApi()->paragraph_get_glyph_position_at(
++  FML_CHECK(SpiApi().text->paragraph_get_glyph_position_at(
+                 m_paragraph_, dx, dy, &offset, &affinity) == kFlutterSpiOk);
+   std::vector<size_t> result = {offset, static_cast<size_t>(affinity)};
+   return tonic::DartConverter<decltype(result)>::ToDart(result);
+@@ -189,7 +189,7 @@ Dart_Handle Paragraph::getGlyphInfoAt(unsigned utf16Offset,
+                                       Dart_Handle constructor) const {
+   FlutterSpiGlyphInfo glyph_info = {};
+   bool found = false;
+-  FML_CHECK(TextApi()->paragraph_get_glyph_info_at(
++  FML_CHECK(SpiApi().text->paragraph_get_glyph_info_at(
+                 m_paragraph_, utf16Offset, &glyph_info, &found) ==
+             kFlutterSpiOk);
+   if (!found) {
+@@ -205,7 +205,7 @@ Dart_Handle Paragraph::getClosestGlyphInfo(double dx,
+                                            Dart_Handle constructor) const {
+   FlutterSpiGlyphInfo glyph_info = {};
+   bool found = false;
+-  FML_CHECK(TextApi()->paragraph_get_closest_glyph_info(
++  FML_CHECK(SpiApi().text->paragraph_get_closest_glyph_info(
+                 m_paragraph_, dx, dy, &glyph_info, &found) == kFlutterSpiOk);
+   if (!found) {
+     return Dart_Null();
+@@ -218,7 +218,7 @@ Dart_Handle Paragraph::getClosestGlyphInfo(double dx,
+ Dart_Handle Paragraph::getWordBoundary(unsigned utf16Offset) {
+   size_t start = 0;
+   size_t end = 0;
+-  FML_CHECK(TextApi()->paragraph_get_word_boundary(
++  FML_CHECK(SpiApi().text->paragraph_get_word_boundary(
+                 m_paragraph_, utf16Offset, &start, &end) == kFlutterSpiOk);
+   std::vector<size_t> result = {start, end};
+   return tonic::DartConverter<decltype(result)>::ToDart(result);
+@@ -227,7 +227,7 @@ Dart_Handle Paragraph::getWordBoundary(unsigned utf16Offset) {
+ Dart_Handle Paragraph::getLineBoundary(unsigned utf16Offset) {
+   int64_t start = -1;
+   int64_t end = -1;
+-  FML_CHECK(TextApi()->paragraph_get_line_boundary(
++  FML_CHECK(SpiApi().text->paragraph_get_line_boundary(
+                 m_paragraph_, utf16Offset, &start, &end) == kFlutterSpiOk);
+   std::vector<int> result = {static_cast<int>(start), static_cast<int>(end)};
+   return tonic::DartConverter<decltype(result)>::ToDart(result);
+@@ -257,7 +257,7 @@ Dart_Handle Paragraph::getLineMetricsAt(int lineNumber,
+                                         Dart_Handle constructor) const {
+   FlutterSpiLineMetrics line = {};
+   bool found = false;
+-  FML_CHECK(TextApi()->paragraph_get_line_metrics_at(
++  FML_CHECK(SpiApi().text->paragraph_get_line_metrics_at(
+                 m_paragraph_, lineNumber, &line, &found) == kFlutterSpiOk);
+   if (!found) {
+     return Dart_Null();
+@@ -281,21 +281,21 @@ Dart_Handle Paragraph::getLineMetricsAt(int lineNumber,
+ 
+ size_t Paragraph::getNumberOfLines() const {
+   size_t line_count = 0;
+-  FML_CHECK(TextApi()->paragraph_get_line_count(m_paragraph_, &line_count) ==
++  FML_CHECK(SpiApi().text->paragraph_get_line_count(m_paragraph_, &line_count) ==
+             kFlutterSpiOk);
+   return line_count;
+ }
+ 
+ int Paragraph::getLineNumberAt(size_t utf16Offset) const {
+   int32_t line_number = 0;
+-  FML_CHECK(TextApi()->paragraph_get_line_number_at(
++  FML_CHECK(SpiApi().text->paragraph_get_line_number_at(
+                 m_paragraph_, utf16Offset, &line_number) == kFlutterSpiOk);
+   return line_number;
+ }
+ 
+ void Paragraph::dispose() {
+   if (m_paragraph_ != nullptr) {
+-    FML_CHECK(TextApi()->paragraph_release(m_paragraph_) == kFlutterSpiOk);
++    FML_CHECK(SpiApi().text->paragraph_release(m_paragraph_) == kFlutterSpiOk);
+     m_paragraph_ = nullptr;
+   }
+   ClearDartWrapper();
+diff --git a/engine/src/flutter/lib/ui/text/paragraph_builder.cc b/engine/src/flutter/lib/ui/text/paragraph_builder.cc
+index 76c19a4afb8..691c3073411 100644
+--- a/engine/src/flutter/lib/ui/text/paragraph_builder.cc
++++ b/engine/src/flutter/lib/ui/text/paragraph_builder.cc
+@@ -10,7 +10,7 @@
+ #include <vector>
+ 
+ #include "flutter/fml/logging.h"
+-#include "flutter/lib/ui/text/spi_text_api.h"
++#include "flutter/lib/ui/spi_api.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/lib/ui/window/platform_configuration.h"
+ #include "third_party/icu/source/common/unicode/ustring.h"
+@@ -371,14 +371,14 @@ ParagraphBuilder::ParagraphBuilder(
+ 
+   FlutterSpiEngine* engine =
+       UIDartState::Current()->platform_configuration()->client()->GetSpiEngine();
+-  FML_CHECK(TextApi() != nullptr);
+-  FML_CHECK(TextApi()->paragraph_builder_create(
++  FML_CHECK(SpiApi().text != nullptr);
++  FML_CHECK(SpiApi().text->paragraph_builder_create(
+                 engine, &style, &m_paragraph_builder_) == kFlutterSpiOk);
+ }
+ 
+ ParagraphBuilder::~ParagraphBuilder() {
+   if (m_paragraph_builder_ != nullptr) {
+-    FML_CHECK(TextApi()->paragraph_builder_release(m_paragraph_builder_) ==
++    FML_CHECK(SpiApi().text->paragraph_builder_release(m_paragraph_builder_) ==
+               kFlutterSpiOk);
+   }
+ }
+@@ -491,12 +491,12 @@ void ParagraphBuilder::pushStyle(
+     style.variation_count = variations.size();
+   }
+ 
+-  FML_CHECK(TextApi()->paragraph_builder_push_style(m_paragraph_builder_,
++  FML_CHECK(SpiApi().text->paragraph_builder_push_style(m_paragraph_builder_,
+                                                      &style) == kFlutterSpiOk);
+ }
+ 
+ void ParagraphBuilder::pop() {
+-  FML_CHECK(TextApi()->paragraph_builder_pop(m_paragraph_builder_) ==
++  FML_CHECK(SpiApi().text->paragraph_builder_pop(m_paragraph_builder_) ==
+             kFlutterSpiOk);
+ }
+ 
+@@ -512,7 +512,7 @@ Dart_Handle ParagraphBuilder::addText(const std::u16string& text) {
+     return tonic::ToDart("string is not well-formed UTF-16");
+   }
+ 
+-  FML_CHECK(TextApi()->paragraph_builder_add_text_utf16(
++  FML_CHECK(SpiApi().text->paragraph_builder_add_text_utf16(
+                 m_paragraph_builder_,
+                 reinterpret_cast<const uint16_t*>(text.data()), text.size()) ==
+             kFlutterSpiOk);
+@@ -524,7 +524,7 @@ void ParagraphBuilder::addPlaceholder(double width,
+                                       unsigned alignment,
+                                       double baseline_offset,
+                                       unsigned baseline) {
+-  FML_CHECK(TextApi()->paragraph_builder_add_placeholder(
++  FML_CHECK(SpiApi().text->paragraph_builder_add_placeholder(
+                 m_paragraph_builder_, static_cast<float>(width),
+                 static_cast<float>(height), alignment,
+                 static_cast<float>(baseline_offset),
+@@ -533,7 +533,7 @@ void ParagraphBuilder::addPlaceholder(double width,
+ 
+ void ParagraphBuilder::build(Dart_Handle paragraph_handle) {
+   FlutterSpiParagraph* paragraph = nullptr;
+-  FML_CHECK(TextApi()->paragraph_builder_build(m_paragraph_builder_,
++  FML_CHECK(SpiApi().text->paragraph_builder_build(m_paragraph_builder_,
+                                                 &paragraph) == kFlutterSpiOk);
+   Paragraph::Create(paragraph_handle, paragraph);
+   m_paragraph_builder_ = nullptr;
+diff --git a/engine/src/flutter/lib/ui/text/spi_text_api.h b/engine/src/flutter/lib/ui/text/spi_text_api.h
+deleted file mode 100644
+index 10436daba55..00000000000
+--- a/engine/src/flutter/lib/ui/text/spi_text_api.h
++++ /dev/null
+@@ -1,22 +0,0 @@
+-// Copyright 2026 The Flutter Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style license that can be
+-// found in the LICENSE file.
+-
+-#ifndef FLUTTER_LIB_UI_TEXT_SPI_TEXT_API_H_
+-#define FLUTTER_LIB_UI_TEXT_SPI_TEXT_API_H_
+-
+-#include "flutter/lib/ui/ui_dart_state.h"
+-#include "flutter/lib/ui/window/platform_configuration.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+-
+-namespace flutter {
+-
+-inline const FlutterSpiTextApi* TextApi() {
+-  static const FlutterSpiTextApi* text_api = SpiEngineTextApi(
+-      UIDartState::Current()->platform_configuration()->client()->GetSpiEngine());
+-  return text_api;
+-}
+-
+-}  // namespace flutter
+-
+-#endif  // FLUTTER_LIB_UI_TEXT_SPI_TEXT_API_H_
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
+index e20385f8714..7a1382f952c 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
+@@ -10,42 +10,13 @@
+ #include "flutter/flow/layers/layer_tree.h"
+ #include "flutter/lib/ui/text/font_collection.h"
+ #include "flutter/runtime/runtime_delegate.h"
+-#include "flutter/runtime_spi/effects/spi_image_filter.h"
+-#include "flutter/runtime_spi/effects/spi_shader.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
+ #include "flutter/runtime_spi/scene/spi_canvas.h"
+-#include "flutter/runtime_spi/spi_engine_api.h"
+ #include "flutter/runtime_spi/spi_runtime_backend.h"
+ #include "flutter/runtime_spi/spi_scene.h"
+ 
+ namespace flutter {
+ 
+-const FlutterSpiPaintEffectsApi* SpiPaintEffectsApi() {
+-  return SpiEngineApi::Create().paint_effects;
+-}
+-
+-const FlutterSpiImageApi* SpiImageApi() {
+-  return SpiEngineApi::Create().image;
+-}
+-
+-const FlutterSpiFragmentApi* SpiFragmentApi() {
+-  return SpiEngineApi::Create().fragment;
+-}
+-
+-FlutterSpiResult SpiEngineAssetRead(FlutterSpiEngine* engine,
+-                                    const char* name,
+-                                    FlutterSpiBytesCallback callback,
+-                                    void* user_data) {
+-  return SpiEngineApi::Create().asset_read(engine, name, callback, user_data);
+-}
+-
+-void SpiEngineFreeString(FlutterSpiEngine* engine, char* value) {
+-  const auto api = SpiEngineApi::Create();
+-  if (api.free_string != nullptr && value != nullptr) {
+-    api.free_string(engine, value);
+-  }
+-}
+-
+ sk_sp<DlImage> SpiImageToDlImage(FlutterSpiImage* image) {
+   return SpiImageGet(image);
+ }
+@@ -63,34 +34,6 @@ std::unique_ptr<LayerTree> SpiSceneTakeLayerTree(FlutterSpiScene* scene) {
+   return layer_tree;
+ }
+ 
+-FlutterSpiResult SpiEngineFontLoad(FlutterSpiEngine* engine,
+-                                   const uint8_t* data,
+-                                   size_t size,
+-                                   const char* family_alias) {
+-  if (engine == nullptr || engine->backend == nullptr) {
+-    return kFlutterSpiInvalidArgument;
+-  }
+-  const FlutterSpiTextApi* text_api = engine->backend->engine_api().text;
+-  if (text_api == nullptr || text_api->font_load == nullptr) {
+-    return kFlutterSpiInvalidArgument;
+-  }
+-  return text_api->font_load(engine, data, size, family_alias);
+-}
+-
+-const FlutterSpiTextApi* SpiEngineTextApi(FlutterSpiEngine* engine) {
+-  if (engine == nullptr || engine->backend == nullptr) {
+-    return nullptr;
+-  }
+-  return engine->backend->engine_api().text;
+-}
+-
+-const FlutterSpiSemanticsApi* SpiEngineSemanticsApi(FlutterSpiEngine* engine) {
+-  if (engine == nullptr || engine->backend == nullptr) {
+-    return nullptr;
+-  }
+-  return engine->backend->engine_api().semantics;
+-}
+-
+ std::shared_ptr<AssetManager> SpiEngineAssetManager(FlutterSpiEngine* engine) {
+   return engine->backend->runtime_delegate_.GetAssetManager();
+ }
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+index b5ad63b3e72..197f7ab817f 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+@@ -20,19 +20,6 @@ class AssetManager;
+ class FontCollection;
+ class LayerTree;
+ 
+-const FlutterSpiPaintEffectsApi* SpiPaintEffectsApi();
+-
+-const FlutterSpiImageApi* SpiImageApi();
+-
+-const FlutterSpiFragmentApi* SpiFragmentApi();
+-
+-FlutterSpiResult SpiEngineAssetRead(FlutterSpiEngine* engine,
+-                                   const char* name,
+-                                   FlutterSpiBytesCallback callback,
+-                                   void* user_data);
+-
+-void SpiEngineFreeString(FlutterSpiEngine* engine, char* value);
+-
+ sk_sp<DlImage> SpiImageToDlImage(FlutterSpiImage*);
+ 
+ // Temporary bridge until S4e moves picture ownership behind dart:ui SPI.
+@@ -41,15 +28,6 @@ const DisplayList* SpiPictureDisplayList(FlutterSpiPicture*);
+ // Temporary bridge until S4g moves image snapshots behind dart:ui SPI.
+ std::unique_ptr<LayerTree> SpiSceneTakeLayerTree(FlutterSpiScene* scene);
+ 
+-const FlutterSpiSemanticsApi* SpiEngineSemanticsApi(FlutterSpiEngine* engine);
+-
+-FlutterSpiResult SpiEngineFontLoad(FlutterSpiEngine* engine,
+-                                   const uint8_t* data,
+-                                   size_t size,
+-                                   const char* family_alias);
+-
+-const FlutterSpiTextApi* SpiEngineTextApi(FlutterSpiEngine* engine);
+-
+ // Temporary bridge until S4f moves font access behind dart:ui SPI.
+ FontCollection& SpiEngineFontCollection(FlutterSpiEngine* engine);
+ 
