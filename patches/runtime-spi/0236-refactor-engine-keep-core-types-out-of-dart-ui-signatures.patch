@@ -1,0 +1,1025 @@
+# Why: expose only SPI-compatible scalar and geometry types from dart:ui while
+# preserving the existing scene values.
+diff --git a/engine/src/flutter/lib/ui/compositing/scene_builder.cc b/engine/src/flutter/lib/ui/compositing/scene_builder.cc
+index 7a446f5a726..46c1ebe7870 100644
+--- a/engine/src/flutter/lib/ui/compositing/scene_builder.cc
++++ b/engine/src/flutter/lib/ui/compositing/scene_builder.cc
+@@ -16,21 +16,6 @@
+ namespace flutter {
+ namespace {
+ 
+-FlutterSpiRect ToSpiRect(const DlRect& rect) {
+-  return {rect.GetLeft(), rect.GetTop(), rect.GetRight(), rect.GetBottom()};
+-}
+-
+-template <typename RoundRect>
+-FlutterSpiRRect ToSpiRRect(const RoundRect& round_rect) {
+-  const auto& bounds = round_rect.GetBounds();
+-  const auto& radii = round_rect.GetRadii();
+-  return {ToSpiRect(bounds),
+-          {{radii.top_left.width, radii.top_left.height},
+-           {radii.top_right.width, radii.top_right.height},
+-           {radii.bottom_right.width, radii.bottom_right.height},
+-           {radii.bottom_left.width, radii.bottom_left.height}}};
+-}
+-
+ const FlutterSpiSceneApi* Api() {
+   return SpiApi().scene;
+ }
+@@ -115,9 +100,8 @@ void SceneBuilder::pushClipRRect(Dart_Handle layer_handle,
+                                  const RRect& rrect,
+                                  int clip_behavior,
+                                  const fml::RefPtr<EngineLayer>& old_layer) {
+-  const FlutterSpiRRect shape = ToSpiRRect(rrect.rrect);
+   const FlutterSpiResult push_result =
+-      Api()->scene_push_clip_rrect(builder_, &shape, clip_behavior);
++      Api()->scene_push_clip_rrect(builder_, &rrect.rrect, clip_behavior);
+   RetainPushedLayer(push_result, layer_handle, old_layer);
+ }
+ 
+@@ -126,9 +110,9 @@ void SceneBuilder::pushClipRSuperellipse(
+     const RSuperellipse* rse,
+     int clip_behavior,
+     const fml::RefPtr<EngineLayer>& old_layer) {
+-  const FlutterSpiRSuperellipse shape = ToSpiRRect(rse->rsuperellipse());
+   const FlutterSpiResult push_result =
+-      Api()->scene_push_clip_rsuperellipse(builder_, &shape, clip_behavior);
++      Api()->scene_push_clip_rsuperellipse(builder_, &rse->rsuperellipse,
++                                           clip_behavior);
+   RetainPushedLayer(push_result, layer_handle, old_layer);
+ }
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/canvas.cc b/engine/src/flutter/lib/ui/painting/canvas.cc
+index 9cb9b11ffb2..7c8d2a7929b 100644
+--- a/engine/src/flutter/lib/ui/painting/canvas.cc
++++ b/engine/src/flutter/lib/ui/painting/canvas.cc
+@@ -29,17 +29,6 @@ FlutterSpiColor ToSpiColor(const DlColor& color) {
+           static_cast<int32_t>(color.getColorSpace())};
+ }
+ 
+-template <typename RoundRect>
+-FlutterSpiRRect ToSpiRRect(const RoundRect& round_rect) {
+-  const auto& bounds = round_rect.GetBounds();
+-  const auto& radii = round_rect.GetRadii();
+-  return {ToSpiRect(bounds),
+-          {{radii.top_left.width, radii.top_left.height},
+-           {radii.top_right.width, radii.top_right.height},
+-           {radii.bottom_right.width, radii.bottom_right.height},
+-           {radii.bottom_left.width, radii.bottom_left.height}}};
+-}
+-
+ FlutterSpiPaint ToSpiPaint(const Paint& paint) {
+   FlutterSpiPaint spi_paint = {};
+   spi_paint.struct_size = sizeof(FlutterSpiPaint);
+@@ -79,8 +68,8 @@ void Canvas::Create(Dart_Handle wrapper,
+ 
+   fml::RefPtr<Canvas> canvas =
+       fml::MakeRefCounted<Canvas>(recorder->BeginRecording(
+-          DlRect::MakeLTRB(SafeNarrow(left), SafeNarrow(top), SafeNarrow(right),
+-                           SafeNarrow(bottom))));
++          {SafeNarrow(left), SafeNarrow(top), SafeNarrow(right),
++           SafeNarrow(bottom)}));
+   recorder->set_canvas(canvas);
+   canvas->AssociateWithDartWrapper(wrapper);
+ }
+@@ -213,7 +202,7 @@ void Canvas::clipRect(double left,
+                       double top,
+                       double right,
+                       double bottom,
+-                      DlClipOp clipOp,
++                      int32_t clipOp,
+                       bool doAntiAlias) {
+   if (recorder_ != nullptr) {
+     FlutterSpiRect rect = {SafeNarrow(left), SafeNarrow(top), SafeNarrow(right),
+@@ -225,7 +214,7 @@ void Canvas::clipRect(double left,
+ 
+ void Canvas::clipRRect(const RRect& rrect, bool doAntiAlias) {
+   if (recorder_ != nullptr) {
+-    FlutterSpiRRect spi_rrect = ToSpiRRect(rrect.rrect);
++    FlutterSpiRRect spi_rrect = rrect.rrect;
+     SpiApi().scene->canvas_clip_rrect(recorder_, &spi_rrect,
+                                      kFlutterSpiClipOpIntersect, doAntiAlias);
+   }
+@@ -233,9 +222,9 @@ void Canvas::clipRRect(const RRect& rrect, bool doAntiAlias) {
+ 
+ void Canvas::clipRSuperellipse(const RSuperellipse* rse, bool doAntiAlias) {
+   if (recorder_ != nullptr) {
+-    FlutterSpiRRect spi_rrect = ToSpiRRect(rse->rsuperellipse());
++    FlutterSpiRSuperellipse spi_rsuperellipse = rse->rsuperellipse;
+     SpiApi().scene->canvas_clip_rsuperellipse(
+-        recorder_, &spi_rrect, kFlutterSpiClipOpIntersect, doAntiAlias);
++        recorder_, &spi_rsuperellipse, kFlutterSpiClipOpIntersect, doAntiAlias);
+   }
+ }
+ 
+@@ -275,7 +264,7 @@ void Canvas::getLocalClipBounds(Dart_Handle rect_handle) {
+   }
+ }
+ 
+-void Canvas::drawColor(uint32_t color, DlBlendMode blend_mode) {
++void Canvas::drawColor(uint32_t color, int32_t blend_mode) {
+   if (recorder_ != nullptr) {
+     FlutterSpiColor spi_color = ToSpiColor(DlColor(color));
+     SpiApi().scene->canvas_draw_color(recorder_, &spi_color,
+@@ -373,7 +362,7 @@ void Canvas::drawRRect(const RRect& rrect,
+   FML_DCHECK(paint.isNotNull());
+   if (recorder_ != nullptr) {
+     FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+-    FlutterSpiRRect spi_rrect = ToSpiRRect(rrect.rrect);
++    FlutterSpiRRect spi_rrect = rrect.rrect;
+     SpiApi().scene->canvas_draw_rrect(recorder_, &spi_rrect, &spi_paint);
+   }
+ }
+@@ -395,8 +384,8 @@ void Canvas::drawDRRect(const RRect& outer,
+   FML_DCHECK(paint.isNotNull());
+   if (recorder_ != nullptr) {
+     FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+-    FlutterSpiRRect spi_outer = ToSpiRRect(outer.rrect);
+-    FlutterSpiRRect spi_inner = ToSpiRRect(inner.rrect);
++    FlutterSpiRRect spi_outer = outer.rrect;
++    FlutterSpiRRect spi_inner = inner.rrect;
+     SpiApi().scene->canvas_draw_drrect(recorder_, &spi_outer, &spi_inner,
+                                       &spi_paint);
+   }
+@@ -418,8 +407,8 @@ void Canvas::drawRSuperellipse(const RSuperellipse* rse,
+   FML_DCHECK(paint.isNotNull());
+   if (recorder_ != nullptr) {
+     FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+-    FlutterSpiRRect spi_rrect = ToSpiRRect(rse->rsuperellipse());
+-    SpiApi().scene->canvas_draw_rsuperellipse(recorder_, &spi_rrect,
++    FlutterSpiRSuperellipse spi_rsuperellipse = rse->rsuperellipse;
++    SpiApi().scene->canvas_draw_rsuperellipse(recorder_, &spi_rsuperellipse,
+                                              &spi_paint);
+   }
+ }
+@@ -676,7 +665,7 @@ void Canvas::drawPoints(Dart_Handle paint_objects,
+                         uint64_t w6,
+                         uint64_t w7,
+                         uint64_t w8,
+-                        DlPointMode point_mode,
++                        int32_t point_mode,
+                         const tonic::Float32List& points) {
+   Paint paint(paint_objects, MakePaintWords(w0, w1, w2, w3, w4, w5, w6, w7, w8));
+ 
+@@ -694,7 +683,7 @@ void Canvas::drawPoints(Dart_Handle paint_objects,
+ }
+ 
+ void Canvas::drawVertices(const Vertices* vertices,
+-                          DlBlendMode blend_mode,
++                          int32_t blend_mode,
+                           Dart_Handle paint_objects,
+                           uint64_t w0,
+                           uint64_t w1,
+@@ -736,7 +725,7 @@ Dart_Handle Canvas::drawAtlas(Dart_Handle paint_objects,
+                               Dart_Handle transforms_handle,
+                               Dart_Handle rects_handle,
+                               Dart_Handle colors_handle,
+-                              DlBlendMode blend_mode,
++                              int32_t blend_mode,
+                               Dart_Handle cull_rect_handle) {
+   Paint paint(paint_objects, MakePaintWords(w0, w1, w2, w3, w4, w5, w6, w7, w8));
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/canvas.h b/engine/src/flutter/lib/ui/painting/canvas.h
+index aba2f895beb..769ad89752e 100644
+--- a/engine/src/flutter/lib/ui/painting/canvas.h
++++ b/engine/src/flutter/lib/ui/painting/canvas.h
+@@ -5,8 +5,8 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_CANVAS_H_
+ #define FLUTTER_LIB_UI_PAINTING_CANVAS_H_
+ 
+-#include "flutter/display_list/dl_blend_mode.h"
+-#include "flutter/display_list/dl_op_flags.h"
++#include <cstdint>
++
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "flutter/lib/ui/painting/path.h"
+ #include "flutter/lib/ui/painting/picture.h"
+@@ -20,7 +20,7 @@
+ namespace flutter {
+ class CanvasImage;
+ 
+-class Canvas : public RefCountedDartWrappable<Canvas>, DisplayListOpFlags {
++class Canvas : public RefCountedDartWrappable<Canvas> {
+   DEFINE_WRAPPERTYPEINFO();
+   FML_FRIEND_MAKE_REF_COUNTED(Canvas);
+ 
+@@ -76,7 +76,7 @@ class Canvas : public RefCountedDartWrappable<Canvas>, DisplayListOpFlags {
+                 double top,
+                 double right,
+                 double bottom,
+-                DlClipOp clipOp,
++                int32_t clipOp,
+                 bool doAntiAlias = true);
+   void clipRRect(const RRect& rrect, bool doAntiAlias = true);
+   void clipRSuperellipse(const RSuperellipse* rse, bool doAntiAlias = true);
+@@ -84,7 +84,7 @@ class Canvas : public RefCountedDartWrappable<Canvas>, DisplayListOpFlags {
+   void getDestinationClipBounds(Dart_Handle rect_handle);
+   void getLocalClipBounds(Dart_Handle rect_handle);
+ 
+-  void drawColor(uint32_t color, DlBlendMode blend_mode);
++  void drawColor(uint32_t color, int32_t blend_mode);
+ 
+   void drawLine(double x1,
+                 double y1,
+@@ -297,11 +297,11 @@ class Canvas : public RefCountedDartWrappable<Canvas>, DisplayListOpFlags {
+                   uint64_t w6,
+                   uint64_t w7,
+                   uint64_t w8,
+-                  DlPointMode point_mode,
++                  int32_t point_mode,
+                   const tonic::Float32List& points);
+ 
+   void drawVertices(const Vertices* vertices,
+-                    DlBlendMode blend_mode,
++                    int32_t blend_mode,
+                     Dart_Handle paint_objects,
+                     uint64_t w0,
+                     uint64_t w1,
+@@ -328,7 +328,7 @@ class Canvas : public RefCountedDartWrappable<Canvas>, DisplayListOpFlags {
+                         Dart_Handle transforms_handle,
+                         Dart_Handle rects_handle,
+                         Dart_Handle colors_handle,
+-                        DlBlendMode blend_mode,
++                        int32_t blend_mode,
+                         Dart_Handle cull_rect_handle);
+ 
+   void drawShadow(const CanvasPath* path,
+diff --git a/engine/src/flutter/lib/ui/painting/fragment_program.cc b/engine/src/flutter/lib/ui/painting/fragment_program.cc
+index 0d0bc61be0b..6c0f2aa36d7 100644
+--- a/engine/src/flutter/lib/ui/painting/fragment_program.cc
++++ b/engine/src/flutter/lib/ui/painting/fragment_program.cc
+@@ -2,13 +2,10 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+-#include <memory>
+-
+ #include "flutter/lib/ui/painting/fragment_program.h"
+ 
+ #include "flutter/assets/asset_manager.h"
+ #include "flutter/fml/trace_event.h"
+-#include "flutter/lib/ui/painting/runtime_effect_loader.h"
+ #include "flutter/lib/ui/spi_api.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/lib/ui/window/platform_configuration.h"
+@@ -113,21 +110,6 @@ std::string FragmentProgram::initFromAsset(const std::string& asset_name) {
+   return "";
+ }
+ 
+-std::shared_ptr<DlColorSource> FragmentProgram::MakeDlColorSource(
+-    std::shared_ptr<std::vector<uint8_t>> float_uniforms,
+-    const std::vector<std::shared_ptr<DlColorSource>>& children) {
+-  return DlColorSource::MakeRuntimeEffect(runtime_effect_, children,
+-                                          std::move(float_uniforms));
+-}
+-
+-std::shared_ptr<DlImageFilter> FragmentProgram::MakeDlImageFilter(
+-    std::shared_ptr<std::vector<uint8_t>> float_uniforms,
+-    const std::vector<std::shared_ptr<DlColorSource>>& children,
+-    DlImageSampling input_sampling) {
+-  return DlImageFilter::MakeRuntimeEffect(
+-      runtime_effect_, children, std::move(float_uniforms), input_sampling);
+-}
+-
+ void FragmentProgram::Create(Dart_Handle wrapper) {
+   auto res = fml::MakeRefCounted<FragmentProgram>();
+   res->AssociateWithDartWrapper(wrapper);
+diff --git a/engine/src/flutter/lib/ui/painting/fragment_program.h b/engine/src/flutter/lib/ui/painting/fragment_program.h
+index b3ac4f6c67a..365a54bb7f9 100644
+--- a/engine/src/flutter/lib/ui/painting/fragment_program.h
++++ b/engine/src/flutter/lib/ui/painting/fragment_program.h
+@@ -5,8 +5,6 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_FRAGMENT_PROGRAM_H_
+ #define FLUTTER_LIB_UI_PAINTING_FRAGMENT_PROGRAM_H_
+ 
+-#include "display_list/effects/dl_image_filter.h"
+-#include "flutter/display_list/effects/dl_runtime_effect.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "flutter/lib/ui/painting/shader.h"
+ #include "flutter/runtime_spi/include/flutter_fragment.h"
+@@ -14,9 +12,7 @@
+ #include "third_party/tonic/dart_library_natives.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
+ 
+-#include <memory>
+ #include <string>
+-#include <vector>
+ 
+ namespace flutter {
+ 
+@@ -36,20 +32,10 @@ class FragmentProgram : public RefCountedDartWrappable<FragmentProgram> {
+                                      Dart_Handle uniforms_handle,
+                                      Dart_Handle samplers);
+ 
+-  std::shared_ptr<DlColorSource> MakeDlColorSource(
+-      std::shared_ptr<std::vector<uint8_t>> float_uniforms,
+-      const std::vector<std::shared_ptr<DlColorSource>>& children);
+-
+-  std::shared_ptr<DlImageFilter> MakeDlImageFilter(
+-      std::shared_ptr<std::vector<uint8_t>> float_uniforms,
+-      const std::vector<std::shared_ptr<DlColorSource>>& children,
+-      DlImageSampling input_sampling = DlImageSampling::kNearestNeighbor);
+-
+   FlutterSpiFragmentProgram* spi_handle() const { return spi_program_; }
+ 
+  private:
+   FragmentProgram();
+-  sk_sp<DlRuntimeEffect> runtime_effect_;
+   FlutterSpiFragmentProgram* spi_program_ = nullptr;
+ };
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/fragment_shader.cc b/engine/src/flutter/lib/ui/painting/fragment_shader.cc
+index 5f4182b3140..0d2df11de50 100644
+--- a/engine/src/flutter/lib/ui/painting/fragment_shader.cc
++++ b/engine/src/flutter/lib/ui/painting/fragment_shader.cc
+@@ -7,7 +7,6 @@
+ 
+ #include "flutter/lib/ui/painting/fragment_shader.h"
+ 
+-#include "flutter/display_list/dl_tile_mode.h"
+ #include "flutter/lib/ui/painting/fragment_program.h"
+ #include "flutter/lib/ui/painting/image_filter.h"
+ #include "flutter/lib/ui/spi_api.h"
+@@ -19,20 +18,6 @@ IMPLEMENT_WRAPPERTYPEINFO(ui, ReusableFragmentShader);
+ 
+ namespace {
+ 
+-int ToSpiFilterQuality(DlImageSampling sampling) {
+-  switch (sampling) {
+-    case DlImageSampling::kNearestNeighbor:
+-      return kFlutterSpiFilterQualityNone;
+-    case DlImageSampling::kLinear:
+-      return kFlutterSpiFilterQualityLow;
+-    case DlImageSampling::kMipmapLinear:
+-      return kFlutterSpiFilterQualityMedium;
+-    case DlImageSampling::kCubic:
+-      return kFlutterSpiFilterQualityHigh;
+-  }
+-  return kFlutterSpiFilterQualityNone;
+-}
+-
+ void UpdateUniforms(FlutterSpiFragmentShader* shader,
+                     const SkData& uniform_data,
+                     size_t float_count) {
+@@ -123,7 +108,7 @@ void ReusableFragmentShader::SetImageSampler(Dart_Handle index_handle,
+ }
+ 
+ FlutterSpiImageFilter* ReusableFragmentShader::as_image_filter(
+-    DlImageSampling input_sampling) const {
++    int32_t filter_quality) const {
+   if (spi_fragment_shader_ == nullptr) {
+     return nullptr;
+   }
+@@ -131,7 +116,7 @@ FlutterSpiImageFilter* ReusableFragmentShader::as_image_filter(
+   UpdateUniforms(spi_fragment_shader_, *uniform_data_, float_count_);
+   FlutterSpiImageFilter* filter = nullptr;
+   if (api->shader_to_image_filter(
+-          spi_fragment_shader_, ToSpiFilterQuality(input_sampling), &filter) !=
++          spi_fragment_shader_, filter_quality, &filter) !=
+       kFlutterSpiOk) {
+     return nullptr;
+   }
+diff --git a/engine/src/flutter/lib/ui/painting/fragment_shader.h b/engine/src/flutter/lib/ui/painting/fragment_shader.h
+index e5a809457ef..dfdfafe1070 100644
+--- a/engine/src/flutter/lib/ui/painting/fragment_shader.h
++++ b/engine/src/flutter/lib/ui/painting/fragment_shader.h
+@@ -5,6 +5,8 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_FRAGMENT_SHADER_H_
+ #define FLUTTER_LIB_UI_PAINTING_FRAGMENT_SHADER_H_
+ 
++#include <cstdint>
++
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "flutter/lib/ui/painting/fragment_program.h"
+ #include "flutter/lib/ui/painting/image.h"
+@@ -46,8 +48,7 @@ class ReusableFragmentShader : public Shader {
+ 
+   FlutterSpiShader* spi_handle() const override;
+ 
+-  FlutterSpiImageFilter* as_image_filter(
+-      DlImageSampling input_sampling) const;
++  FlutterSpiImageFilter* as_image_filter(int32_t filter_quality) const;
+ 
+  private:
+   ReusableFragmentShader(fml::RefPtr<FragmentProgram> program,
+diff --git a/engine/src/flutter/lib/ui/painting/gradient.cc b/engine/src/flutter/lib/ui/painting/gradient.cc
+index e1ac42b65c7..61144fa6942 100644
+--- a/engine/src/flutter/lib/ui/painting/gradient.cc
++++ b/engine/src/flutter/lib/ui/painting/gradient.cc
+@@ -68,7 +68,7 @@ void CanvasGradient::Create(Dart_Handle wrapper) {
+ void CanvasGradient::initLinear(const tonic::Float32List& end_points,
+                                 const tonic::Float32List& colors,
+                                 const tonic::Float32List& color_stops,
+-                                DlTileMode tile_mode,
++                                int32_t tile_mode,
+                                 const tonic::Float64List& matrix4) {
+   FML_DCHECK(end_points.num_elements() == 4);
+   FML_DCHECK(colors.num_elements() == (color_stops.num_elements() * 4) ||
+@@ -89,7 +89,7 @@ void CanvasGradient::initRadial(double center_x,
+                                 double radius,
+                                 const tonic::Float32List& colors,
+                                 const tonic::Float32List& color_stops,
+-                                DlTileMode tile_mode,
++                                int32_t tile_mode,
+                                 const tonic::Float64List& matrix4) {
+   FML_DCHECK(colors.num_elements() == (color_stops.num_elements() * 4) ||
+              color_stops.data() == nullptr);
+@@ -108,7 +108,7 @@ void CanvasGradient::initSweep(double center_x,
+                                double center_y,
+                                const tonic::Float32List& colors,
+                                const tonic::Float32List& color_stops,
+-                               DlTileMode tile_mode,
++                               int32_t tile_mode,
+                                double start_angle,
+                                double end_angle,
+                                const tonic::Float64List& matrix4) {
+@@ -133,7 +133,7 @@ void CanvasGradient::initTwoPointConical(double start_x,
+                                          double end_radius,
+                                          const tonic::Float32List& colors,
+                                          const tonic::Float32List& color_stops,
+-                                         DlTileMode tile_mode,
++                                         int32_t tile_mode,
+                                          const tonic::Float64List& matrix4) {
+   FML_DCHECK(colors.num_elements() == (color_stops.num_elements() * 4) ||
+              color_stops.data() == nullptr);
+diff --git a/engine/src/flutter/lib/ui/painting/gradient.h b/engine/src/flutter/lib/ui/painting/gradient.h
+index 9276f3c436c..bea30ece011 100644
+--- a/engine/src/flutter/lib/ui/painting/gradient.h
++++ b/engine/src/flutter/lib/ui/painting/gradient.h
+@@ -5,7 +5,8 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_GRADIENT_H_
+ #define FLUTTER_LIB_UI_PAINTING_GRADIENT_H_
+ 
+-#include "flutter/display_list/dl_tile_mode.h"
++#include <cstdint>
++
+ #include "flutter/lib/ui/painting/matrix.h"
+ #include "flutter/lib/ui/painting/shader.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
+@@ -23,7 +24,7 @@ class CanvasGradient : public Shader {
+   void initLinear(const tonic::Float32List& end_points,
+                   const tonic::Float32List& colors,
+                   const tonic::Float32List& color_stops,
+-                  DlTileMode tile_mode,
++                  int32_t tile_mode,
+                   const tonic::Float64List& matrix4);
+ 
+   void initRadial(double center_x,
+@@ -31,14 +32,14 @@ class CanvasGradient : public Shader {
+                   double radius,
+                   const tonic::Float32List& colors,
+                   const tonic::Float32List& color_stops,
+-                  DlTileMode tile_mode,
++                  int32_t tile_mode,
+                   const tonic::Float64List& matrix4);
+ 
+   void initSweep(double center_x,
+                  double center_y,
+                  const tonic::Float32List& colors,
+                  const tonic::Float32List& color_stops,
+-                 DlTileMode tile_mode,
++                 int32_t tile_mode,
+                  double start_angle,
+                  double end_angle,
+                  const tonic::Float64List& matrix4);
+@@ -51,7 +52,7 @@ class CanvasGradient : public Shader {
+                            double end_radius,
+                            const tonic::Float32List& colors,
+                            const tonic::Float32List& color_stops,
+-                           DlTileMode tile_mode,
++                           int32_t tile_mode,
+                            const tonic::Float64List& matrix4);
+ 
+   FlutterSpiShader* spi_handle() const override;
+diff --git a/engine/src/flutter/lib/ui/painting/image_filter.cc b/engine/src/flutter/lib/ui/painting/image_filter.cc
+index 471eaf224a1..052a9f93198 100644
+--- a/engine/src/flutter/lib/ui/painting/image_filter.cc
++++ b/engine/src/flutter/lib/ui/painting/image_filter.cc
+@@ -6,7 +6,9 @@
+ 
+ #include "flutter/lib/ui/spi_api.h"
+ 
+-#include "display_list/dl_sampling_options.h"
++#include <algorithm>
++#include <cstdint>
++
+ #include "flutter/lib/ui/floating_point.h"
+ #include "flutter/lib/ui/painting/matrix.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+@@ -43,29 +45,10 @@ void ImageFilter::Create(Dart_Handle wrapper) {
+   res->AssociateWithDartWrapper(wrapper);
+ }
+ 
+-static const std::array<DlImageSampling, 4> kFilterQualities = {
+-    DlImageSampling::kNearestNeighbor,
+-    DlImageSampling::kLinear,
+-    DlImageSampling::kMipmapLinear,
+-    DlImageSampling::kCubic,
+-};
+-
+-DlImageSampling ImageFilter::SamplingFromIndex(int filterQualityIndex) {
+-  if (filterQualityIndex < 0) {
+-    return kFilterQualities.front();
+-  } else if (static_cast<size_t>(filterQualityIndex) >=
+-             kFilterQualities.size()) {
+-    return kFilterQualities.back();
+-  } else {
+-    return kFilterQualities[filterQualityIndex];
+-  }
+-}
+-
+-DlFilterMode ImageFilter::FilterModeFromIndex(int filterQualityIndex) {
+-  if (filterQualityIndex <= 0) {
+-    return DlFilterMode::kNearest;
+-  }
+-  return DlFilterMode::kLinear;
++int32_t ClampFilterQuality(int filter_quality_index) {
++  return std::clamp(filter_quality_index,
++                    static_cast<int32_t>(kFlutterSpiFilterQualityNone),
++                    static_cast<int32_t>(kFlutterSpiFilterQualityHigh));
+ }
+ 
+ ImageFilter::ImageFilter() {}
+@@ -114,10 +97,10 @@ void ImageFilter::initErode(double radius_x, double radius_y) {
+ 
+ void ImageFilter::initMatrix(const tonic::Float64List& matrix4,
+                              int filterQualityIndex) {
+-  auto sampling = ImageFilter::SamplingFromIndex(filterQualityIndex);
+   const FlutterSpiMatrix spi_matrix = ToSpiMatrix(matrix4);
+   EffectsApi()->image_filter_matrix(
+-      nullptr, &spi_matrix, static_cast<int32_t>(sampling), &spi_filter_);
++      nullptr, &spi_matrix, ClampFilterQuality(filterQualityIndex),
++      &spi_filter_);
+ }
+ 
+ void ImageFilter::initColorFilter(ColorFilter* colorFilter) {
+@@ -138,8 +121,7 @@ void ImageFilter::initShader(ReusableFragmentShader* shader,
+   if (spi_filter_ != nullptr) {
+     EffectsApi()->image_filter_release(spi_filter_);
+   }
+-  spi_filter_ = shader->as_image_filter(
+-      SamplingFromIndex(filterQualityIndex));
++  spi_filter_ = shader->as_image_filter(ClampFilterQuality(filterQualityIndex));
+ }
+ 
+ bool ImageFilter::equals(Dart_Handle a_handle, Dart_Handle b_handle) {
+diff --git a/engine/src/flutter/lib/ui/painting/image_filter.h b/engine/src/flutter/lib/ui/painting/image_filter.h
+index e2757d788ef..e59f22b6107 100644
+--- a/engine/src/flutter/lib/ui/painting/image_filter.h
++++ b/engine/src/flutter/lib/ui/painting/image_filter.h
+@@ -5,7 +5,6 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_IMAGE_FILTER_H_
+ #define FLUTTER_LIB_UI_PAINTING_IMAGE_FILTER_H_
+ 
+-#include "flutter/display_list/dl_sampling_options.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "flutter/lib/ui/painting/color_filter.h"
+ #include "flutter/runtime_spi/include/flutter_paint_effects.h"
+@@ -26,9 +25,6 @@ class ImageFilter : public RefCountedDartWrappable<ImageFilter> {
+   ~ImageFilter() override;
+   static void Create(Dart_Handle wrapper);
+ 
+-  static DlImageSampling SamplingFromIndex(int filterQualityIndex);
+-  static DlFilterMode FilterModeFromIndex(int index);
+-
+   void initBlur(double sigma_x,
+                 double sigma_y,
+                 int tile_mode_index,
+diff --git a/engine/src/flutter/lib/ui/painting/image_shader.cc b/engine/src/flutter/lib/ui/painting/image_shader.cc
+index 8c18dedb51c..ad7b02a3694 100644
+--- a/engine/src/flutter/lib/ui/painting/image_shader.cc
++++ b/engine/src/flutter/lib/ui/painting/image_shader.cc
+@@ -24,8 +24,8 @@ void ImageShader::Create(Dart_Handle wrapper) {
+ }
+ 
+ Dart_Handle ImageShader::initWithImage(CanvasImage* image,
+-                                       DlTileMode tmx,
+-                                       DlTileMode tmy,
++                                       int32_t tmx,
++                                       int32_t tmy,
+                                        int filter_quality_index,
+                                        Dart_Handle matrix_handle) {
+   if (!image || !image->spi_handle()) {
+diff --git a/engine/src/flutter/lib/ui/painting/image_shader.h b/engine/src/flutter/lib/ui/painting/image_shader.h
+index 5973edacef6..3223c6905cc 100644
+--- a/engine/src/flutter/lib/ui/painting/image_shader.h
++++ b/engine/src/flutter/lib/ui/painting/image_shader.h
+@@ -5,7 +5,8 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_IMAGE_SHADER_H_
+ #define FLUTTER_LIB_UI_PAINTING_IMAGE_SHADER_H_
+ 
+-#include "flutter/display_list/dl_tile_mode.h"
++#include <cstdint>
++
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "flutter/lib/ui/painting/image.h"
+ #include "flutter/lib/ui/painting/matrix.h"
+@@ -23,8 +24,8 @@ class ImageShader : public Shader {
+   static void Create(Dart_Handle wrapper);
+ 
+   Dart_Handle initWithImage(CanvasImage* image,
+-                            DlTileMode tmx,
+-                            DlTileMode tmy,
++                            int32_t tmx,
++                            int32_t tmy,
+                             int filter_quality_index,
+                             Dart_Handle matrix_handle);
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/matrix.cc b/engine/src/flutter/lib/ui/painting/matrix.cc
+index 02b4b101e09..7b8e5ed9810 100644
+--- a/engine/src/flutter/lib/ui/painting/matrix.cc
++++ b/engine/src/flutter/lib/ui/painting/matrix.cc
+@@ -43,18 +43,6 @@ SkMatrix ToSkMatrix(const tonic::Float64List& matrix4) {
+   return sk_matrix;
+ }
+ 
+-DlMatrix ToDlMatrix(const tonic::Float64List& matrix4) {
+-  FML_DCHECK(matrix4.data());
+-  // clang-format off
+-  return DlMatrix::MakeColumn(
+-    SafeNarrow(matrix4[ 0]), SafeNarrow(matrix4[ 1]), SafeNarrow(matrix4[ 2]), SafeNarrow(matrix4[ 3]),
+-    SafeNarrow(matrix4[ 4]), SafeNarrow(matrix4[ 5]), SafeNarrow(matrix4[ 6]), SafeNarrow(matrix4[ 7]),
+-    SafeNarrow(matrix4[ 8]), SafeNarrow(matrix4[ 9]), SafeNarrow(matrix4[10]), SafeNarrow(matrix4[11]),
+-    SafeNarrow(matrix4[12]), SafeNarrow(matrix4[13]), SafeNarrow(matrix4[14]), SafeNarrow(matrix4[15])
+-  );
+-  // clang-format on
+-}
+-
+ tonic::Float64List ToMatrix4(const SkMatrix& sk_matrix) {
+   tonic::Float64List matrix4(Dart_NewTypedData(Dart_TypedData_kFloat64, 16));
+   for (int i = 0; i < 9; ++i) {
+diff --git a/engine/src/flutter/lib/ui/painting/matrix.h b/engine/src/flutter/lib/ui/painting/matrix.h
+index 2312a64ec92..94b618cd6ff 100644
+--- a/engine/src/flutter/lib/ui/painting/matrix.h
++++ b/engine/src/flutter/lib/ui/painting/matrix.h
+@@ -5,8 +5,6 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_MATRIX_H_
+ #define FLUTTER_LIB_UI_PAINTING_MATRIX_H_
+ 
+-#include "flutter/display_list/geometry/dl_geometry_types.h"
+-
+ #include "third_party/skia/include/core/SkM44.h"
+ #include "third_party/skia/include/core/SkMatrix.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
+@@ -15,7 +13,6 @@ namespace flutter {
+ 
+ SkM44 ToSkM44(const tonic::Float64List& matrix4);
+ SkMatrix ToSkMatrix(const tonic::Float64List& matrix4);
+-DlMatrix ToDlMatrix(const tonic::Float64List& matrix4);
+ tonic::Float64List ToMatrix4(const SkMatrix& sk_matrix);
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/path.cc b/engine/src/flutter/lib/ui/painting/path.cc
+index a81ea3f9298..2cfde5367a4 100644
+--- a/engine/src/flutter/lib/ui/painting/path.cc
++++ b/engine/src/flutter/lib/ui/painting/path.cc
+@@ -22,21 +22,6 @@ namespace {
+ 
+ constexpr float kRadiansToDegrees = 180.0f / static_cast<float>(M_PI);
+ 
+-FlutterSpiRect ToSpiRect(const DlRect& rect) {
+-  return {rect.GetLeft(), rect.GetTop(), rect.GetRight(), rect.GetBottom()};
+-}
+-
+-template <typename RoundRect>
+-FlutterSpiRRect ToSpiRRect(const RoundRect& round_rect) {
+-  const auto& bounds = round_rect.GetBounds();
+-  const auto& radii = round_rect.GetRadii();
+-  return {ToSpiRect(bounds),
+-          {{radii.top_left.width, radii.top_left.height},
+-           {radii.top_right.width, radii.top_right.height},
+-           {radii.bottom_right.width, radii.bottom_right.height},
+-           {radii.bottom_left.width, radii.bottom_left.height}}};
+-}
+-
+ }  // namespace
+ 
+ typedef CanvasPath Path;
+@@ -225,14 +210,12 @@ void CanvasPath::addPolygon(const tonic::Float32List& points, bool close) {
+ }
+ 
+ void CanvasPath::addRRect(const RRect& rrect) {
+-  const FlutterSpiRRect spi_rrect = ToSpiRRect(rrect.rrect);
+-  SpiApi().scene->path_add_rrect(spi_path_, &spi_rrect);
++  SpiApi().scene->path_add_rrect(spi_path_, &rrect.rrect);
+ }
+ 
+ void CanvasPath::addRSuperellipse(const RSuperellipse* rsuperellipse) {
+-  const FlutterSpiRSuperellipse spi_rsuperellipse =
+-      ToSpiRRect(rsuperellipse->rsuperellipse());
+-  SpiApi().scene->path_add_rsuperellipse(spi_path_, &spi_rsuperellipse);
++  SpiApi().scene->path_add_rsuperellipse(spi_path_,
++                                        &rsuperellipse->rsuperellipse);
+ }
+ 
+ void CanvasPath::addPath(CanvasPath* path, double dx, double dy) {
+diff --git a/engine/src/flutter/lib/ui/painting/path.h b/engine/src/flutter/lib/ui/painting/path.h
+index e09d0352fec..6b936c15102 100644
+--- a/engine/src/flutter/lib/ui/painting/path.h
++++ b/engine/src/flutter/lib/ui/painting/path.h
+@@ -5,7 +5,6 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_PATH_H_
+ #define FLUTTER_LIB_UI_PAINTING_PATH_H_
+ 
+-#include "flutter/display_list/geometry/dl_path.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "flutter/lib/ui/painting/rrect.h"
+ #include "flutter/lib/ui/painting/rsuperellipse.h"
+diff --git a/engine/src/flutter/lib/ui/painting/picture_recorder.cc b/engine/src/flutter/lib/ui/painting/picture_recorder.cc
+index 8539adf49c7..4d53b0ebb58 100644
+--- a/engine/src/flutter/lib/ui/painting/picture_recorder.cc
++++ b/engine/src/flutter/lib/ui/painting/picture_recorder.cc
+@@ -30,10 +30,9 @@ PictureRecorder::~PictureRecorder() {
+   }
+ }
+ 
+-FlutterSpiPictureRecorder* PictureRecorder::BeginRecording(DlRect bounds) {
+-  FlutterSpiRect spi_bounds = {bounds.GetLeft(), bounds.GetTop(),
+-                               bounds.GetRight(), bounds.GetBottom()};
+-  if (SpiApi().scene->recorder_create(nullptr, &spi_bounds, &spi_recorder_) !=
++FlutterSpiPictureRecorder* PictureRecorder::BeginRecording(
++    const FlutterSpiRect& bounds) {
++  if (SpiApi().scene->recorder_create(nullptr, &bounds, &spi_recorder_) !=
+       kFlutterSpiOk) {
+     spi_recorder_ = nullptr;
+   }
+diff --git a/engine/src/flutter/lib/ui/painting/picture_recorder.h b/engine/src/flutter/lib/ui/painting/picture_recorder.h
+index 481b547d989..deff6699e18 100644
+--- a/engine/src/flutter/lib/ui/painting/picture_recorder.h
++++ b/engine/src/flutter/lib/ui/painting/picture_recorder.h
+@@ -5,7 +5,6 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_PICTURE_RECORDER_H_
+ #define FLUTTER_LIB_UI_PAINTING_PICTURE_RECORDER_H_
+ 
+-#include "flutter/display_list/geometry/dl_geometry_types.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "flutter/runtime_spi/include/flutter_scene.h"
+ 
+@@ -22,7 +21,7 @@ class PictureRecorder : public RefCountedDartWrappable<PictureRecorder> {
+ 
+   ~PictureRecorder() override;
+ 
+-  FlutterSpiPictureRecorder* BeginRecording(DlRect bounds);
++  FlutterSpiPictureRecorder* BeginRecording(const FlutterSpiRect& bounds);
+   void endRecording(Dart_Handle dart_picture);
+ 
+   void set_canvas(fml::RefPtr<Canvas> canvas) { canvas_ = std::move(canvas); }
+diff --git a/engine/src/flutter/lib/ui/painting/rrect.cc b/engine/src/flutter/lib/ui/painting/rrect.cc
+index 7b14b6dcb85..e9dcd517647 100644
+--- a/engine/src/flutter/lib/ui/painting/rrect.cc
++++ b/engine/src/flutter/lib/ui/painting/rrect.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "flutter/lib/ui/painting/rrect.h"
+ 
++#include <algorithm>
++
+ #include "flutter/fml/logging.h"
+ #include "third_party/tonic/logging/dart_error.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
+@@ -12,7 +14,7 @@ using flutter::RRect;
+ 
+ namespace tonic {
+ 
+-// Construct an DlRoundRect from a Dart RRect object.
++// Construct an SPI round rectangle from a Dart RRect object.
+ // The Dart RRect is a Float32List containing
+ //   [left, top, right, bottom, xRadius, yRadius]
+ RRect DartConverter<flutter::RRect>::FromDart(Dart_Handle value) {
+@@ -27,20 +29,16 @@ RRect DartConverter<flutter::RRect>::FromDart(Dart_Handle value) {
+   // The Flutter rect may be inverted (upside down, backward, or both)
+   // Historically, Skia would normalize such rects but we will do that
+   // manually below when we construct the Impeller RoundRect
+-  flutter::DlRect raw_rect =
+-      flutter::DlRect::MakeLTRB(buffer[0], buffer[1], buffer[2], buffer[3]);
+-
+-  // Flutter has radii in TL,TR,BR,BL (clockwise) order,
+-  // but Impeller uses TL,TR,BL,BR (zig-zag) order
+-  impeller::RoundingRadii radii = {
+-      .top_left = flutter::DlSize(buffer[4], buffer[5]),
+-      .top_right = flutter::DlSize(buffer[6], buffer[7]),
+-      .bottom_left = flutter::DlSize(buffer[10], buffer[11]),
+-      .bottom_right = flutter::DlSize(buffer[8], buffer[9]),
++  result.rrect.rect = {
++      std::min(buffer[0], buffer[2]),
++      std::min(buffer[1], buffer[3]),
++      std::max(buffer[0], buffer[2]),
++      std::max(buffer[1], buffer[3]),
+   };
+-
+-  result.rrect =
+-      flutter::DlRoundRect::MakeRectRadii(raw_rect.GetPositive(), radii);
++  result.rrect.radii[0] = {buffer[4], buffer[5]};
++  result.rrect.radii[1] = {buffer[6], buffer[7]};
++  result.rrect.radii[2] = {buffer[8], buffer[9]};
++  result.rrect.radii[3] = {buffer[10], buffer[11]};
+ 
+   result.is_null = false;
+   return result;
+diff --git a/engine/src/flutter/lib/ui/painting/rrect.h b/engine/src/flutter/lib/ui/painting/rrect.h
+index 4a2912ecc34..6391be8c170 100644
+--- a/engine/src/flutter/lib/ui/painting/rrect.h
++++ b/engine/src/flutter/lib/ui/painting/rrect.h
+@@ -5,7 +5,7 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_RRECT_H_
+ #define FLUTTER_LIB_UI_PAINTING_RRECT_H_
+ 
+-#include "flutter/display_list/geometry/dl_geometry_types.h"
++#include "flutter/runtime_spi/include/flutter_scene.h"
+ #include "third_party/dart/runtime/include/dart_api.h"
+ #include "third_party/skia/include/core/SkRRect.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+@@ -14,7 +14,7 @@ namespace flutter {
+ 
+ class RRect {
+  public:
+-  DlRoundRect rrect;
++  FlutterSpiRRect rrect;
+   bool is_null;
+ };
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/rsuperellipse.cc b/engine/src/flutter/lib/ui/painting/rsuperellipse.cc
+index c8e39ce54f3..bc3cfdb50cc 100644
+--- a/engine/src/flutter/lib/ui/painting/rsuperellipse.cc
++++ b/engine/src/flutter/lib/ui/painting/rsuperellipse.cc
+@@ -4,24 +4,32 @@
+ 
+ #include "flutter/lib/ui/painting/rsuperellipse.h"
+ 
++#include <algorithm>
++
+ #include "flutter/fml/logging.h"
+ #include "flutter/lib/ui/floating_point.h"
++#include "flutter/lib/ui/spi_api.h"
+ #include "third_party/tonic/logging/dart_error.h"
+ 
+ namespace flutter {
+ 
+ namespace {
+ 
+-flutter::DlRect BuildBounds(float left, float top, float right, float bottom) {
++FlutterSpiRect BuildBounds(float left, float top, float right, float bottom) {
+   // The Flutter rect may be inverted (upside down, backward, or both)
+   // Historically, Skia would normalize such rects but we will do that
+   // manually below when we construct the Impeller Rect
+-  flutter::DlRect raw_rect =
+-      flutter::DlRect::MakeLTRB(left, top, right, bottom);
+-  return raw_rect.GetPositive();
++  return {
++      std::min(left, right), std::min(top, bottom), std::max(left, right),
++      std::max(top, bottom),
++  };
+ }
+ 
+-impeller::RoundingRadii BuildRadii(float tl_radius_x,
++FlutterSpiRSuperellipse BuildShape(float left,
++                                   float top,
++                                   float right,
++                                   float bottom,
++                                   float tl_radius_x,
+                                    float tl_radius_y,
+                                    float tr_radius_x,
+                                    float tr_radius_y,
+@@ -29,14 +37,13 @@ impeller::RoundingRadii BuildRadii(float tl_radius_x,
+                                    float br_radius_y,
+                                    float bl_radius_x,
+                                    float bl_radius_y) {
+-  // Flutter has radii in TL,TR,BR,BL (clockwise) order,
+-  // but Impeller uses TL,TR,BL,BR (zig-zag) order
+-  return impeller::RoundingRadii{
+-      .top_left = flutter::DlSize(tl_radius_x, tl_radius_y),
+-      .top_right = flutter::DlSize(tr_radius_x, tr_radius_y),
+-      .bottom_left = flutter::DlSize(bl_radius_x, bl_radius_y),
+-      .bottom_right = flutter::DlSize(br_radius_x, br_radius_y),
+-  };
++  FlutterSpiRSuperellipse shape = {};
++  shape.rect = BuildBounds(left, top, right, bottom);
++  shape.radii[0] = {tl_radius_x, tl_radius_y};
++  shape.radii[1] = {tr_radius_x, tr_radius_y};
++  shape.radii[2] = {br_radius_x, br_radius_y};
++  shape.radii[3] = {bl_radius_x, bl_radius_y};
++  return shape;
+ }
+ }  // namespace
+ 
+@@ -57,35 +64,25 @@ void RSuperellipse::Create(Dart_Handle wrapper,
+                            double bl_radius_y) {
+   UIDartState::ThrowIfUIOperationsProhibited();
+   auto res = fml::MakeRefCounted<RSuperellipse>(
+-      BuildBounds(SafeNarrow(left), SafeNarrow(top), SafeNarrow(right),
+-                  SafeNarrow(bottom)),
+-      BuildRadii(SafeNarrow(tl_radius_x), SafeNarrow(tl_radius_y),
+-                 SafeNarrow(tr_radius_x), SafeNarrow(tr_radius_y),
+-                 SafeNarrow(br_radius_x), SafeNarrow(br_radius_y),
+-                 SafeNarrow(bl_radius_x), SafeNarrow(bl_radius_y)));
++      BuildShape(SafeNarrow(left), SafeNarrow(top), SafeNarrow(right),
++                 SafeNarrow(bottom), SafeNarrow(tl_radius_x),
++                 SafeNarrow(tl_radius_y), SafeNarrow(tr_radius_x),
++                 SafeNarrow(tr_radius_y), SafeNarrow(br_radius_x),
++                 SafeNarrow(br_radius_y), SafeNarrow(bl_radius_x),
++                 SafeNarrow(bl_radius_y)));
+   res->AssociateWithDartWrapper(wrapper);
+ }
+ 
+-RSuperellipse::RSuperellipse(flutter::DlRect bounds,
+-                             impeller::RoundingRadii radii)
+-    : bounds_(bounds), radii_(radii) {}
++RSuperellipse::RSuperellipse(FlutterSpiRSuperellipse shape)
++    : rsuperellipse(shape) {}
+ 
+ RSuperellipse::~RSuperellipse() = default;
+ 
+-flutter::DlRoundSuperellipse RSuperellipse::rsuperellipse() const {
+-  return flutter::DlRoundSuperellipse::MakeRectRadii(bounds_, radii_);
+-}
+-
+-impeller::RoundSuperellipseParam RSuperellipse::param() const {
+-  return impeller::RoundSuperellipseParam::MakeBoundsRadii(bounds_, radii_);
+-}
+-
+ bool RSuperellipse::contains(double x, double y) {
+-  DlPoint point(SafeNarrow(x), SafeNarrow(y));
+-  if (!bounds_.Contains(point)) {
+-    return false;
+-  }
+-  return param().Contains(point);
++  bool result = false;
++  return SpiApi().scene->rsuperellipse_contains(&rsuperellipse, x, y,
++                                                &result) == kFlutterSpiOk &&
++         result;
+ }
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/rsuperellipse.h b/engine/src/flutter/lib/ui/painting/rsuperellipse.h
+index 78f5a60e7b3..49e592b4cc6 100644
+--- a/engine/src/flutter/lib/ui/painting/rsuperellipse.h
++++ b/engine/src/flutter/lib/ui/painting/rsuperellipse.h
+@@ -5,10 +5,9 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_RSUPERELLIPSE_H_
+ #define FLUTTER_LIB_UI_PAINTING_RSUPERELLIPSE_H_
+ 
+-#include "flutter/display_list/geometry/dl_geometry_types.h"
+-#include "flutter/impeller/geometry/round_superellipse_param.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
++#include "flutter/runtime_spi/include/flutter_scene.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
+ 
+ namespace flutter {
+@@ -36,18 +35,10 @@ class RSuperellipse : public RefCountedDartWrappable<RSuperellipse> {
+ 
+   bool contains(double x, double y);
+ 
+-  flutter::DlRoundSuperellipse rsuperellipse() const;
+-  impeller::RoundSuperellipseParam param() const;
+-  flutter::DlRect bounds() const { return bounds_; }
+-  impeller::RoundingRadii radii() const { return radii_; }
++  FlutterSpiRSuperellipse rsuperellipse;
+ 
+  private:
+-  RSuperellipse(flutter::DlRect bounds, impeller::RoundingRadii radii);
+-
+-  flutter::DlScalar scalar_value(int index) const;
+-
+-  flutter::DlRect bounds_;
+-  impeller::RoundingRadii radii_;
++  explicit RSuperellipse(FlutterSpiRSuperellipse shape);
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/vertices.cc b/engine/src/flutter/lib/ui/painting/vertices.cc
+index be60fa6848a..4330b8ea2b6 100644
+--- a/engine/src/flutter/lib/ui/painting/vertices.cc
++++ b/engine/src/flutter/lib/ui/painting/vertices.cc
+@@ -51,7 +51,7 @@ FlutterSpiVertices* Vertices::spi_handle() const {
+ }
+ 
+ bool Vertices::init(Dart_Handle vertices_handle,
+-                    DlVertexMode vertex_mode,
++                    int32_t vertex_mode,
+                     Dart_Handle positions_handle,
+                     Dart_Handle texture_coordinates_handle,
+                     Dart_Handle colors_handle,
+diff --git a/engine/src/flutter/lib/ui/painting/vertices.h b/engine/src/flutter/lib/ui/painting/vertices.h
+index cbcfed1ea75..c362c445046 100644
+--- a/engine/src/flutter/lib/ui/painting/vertices.h
++++ b/engine/src/flutter/lib/ui/painting/vertices.h
+@@ -5,7 +5,8 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_VERTICES_H_
+ #define FLUTTER_LIB_UI_PAINTING_VERTICES_H_
+ 
+-#include "flutter/display_list/dl_vertices.h"
++#include <cstdint>
++
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "flutter/runtime_spi/include/flutter_paint_effects.h"
+ #include "third_party/skia/include/core/SkVertices.h"
+@@ -21,7 +22,7 @@ class Vertices : public RefCountedDartWrappable<Vertices> {
+   ~Vertices() override;
+ 
+   static bool init(Dart_Handle vertices_handle,
+-                   DlVertexMode vertex_mode,
++                   int32_t vertex_mode,
+                    Dart_Handle positions_handle,
+                    Dart_Handle texture_coordinates_handle,
+                    Dart_Handle colors_handle,
