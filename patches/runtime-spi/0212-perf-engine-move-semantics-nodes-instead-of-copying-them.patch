@@ -1,0 +1,49 @@
+# Why: let the semantics update path transfer node-owned storage into the core
+# map.
+diff --git a/engine/src/flutter/lib/ui/semantics/semantics_node.cc b/engine/src/flutter/lib/ui/semantics/semantics_node.cc
+index d1e27389b22..7ac93fee5c7 100644
+--- a/engine/src/flutter/lib/ui/semantics/semantics_node.cc
++++ b/engine/src/flutter/lib/ui/semantics/semantics_node.cc
+@@ -14,6 +14,12 @@ SemanticsNode::SemanticsNode() = default;
+ 
+ SemanticsNode::SemanticsNode(const SemanticsNode& other) = default;
+ 
++SemanticsNode::SemanticsNode(SemanticsNode&& other) noexcept = default;
++
++SemanticsNode& SemanticsNode::operator=(const SemanticsNode& other) = default;
++
++SemanticsNode& SemanticsNode::operator=(SemanticsNode&& other) noexcept = default;
++
+ SemanticsNode::~SemanticsNode() = default;
+ 
+ bool SemanticsNode::HasAction(SemanticsAction action) const {
+diff --git a/engine/src/flutter/lib/ui/semantics/semantics_node.h b/engine/src/flutter/lib/ui/semantics/semantics_node.h
+index 5e0e85313cb..a02fcfc763e 100644
+--- a/engine/src/flutter/lib/ui/semantics/semantics_node.h
++++ b/engine/src/flutter/lib/ui/semantics/semantics_node.h
+@@ -127,6 +127,12 @@ struct SemanticsNode {
+ 
+   SemanticsNode(const SemanticsNode& other);
+ 
++  SemanticsNode(SemanticsNode&& other) noexcept;
++
++  SemanticsNode& operator=(const SemanticsNode& other);
++
++  SemanticsNode& operator=(SemanticsNode&& other) noexcept;
++
+   ~SemanticsNode();
+ 
+   bool HasAction(SemanticsAction action) const;
+diff --git a/engine/src/flutter/runtime_spi/semantics/spi_semantics.cc b/engine/src/flutter/runtime_spi/semantics/spi_semantics.cc
+index dfce1face7f..4da70f709ce 100644
+--- a/engine/src/flutter/runtime_spi/semantics/spi_semantics.cc
++++ b/engine/src/flutter/runtime_spi/semantics/spi_semantics.cc
+@@ -189,7 +189,7 @@ FlutterSpiResult UpdateNode(FlutterSpiSemanticsUpdateBuilder* builder,
+   if (result != kFlutterSpiOk) {
+     return result;
+   }
+-  builder->nodes[node.id] = std::move(node);
++  builder->nodes.insert_or_assign(node.id, std::move(node));
+   return kFlutterSpiOk;
+ }
+ 

@@ -1,0 +1,25 @@
+# Why: pin the nothrow move operations required by the semantics fast path.
+diff --git a/engine/src/flutter/runtime_spi/semantics/spi_semantics_unittests.cc b/engine/src/flutter/runtime_spi/semantics/spi_semantics_unittests.cc
+index 29c1700b1eb..c4f3c21de39 100644
+--- a/engine/src/flutter/runtime_spi/semantics/spi_semantics_unittests.cc
++++ b/engine/src/flutter/runtime_spi/semantics/spi_semantics_unittests.cc
+@@ -7,6 +7,7 @@
+ #include <array>
+ #include <cstddef>
+ #include <cstdint>
++#include <type_traits>
+ 
+ #include "flutter/lib/ui/semantics/custom_accessibility_action.h"
+ #include "flutter/lib/ui/semantics/semantics_node.h"
+@@ -18,6 +19,11 @@
+ namespace flutter::testing {
+ namespace {
+ 
++TEST(SpiSemantics, SemanticsNodeIsNothrowMovable) {
++  EXPECT_TRUE(std::is_nothrow_move_constructible_v<SemanticsNode>);
++  EXPECT_TRUE(std::is_nothrow_move_assignable_v<SemanticsNode>);
++}
++
+ FlutterSpiSemanticsNode EmptyNode() {
+   FlutterSpiSemanticsNode node = {};
+   node.struct_size = sizeof(FlutterSpiSemanticsNode);
