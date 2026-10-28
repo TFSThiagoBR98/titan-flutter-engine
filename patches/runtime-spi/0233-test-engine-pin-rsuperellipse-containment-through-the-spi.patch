@@ -1,0 +1,127 @@
+# Why: Pin the new ABI entry point and frozen layout before implementing its
+# runtime behavior.
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index c1d6dd65b00..5c555c37d14 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -944,7 +944,9 @@ SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_retain_last_layer,
+                   sizeof(void*) == 8 ? 840 : 420);
+ SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_set_volatile,
+                   sizeof(void*) == 8 ? 848 : 424);
+-SPI_EXPECT_SIZE(FlutterSpiSceneApi, sizeof(void*) == 8 ? 856 : 428);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, rsuperellipse_contains,
++                  sizeof(void*) == 8 ? 856 : 428);
++SPI_EXPECT_SIZE(FlutterSpiSceneApi, sizeof(void*) == 8 ? 864 : 432);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiPixels, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiPixels, pixels,
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index 59d02e51dc3..aee465d2357 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 23
++#define FLUTTER_SPI_VERSION_MINOR 24
+ 
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_scene.h b/engine/src/flutter/runtime_spi/include/flutter_scene.h
+index 34958e061b7..7d5e8ad6ed8 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_scene.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_scene.h
+@@ -538,6 +538,11 @@ struct FlutterSpiSceneApi {
+                                               FlutterSpiEngineLayer** out_layer);
+   FlutterSpiResult (*path_set_volatile)(FlutterSpiPath* path,
+                                          bool is_volatile);
++  FlutterSpiResult (*rsuperellipse_contains)(
++      const FlutterSpiRSuperellipse* rsuperellipse,
++      double x,
++      double y,
++      bool* out_contains);
+ };
+ 
+ #ifdef __cplusplus
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_path_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_path_unittests.cc
+index 0d21aac20a4..d2b8e12c433 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_path_unittests.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_path_unittests.cc
+@@ -9,6 +9,10 @@
+ #include <cmath>
+ 
+ #include "flutter/display_list/geometry/dl_path_builder.h"
++#include "flutter/impeller/geometry/point.h"
++#include "flutter/impeller/geometry/rect.h"
++#include "flutter/impeller/geometry/round_superellipse_param.h"
++#include "flutter/impeller/geometry/rounding_radii.h"
+ #include "flutter/runtime_spi/include/flutter_scene.h"
+ #include "flutter/testing/testing.h"
+ 
+@@ -100,5 +104,42 @@ TEST(SpiGeometry, RejectsNonFiniteMatrix) {
+   EXPECT_FALSE(ToDlMatrix(spi_matrix, &matrix));
+ }
+ 
++TEST(SpiGeometry, RSuperellipseContainsMatchesImpeller) {
++  const FlutterSpiSceneApi* api = SpiSceneApi();
++  ASSERT_NE(api->rsuperellipse_contains, nullptr);
++
++  constexpr FlutterSpiRSuperellipse shape = {
++      .rect = {.left = -50.0f, .top = -50.0f, .right = 50.0f, .bottom = 50.0f},
++      .radii = {{5.0f, 5.0f},
++                {5.0f, 5.0f},
++                {5.0f, 5.0f},
++                {5.0f, 5.0f}},
++  };
++  const impeller::Rect bounds =
++      impeller::Rect::MakeLTRB(shape.rect.left, shape.rect.top,
++                               shape.rect.right, shape.rect.bottom)
++          .GetPositive();
++  const impeller::RoundingRadii radii = {
++      .top_left = {shape.radii[0].x, shape.radii[0].y},
++      .top_right = {shape.radii[1].x, shape.radii[1].y},
++      .bottom_left = {shape.radii[3].x, shape.radii[3].y},
++      .bottom_right = {shape.radii[2].x, shape.radii[2].y},
++  };
++  const auto param =
++      impeller::RoundSuperellipseParam::MakeBoundsRadii(bounds, radii);
++
++  for (const impeller::Point point : {
++           impeller::Point{0.0f, 0.0f},
++           impeller::Point{60.0f, 0.0f},
++           impeller::Point{48.53f, 48.53f},
++       }) {
++    bool actual = false;
++    ASSERT_EQ(api->rsuperellipse_contains(&shape, point.x, point.y, &actual),
++              kFlutterSpiOk);
++    const bool expected = bounds.Contains(point) && param.Contains(point);
++    EXPECT_EQ(actual, expected);
++  }
++}
++
+ }  // namespace
+ }  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index 8a1d444350f..53b587b6908 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -94,7 +94,7 @@ TEST(SpiAbi, ImageEnumValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawUnmodified, 2);
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawExtendedRGBA128, 3);
+   EXPECT_EQ(kFlutterSpiImageByteFormatPNG, 4);
+-  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 23);
++  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 24);
+ }
+ 
+ TEST(SpiAbi, SemanticsLayoutIsFrozen) {
+@@ -733,7 +733,8 @@ TEST(SpiAbi, SceneApiLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiSceneApi, scene_create_from_root, 832, 416);
+   EXPECT_SPI_OFFSET(FlutterSpiSceneApi, scene_retain_last_layer, 840, 420);
+   EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_set_volatile, 848, 424);
+-  EXPECT_EQ(sizeof(FlutterSpiSceneApi), sizeof(void*) == 8 ? 856u : 428u);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, rsuperellipse_contains, 856, 428);
++  EXPECT_EQ(sizeof(FlutterSpiSceneApi), sizeof(void*) == 8 ? 864u : 432u);
+ }
+ 
+ TEST(SpiAbi, ImageLayoutIsFrozen) {

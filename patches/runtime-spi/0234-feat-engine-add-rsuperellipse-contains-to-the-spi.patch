@@ -1,0 +1,64 @@
+# Why: Implement the frozen scene ABI entry point with the same positive-
+# bounds and raw-radii containment semantics as RSuperellipse.
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+index 5c51cb35ee2..6d44aeae9c5 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+@@ -12,6 +12,10 @@
+ #include <vector>
+ 
+ #include "flutter/display_list/dl_builder.h"
++#include "flutter/impeller/geometry/point.h"
++#include "flutter/impeller/geometry/rect.h"
++#include "flutter/impeller/geometry/round_superellipse_param.h"
++#include "flutter/impeller/geometry/rounding_radii.h"
+ #include "flutter/runtime_spi/scene/spi_geometry.h"
+ #include "flutter/runtime_spi/scene/spi_handle_table.h"
+ #include "flutter/runtime_spi/scene/spi_paint.h"
+@@ -592,6 +596,38 @@ FlutterSpiResult PathContains(FlutterSpiPath* path,
+   return kFlutterSpiOk;
+ }
+ 
++FlutterSpiResult RSuperellipseContains(
++    const FlutterSpiRSuperellipse* rsuperellipse,
++    double x,
++    double y,
++    bool* out_contains) {
++  if (rsuperellipse == nullptr || out_contains == nullptr ||
++      !IsFinite(*rsuperellipse) || !std::isfinite(x) || !std::isfinite(y)) {
++    return kFlutterSpiInvalidArgument;
++  }
++
++  const impeller::Rect bounds =
++      impeller::Rect::MakeLTRB(rsuperellipse->rect.left,
++                               rsuperellipse->rect.top,
++                               rsuperellipse->rect.right,
++                               rsuperellipse->rect.bottom)
++          .GetPositive();
++  const impeller::RoundingRadii radii = {
++      .top_left = {rsuperellipse->radii[0].x, rsuperellipse->radii[0].y},
++      .top_right = {rsuperellipse->radii[1].x, rsuperellipse->radii[1].y},
++      .bottom_left = {rsuperellipse->radii[3].x,
++                      rsuperellipse->radii[3].y},
++      .bottom_right = {rsuperellipse->radii[2].x,
++                       rsuperellipse->radii[2].y},
++  };
++  const impeller::Point point{static_cast<float>(x), static_cast<float>(y)};
++  *out_contains =
++      bounds.Contains(point) &&
++      impeller::RoundSuperellipseParam::MakeBoundsRadii(bounds, radii)
++          .Contains(point);
++  return kFlutterSpiOk;
++}
++
+ FlutterSpiResult PathGetBounds(FlutterSpiPath* path, FlutterSpiRect* out) {
+   const auto path_value = FindPath(path);
+   if (path_value == nullptr) {
+@@ -1527,6 +1563,7 @@ const FlutterSpiSceneApi kSceneApi = {
+     .scene_create_from_root = SpiSceneCreateFromRoot,
+     .scene_retain_last_layer = SpiSceneRetainLastLayer,
+     .path_set_volatile = PathSetVolatile,
++    .rsuperellipse_contains = RSuperellipseContains,
+ };
+ 
+ }  // namespace
