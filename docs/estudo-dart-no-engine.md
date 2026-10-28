@@ -739,6 +739,35 @@ includes `Dl*`/`flow`/`impeller`/`shell` restantes, o corte dos deps GN do
 `lib/ui:ui` e o `assert_no_deps`. A medição do portão está em
 [runtime-spi-s4i1.md](medidas/runtime-spi-s4i1.md).
 
+## S4i-2: Código morto e pontes C++ do dart:ui
+
+Depois do acessor único da S4i-1, a ABI 0.23 acrescenta `path_set_volatile` ao
+fim da `FlutterSpiSceneApi`. O `dart:ui` passa a usar esse ponto de entrada
+público para a volatilidade dos paths.
+
+O código morto que restava da migração para o SPI foi removido: `SingleFrameCodec`,
+`MultiFrameCodec`, `Paint::paint`, `Shader::shader()` e seus overrides,
+`CanvasPath::path()`, `Picture::RasterizeToImageSync`,
+`Picture::RasterizeToImage`, `Picture::RasterizeLayerTreeToImage`,
+`Picture::DoRasterizeToImage` e `SceneBuilder::layer_stack()`.
+
+Os testes foram portados para a ABI sem mudar suas asserções: os dois testes
+`SingleFrameCodec*`, `MultiFrameCodecCanBeCollectedBeforeIOTasksFinish`, o
+teste do `shell_io_manager`, `ConvertPaintToDlPaint`,
+`ConvertDefaultPaintToDlPaint` sobre `FlutterSpiPaint` e o teste de volatilidade
+de `path_unittests`.
+
+As pontes restantes passaram a usar a ABI pública: `canvas_draw_image*`,
+`canvas_draw_atlas`, `canvas_draw_vertices`, retenção, liberação e tamanho de
+imagens, liberação de shaders e `CanvasPath::CreateFromHandle` em
+`path_measure`. A exceção é `lib/ui/painting/image_gpu_bridge.cc`, que mantém a
+ponte do `flutter_gpu` até a S7, conforme decisão do usuário em 2026-10-28.
+
+Neste ponto, nenhum arquivo do alvo `lib/ui:ui` inclui headers C++ internos do
+`runtime_spi`, fora dessa ponte temporária. Para a S4i-3 ficam os includes de
+`display_list`/`flow`/`impeller`/`shell`, o corte dos deps GN e o
+`assert_no_deps`.
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos

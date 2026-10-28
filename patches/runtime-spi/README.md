@@ -233,6 +233,12 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0224-feat-engine-give-dart-ui-one-spi-api-accessor.patch` | install one stable copy of the runtime SPI before Dart isolates start. | |
 | `0225-test-engine-make-the-spi-api-accessor-tests-order-independent.patch` | keep the accessor tests valid when the process has already installed the global SPI copy. | |
 | `0226-refactor-engine-read-the-spi-through-one-accessor-in-dart-ui.patch` | make dart:ui use the runtime-installed SPI table instead of recreating engine API accessors. | |
+| `0227-test-engine-pin-path-volatility-through-the-spi.patch` | Pin the new public path volatility entry point before wiring its implementation. | |
+| `0228-feat-engine-add-path-set-volatile-to-the-spi.patch` | Expose path volatility through the public SPI scene API while preserving invalid-handle semantics. | |
+| `0229-refactor-engine-drop-dead-dart-ui-paths-left-after-the-spi-migration.patch` | Remove obsolete Dart UI bridges and exercise codec lifetime scenarios through the public SPI ABI. | |
+| `0230-refactor-engine-use-the-public-spi-abi-in-the-remaining-dart-ui-natives.patch` | keep dart:ui on the public runtime SPI ABI while isolating the temporary flutter_gpu bridge. | |
+| `0231-fix-engine-include-the-spi-scene-builder-bridge-in-animator-tests.patch` | expose the bridge helper used after removing SceneBuilder::layer_stack(). | |
+| `0232-fix-engine-route-remaining-painting-calls-through-the-spi.patch` | complete the mechanical migration of the remaining canvas and shader releases to the public SPI tables. | |
 
 O fluxo é:
 

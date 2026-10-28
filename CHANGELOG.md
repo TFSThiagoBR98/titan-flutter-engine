@@ -51,6 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime SPI S4h-1: a semântica do `dart:ui` (`SemanticsUpdateBuilder`, `SemanticsUpdate`, `updateSemantics`) passa a usar o SPI; o release de um builder de semântica vale depois de o engine ser destruído; o SPI valida UTF-8 sem o ICU.
 - Runtime SPI S4h-2: platform messages de isolates de fundo passam pelo SPI (ABI 0.22, sender seguro em qualquer thread); um envio de isolate de fundo sem handler volta a lançar a exceção no Dart em vez de derrubar o isolate.
 - Runtime SPI S4i-1: o `dart:ui` passa a ler a ABI do SPI por um acessor único, instalado pelo runtime Dart, em vez de funções C++ do core.
+- Runtime SPI S4i-2: os últimos natives do `dart:ui` passam a usar só a ABI pública do SPI (exceto a ponte do `flutter_gpu`, até a S7); a ABI 0.23 acrescenta `path_set_volatile`; código do `dart:ui` sem uso desde a migração é removido.
 
 ### Fixed
 
