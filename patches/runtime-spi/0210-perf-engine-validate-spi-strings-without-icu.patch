@@ -1,0 +1,74 @@
+# Why: Reuse the SPI UTF-8 validator and measure each semantics string only
+# once.
+diff --git a/engine/src/flutter/runtime_spi/semantics/spi_semantics.cc b/engine/src/flutter/runtime_spi/semantics/spi_semantics.cc
+index d44aeee1757..dfce1face7f 100644
+--- a/engine/src/flutter/runtime_spi/semantics/spi_semantics.cc
++++ b/engine/src/flutter/runtime_spi/semantics/spi_semantics.cc
+@@ -6,12 +6,13 @@
+ 
+ #include <climits>
+ #include <cstddef>
++#include <cstring>
+ #include <memory>
+ #include <new>
+ #include <string>
+ #include <utility>
+ 
+-#include "third_party/icu/source/common/unicode/ustring.h"
++#include "flutter/runtime_spi/internal/spi_utf8.h"
+ 
+ namespace flutter {
+ namespace {
+@@ -20,21 +21,12 @@ bool HasField(size_t struct_size, size_t offset, size_t field_size) {
+   return struct_size >= offset && struct_size - offset >= field_size;
+ }
+ 
+-bool IsValidUtf8(const char* value) {
+-  if (value == nullptr) {
+-    return true;
+-  }
+-  UErrorCode error = U_ZERO_ERROR;
+-  int32_t utf16_length = 0;
+-  u_strFromUTF8(nullptr, 0, &utf16_length, value, -1, &error);
+-  return U_SUCCESS(error) || error == U_BUFFER_OVERFLOW_ERROR;
+-}
+-
+ FlutterSpiResult AssignString(const char* value, std::string* output) {
+-  if (!IsValidUtf8(value)) {
++  const size_t size = value == nullptr ? 0 : std::strlen(value);
++  if (!SpiIsValidUtf8(value, size)) {
+     return kFlutterSpiInvalidArgument;
+   }
+-  *output = value == nullptr ? std::string() : value;
++  output->assign(value, size);
+   return kFlutterSpiOk;
+ }
+ 
+diff --git a/engine/src/flutter/runtime_spi/text/spi_paragraph.cc b/engine/src/flutter/runtime_spi/text/spi_paragraph.cc
+index 580ce982cd5..ec912f84059 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_paragraph.cc
++++ b/engine/src/flutter/runtime_spi/text/spi_paragraph.cc
+@@ -11,9 +11,9 @@
+ #include <utility>
+ 
+ #include "flutter/display_list/dl_builder.h"
++#include "flutter/runtime_spi/internal/spi_utf8.h"
+ #include "flutter/runtime_spi/scene/spi_handle_table.h"
+ #include "flutter/runtime_spi/text/spi_text_style.h"
+-#include "third_party/icu/source/common/unicode/ustring.h"
+ #include "txt/paragraph_builder.h"
+ #include "txt/placeholder_run.h"
+ 
+@@ -95,11 +95,7 @@ class SpiParagraphBuilder final {
+     if (utf8 == nullptr || size > static_cast<size_t>(INT32_MAX)) {
+       return false;
+     }
+-    UErrorCode error = U_ZERO_ERROR;
+-    int32_t utf16_length = 0;
+-    u_strFromUTF8(nullptr, 0, &utf16_length, utf8, static_cast<int32_t>(size),
+-                  &error);
+-    return error == U_BUFFER_OVERFLOW_ERROR;
++    return SpiIsValidUtf8(utf8, size);
+   }
+ 
+   std::unique_ptr<txt::ParagraphBuilder> builder_;
