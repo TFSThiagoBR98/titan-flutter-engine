@@ -212,6 +212,14 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0202-fix-engine-accept-short-raw-buffers-like-the-image-descriptor-did.patch` | Defer short raw-buffer failures to codec decoding, matching the existing image descriptor behavior while keeping descriptor construction memory-safe. | |
 | `0203-perf-engine-drop-redundant-ui-hops-in-spi-image-decoding.patch` | Keep decoder and codec callbacks on the UI thread without reposting work that is already there, while preserving asynchronous delivery for cached frames. | |
 | `0204-fix-engine-keep-spi-image-callbacks-asynchronous-inside-api-calls.patch` | A decoder or codec callback can run reentrantly on the UI thread while its public API call is still active. Track UI API-call depth so delivery is posted until that call returns. | |
+| `0205-test-engine-add-a-semantics-frame-benchmark.patch` | establish the S4h-1 semantics benchmark baseline before routing dart:ui semantics through the runtime SPI. | |
+| `0206-test-engine-pin-spi-semantics-builder-lifetime.patch` | lock the required builder lifetime and post-submit semantics before routing dart:ui through the SPI. | |
+| `0207-feat-engine-submit-dart-ui-semantics-through-the-spi.patch` | Preserve the runtime SPI ownership contract while forwarding dart:ui semantics into the engine boundary. | |
+| `0208-test-engine-pin-spi-utf-8-validation-against-icu.patch` | Establish the UTF-8 validator contract against ICU before implementing the fast path. | |
+| `0209-feat-engine-add-a-fast-utf-8-validator-to-the-spi.patch` | Validate SPI strings with the Unicode well-formedness table and an ASCII fast path while preserving ICU's accepted domain. | |
+| `0210-perf-engine-validate-spi-strings-without-icu.patch` | Reuse the SPI UTF-8 validator and measure each semantics string only once. | |
+| `0211-test-engine-require-movable-semantics-nodes.patch` | pin the nothrow move operations required by the semantics fast path. | |
+| `0212-perf-engine-move-semantics-nodes-instead-of-copying-them.patch` | let the semantics update path transfer node-owned storage into the core map. | |
 
 O fluxo é:
 

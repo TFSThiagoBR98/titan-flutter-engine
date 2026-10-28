@@ -662,6 +662,29 @@ preservados:
   do descriptor permanece segura, e a falha aparece na decodificação, como no
   comportamento anterior.
 
+## S4h-1: Semântica sobre o SPI
+
+A semântica do `dart:ui` passa pelo Runtime SPI. `SemanticsUpdateBuilder` e
+`SemanticsUpdate` guardam um `FlutterSpiSemanticsUpdateBuilder*`, e
+`updateSemantics` entrega o update por `semantics->update_submit`.
+`RuntimeDelegate::UpdateSemantics` recebe o handle, como ocorre com o
+`RenderScene` da S4e, e o `Engine` move os mapas para o `Shell`. A ponte
+`SpiSubmitSemantics` saiu do caminho.
+
+A ABI continua na versão 0.21: somente o comentário de contrato em
+`flutter_semantics.h` muda.
+
+### Contratos
+
+- O release vale em qualquer thread e depois de o backend morrer. Builders
+  órfãos continuam sendo liberados porque, com `Spawn`, o isolate group
+  sobrevive ao engine.
+- A segunda entrega do mesmo `SemanticsUpdate` é recusada; antes, ela enviava
+  mapas vazios.
+- As strings são cortadas no primeiro NUL.
+- O validador UTF-8 de `runtime_spi/internal/spi_utf8.*` mantém paridade com o
+  ICU e também é usado pelo texto.
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos
