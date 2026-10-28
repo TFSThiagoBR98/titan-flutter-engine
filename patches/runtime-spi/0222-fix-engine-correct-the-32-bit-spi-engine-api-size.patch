@@ -1,0 +1,37 @@
+# Why: keep the frozen FlutterSpiEngineApi layout accurate on 32-bit ARM,
+# where the 64-bit capabilities field requires 8-byte alignment.
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 90a81667818..1c0694b4c3e 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -513,7 +513,7 @@ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, platform_message_sender_send,
+                   sizeof(void*) == 8 ? 304 : 164);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, platform_message_sender_release,
+                   sizeof(void*) == 8 ? 312 : 168);
+-SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 320 : 172);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 320 : 176);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, color, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, offset, 20);
+@@ -752,7 +752,7 @@ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, fragment,
+                   sizeof(void*) == 8 ? 144 : 84);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, semantics,
+                   sizeof(void*) == 8 ? 152 : 88);
+-SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 320 : 172);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 320 : 176);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, name,
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index 9b4e5001b1c..7705ffb61a4 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -613,7 +613,7 @@ TEST(SpiAbi, EngineApiLayoutIsFrozen) {
+                     platform_message_sender_release,
+                     312,
+                     168);
+-  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 320u : 172u);
++  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 320u : 176u);
+ }
+ 
+ TEST(SpiAbi, FragmentUniformInfoLayoutIsFrozen) {
