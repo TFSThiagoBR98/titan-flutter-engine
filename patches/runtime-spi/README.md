@@ -229,6 +229,10 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0219-fix-engine-release-platform-message-payloads-before-dispatch.patch` | release the Dart typed-data acquisition before dispatching a platform message so error handling can call back into the Dart VM safely. | |
 | `0220-fix-engine-initialize-platform-payload-mapping-before-dispatch.patch` | construct the non-copyable payload mapping from the scoped Dart byte data without changing the dispatch lifetime. | |
 | `0221-fix-engine-check-the-backend-before-creating-a-platform-message-sender.patch` | reject invalid engine handles before dereferencing the backend during sender creation. | |
+| `0223-test-engine-pin-the-dart-ui-spi-api-accessor.patch` | pin the single accessor contract before wiring the runtime installation. | |
+| `0224-feat-engine-give-dart-ui-one-spi-api-accessor.patch` | install one stable copy of the runtime SPI before Dart isolates start. | |
+| `0225-test-engine-make-the-spi-api-accessor-tests-order-independent.patch` | keep the accessor tests valid when the process has already installed the global SPI copy. | |
+| `0226-refactor-engine-read-the-spi-through-one-accessor-in-dart-ui.patch` | make dart:ui use the runtime-installed SPI table instead of recreating engine API accessors. | |
 
 O fluxo é:
 

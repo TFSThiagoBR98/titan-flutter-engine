@@ -719,6 +719,26 @@ entrega esse recurso ao runtime.
 
 Não há portão de desempenho nesta etapa: o caminho de quadro não muda.
 
+## S4i-1: Um acessor da ABI no dart:ui
+
+O `lib/ui` passa a ler todas as tabelas do Runtime SPI por `SpiApi()`, em
+`lib/ui/spi_api.{h,cc}`. O `FlutterDartRuntime::Start` instala uma cópia da
+`FlutterSpiEngineApi` uma única vez. A cópia é necessária porque a struct de
+cada engine morre com o backend; as sub-tabelas do core são estáticas.
+
+Saem do `lib/ui` `SpiSceneApi()`, `SpiPaintEffectsApi()`, `SpiImageApi()`,
+`SpiFragmentApi()`, `TextApi()`/`SpiEngineTextApi`, `SpiEngineSemanticsApi`,
+`SpiEngineAssetRead`, `SpiEngineFreeString` e `SpiEngineFontLoad`. Essas nove
+pontes também saem do `spi_internal_bridges`.
+
+Como efeito colateral, os acessores antigos montavam e copiavam a struct
+inteira, de 320 bytes, a cada chamada.
+
+Para a S4i-2 ficam o `SpiPathDlPath` em `path.cc`/`path_measure.cc`, os
+includes `Dl*`/`flow`/`impeller`/`shell` restantes, o corte dos deps GN do
+`lib/ui:ui` e o `assert_no_deps`. A medição do portão está em
+[runtime-spi-s4i1.md](medidas/runtime-spi-s4i1.md).
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos
