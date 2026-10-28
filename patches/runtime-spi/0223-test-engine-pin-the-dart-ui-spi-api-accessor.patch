@@ -1,0 +1,125 @@
+# Why: pin the single accessor contract before wiring the runtime
+# installation.
+diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
+index 33d3ff7179f..be0852d81b5 100644
+--- a/engine/src/flutter/lib/ui/BUILD.gn
++++ b/engine/src/flutter/lib/ui/BUILD.gn
+@@ -256,6 +256,8 @@ source_set("ui") {
+     "painting/vertices.h",
+     "plugins/callback_cache.cc",
+     "plugins/callback_cache.h",
++    "spi_api.cc",
++    "spi_api.h",
+     "semantics/semantics_flags.cc",
+     "semantics/semantics_flags.h",
+     "semantics/semantics_update.cc",
+@@ -401,6 +403,7 @@ if (enable_unittests) {
+       "painting/canvas_spi_unittests.cc",
+       "painting/path_unittests.cc",
+       "painting/single_frame_codec_unittests.cc",
++      "spi_api_unittests.cc",
+       "semantics/semantics_update_builder_unittests.cc",
+       "window/platform_configuration_unittests.cc",
+       "window/platform_message_response_dart_port_unittests.cc",
+diff --git a/engine/src/flutter/lib/ui/spi_api.cc b/engine/src/flutter/lib/ui/spi_api.cc
+new file mode 100644
+index 00000000000..baa7a899bd7
+--- /dev/null
++++ b/engine/src/flutter/lib/ui/spi_api.cc
+@@ -0,0 +1,20 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/lib/ui/spi_api.h"
++
++namespace flutter {
++namespace {
++
++FlutterSpiEngineApi g_spi_api{};
++
++}  // namespace
++
++void InstallSpiApi(const FlutterSpiEngineApi& api) {}
++
++const FlutterSpiEngineApi& SpiApi() {
++  return g_spi_api;
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/spi_api.h b/engine/src/flutter/lib/ui/spi_api.h
+new file mode 100644
+index 00000000000..82bb3830f64
+--- /dev/null
++++ b/engine/src/flutter/lib/ui/spi_api.h
+@@ -0,0 +1,21 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_LIB_UI_SPI_API_H_
++#define FLUTTER_LIB_UI_SPI_API_H_
++
++#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
++
++namespace flutter {
++
++// Instalada pelo runtime Dart antes de qualquer isolate rodar; todas as chamadas devem passar a mesma ABI (major/minor).
++// Guarda uma cópia: as sub-tabelas do core são estáticas, a struct de cada engine não é.
++void InstallSpiApi(const FlutterSpiEngineApi& api);
++
++// FML_DCHECK de que InstallSpiApi rodou.
++const FlutterSpiEngineApi& SpiApi();
++
++}  // namespace flutter
++
++#endif  // FLUTTER_LIB_UI_SPI_API_H_
+diff --git a/engine/src/flutter/lib/ui/spi_api_unittests.cc b/engine/src/flutter/lib/ui/spi_api_unittests.cc
+new file mode 100644
+index 00000000000..eb3a83bde58
+--- /dev/null
++++ b/engine/src/flutter/lib/ui/spi_api_unittests.cc
+@@ -0,0 +1,43 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/lib/ui/spi_api.h"
++
++#include "flutter/testing/testing.h"
++
++namespace flutter::testing {
++namespace {
++
++FlutterSpiEngineApi MakeTestApi(const FlutterSpiSceneApi* scene) {
++  FlutterSpiEngineApi api{};
++  api.struct_size = sizeof(api);
++  api.version_major = FLUTTER_SPI_VERSION_MAJOR;
++  api.version_minor = FLUTTER_SPI_VERSION_MINOR;
++  api.scene = scene;
++  return api;
++}
++
++TEST(SpiApiTest, InstalledCopyOutlivesTheSource) {
++  const FlutterSpiSceneApi* original_scene = nullptr;
++  {
++    FlutterSpiSceneApi source_scene_api{};
++    FlutterSpiEngineApi source_api = MakeTestApi(&source_scene_api);
++    original_scene = source_api.scene;
++    InstallSpiApi(source_api);
++  }
++
++  EXPECT_EQ(SpiApi().scene, original_scene);
++}
++
++TEST(SpiApiTest, SecondInstallKeepsTheFirst) {
++  FlutterSpiSceneApi first_scene_api{};
++  FlutterSpiSceneApi second_scene_api{};
++  InstallSpiApi(MakeTestApi(&first_scene_api));
++  InstallSpiApi(MakeTestApi(&second_scene_api));
++
++  EXPECT_EQ(SpiApi().scene, &first_scene_api);
++}
++
++}  // namespace
++}  // namespace flutter::testing
