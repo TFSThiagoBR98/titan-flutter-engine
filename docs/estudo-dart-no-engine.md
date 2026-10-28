@@ -620,6 +620,48 @@ Ainda permanecem pontes para a S4g-3. Os produtores de imagens dos codecs
 de fragment shader. Essas pontes são temporárias e não fazem parte dos
 caminhos de `Image`, snapshots e `ImageShader` migrados nesta fase.
 
+## S4g-3: Codecs, buffers e fragment shaders sobre o SPI
+
+A S4g-3 faz `ImageDescriptor`, `Codec`, `ImmutableBuffer.fromAsset`,
+`FragmentProgram`, `ReusableFragmentShader` e `ImageFilter.shader` do `dart:ui`
+usarem diretamente as APIs do Runtime SPI. Descriptors codificados são
+criados de forma síncrona, descriptors crus preservam a cópia do buffer, e
+`instantiateCodec` recebe as opções de decodificação pela ABI. A leitura de
+assets passa por `asset_read`; o lookup e a cópia ocorrem no worker concorrente
+quando ele está disponível, e a callback continua sendo entregue na thread de
+UI.
+
+A ABI 0.21 acrescenta descriptors de imagem codificados e crus, leitura de
+assets e validação dos recursos de fragment shaders. A criação de codec recebe
+`FlutterSpiImageDecodeOptions`, cujo `target_pixel_format` fica no fim da
+struct para preservar a compatibilidade com leitores de versões anteriores.
+Os valores de formato de pixel mantêm a ordem do `TargetPixelFormat` do Dart.
+Também fazem parte do contrato as validações de samplers e do filtro de
+imagem do shader, com os mesmos textos de erro do caminho anterior.
+
+Saem do caminho migrado as pontes `SpiImageFromDlImage`,
+`SpiShaderFromColorSource`, `SpiImageFilterFromDl` e o caminho de
+`Picture::display_list_`. A ponte `SpiEngineAssetManager` permanece: o
+`flutter_gpu` e a configuração do isolate ainda precisam de um
+`AssetManager` C++, enquanto o `dart:ui` lê bytes por `asset_read`.
+
+### Contratos corrigidos
+
+A migração também tornou explícitos quatro contratos que precisavam ser
+preservados:
+
+- `codec_release` não cancela quadros já pedidos. Cada callback pendente é
+  entregue exatamente uma vez, enquanto pedidos novos depois do release são
+  rejeitados.
+- O codec usa o gerador do descriptor e o registry do engine. Assim, os
+  decoders registrados por `Shell::RegisterImageDecoder` continuam válidos.
+- `asset_read` lê no worker concorrente e entrega o resultado na UI. Os três
+  pontos que constroem `SpiRuntimeBackend` recebem o worker correspondente;
+  sem worker, a leitura mantém o fallback na UI.
+- `ImageDescriptor.raw` aceita buffer menor que `rowBytes × height`. A criação
+  do descriptor permanece segura, e a falha aparece na decodificação, como no
+  comportamento anterior.
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos

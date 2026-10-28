@@ -47,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime SPI S4g-2: `Image`, `Picture.toImage`, `Scene.toImage` e `ImageShader` do `dart:ui` passam a usar handles da
   API de imagens do SPI; a ABI 0.20 acrescenta criação síncrona de imagens de pixels, espaço de cor e formato de
   snapshot, enquanto codecs, descriptors, buffers, fragment programs e assets permanecem para a S4g-3.
+- Runtime SPI S4g-3: `ImageDescriptor`, `Codec`, `ImmutableBuffer.fromAsset` e os fragment shaders do `dart:ui` passam a usar o SPI; a ABI 0.21 acrescenta descriptors de imagem, leitura de assets, validação de shaders e o formato de pixel de destino nas opções de decodificação; `codec_release` deixa de descartar quadros já pedidos.
 
 ### Fixed
 

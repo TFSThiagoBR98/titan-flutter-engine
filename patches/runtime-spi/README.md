@@ -179,6 +179,39 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0169-fix-engine-fix-image-migration-compile-errors.patch` | Corrigir erros mecânicos de compilação restantes da migração de imagens. | |
 | `0170-fix-engine-fix-remaining-image-migration-compile-errors.patch` | Corrigir os diagnósticos mecânicos finais da migração de imagens. | |
 | `0171-test-engine-build-the-image-benchmark-images-with-toimagesync.patch` | Produzir as imagens do benchmark com `Picture.toImageSync`, compatível com o Shell Skia. | |
+| `0172-test-engine-add-runtime-spi-s4g3-codec-benchmark.patch` | exercise the dart:ui codec path with eight PNG frames while keeping the shell benchmark on Skia. | |
+| `0173-fix-engine-fix-codec-benchmark-lambda-capture.patch` | remove the unused frame latch capture rejected by the engine's warnings-as-errors build. | |
+| `0174-test-engine-add-runtime-spi-s4g3-abi-red-coverage.patch` | compile the ABI extensions and make the missing descriptor, asset, and shader validation entry points fail explicitly before implementation. | |
+| `0175-fix-engine-use-the-runtime-fixture-member-in-spi-asset-red-tests.patch` | correct the existing fixture member name so the RED coverage compiles without changing its assertions or behavior. | |
+| `0176-fix-engine-update-all-s4g3-abi-size-checks.patch` | keep the duplicated C ABI size assertions aligned with the appended 0.21 table fields. | |
+| `0177-feat-engine-add-image-descriptors-asset-reads-and-shader-validation-to-the-spi.patch` | expose the S4g3 descriptor, asset, and fragment validation primitives that the Dart UI migration will consume. | |
+| `0178-fix-engine-suppress-deprecated-message-loop-access-in-spi-asset-tests.patch` | keep the test-only task drain compatible with the engine warning-as-error build without changing its behavior. | |
+| `0179-fix-engine-preserve-the-32-bit-engine-api-size.patch` | account for the existing tail padding when freezing the appended asset_read field on arm-hard. | |
+| `0180-feat-engine-move-dart-ui-codecs-buffers-and-fragment-shaders-to-runtime-spi.patch` | move the dart:ui codec, asset, fragment shader, and picture paths onto the runtime SPI while removing obsolete internal bridges. | |
+| `0181-fix-engine-expose-runtime-spi-access-through-the-internal-bridge.patch` | keep lib/ui within GN visibility while using the public SPI tables. | |
+| `0182-fix-engine-complete-runtime-spi-native-includes.patch` | resolve the missing declarations and local name collision reported by the S4g-3 build. | |
+| `0183-fix-engine-correct-runtime-spi-shader-compile-diagnostics.patch` | Apply mechanical compiler fixes for RefPtr null checks, sampler bounds, and result variable names without changing the runtime SPI behavior or public APIs. | |
+| `0184-fix-engine-define-runtime-spi-asset-getter-out-of-line.patch` | Keep the existing runtime asset manager behavior while avoiding a call through the forward-declared RuntimeDelegate in the public header. | |
+| `0185-fix-engine-keep-the-asset-manager-bridge-for-flutter-gpu-and-isolate-config.patch` | Keep the C++ AssetManager bridge for flutter_gpu and Dart isolate configuration while dart:ui reads assets through the SPI. | |
+| `0186-test-engine-restore-the-image-frame-benchmark.patch` | Restore the S4g-2 image benchmark and its historical fixture entrypoint while keeping the new codec benchmark separate. | |
+| `0187-fix-engine-grant-the-asset-manager-bridge-backend-access.patch` | Allow the restored SpiEngineAssetManager bridge to access the backend delegate without changing its public API or behavior. | |
+| `0188-test-engine-expect-released-codecs-to-deliver-pending-frames.patch` | Lock the codec contract that already-requested static and animated frames are delivered exactly once after release. | |
+| `0189-fix-engine-deliver-pending-codec-frames-after-release.patch` | Keep already-requested codec callbacks alive through release while rejecting only new frame requests. | |
+| `0190-test-engine-expect-spi-codecs-to-use-registered-image-decoders.patch` | Lock descriptor codec creation to the image generators registered by the engine. | |
+| `0191-fix-engine-build-spi-codecs-from-the-descriptor-generator.patch` | Reuse the generator and registry selected by the engine descriptor, including registered image decoders. | |
+| `0192-style-engine-format-the-registered-decoder-codec-test.patch` | keep the registered decoder codec test formatted according to the engine style. | |
+| `0193-test-engine-expect-spi-asset-reads-on-the-concurrent-worker.patch` | lock in the worker-thread contract for SPI asset reads before implementation. | |
+| `0194-fix-engine-read-spi-assets-on-the-concurrent-worker.patch` | Keep asset lookup and byte copying off the UI thread while preserving UI-thread callbacks and the existing fallback when no concurrent worker is available. | |
+| `0195-fix-engine-pass-spi-backend-constructor-arguments-explicitly.patch` | Preserve the existing optional backend arguments when appending the concurrent worker runner to the SPI backend constructor. | |
+| `0196-test-engine-expect-synchronous-invalid-encoded-image-errors.patch` | Reproduce the synchronous ImageDescriptor.encoded error contract before the SPI fix. | |
+| `0197-fix-engine-create-encoded-spi-descriptors-synchronously.patch` | Preserve ImageDescriptor.encoded's synchronous invalid-data error contract and avoid posting Dart exceptions from a callback. | |
+| `0198-test-engine-read-the-encoded-image-error-latch-timeout-correctly.patch` | AutoResetWaitableEvent::WaitWithTimeout returns true when the timeout expires, so the test must assert that the wait did not time out before checking the received exception. | |
+| `0199-test-engine-expect-spi-codecs-to-honor-the-target-pixel-format.patch` | Capture the target pixel format contract, including compatibility with older decode option structs, before wiring the SPI value into ImageDecoder. | |
+| `0200-feat-engine-carry-the-target-pixel-format-through-spi-decode-options.patch` | Preserve Dart UI target-format requests across the SPI descriptor and codec path until ImageDecoder receives its target format. | |
+| `0201-test-engine-expect-short-raw-buffers-to-fail-at-decode.patch` | Preserve the existing image descriptor contract that accepts a short raw buffer and reports the failure during codec decoding. | |
+| `0202-fix-engine-accept-short-raw-buffers-like-the-image-descriptor-did.patch` | Defer short raw-buffer failures to codec decoding, matching the existing image descriptor behavior while keeping descriptor construction memory-safe. | |
+| `0203-perf-engine-drop-redundant-ui-hops-in-spi-image-decoding.patch` | Keep decoder and codec callbacks on the UI thread without reposting work that is already there, while preserving asynchronous delivery for cached frames. | |
+| `0204-fix-engine-keep-spi-image-callbacks-asynchronous-inside-api-calls.patch` | A decoder or codec callback can run reentrantly on the UI thread while its public API call is still active. Track UI API-call depth so delivery is posted until that call returns. | |
 
 O fluxo é:
 
