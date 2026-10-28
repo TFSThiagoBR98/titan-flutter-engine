@@ -220,6 +220,15 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0210-perf-engine-validate-spi-strings-without-icu.patch` | Reuse the SPI UTF-8 validator and measure each semantics string only once. | |
 | `0211-test-engine-require-movable-semantics-nodes.patch` | pin the nothrow move operations required by the semantics fast path. | |
 | `0212-perf-engine-move-semantics-nodes-instead-of-copying-them.patch` | let the semantics update path transfer node-owned storage into the core map. | |
+| `0213-test-engine-cover-platform-messages-from-background-isolates.patch` | keep the end-to-end background-isolate platform message coverage as the SPI migration starts. | |
+| `0214-test-engine-pin-the-spi-platform-message-sender.patch` | freeze the ABI and RED coverage before wiring the sender implementation. | |
+| `0215-feat-engine-add-a-thread-safe-platform-message-sender-to-the-spi.patch` | let background-isolate platform messages reach the platform handler through a thread-safe SPI sender. | |
+| `0216-feat-engine-send-background-isolate-platform-messages-through-the-spi.patch` | route background-isolate platform messages through the thread-safe SPI sender and retain sender ownership with the isolate group. | |
+| `0217-test-engine-pin-failed-background-platform-message-sends.patch` | Preserve the legacy behavior that failed background-isolate platform messages raise an error without completing the reply port. | |
+| `0218-fix-engine-keep-failed-background-sends-unanswered.patch` | preserve the legacy failed-send contract by releasing the reply context without calling back into the Dart VM while the native send is still active. | |
+| `0219-fix-engine-release-platform-message-payloads-before-dispatch.patch` | release the Dart typed-data acquisition before dispatching a platform message so error handling can call back into the Dart VM safely. | |
+| `0220-fix-engine-initialize-platform-payload-mapping-before-dispatch.patch` | construct the non-copyable payload mapping from the scoped Dart byte data without changing the dispatch lifetime. | |
+| `0221-fix-engine-check-the-backend-before-creating-a-platform-message-sender.patch` | reject invalid engine handles before dereferencing the backend during sender creation. | |
 
 O fluxo é:
 

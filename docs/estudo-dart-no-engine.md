@@ -685,6 +685,40 @@ A ABI continua na versão 0.21: somente o comentário de contrato em
 - O validador UTF-8 de `runtime_spi/internal/spi_utf8.*` mantém paridade com o
   ICU e também é usado pelo texto.
 
+## S4h-2: Platform messages de isolates de fundo sobre o SPI
+
+O levantamento mostrou que todos os natives de `PlatformConfigurationNativeApi`
+já passavam pelo SPI desde a S4c-2. A ponte que restava era
+`SpiEnginePlatformMessageHandler`, que entregava ao lado Dart um
+`weak_ptr<PlatformMessageHandler>` do `Shell` para os isolates de fundo.
+
+A ABI 0.22 substitui essa ponte por um `FlutterSpiPlatformMessageSender` opaco.
+`platform_message_sender_create` só pode ser chamado na thread de UI;
+`platform_message_sender_send` e `platform_message_sender_release` podem ser
+chamados em qualquer thread. A capacidade
+`kFlutterSpiCapBackgroundPlatformMessages` anuncia o suporte. A resposta é
+entregue na thread de quem responde e exatamente uma vez. Depois que o engine
+ou o handler da plataforma desaparece, as operações retornam
+`kFlutterSpiInvalidHandle`.
+
+No lado Dart, `PlatformMessageSender` em
+`lib/ui/window/platform_message_sender.*` usa o sender guardado por token em
+`DartIsolateGroupData`. O `RuntimeDelegate::CreatePlatformMessageSender`
+entrega esse recurso ao runtime.
+
+### Defeitos encontrados
+
+1. Um envio que falha não completa a resposta, como antes. A primeira versão
+   completava a resposta e enviava `[id, null]` à porta; isso não preservava o
+   contrato legado de lançar a exceção no Dart.
+2. Havia um defeito anterior ao SPI: o helper `HandlePlatformMessage` de
+   `platform_configuration.cc` criava a string de erro enquanto o payload ainda
+   estava adquirido por `Dart_TypedDataAcquireData`. A VM recusava esse acesso e
+   o isolate de fundo morria em vez de receber a exceção. Agora o payload é
+   copiado e liberado antes do despacho.
+
+Não há portão de desempenho nesta etapa: o caminho de quadro não muda.
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos
