@@ -1,0 +1,69 @@
+# Why: keep the accessor tests valid when the process has already installed
+# the global SPI copy.
+diff --git a/engine/src/flutter/lib/ui/spi_api_unittests.cc b/engine/src/flutter/lib/ui/spi_api_unittests.cc
+index eb3a83bde58..d9a5716119b 100644
+--- a/engine/src/flutter/lib/ui/spi_api_unittests.cc
++++ b/engine/src/flutter/lib/ui/spi_api_unittests.cc
+@@ -3,40 +3,31 @@
+ // found in the LICENSE file.
+ 
+ #include "flutter/lib/ui/spi_api.h"
++#include "flutter/runtime_spi/spi_engine_api.h"
+ 
+ #include "flutter/testing/testing.h"
+ 
+ namespace flutter::testing {
+ namespace {
+ 
+-FlutterSpiEngineApi MakeTestApi(const FlutterSpiSceneApi* scene) {
+-  FlutterSpiEngineApi api{};
+-  api.struct_size = sizeof(api);
+-  api.version_major = FLUTTER_SPI_VERSION_MAJOR;
+-  api.version_minor = FLUTTER_SPI_VERSION_MINOR;
+-  api.scene = scene;
+-  return api;
+-}
+-
+ TEST(SpiApiTest, InstalledCopyOutlivesTheSource) {
+-  const FlutterSpiSceneApi* original_scene = nullptr;
+   {
+-    FlutterSpiSceneApi source_scene_api{};
+-    FlutterSpiEngineApi source_api = MakeTestApi(&source_scene_api);
+-    original_scene = source_api.scene;
++    const FlutterSpiEngineApi source_api = SpiEngineApi::Create();
+     InstallSpiApi(source_api);
+   }
+ 
+-  EXPECT_EQ(SpiApi().scene, original_scene);
++  EXPECT_EQ(SpiApi().scene, SpiEngineApi::Create().scene);
++  EXPECT_NE(SpiApi().struct_size, 0u);
+ }
+ 
+ TEST(SpiApiTest, SecondInstallKeepsTheFirst) {
+-  FlutterSpiSceneApi first_scene_api{};
+-  FlutterSpiSceneApi second_scene_api{};
+-  InstallSpiApi(MakeTestApi(&first_scene_api));
+-  InstallSpiApi(MakeTestApi(&second_scene_api));
++  InstallSpiApi(SpiEngineApi::Create());
++  const FlutterSpiSceneApi* first_scene = SpiApi().scene;
++  FlutterSpiEngineApi second_api = SpiEngineApi::Create();
++  second_api.scene = nullptr;
++  InstallSpiApi(second_api);
+ 
+-  EXPECT_EQ(SpiApi().scene, &first_scene_api);
++  EXPECT_EQ(SpiApi().scene, first_scene);
+ }
+ 
+ }  // namespace
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index b2f1a7a230a..210cdcbbe27 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -28,6 +28,7 @@ source_set("spi_backend") {
+     "spi_runtime_backend.h",
+     "spi_runtime_backend_factory.h",
+     "internal/spi_internal_bridges.h",
++    "spi_engine_api.h",
+     "spi_scene.h",
+   ]
+   sources = [

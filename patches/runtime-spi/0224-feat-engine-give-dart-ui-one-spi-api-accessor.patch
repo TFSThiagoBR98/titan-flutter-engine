@@ -1,0 +1,63 @@
+# Why: install one stable copy of the runtime SPI before Dart isolates start.
+diff --git a/engine/src/flutter/lib/ui/spi_api.cc b/engine/src/flutter/lib/ui/spi_api.cc
+index baa7a899bd7..58a83156cdd 100644
+--- a/engine/src/flutter/lib/ui/spi_api.cc
++++ b/engine/src/flutter/lib/ui/spi_api.cc
+@@ -4,16 +4,36 @@
+ 
+ #include "flutter/lib/ui/spi_api.h"
+ 
++#include <algorithm>
++#include <cstring>
++#include <mutex>
++
++#include "flutter/fml/logging.h"
++
+ namespace flutter {
+ namespace {
+ 
+ FlutterSpiEngineApi g_spi_api{};
++std::once_flag g_spi_api_install_flag;
++bool g_spi_api_installed = false;
+ 
+ }  // namespace
+ 
+-void InstallSpiApi(const FlutterSpiEngineApi& api) {}
++void InstallSpiApi(const FlutterSpiEngineApi& api) {
++  std::call_once(g_spi_api_install_flag, [&api]() {
++    const size_t struct_size =
++        std::min(api.struct_size, sizeof(FlutterSpiEngineApi));
++    std::memcpy(&g_spi_api, &api, struct_size);
++    g_spi_api.struct_size = struct_size;
++    g_spi_api_installed = true;
++  });
++
++  FML_DCHECK(g_spi_api.version_major == api.version_major);
++  FML_DCHECK(g_spi_api.version_minor == api.version_minor);
++}
+ 
+ const FlutterSpiEngineApi& SpiApi() {
++  FML_DCHECK(g_spi_api_installed);
+   return g_spi_api;
+ }
+ 
+diff --git a/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc b/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc
+index 5ae511957ab..b82f1f02146 100644
+--- a/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc
++++ b/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc
+@@ -12,6 +12,7 @@
+ 
+ #include "assets/native_assets.h"
+ #include "flutter/fml/mapping.h"
++#include "flutter/lib/ui/spi_api.h"
+ #include "flutter/lib/ui/window/key_data.h"
+ #include "flutter/lib/ui/window/platform_message_response.h"
+ #include "flutter/runtime/dart_vm.h"
+@@ -353,6 +354,7 @@ DartRuntimeDelegateBridge& FlutterDartRuntime::delegate_bridge() {
+ 
+ void FlutterDartRuntime::Start(const FlutterSpiEngineApi* engine_api,
+                                FlutterSpiEngine* engine) {
++  InstallSpiApi(*engine_api);
+   delegate_bridge_->SetEngineApi(engine_api, engine);
+ }
+ 
