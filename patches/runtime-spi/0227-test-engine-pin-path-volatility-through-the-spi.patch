@@ -1,0 +1,92 @@
+# Why: Pin the new public path volatility entry point before wiring its
+# implementation.
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 1c0694b4c3e..c1d6dd65b00 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -942,7 +942,9 @@ SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_create_from_root,
+                   sizeof(void*) == 8 ? 832 : 416);
+ SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_retain_last_layer,
+                   sizeof(void*) == 8 ? 840 : 420);
+-SPI_EXPECT_SIZE(FlutterSpiSceneApi, sizeof(void*) == 8 ? 848 : 424);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_set_volatile,
++                  sizeof(void*) == 8 ? 848 : 424);
++SPI_EXPECT_SIZE(FlutterSpiSceneApi, sizeof(void*) == 8 ? 856 : 428);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiPixels, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiPixels, pixels,
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index 474c870c6b4..59d02e51dc3 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 22
++#define FLUTTER_SPI_VERSION_MINOR 23
+ 
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_scene.h b/engine/src/flutter/runtime_spi/include/flutter_scene.h
+index 8f034a99e43..34958e061b7 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_scene.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_scene.h
+@@ -536,6 +536,8 @@ struct FlutterSpiSceneApi {
+   FlutterSpiResult (*scene_retain_last_layer)(FlutterSpiSceneBuilder* builder,
+                                               FlutterSpiEngineLayer* old_layer,
+                                               FlutterSpiEngineLayer** out_layer);
++  FlutterSpiResult (*path_set_volatile)(FlutterSpiPath* path,
++                                         bool is_volatile);
+ };
+ 
+ #ifdef __cplusplus
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_path_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_path_unittests.cc
+index a9a0e9f1990..0d21aac20a4 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_path_unittests.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_path_unittests.cc
+@@ -3,6 +3,7 @@
+ // found in the LICENSE file.
+ 
+ #include "flutter/runtime_spi/scene/spi_geometry.h"
++#include "flutter/runtime_spi/scene/spi_canvas.h"
+ #include "flutter/runtime_spi/scene/spi_path.h"
+ 
+ #include <cmath>
+@@ -44,6 +45,22 @@ TEST(SpiPath, ABIOperationsMatchDirectPathBuilder) {
+   EXPECT_EQ(actual.path(), expected.CopyPath());
+ }
+ 
++TEST(SpiPath, SetVolatileThroughTheAbi) {
++  const FlutterSpiSceneApi* api = SpiSceneApi();
++  ASSERT_NE(api->path_set_volatile, nullptr);
++
++  FlutterSpiPath* path = nullptr;
++  ASSERT_EQ(api->path_create(nullptr, &path), kFlutterSpiOk);
++  ASSERT_NE(path, nullptr);
++
++  ASSERT_EQ(api->path_set_volatile(path, true), kFlutterSpiOk);
++  ASSERT_TRUE(SpiPathForTesting(path)->GetSkPath().isVolatile());
++
++  ASSERT_EQ(api->path_set_volatile(path, false), kFlutterSpiOk);
++  EXPECT_FALSE(SpiPathForTesting(path)->GetSkPath().isVolatile());
++  EXPECT_EQ(api->path_release(path), kFlutterSpiOk);
++}
++
+ TEST(SpiGeometry, ConvertsFiniteValues) {
+   const FlutterSpiPoint spi_point = {.x = 1.0f, .y = 2.0f};
+   const FlutterSpiRect spi_rect = {
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index 7705ffb61a4..bf60388c2f5 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -732,7 +732,8 @@ TEST(SpiAbi, SceneApiLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiSceneApi, scene_build_root, 824, 412);
+   EXPECT_SPI_OFFSET(FlutterSpiSceneApi, scene_create_from_root, 832, 416);
+   EXPECT_SPI_OFFSET(FlutterSpiSceneApi, scene_retain_last_layer, 840, 420);
+-  EXPECT_EQ(sizeof(FlutterSpiSceneApi), sizeof(void*) == 8 ? 848u : 424u);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_set_volatile, 848, 424);
++  EXPECT_EQ(sizeof(FlutterSpiSceneApi), sizeof(void*) == 8 ? 856u : 428u);
+ }
+ 
+ TEST(SpiAbi, ImageLayoutIsFrozen) {
