@@ -1,0 +1,178 @@
+# Why: establish the S4h-1 semantics benchmark baseline before routing dart:ui
+# semantics through the runtime SPI.
+diff --git a/engine/src/flutter/shell/common/fixtures/shell_test.dart b/engine/src/flutter/shell/common/fixtures/shell_test.dart
+index 8dc18a9d9f7..7067de6d308 100644
+--- a/engine/src/flutter/shell/common/fixtures/shell_test.dart
++++ b/engine/src/flutter/shell/common/fixtures/shell_test.dart
+@@ -187,6 +187,114 @@ Future<void> decodeCodecFrame() async {
+   codecFrameDone();
+ }
+ 
++const int _semanticsBenchmarkNodeCount = 200;
++List<String>? _semanticsBenchmarkLabels;
++List<String>? _semanticsBenchmarkValues;
++List<String>? _semanticsBenchmarkHints;
++List<List<StringAttribute>>? _semanticsBenchmarkLabelAttributes;
++Float64List? _semanticsBenchmarkIdentityTransform;
++Int32List? _semanticsBenchmarkRootChildren;
++Int32List? _semanticsBenchmarkEmptyChildren;
++
++void _initializeSemanticsBenchmarkData() {
++  if (_semanticsBenchmarkLabels != null) {
++    return;
++  }
++
++  _semanticsBenchmarkLabels = <String>[
++    for (int index = 0; index < _semanticsBenchmarkNodeCount; index++) 'Item $index',
++  ];
++  _semanticsBenchmarkValues = <String>[
++    for (int index = 0; index < _semanticsBenchmarkNodeCount; index++) '$index',
++  ];
++  _semanticsBenchmarkHints = <String>[
++    for (int index = 0; index < _semanticsBenchmarkNodeCount; index++) 'Hint $index',
++  ];
++  _semanticsBenchmarkLabelAttributes = <List<StringAttribute>>[
++    for (int index = 0; index < _semanticsBenchmarkNodeCount; index++)
++      <StringAttribute>[
++        SpellOutStringAttribute(range: const TextRange(start: 0, end: 1)),
++      ],
++  ];
++  _semanticsBenchmarkIdentityTransform = Float64List.fromList(<double>[
++    1, 0, 0, 0,
++    0, 1, 0, 0,
++    0, 0, 1, 0,
++    0, 0, 0, 1,
++  ]);
++  _semanticsBenchmarkRootChildren = Int32List.fromList(<int>[
++    for (int index = 1; index < _semanticsBenchmarkNodeCount; index++) index,
++  ]);
++  _semanticsBenchmarkEmptyChildren = Int32List(0);
++}
++
++@pragma('vm:entry-point')
++void buildSemanticsFrame() {
++  _initializeSemanticsBenchmarkData();
++  final SemanticsUpdateBuilder builder = SemanticsUpdateBuilder();
++  final List<String> labels = _semanticsBenchmarkLabels!;
++  final List<String> values = _semanticsBenchmarkValues!;
++  final List<String> hints = _semanticsBenchmarkHints!;
++  final List<List<StringAttribute>> labelAttributes = _semanticsBenchmarkLabelAttributes!;
++  final Float64List identityTransform = _semanticsBenchmarkIdentityTransform!;
++  final Int32List rootChildren = _semanticsBenchmarkRootChildren!;
++  final Int32List emptyChildren = _semanticsBenchmarkEmptyChildren!;
++
++  for (int index = 0; index < _semanticsBenchmarkNodeCount; index++) {
++    final Int32List children = index == 0 ? rootChildren : emptyChildren;
++    builder.updateNode(
++      id: index,
++      flags: SemanticsFlags.none,
++      actions: 0,
++      maxValueLength: 0,
++      currentValueLength: 0,
++      textSelectionBase: -1,
++      textSelectionExtent: -1,
++      platformViewId: -1,
++      scrollChildren: 0,
++      scrollIndex: 0,
++      traversalParent: 0,
++      scrollPosition: 0,
++      scrollExtentMax: 0,
++      scrollExtentMin: 0,
++      rect: Rect.fromLTWH(0, index * 10.0, 100, 10),
++      identifier: 'identifier',
++      label: labels[index],
++      labelAttributes: labelAttributes[index],
++      value: values[index],
++      valueAttributes: const <StringAttribute>[],
++      increasedValue: 'increasedValue',
++      increasedValueAttributes: const <StringAttribute>[],
++      decreasedValue: 'decreasedValue',
++      decreasedValueAttributes: const <StringAttribute>[],
++      hint: hints[index],
++      hintAttributes: const <StringAttribute>[],
++      tooltip: 'tooltip',
++      textDirection: TextDirection.ltr,
++      transform: identityTransform,
++      hitTestTransform: identityTransform,
++      childrenInTraversalOrder: children,
++      childrenInHitTestOrder: children,
++      additionalActions: Int32List(0),
++      headingLevel: 0,
++      linkUrl: '',
++      controlsNodes: null,
++      inputType: SemanticsInputType.none,
++      locale: null,
++      minValue: '0',
++      maxValue: '0',
++    );
++  }
++
++  for (int index = 0; index < 10; index++) {
++    builder.updateCustomAction(id: index, label: 'Action $index');
++  }
++
++  final SemanticsUpdate update = builder.build();
++  PlatformDispatcher.instance.implicitView!.updateSemantics(update);
++  update.dispose();
++}
++
+ Paragraph _buildCompositeTitleParagraph(int groupIndex) {
+   final ParagraphBuilder builder = ParagraphBuilder(
+     ParagraphStyle(textAlign: TextAlign.center),
+diff --git a/engine/src/flutter/shell/common/shell_benchmarks.cc b/engine/src/flutter/shell/common/shell_benchmarks.cc
+index dfbac0a8f76..e2ba1e22af8 100644
+--- a/engine/src/flutter/shell/common/shell_benchmarks.cc
++++ b/engine/src/flutter/shell/common/shell_benchmarks.cc
+@@ -294,6 +294,52 @@ static void BM_DartCodecFrame(benchmark::State& state) {
+ 
+ BENCHMARK(BM_DartCodecFrame)->Unit(benchmark::kMicrosecond);
+ 
++static void BM_DartSemanticsFrame(benchmark::State& state) {
++  ParagraphBenchmarkShell shell_test;
++  Settings settings = shell_test.CreateSettingsForFixture();
++  settings.icu_data_path = testing::IcuDataPathForTesting();
++  testing::InitializeIcuForTesting();
++  auto shell = shell_test.CreateShell(settings);
++  FML_CHECK(shell);
++
++  testing::ShellTest::PlatformViewNotifyCreated(shell.get());
++
++  auto configuration = RunConfiguration::InferFromSettings(settings);
++  configuration.SetEntrypoint("mainNotifyNative");
++
++  fml::AutoResetWaitableEvent startup_latch;
++  shell_test.AddFfiNativeCallback(
++      "NotifyNative", CREATE_FFI_LAMBDA([&startup_latch]() {
++        startup_latch.Signal();
++      }));
++  testing::ShellTest::RunEngine(shell.get(), std::move(configuration));
++  startup_latch.Wait();
++
++  while (state.KeepRunning()) {
++    fml::AutoResetWaitableEvent frame_latch;
++    fml::TaskRunner::RunNowOrPostTask(
++        shell->GetTaskRunners().GetUITaskRunner(),
++        [&shell, &frame_latch]() {
++          auto engine = shell->GetEngine();
++          FML_CHECK(engine);
++          const auto root_isolate = std::const_pointer_cast<DartIsolate>(
++              engine->GetRuntimeController()->GetRootIsolate().lock());
++          FML_CHECK(root_isolate);
++          tonic::DartState::Scope scope(root_isolate);
++          const Dart_Handle result = Dart_Invoke(
++              Dart_RootLibrary(),
++              Dart_NewStringFromCString("buildSemanticsFrame"), 0, nullptr);
++          FML_CHECK(!Dart_IsError(result));
++          frame_latch.Signal();
++        });
++    frame_latch.Wait();
++  }
++
++  shell_test.DestroyShell(std::move(shell));
++}
++
++BENCHMARK(BM_DartSemanticsFrame)->Unit(benchmark::kMicrosecond);
++
+ static void BM_DartCompositeFrame(benchmark::State& state) {
+   ParagraphBenchmarkShell shell_test;
+   Settings settings = shell_test.CreateSettingsForFixture();
