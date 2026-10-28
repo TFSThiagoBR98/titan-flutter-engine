@@ -1,0 +1,561 @@
+# Why: route background-isolate platform messages through the thread-safe SPI
+# sender and retain sender ownership with the isolate group.
+diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
+index 03964c7665d..33d3ff7179f 100644
+--- a/engine/src/flutter/lib/ui/BUILD.gn
++++ b/engine/src/flutter/lib/ui/BUILD.gn
+@@ -279,6 +279,8 @@ source_set("ui") {
+     "window/platform_configuration.h",
+     "window/platform_isolate.cc",
+     "window/platform_isolate.h",
++    "window/platform_message_sender.cc",
++    "window/platform_message_sender.h",
+     "window/platform_message_response_dart.cc",
+     "window/platform_message_response_dart.h",
+     "window/platform_message_response_dart_port.cc",
+diff --git a/engine/src/flutter/lib/ui/ui_dart_state.cc b/engine/src/flutter/lib/ui/ui_dart_state.cc
+index d6b71e72fdb..d763b5c0fa4 100644
+--- a/engine/src/flutter/lib/ui/ui_dart_state.cc
++++ b/engine/src/flutter/lib/ui/ui_dart_state.cc
+@@ -9,6 +9,7 @@
+ #include "flutter/fml/message_loop.h"
+ #include "flutter/lib/ui/window/platform_configuration.h"
+ #include "flutter/lib/ui/window/platform_message.h"
++#include "flutter/lib/ui/window/platform_message_sender.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_message_handler.h"
+ 
+@@ -127,10 +128,10 @@ void UIDartState::SetPlatformConfiguration(
+   }
+ }
+ 
+-void UIDartState::SetPlatformMessageHandler(
+-    std::weak_ptr<PlatformMessageHandler> handler) {
++void UIDartState::SetPlatformMessageSender(
++    std::shared_ptr<PlatformMessageSender> sender) {
+   FML_DCHECK(!IsRootIsolate());
+-  platform_message_handler_ = std::move(handler);
++  platform_message_sender_ = std::move(sender);
+ }
+ 
+ const TaskRunners& UIDartState::GetTaskRunners() const {
+@@ -225,15 +226,10 @@ Dart_Handle UIDartState::HandlePlatformMessage(
+   if (platform_configuration_) {
+     platform_configuration_->client()->HandlePlatformMessage(
+         std::move(message));
+-  } else {
+-    std::shared_ptr<PlatformMessageHandler> handler =
+-        platform_message_handler_.lock();
+-    if (handler) {
+-      handler->HandlePlatformMessage(std::move(message));
+-    } else {
+-      return tonic::ToDart(
+-          "No platform channel handler registered for background isolate.");
+-    }
++  } else if (!platform_message_sender_ ||
++             !platform_message_sender_->Send(std::move(message))) {
++    return tonic::ToDart(
++        "No platform channel handler registered for background isolate.");
+   }
+ 
+   return Dart_Null();
+diff --git a/engine/src/flutter/lib/ui/ui_dart_state.h b/engine/src/flutter/lib/ui/ui_dart_state.h
+index a7248b23d59..2d3b2c792d1 100644
+--- a/engine/src/flutter/lib/ui/ui_dart_state.h
++++ b/engine/src/flutter/lib/ui/ui_dart_state.h
+@@ -19,7 +19,6 @@
+ #include "flutter/lib/ui/isolate_name_server/isolate_name_server.h"
+ #include "flutter/lib/ui/painting/image_decoder.h"
+ #include "flutter/lib/ui/snapshot_delegate.h"
+-#include "flutter/shell/common/platform_message_handler.h"
+ #include "impeller/core/runtime_types.h"
+ #include "impeller/runtime_stage/runtime_stage.h"
+ #include "third_party/dart/runtime/include/dart_api.h"
+@@ -33,6 +32,7 @@ class FontSelector;
+ class ImageGeneratorRegistry;
+ class PlatformConfiguration;
+ class PlatformMessage;
++class PlatformMessageSender;
+ 
+ class UIDartState : public tonic::DartState {
+  public:
+@@ -129,7 +129,7 @@ class UIDartState : public tonic::DartState {
+     return platform_configuration_.get();
+   }
+ 
+-  void SetPlatformMessageHandler(std::weak_ptr<PlatformMessageHandler> handler);
++  void SetPlatformMessageSender(std::shared_ptr<PlatformMessageSender> sender);
+ 
+   Dart_Handle HandlePlatformMessage(std::unique_ptr<PlatformMessage> message);
+ 
+@@ -217,7 +217,7 @@ class UIDartState : public tonic::DartState {
+   const bool is_root_isolate_;
+   std::string debug_name_;
+   std::unique_ptr<PlatformConfiguration> platform_configuration_;
+-  std::weak_ptr<PlatformMessageHandler> platform_message_handler_;
++  std::shared_ptr<PlatformMessageSender> platform_message_sender_;
+   tonic::DartMicrotaskQueue microtask_queue_;
+   UnhandledExceptionCallback unhandled_exception_callback_;
+   LogMessageCallback log_message_callback_;
+diff --git a/engine/src/flutter/lib/ui/window/platform_configuration.cc b/engine/src/flutter/lib/ui/window/platform_configuration.cc
+index 03891086495..862f7e812af 100644
+--- a/engine/src/flutter/lib/ui/window/platform_configuration.cc
++++ b/engine/src/flutter/lib/ui/window/platform_configuration.cc
+@@ -9,6 +9,7 @@
+ #include "flutter/common/constants.h"
+ #include "flutter/lib/ui/compositing/scene.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
++#include "flutter/lib/ui/window/platform_message_sender.h"
+ #include "flutter/lib/ui/window/platform_message.h"
+ #include "flutter/lib/ui/window/platform_message_response_dart.h"
+ #include "flutter/lib/ui/window/platform_message_response_dart_port.h"
+@@ -778,9 +779,9 @@ void PlatformConfigurationNativeApi::RegisterBackgroundIsolate(
+       (*static_cast<std::shared_ptr<PlatformMessageHandlerStorage>*>(
+           Dart_CurrentIsolateGroupData()));
+   FML_DCHECK(platform_message_handler);
+-  auto weak_platform_message_handler =
+-      platform_message_handler->GetPlatformMessageHandler(root_isolate_token);
+-  dart_state->SetPlatformMessageHandler(weak_platform_message_handler);
++  auto platform_message_sender =
++      platform_message_handler->GetPlatformMessageSender(root_isolate_token);
++  dart_state->SetPlatformMessageSender(std::move(platform_message_sender));
+ }
+ 
+ void PlatformConfigurationNativeApi::SendChannelUpdate(const std::string& name,
+diff --git a/engine/src/flutter/lib/ui/window/platform_configuration.h b/engine/src/flutter/lib/ui/window/platform_configuration.h
+index 4652ad0f6dd..e363591e449 100644
+--- a/engine/src/flutter/lib/ui/window/platform_configuration.h
++++ b/engine/src/flutter/lib/ui/window/platform_configuration.h
+@@ -31,7 +31,7 @@ struct FlutterSpiEngine;
+ namespace flutter {
+ class FontCollection;
+ class PlatformMessage;
+-class PlatformMessageHandler;
++class PlatformMessageSender;
+ class PlatformIsolateManager;
+ class Scene;
+ 
+@@ -639,11 +639,11 @@ class PlatformConfiguration final {
+ class PlatformMessageHandlerStorage {
+  public:
+   virtual ~PlatformMessageHandlerStorage() = default;
+-  virtual void SetPlatformMessageHandler(
++  virtual void SetPlatformMessageSender(
+       int64_t root_isolate_token,
+-      std::weak_ptr<PlatformMessageHandler> handler) = 0;
++      std::shared_ptr<PlatformMessageSender> sender) = 0;
+ 
+-  virtual std::weak_ptr<PlatformMessageHandler> GetPlatformMessageHandler(
++  virtual std::shared_ptr<PlatformMessageSender> GetPlatformMessageSender(
+       int64_t root_isolate_token) const = 0;
+ };
+ 
+diff --git a/engine/src/flutter/lib/ui/window/platform_message_sender.cc b/engine/src/flutter/lib/ui/window/platform_message_sender.cc
+new file mode 100644
+index 00000000000..210245fda31
+--- /dev/null
++++ b/engine/src/flutter/lib/ui/window/platform_message_sender.cc
+@@ -0,0 +1,88 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/lib/ui/window/platform_message_sender.h"
++
++#include <cstddef>
++#include <utility>
++
++#include "flutter/fml/logging.h"
++#include "flutter/lib/ui/window/platform_message.h"
++
++namespace flutter {
++
++void CompleteEngineReply(void* user_data,
++                         const uint8_t* data,
++                         size_t size) {
++  auto context = std::unique_ptr<EngineReplyContext>(
++      static_cast<EngineReplyContext*>(user_data));
++  if (!context->response) {
++    return;
++  }
++  if (data == nullptr || size == 0) {
++    context->response->CompleteEmpty();
++    return;
++  }
++  context->response->Complete(
++      std::make_unique<fml::MallocMapping>(fml::MallocMapping::Copy(data, size)));
++}
++
++std::shared_ptr<PlatformMessageSender> PlatformMessageSender::Create(
++    FlutterSpiEngine* engine,
++    const FlutterSpiEngineApi* api) {
++  if (engine == nullptr || api == nullptr ||
++      api->struct_size <
++          offsetof(FlutterSpiEngineApi, platform_message_sender_release) +
++              sizeof(api->platform_message_sender_release) ||
++      api->platform_message_sender_create == nullptr ||
++      api->platform_message_sender_send == nullptr ||
++      api->platform_message_sender_release == nullptr) {
++    return nullptr;
++  }
++
++  FlutterSpiPlatformMessageSender* sender = nullptr;
++  if (api->platform_message_sender_create(engine, &sender) != kFlutterSpiOk ||
++      sender == nullptr) {
++    return nullptr;
++  }
++  return std::shared_ptr<PlatformMessageSender>(new PlatformMessageSender(
++      sender, api->platform_message_sender_send,
++      api->platform_message_sender_release));
++}
++
++PlatformMessageSender::~PlatformMessageSender() {
++  if (sender_ == nullptr || release_ == nullptr) {
++    return;
++  }
++  const FlutterSpiResult result = release_(sender_);
++  if (result != kFlutterSpiOk) {
++    FML_LOG(ERROR) << "Runtime SPI platform message sender release failed: "
++                   << result;
++  }
++}
++
++bool PlatformMessageSender::Send(std::unique_ptr<PlatformMessage> message) {
++  if (message == nullptr || sender_ == nullptr || send_ == nullptr) {
++    return false;
++  }
++
++  auto* context = !message->response()
++                      ? nullptr
++                      : new EngineReplyContext{message->response()};
++  static const uint8_t kEmptyPayload = 0;
++  const uint8_t* data = nullptr;
++  if (message->hasData()) {
++    data = message->data().GetSize() == 0 ? &kEmptyPayload
++                                          : message->data().GetMapping();
++  }
++  const FlutterSpiResult result = send_(
++      sender_, message->channel().c_str(), data, message->data().GetSize(),
++      context == nullptr ? nullptr : CompleteEngineReply, context);
++  if (result != kFlutterSpiOk && context != nullptr) {
++    CompleteEngineReply(context, nullptr, 0);
++  }
++  return result == kFlutterSpiOk;
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/window/platform_message_sender.h b/engine/src/flutter/lib/ui/window/platform_message_sender.h
+new file mode 100644
+index 00000000000..57a9ea6766d
+--- /dev/null
++++ b/engine/src/flutter/lib/ui/window/platform_message_sender.h
+@@ -0,0 +1,57 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_LIB_UI_WINDOW_PLATFORM_MESSAGE_SENDER_H_
++#define FLUTTER_LIB_UI_WINDOW_PLATFORM_MESSAGE_SENDER_H_
++
++#include <cstddef>
++#include <cstdint>
++#include <memory>
++
++#include "flutter/fml/macros.h"
++#include "flutter/lib/ui/window/platform_message_response.h"
++#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
++
++namespace flutter {
++
++class PlatformMessage;
++
++struct EngineReplyContext {
++  fml::RefPtr<PlatformMessageResponse> response;
++};
++
++void CompleteEngineReply(void* user_data,
++                         const uint8_t* data,
++                         size_t size);
++
++class PlatformMessageSender final {
++ public:
++  static std::shared_ptr<PlatformMessageSender> Create(
++      FlutterSpiEngine* engine,
++      const FlutterSpiEngineApi* api);
++
++  ~PlatformMessageSender();
++
++  bool Send(std::unique_ptr<PlatformMessage> message);
++
++ private:
++  using SendFunction = decltype(FlutterSpiEngineApi::platform_message_sender_send);
++  using ReleaseFunction =
++      decltype(FlutterSpiEngineApi::platform_message_sender_release);
++
++  PlatformMessageSender(FlutterSpiPlatformMessageSender* sender,
++                        SendFunction send,
++                        ReleaseFunction release)
++      : sender_(sender), send_(send), release_(release) {}
++
++  FlutterSpiPlatformMessageSender* sender_ = nullptr;
++  SendFunction send_ = nullptr;
++  ReleaseFunction release_ = nullptr;
++
++  FML_DISALLOW_COPY_AND_ASSIGN(PlatformMessageSender);
++};
++
++}  // namespace flutter
++
++#endif  // FLUTTER_LIB_UI_WINDOW_PLATFORM_MESSAGE_SENDER_H_
+diff --git a/engine/src/flutter/runtime/dart_isolate_group_data.cc b/engine/src/flutter/runtime/dart_isolate_group_data.cc
+index 0e844d3e3c4..912825db012 100644
+--- a/engine/src/flutter/runtime/dart_isolate_group_data.cc
++++ b/engine/src/flutter/runtime/dart_isolate_group_data.cc
+@@ -73,21 +73,19 @@ DartIsolateGroupData::GetNativeAssetsManager() const {
+   return native_assets_manager_;
+ }
+ 
+-void DartIsolateGroupData::SetPlatformMessageHandler(
++void DartIsolateGroupData::SetPlatformMessageSender(
+     int64_t root_isolate_token,
+-    std::weak_ptr<PlatformMessageHandler> handler) {
++    std::shared_ptr<PlatformMessageSender> sender) {
+   std::scoped_lock lock(platform_message_handlers_mutex_);
+-  platform_message_handlers_[root_isolate_token] = handler;
++  platform_message_senders_[root_isolate_token] = std::move(sender);
+ }
+ 
+-std::weak_ptr<PlatformMessageHandler>
+-DartIsolateGroupData::GetPlatformMessageHandler(
++std::shared_ptr<PlatformMessageSender>
++DartIsolateGroupData::GetPlatformMessageSender(
+     int64_t root_isolate_token) const {
+   std::scoped_lock lock(platform_message_handlers_mutex_);
+-  auto it = platform_message_handlers_.find(root_isolate_token);
+-  return it == platform_message_handlers_.end()
+-             ? std::weak_ptr<PlatformMessageHandler>()
+-             : it->second;
++  auto it = platform_message_senders_.find(root_isolate_token);
++  return it == platform_message_senders_.end() ? nullptr : it->second;
+ }
+ 
+ void DartIsolateGroupData::AddKernelBuffer(
+diff --git a/engine/src/flutter/runtime/dart_isolate_group_data.h b/engine/src/flutter/runtime/dart_isolate_group_data.h
+index 8ff29272150..3a077632a28 100644
+--- a/engine/src/flutter/runtime/dart_isolate_group_data.h
++++ b/engine/src/flutter/runtime/dart_isolate_group_data.h
+@@ -19,7 +19,7 @@ namespace flutter {
+ 
+ class DartIsolate;
+ class DartSnapshot;
+-class PlatformMessageHandler;
++class PlatformMessageSender;
+ 
+ using ChildIsolatePreparer = std::function<bool(DartIsolate*)>;
+ 
+@@ -69,12 +69,12 @@ class DartIsolateGroupData : public PlatformMessageHandlerStorage {
+   std::vector<std::shared_ptr<const fml::Mapping>> GetKernelBuffers() const;
+ 
+   // |PlatformMessageHandlerStorage|
+-  void SetPlatformMessageHandler(
++  void SetPlatformMessageSender(
+       int64_t root_isolate_token,
+-      std::weak_ptr<PlatformMessageHandler> handler) override;
++      std::shared_ptr<PlatformMessageSender> sender) override;
+ 
+   // |PlatformMessageHandlerStorage|
+-  std::weak_ptr<PlatformMessageHandler> GetPlatformMessageHandler(
++  std::shared_ptr<PlatformMessageSender> GetPlatformMessageSender(
+       int64_t root_isolate_token) const override;
+ 
+  private:
+@@ -88,8 +88,8 @@ class DartIsolateGroupData : public PlatformMessageHandlerStorage {
+   const fml::closure isolate_create_callback_;
+   const fml::closure isolate_shutdown_callback_;
+   std::shared_ptr<NativeAssetsManager> native_assets_manager_;
+-  std::map<int64_t, std::weak_ptr<PlatformMessageHandler>>
+-      platform_message_handlers_;
++  std::map<int64_t, std::shared_ptr<PlatformMessageSender>>
++      platform_message_senders_;
+   mutable std::mutex platform_message_handlers_mutex_;
+ 
+   FML_DISALLOW_COPY_AND_ASSIGN(DartIsolateGroupData);
+diff --git a/engine/src/flutter/runtime/runtime_controller.cc b/engine/src/flutter/runtime/runtime_controller.cc
+index b6176dce502..45eb527cc16 100644
+--- a/engine/src/flutter/runtime/runtime_controller.cc
++++ b/engine/src/flutter/runtime/runtime_controller.cc
+@@ -587,9 +587,9 @@ bool RuntimeController::LaunchRootIsolate(
+   }
+ 
+   // Enable platform channels for background isolates.
+-  strong_root_isolate->GetIsolateGroupData().SetPlatformMessageHandler(
++  strong_root_isolate->GetIsolateGroupData().SetPlatformMessageSender(
+       strong_root_isolate->GetRootIsolateToken(),
+-      client_.GetPlatformMessageHandler());
++      client_.CreatePlatformMessageSender());
+ 
+   // The root isolate ivar is weak.
+   root_isolate_ = strong_root_isolate;
+diff --git a/engine/src/flutter/runtime/runtime_delegate.h b/engine/src/flutter/runtime/runtime_delegate.h
+index b1715eb538e..77838c60e80 100644
+--- a/engine/src/flutter/runtime/runtime_delegate.h
++++ b/engine/src/flutter/runtime/runtime_delegate.h
+@@ -23,6 +23,8 @@ struct FlutterSpiSemanticsUpdateBuilder;
+ 
+ namespace flutter {
+ 
++class PlatformMessageSender;
++
+ class RuntimeDelegate {
+  public:
+   virtual std::string DefaultRouteName() = 0;
+@@ -51,6 +53,12 @@ class RuntimeDelegate {
+ 
+   virtual std::shared_ptr<AssetManager> GetAssetManager() = 0;
+ 
++  // Used by the Dart runtime for background isolates.
++  virtual std::shared_ptr<PlatformMessageSender>
++  CreatePlatformMessageSender() {
++    return nullptr;
++  }
++
+   virtual void OnRootIsolateCreated() = 0;
+ 
+   virtual void UpdateIsolateDescription(const std::string isolate_name,
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
+index 301b0225919..e20385f8714 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
+@@ -95,9 +95,4 @@ std::shared_ptr<AssetManager> SpiEngineAssetManager(FlutterSpiEngine* engine) {
+   return engine->backend->runtime_delegate_.GetAssetManager();
+ }
+ 
+-std::weak_ptr<PlatformMessageHandler> SpiEnginePlatformMessageHandler(
+-    FlutterSpiEngine* engine) {
+-  return engine->backend->runtime_delegate_.GetPlatformMessageHandler();
+-}
+-
+ }  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+index 40297b7f8f4..b5ad63b3e72 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+@@ -19,7 +19,6 @@ namespace flutter {
+ class AssetManager;
+ class FontCollection;
+ class LayerTree;
+-class PlatformMessageHandler;
+ 
+ const FlutterSpiPaintEffectsApi* SpiPaintEffectsApi();
+ 
+@@ -57,11 +56,6 @@ FontCollection& SpiEngineFontCollection(FlutterSpiEngine* engine);
+ // Bridge kept for flutter_gpu and the Dart isolate configuration, which need a C++ AssetManager; dart:ui reads assets through asset_read.
+ std::shared_ptr<AssetManager> SpiEngineAssetManager(FlutterSpiEngine* engine);
+ 
+-// Temporary bridge: background isolates post platform messages straight to the
+-// shell's handler, a Dart-only path with no C equivalent yet.
+-std::weak_ptr<PlatformMessageHandler> SpiEnginePlatformMessageHandler(
+-    FlutterSpiEngine* engine);
+-
+ }  // namespace flutter
+ 
+ #endif  // FLUTTER_RUNTIME_SPI_INTERNAL_SPI_INTERNAL_BRIDGES_H_
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.h b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+index 39c04f2b4e1..52b53d5487d 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.h
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+@@ -197,8 +197,6 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+   friend FontCollection& SpiEngineFontCollection(FlutterSpiEngine* engine);
+   friend std::shared_ptr<AssetManager> SpiEngineAssetManager(
+       FlutterSpiEngine* engine);
+-  friend std::weak_ptr<PlatformMessageHandler> SpiEnginePlatformMessageHandler(
+-      FlutterSpiEngine* engine);
+ 
+   bool HasUiThread() const;
+   bool HasCapability(FlutterSpiCapabilities capability) const;
+diff --git a/engine/src/flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.cc b/engine/src/flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.cc
+index 18053f5c712..e3ce1c59dc4 100644
+--- a/engine/src/flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.cc
++++ b/engine/src/flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.cc
+@@ -4,7 +4,6 @@
+ 
+ #include "flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.h"
+ 
+-#include <atomic>
+ #include <cstddef>
+ #include <utility>
+ 
+@@ -12,34 +11,11 @@
+ #include "flutter/fml/logging.h"
+ #include "flutter/fml/mapping.h"
+ #include "flutter/lib/ui/text/font_collection.h"
++#include "flutter/lib/ui/window/platform_message_sender.h"
+ #include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "flutter/runtime_spi/spi_scene.h"
+ 
+ namespace flutter {
+-namespace {
+-
+-struct EngineReplyContext {
+-  fml::RefPtr<PlatformMessageResponse> response;
+-};
+-
+-void CompleteEngineReply(void* user_data,
+-                         const uint8_t* data,
+-                         size_t size) {
+-  auto context = std::unique_ptr<EngineReplyContext>(
+-      static_cast<EngineReplyContext*>(user_data));
+-  if (!context->response) {
+-    return;
+-  }
+-  if (data == nullptr || size == 0) {
+-    context->response->CompleteEmpty();
+-    return;
+-  }
+-  context->response->Complete(
+-      std::make_unique<fml::MallocMapping>(fml::MallocMapping::Copy(data, size)));
+-}
+-
+-}  // namespace
+-
+ void DartRuntimeDelegateBridge::SetEngineApi(
+     const FlutterSpiEngineApi* engine_api,
+     FlutterSpiEngine* engine) {
+@@ -166,6 +142,11 @@ std::shared_ptr<AssetManager> DartRuntimeDelegateBridge::GetAssetManager() {
+   return SpiEngineAssetManager(engine_);
+ }
+ 
++std::shared_ptr<PlatformMessageSender>
++DartRuntimeDelegateBridge::CreatePlatformMessageSender() {
++  return PlatformMessageSender::Create(engine_, engine_api_);
++}
++
+ void DartRuntimeDelegateBridge::OnRootIsolateCreated() {
+   if (HasEngineApi() && engine_api_->on_root_isolate_created != nullptr) {
+     engine_api_->on_root_isolate_created(engine_);
+@@ -227,10 +208,8 @@ void DartRuntimeDelegateBridge::RequestDartDeferredLibrary(
+ 
+ std::weak_ptr<PlatformMessageHandler>
+ DartRuntimeDelegateBridge::GetPlatformMessageHandler() const {
+-  if (!HasEngineApi()) {
+-    return {};
+-  }
+-  return SpiEnginePlatformMessageHandler(engine_);
++  // The Dart runtime uses the thread-safe platform message sender.
++  return {};
+ }
+ 
+ void DartRuntimeDelegateBridge::SendChannelUpdate(std::string name,
+diff --git a/engine/src/flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.h b/engine/src/flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.h
+index cdc43c2dba2..e62c698d08a 100644
+--- a/engine/src/flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.h
++++ b/engine/src/flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.h
+@@ -41,6 +41,8 @@ class DartRuntimeDelegateBridge final : public RuntimeDelegate {
+       std::unique_ptr<PlatformMessage> message) override;
+   FlutterSpiEngine* GetSpiEngine() override;
+   std::shared_ptr<AssetManager> GetAssetManager() override;
++  std::shared_ptr<PlatformMessageSender> CreatePlatformMessageSender()
++      override;
+   void OnRootIsolateCreated() override;
+   void UpdateIsolateDescription(const std::string isolate_name,
+                                 int64_t isolate_port) override;
