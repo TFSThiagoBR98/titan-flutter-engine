@@ -1,0 +1,22 @@
+# Why: construct the non-copyable payload mapping from the scoped Dart byte
+# data without changing the dispatch lifetime.
+diff --git a/engine/src/flutter/lib/ui/window/platform_configuration.cc b/engine/src/flutter/lib/ui/window/platform_configuration.cc
+index d4c29e07da3..3a6eea69974 100644
+--- a/engine/src/flutter/lib/ui/window/platform_configuration.cc
++++ b/engine/src/flutter/lib/ui/window/platform_configuration.cc
+@@ -592,12 +592,11 @@ Dart_Handle HandlePlatformMessage(
+     return dart_state->HandlePlatformMessage(
+         std::make_unique<PlatformMessage>(name, response));
+   } else {
+-    fml::MallocMapping mapping;
+-    {
++    fml::MallocMapping mapping = [&]() {
+       tonic::DartByteData data(data_handle);
+       const uint8_t* buffer = static_cast<const uint8_t*>(data.data());
+-      mapping = fml::MallocMapping::Copy(buffer, data.length_in_bytes());
+-    }
++      return fml::MallocMapping::Copy(buffer, data.length_in_bytes());
++    }();
+     return dart_state->HandlePlatformMessage(std::make_unique<PlatformMessage>(
+         name, std::move(mapping), response));
+   }
