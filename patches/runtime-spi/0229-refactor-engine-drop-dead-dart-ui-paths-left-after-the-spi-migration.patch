@@ -1,0 +1,2054 @@
+# Why: Remove obsolete Dart UI bridges and exercise codec lifetime scenarios
+# through the public SPI ABI.
+diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
+index be0852d81b5..9e0080b47d2 100644
+--- a/engine/src/flutter/lib/ui/BUILD.gn
++++ b/engine/src/flutter/lib/ui/BUILD.gn
+@@ -232,8 +232,6 @@ source_set("ui") {
+     "painting/immutable_buffer.h",
+     "painting/matrix.cc",
+     "painting/matrix.h",
+-    "painting/multi_frame_codec.cc",
+-    "painting/multi_frame_codec.h",
+     "painting/paint.cc",
+     "painting/paint.h",
+     "painting/path.cc",
+@@ -250,8 +248,6 @@ source_set("ui") {
+     "painting/rsuperellipse.h",
+     "painting/shader.cc",
+     "painting/shader.h",
+-    "painting/single_frame_codec.cc",
+-    "painting/single_frame_codec.h",
+     "painting/vertices.cc",
+     "painting/vertices.h",
+     "plugins/callback_cache.cc",
+@@ -403,6 +399,7 @@ if (enable_unittests) {
+       "painting/canvas_spi_unittests.cc",
+       "painting/path_unittests.cc",
+       "painting/single_frame_codec_unittests.cc",
++      "//flutter/runtime_spi/testing/test_icu.cc",
+       "spi_api_unittests.cc",
+       "semantics/semantics_update_builder_unittests.cc",
+       "window/platform_configuration_unittests.cc",
+@@ -427,6 +424,7 @@ if (enable_unittests) {
+       "//flutter/testing:dart",
+       "//flutter/testing:fixture_test",
+       "//flutter/runtime_spi:semantics",
++      "//flutter/runtime_spi:c_test_runtime",
+       "//flutter/third_party/libpng",
+       "//flutter/third_party/tonic",
+     ]
+diff --git a/engine/src/flutter/lib/ui/painting/fragment_shader.cc b/engine/src/flutter/lib/ui/painting/fragment_shader.cc
+index ac935125942..55628df8366 100644
+--- a/engine/src/flutter/lib/ui/painting/fragment_shader.cc
++++ b/engine/src/flutter/lib/ui/painting/fragment_shader.cc
+@@ -8,12 +8,10 @@
+ #include "flutter/lib/ui/painting/fragment_shader.h"
+ 
+ #include "flutter/display_list/dl_tile_mode.h"
+-#include "flutter/display_list/effects/dl_color_source.h"
+ #include "flutter/lib/ui/painting/fragment_program.h"
+ #include "flutter/lib/ui/painting/image_filter.h"
+ #include "flutter/lib/ui/spi_api.h"
+ #include "flutter/runtime_spi/effects/spi_shader.h"
+-#include "flutter/runtime_spi/image/spi_image.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ 
+ namespace flutter {
+@@ -141,15 +139,6 @@ FlutterSpiImageFilter* ReusableFragmentShader::as_image_filter(
+   return filter;
+ }
+ 
+-std::shared_ptr<DlColorSource> ReusableFragmentShader::shader(
+-    DlImageSampling sampling) {
+-  (void)sampling;
+-  if (spi_handle() == nullptr) {
+-    return nullptr;
+-  }
+-  return SpiShaderGet(spi_shader_);
+-}
+-
+ // Image filters require at least one uniform sampler input to bind
+ // the input texture.
+ bool ReusableFragmentShader::ValidateImageFilter() {
+diff --git a/engine/src/flutter/lib/ui/painting/fragment_shader.h b/engine/src/flutter/lib/ui/painting/fragment_shader.h
+index 1e06cba00c0..e5a809457ef 100644
+--- a/engine/src/flutter/lib/ui/painting/fragment_shader.h
++++ b/engine/src/flutter/lib/ui/painting/fragment_shader.h
+@@ -44,8 +44,6 @@ class ReusableFragmentShader : public Shader {
+ 
+   void Dispose();
+ 
+-  // |Shader|
+-  std::shared_ptr<DlColorSource> shader(DlImageSampling) override;
+   FlutterSpiShader* spi_handle() const override;
+ 
+   FlutterSpiImageFilter* as_image_filter(
+diff --git a/engine/src/flutter/lib/ui/painting/gradient.cc b/engine/src/flutter/lib/ui/painting/gradient.cc
+index e0a7393c8c7..e1ac42b65c7 100644
+--- a/engine/src/flutter/lib/ui/painting/gradient.cc
++++ b/engine/src/flutter/lib/ui/painting/gradient.cc
+@@ -8,7 +8,7 @@
+ 
+ #include "flutter/lib/ui/floating_point.h"
+ #include "flutter/lib/ui/spi_api.h"
+-#include "flutter/runtime_spi/effects/spi_shader.h"
++#include "flutter/lib/ui/ui_dart_state.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+@@ -157,10 +157,6 @@ CanvasGradient::~CanvasGradient() {
+   }
+ }
+ 
+-std::shared_ptr<DlColorSource> CanvasGradient::shader(DlImageSampling) {
+-  return spi_shader_ == nullptr ? nullptr : SpiShaderGet(spi_shader_);
+-}
+-
+ FlutterSpiShader* CanvasGradient::spi_handle() const {
+   return spi_shader_;
+ }
+diff --git a/engine/src/flutter/lib/ui/painting/gradient.h b/engine/src/flutter/lib/ui/painting/gradient.h
+index 376813aabd0..9276f3c436c 100644
+--- a/engine/src/flutter/lib/ui/painting/gradient.h
++++ b/engine/src/flutter/lib/ui/painting/gradient.h
+@@ -5,6 +5,7 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_GRADIENT_H_
+ #define FLUTTER_LIB_UI_PAINTING_GRADIENT_H_
+ 
++#include "flutter/display_list/dl_tile_mode.h"
+ #include "flutter/lib/ui/painting/matrix.h"
+ #include "flutter/lib/ui/painting/shader.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
+@@ -53,7 +54,6 @@ class CanvasGradient : public Shader {
+                            DlTileMode tile_mode,
+                            const tonic::Float64List& matrix4);
+ 
+-  std::shared_ptr<DlColorSource> shader(DlImageSampling sampling) override;
+   FlutterSpiShader* spi_handle() const override;
+ 
+  private:
+diff --git a/engine/src/flutter/lib/ui/painting/image_decoder_unittests.cc b/engine/src/flutter/lib/ui/painting/image_decoder_unittests.cc
+index e3f661d151b..0261a427162 100644
+--- a/engine/src/flutter/lib/ui/painting/image_decoder_unittests.cc
++++ b/engine/src/flutter/lib/ui/painting/image_decoder_unittests.cc
+@@ -16,9 +16,14 @@
+ #include "flutter/lib/ui/painting/image_decoder_no_gl_unittests.h"
+ #include "flutter/lib/ui/painting/image_decoder_skia.h"
+ #include "flutter/lib/ui/painting/image_descriptor.h"
+-#include "flutter/lib/ui/painting/multi_frame_codec.h"
+ #include "flutter/runtime/dart_vm.h"
+ #include "flutter/runtime/dart_vm_lifecycle.h"
++#include "flutter/runtime_spi/include/flutter_image.h"
++#include "flutter/runtime_spi/spi_runtime_backend_factory.h"
++#include "flutter/runtime_spi/testing/c_test_runtime.h"
++#include "flutter/runtime_spi/testing/test_icu.h"
++#include "flutter/shell/common/shell_test.h"
++#include "flutter/shell/common/shell_test_platform_view.h"
+ #include "flutter/testing/dart_isolate_runner.h"
+ #include "flutter/testing/elf_loader.h"
+ #include "flutter/testing/fixture_test.h"
+@@ -222,6 +227,121 @@ class TestIOManager final : public IOManager {
+ 
+ class ImageDecoderFixtureTest : public FixtureTest {};
+ 
++struct SpiFrameCallbackState {
++  fml::AutoResetWaitableEvent completed;
++  FlutterSpiResult result = kFlutterSpiInternalError;
++  FlutterSpiImage* image = nullptr;
++  int32_t duration_ms = -1;
++  int calls = 0;
++};
++
++void CaptureSpiFrame(void* user_data,
++                     FlutterSpiResult result,
++                     FlutterSpiImage* image,
++                     int32_t duration_ms) {
++  auto* state = static_cast<SpiFrameCallbackState*>(user_data);
++  state->result = result;
++  state->image = image;
++  state->duration_ms = duration_ms;
++  state->calls++;
++  state->completed.Signal();
++}
++
++void PostSpiTaskSync(const fml::RefPtr<fml::TaskRunner>& task_runner,
++                     const fml::closure& task) {
++  fml::AutoResetWaitableEvent completed;
++  task_runner->PostTask([&completed, &task] {
++    task();
++    completed.Signal();
++  });
++  completed.Wait();
++}
++
++class SpiImageDecoderTest : public ShellTest {
++ protected:
++  void SetUp() override {
++    InitializeIcuForTesting();
++    runtime_ = c_test_runtime_create();
++    task_runners_ = std::make_unique<TaskRunners>(GetTaskRunnersForFixture());
++  }
++
++  void TearDown() override {
++    if (shell_ != nullptr) {
++      DestroyShell(std::move(shell_), *task_runners_);
++    }
++    c_test_runtime_free(runtime_);
++  }
++
++  void StartShell() {
++    auto settings = CreateSettingsForFixture();
++    settings.icu_data_path = IcuDataPathForTesting();
++    auto factory = std::make_shared<SpiRuntimeBackendFactory>(
++        c_test_runtime_table(runtime_));
++    shell_ = Shell::Create(
++        PlatformData(), *task_runners_, settings,
++        ShellTestPlatformViewBuilder({}),
++        [](Shell& shell) { return std::make_unique<Rasterizer>(shell); },
++        factory);
++    ASSERT_TRUE(shell_->IsSetup());
++    PlatformViewNotifyCreated(shell_.get());
++    RunEngine(shell_.get(), RunConfiguration::InferFromSettings(settings));
++  }
++
++  FlutterSpiImageDescriptor* CreateEncodedDescriptor(
++      const sk_sp<SkData>& data) {
++    FlutterSpiImageDescriptor* descriptor = nullptr;
++    PostSpiTaskSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++      EXPECT_EQ(runtime_->engine_api->image->image_descriptor_create_encoded(
++                    runtime_->engine, data->bytes(), data->size(),
++                    &descriptor),
++                kFlutterSpiOk);
++    });
++    return descriptor;
++  }
++
++  FlutterSpiCodec* InstantiateCodec(FlutterSpiImageDescriptor* descriptor) {
++    FlutterSpiCodec* codec = nullptr;
++    PostSpiTaskSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++      const FlutterSpiImageDecodeOptions options = {
++          .struct_size = sizeof(FlutterSpiImageDecodeOptions),
++          .target_width = 0,
++          .target_height = 0,
++          .target_pixel_format = kFlutterSpiPixelFormatRGBA8888,
++      };
++      EXPECT_EQ(runtime_->engine_api->image->image_descriptor_instantiate_codec(
++                    descriptor, &options, &codec),
++                kFlutterSpiOk);
++    });
++    return codec;
++  }
++
++  void ReleaseImage(FlutterSpiImage* image) {
++    PostSpiTaskSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++      EXPECT_EQ(runtime_->engine_api->image->image_release(image),
++                kFlutterSpiOk);
++    });
++  }
++
++  void ReleaseCodec(FlutterSpiCodec* codec) {
++    PostSpiTaskSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++      EXPECT_EQ(runtime_->engine_api->image->codec_release(codec),
++                kFlutterSpiOk);
++    });
++  }
++
++  void ReleaseDescriptor(FlutterSpiImageDescriptor* descriptor) {
++    PostSpiTaskSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++      EXPECT_EQ(runtime_->engine_api->image->image_descriptor_release(
++                    descriptor),
++                kFlutterSpiOk);
++    });
++  }
++
++  CTestRuntime* runtime_ = nullptr;
++  std::unique_ptr<TaskRunners> task_runners_;
++  std::unique_ptr<Shell> shell_;
++};
++
+ TEST_F(ImageDecoderFixtureTest, CanCreateImageDecoder) {
+   auto loop = fml::ConcurrentMessageLoop::Create();
+   auto thread_task_runner = CreateNewThread();
+@@ -999,87 +1119,40 @@ TEST(ImageDecoderTest, VerifySubpixelDecodingPreservesExifOrientation) {
+   ASSERT_EQ(200, image->height());
+ }
+ 
+-TEST_F(ImageDecoderFixtureTest,
+-       MultiFrameCodecCanBeCollectedBeforeIOTasksFinish) {
+-  // This test verifies that the MultiFrameCodec safely shares state between
+-  // tasks on the IO and UI runners, and does not allow unsafe memory access if
+-  // the UI object is collected while the IO thread still has pending decode
+-  // work. This could happen in a real application if the engine is collected
+-  // while a multi-frame image is decoding. To exercise this, the test:
+-  //   - Starts a Dart VM
+-  //   - Latches the IO task runner
+-  //   - Create a MultiFrameCodec for an animated gif pointed to a callback
+-  //     in the Dart fixture
+-  //   - Calls getNextFrame on the UI task runner
+-  //   - Collects the MultiFrameCodec object before unlatching the IO task
+-  //     runner.
+-  //   - Unlatches the IO task runner
+-  auto settings = CreateSettingsForFixture();
+-  auto vm_ref = DartVMRef::Create(settings);
+-  auto vm_data = vm_ref.GetVMData();
+-
++TEST_F(SpiImageDecoderTest, SpiCodecCanBeCollectedBeforeIOTasksFinish) {
++  // Keep the IO runner blocked while a SPI codec owns a pending decode. The
++  // codec is released before the IO work is allowed to finish.
++  StartShell();
+   auto gif_mapping = flutter::testing::OpenFixtureAsSkData("hello_loop_2.gif");
+-
+   ASSERT_TRUE(gif_mapping);
+ 
+-  ImageGeneratorRegistry registry;
+-  std::shared_ptr<ImageGenerator> gif_generator =
+-      registry.CreateCompatibleGenerator(gif_mapping);
+-  ASSERT_TRUE(gif_generator);
+-
+-  TaskRunners runners(GetCurrentTestName(),         // label
+-                      CreateNewThread("platform"),  // platform
+-                      CreateNewThread("raster"),    // raster
+-                      CreateNewThread("ui"),        // ui
+-                      CreateNewThread("io")         // io
+-  );
++  FlutterSpiImageDescriptor* descriptor =
++      CreateEncodedDescriptor(gif_mapping);
++  ASSERT_NE(descriptor, nullptr);
++  FlutterSpiCodec* codec = InstantiateCodec(descriptor);
++  ASSERT_NE(codec, nullptr);
+ 
+   fml::AutoResetWaitableEvent io_latch;
+-  std::unique_ptr<TestIOManager> io_manager;
+-
+-  // Setup the IO manager.
+-  PostTaskSync(runners.GetIOTaskRunner(), [&]() {
+-    io_manager = std::make_unique<TestIOManager>(runners.GetIOTaskRunner());
++  shell_->GetTaskRunners().GetIOTaskRunner()->PostTask([&io_latch] {
++    io_latch.Wait();
+   });
+ 
+-  auto isolate = RunDartCodeInIsolate(vm_ref, settings, runners, "main", {},
+-                                      GetDefaultKernelFilePath(),
+-                                      io_manager->GetWeakIOManager());
+-
+-  // Latch the IO task runner.
+-  runners.GetIOTaskRunner()->PostTask([&]() { io_latch.Wait(); });
+-
+-  PostTaskSync(runners.GetUITaskRunner(), [&]() {
+-    fml::AutoResetWaitableEvent isolate_latch;
+-    fml::RefPtr<MultiFrameCodec> codec;
+-    EXPECT_TRUE(isolate->RunInIsolateScope([&]() -> bool {
+-      Dart_Handle library = Dart_RootLibrary();
+-      if (Dart_IsError(library)) {
+-        isolate_latch.Signal();
+-        return false;
+-      }
+-      Dart_Handle closure =
+-          Dart_GetField(library, Dart_NewStringFromCString("frameCallback"));
+-      if (Dart_IsError(closure) || !Dart_IsClosure(closure)) {
+-        isolate_latch.Signal();
+-        return false;
+-      }
+-
+-      codec = fml::MakeRefCounted<MultiFrameCodec>(std::move(gif_generator));
+-      codec->getNextFrame(closure);
+-      codec = nullptr;
+-      isolate_latch.Signal();
+-      return true;
+-    }));
+-    isolate_latch.Wait();
+-
+-    EXPECT_FALSE(codec);
+-
+-    io_latch.Signal();
++  SpiFrameCallbackState callback;
++  PostSpiTaskSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++    EXPECT_EQ(runtime_->engine_api->image->codec_get_next_frame(
++                  codec, CaptureSpiFrame, &callback),
++              kFlutterSpiOk);
+   });
+ 
+-  // Destroy the IO manager
+-  PostTaskSync(runners.GetIOTaskRunner(), [&]() { io_manager.reset(); });
++  EXPECT_EQ(callback.calls, 0);
++  ReleaseCodec(codec);
++  ReleaseDescriptor(descriptor);
++  io_latch.Signal();
++  callback.completed.Wait();
++  EXPECT_EQ(callback.calls, 1);
++  EXPECT_EQ(callback.result, kFlutterSpiOk);
++  ASSERT_NE(callback.image, nullptr);
++  ReleaseImage(callback.image);
+ }
+ 
+ TEST_F(ImageDecoderFixtureTest, NullCheckBuffer) {
+diff --git a/engine/src/flutter/lib/ui/painting/image_descriptor.cc b/engine/src/flutter/lib/ui/painting/image_descriptor.cc
+index 44e2959a5a7..1dbbb477c03 100644
+--- a/engine/src/flutter/lib/ui/painting/image_descriptor.cc
++++ b/engine/src/flutter/lib/ui/painting/image_descriptor.cc
+@@ -7,8 +7,8 @@
+ #include "flutter/fml/build_config.h"
+ #include "flutter/fml/logging.h"
+ #include "flutter/fml/trace_event.h"
+-#include "flutter/lib/ui/painting/multi_frame_codec.h"
+-#include "flutter/lib/ui/painting/single_frame_codec.h"
++#include "flutter/lib/ui/painting/codec.h"
++#include "flutter/lib/ui/painting/image.h"
+ #include "flutter/lib/ui/spi_api.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+diff --git a/engine/src/flutter/lib/ui/painting/image_shader.cc b/engine/src/flutter/lib/ui/painting/image_shader.cc
+index 25b1d374f85..fdaa61ee56e 100644
+--- a/engine/src/flutter/lib/ui/painting/image_shader.cc
++++ b/engine/src/flutter/lib/ui/painting/image_shader.cc
+@@ -59,11 +59,6 @@ Dart_Handle ImageShader::initWithImage(CanvasImage* image,
+   return Dart_Null();
+ }
+ 
+-std::shared_ptr<DlColorSource> ImageShader::shader(DlImageSampling sampling) {
+-  (void)sampling;
+-  return SpiShaderGet(spi_shader_);
+-}
+-
+ int ImageShader::width() {
+   int32_t width = 0;
+   int32_t height = 0;
+diff --git a/engine/src/flutter/lib/ui/painting/image_shader.h b/engine/src/flutter/lib/ui/painting/image_shader.h
+index 83cf7b9e0a3..5973edacef6 100644
+--- a/engine/src/flutter/lib/ui/painting/image_shader.h
++++ b/engine/src/flutter/lib/ui/painting/image_shader.h
+@@ -5,6 +5,7 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_IMAGE_SHADER_H_
+ #define FLUTTER_LIB_UI_PAINTING_IMAGE_SHADER_H_
+ 
++#include "flutter/display_list/dl_tile_mode.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "flutter/lib/ui/painting/image.h"
+ #include "flutter/lib/ui/painting/matrix.h"
+@@ -27,7 +28,6 @@ class ImageShader : public Shader {
+                             int filter_quality_index,
+                             Dart_Handle matrix_handle);
+ 
+-  std::shared_ptr<DlColorSource> shader(DlImageSampling) override;
+   FlutterSpiShader* spi_handle() const override;
+ 
+   int width();
+diff --git a/engine/src/flutter/lib/ui/painting/multi_frame_codec.cc b/engine/src/flutter/lib/ui/painting/multi_frame_codec.cc
+deleted file mode 100644
+index b1584766d55..00000000000
+--- a/engine/src/flutter/lib/ui/painting/multi_frame_codec.cc
++++ /dev/null
+@@ -1,144 +0,0 @@
+-// Copyright 2013 The Flutter Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style license that can be
+-// found in the LICENSE file.
+-
+-#include "flutter/lib/ui/painting/multi_frame_codec.h"
+-
+-#include <utility>
+-
+-#include "flutter/fml/make_copyable.h"
+-#include "flutter/fml/logging.h"
+-#include "flutter/lib/ui/io_manager.h"
+-#include "flutter/lib/ui/painting/image.h"
+-#include "flutter/lib/ui/ui_dart_state.h"
+-#include "flutter/runtime_spi/image/spi_image.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+-#include "third_party/dart/runtime/include/dart_api.h"
+-#include "third_party/tonic/logging/dart_invoke.h"
+-
+-namespace flutter {
+-namespace {
+-
+-void InvokeNextFrameCallback(
+-    const fml::RefPtr<CanvasImage>& image,
+-    int duration,
+-    const std::string& decode_error,
+-    std::unique_ptr<tonic::DartPersistentValue> callback,
+-    size_t trace_id) {
+-  std::shared_ptr<tonic::DartState> dart_state = callback->dart_state().lock();
+-  if (!dart_state) {
+-    FML_DLOG(ERROR) << "Could not acquire Dart state while attempting to fire "
+-                       "next frame callback.";
+-    return;
+-  }
+-  tonic::DartState::Scope scope(dart_state);
+-  tonic::DartInvoke(callback->value(),
+-                    {tonic::ToDart(image), tonic::ToDart(duration),
+-                     tonic::ToDart(decode_error)});
+-}
+-
+-void GetNextFrameAndInvokeCallback(
+-    std::weak_ptr<AnimatedImageFrames> weak_frames,
+-    std::unique_ptr<tonic::DartPersistentValue> callback,
+-    const fml::RefPtr<fml::TaskRunner>& ui_task_runner,
+-    AnimatedImageFramesContext context,
+-    size_t trace_id) {
+-#if FML_OS_IOS_SIMULATOR
+-  if (!context.resource_context && !context.impeller_context) {
+-    ui_task_runner->PostTask(
+-        fml::MakeCopyable([callback = std::move(callback)]() {
+-          // must be destroyed on UI thread.
+-        }));
+-    return;
+-  }
+-#endif  // FML_OS_IOS_SIMULATOR
+-
+-  auto frames = weak_frames.lock();
+-  if (!frames) {
+-    ui_task_runner->PostTask(fml::MakeCopyable(
+-        [callback = std::move(callback)]() { callback->Clear(); }));
+-    return;
+-  }
+-
+-  AnimatedImageFrames::Frame frame = frames->DecodeNextFrame(context);
+-  fml::RefPtr<CanvasImage> image = nullptr;
+-  if (frame.image) {
+-    FlutterSpiImage* spi_image = nullptr;
+-    if (SpiImageWrap(std::move(frame.image), &spi_image) == kFlutterSpiOk) {
+-      image = CanvasImage::Create(spi_image);
+-    }
+-  }
+-
+-  ui_task_runner->PostTask(fml::MakeCopyable(
+-      [callback = std::move(callback), image = std::move(image),
+-       decode_error = std::move(frame.error), duration = frame.duration_ms,
+-       trace_id]() mutable {
+-        InvokeNextFrameCallback(image, duration, decode_error,
+-                                std::move(callback), trace_id);
+-      }));
+-}
+-
+-}  // namespace
+-
+-MultiFrameCodec::MultiFrameCodec(std::shared_ptr<ImageGenerator> generator)
+-    : frames_(std::make_shared<AnimatedImageFrames>(
+-          std::move(generator), UIDartState::Current()->IsImpellerEnabled())) {}
+-
+-MultiFrameCodec::~MultiFrameCodec() = default;
+-
+-Dart_Handle MultiFrameCodec::getNextFrame(Dart_Handle callback_handle) {
+-  static size_t trace_counter = 1;
+-  const size_t trace_id = trace_counter++;
+-
+-  if (!Dart_IsClosure(callback_handle)) {
+-    return tonic::ToDart("Callback must be a function");
+-  }
+-
+-  auto* dart_state = UIDartState::Current();
+-  const auto& task_runners = dart_state->GetTaskRunners();
+-
+-  if (frames_->frame_count() == 0) {
+-    std::string decode_error("Could not provide any frame.");
+-    FML_LOG(ERROR) << decode_error;
+-    task_runners.GetUITaskRunner()->PostTask(fml::MakeCopyable(
+-        [trace_id, decode_error = std::move(decode_error),
+-         callback = std::make_unique<tonic::DartPersistentValue>(
+-             tonic::DartState::Current(), callback_handle)]() mutable {
+-          InvokeNextFrameCallback(nullptr, 0, decode_error, std::move(callback),
+-                                  trace_id);
+-        }));
+-    return Dart_Null();
+-  }
+-
+-  task_runners.GetIOTaskRunner()->PostTask(fml::MakeCopyable(
+-      [callback = std::make_unique<tonic::DartPersistentValue>(
+-           tonic::DartState::Current(), callback_handle),
+-       weak_frames = std::weak_ptr<AnimatedImageFrames>(frames_), trace_id,
+-       ui_task_runner = task_runners.GetUITaskRunner(),
+-       io_manager = dart_state->GetIOManager()]() mutable {
+-        AnimatedImageFramesContext context{
+-            io_manager->GetResourceContext(),
+-            io_manager->GetIsGpuDisabledSyncSwitch(),
+-            io_manager->GetImpellerContext(),
+-            io_manager->GetSkiaUnrefQueue(),
+-        };
+-        GetNextFrameAndInvokeCallback(std::move(weak_frames),
+-                                      std::move(callback), ui_task_runner,
+-                                      std::move(context), trace_id);
+-      }));
+-
+-  return Dart_Null();
+-  // The static leak checker is confused by the control flow, unique pointers,
+-  // and closures in this function.
+-  // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
+-}
+-
+-int MultiFrameCodec::frameCount() const {
+-  return frames_->frame_count();
+-}
+-
+-int MultiFrameCodec::repetitionCount() const {
+-  return frames_->repetition_count();
+-}
+-
+-}  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/multi_frame_codec.h b/engine/src/flutter/lib/ui/painting/multi_frame_codec.h
+deleted file mode 100644
+index e046c3fb2ee..00000000000
+--- a/engine/src/flutter/lib/ui/painting/multi_frame_codec.h
++++ /dev/null
+@@ -1,38 +0,0 @@
+-// Copyright 2013 The Flutter Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style license that can be
+-// found in the LICENSE file.
+-
+-#ifndef FLUTTER_LIB_UI_PAINTING_MULTI_FRAME_CODEC_H_
+-#define FLUTTER_LIB_UI_PAINTING_MULTI_FRAME_CODEC_H_
+-
+-#include "flutter/fml/macros.h"
+-#include "flutter/lib/ui/painting/animated_image_frames.h"
+-#include "flutter/lib/ui/painting/codec.h"
+-
+-namespace flutter {
+-
+-class MultiFrameCodec : public Codec {
+- public:
+-  explicit MultiFrameCodec(std::shared_ptr<ImageGenerator> generator);
+-
+-  ~MultiFrameCodec() override;
+-
+-  // |Codec|
+-  int frameCount() const override;
+-
+-  // |Codec|
+-  int repetitionCount() const override;
+-
+-  // |Codec|
+-  Dart_Handle getNextFrame(Dart_Handle args) override;
+-
+- private:
+-  std::shared_ptr<AnimatedImageFrames> frames_;
+-
+-  FML_FRIEND_MAKE_REF_COUNTED(MultiFrameCodec);
+-  FML_FRIEND_REF_COUNTED_THREAD_SAFE(MultiFrameCodec);
+-};
+-
+-}  // namespace flutter
+-
+-#endif  // FLUTTER_LIB_UI_PAINTING_MULTI_FRAME_CODEC_H_
+diff --git a/engine/src/flutter/lib/ui/painting/paint.cc b/engine/src/flutter/lib/ui/painting/paint.cc
+index 76156eb6f95..384a3d0d19c 100644
+--- a/engine/src/flutter/lib/ui/painting/paint.cc
++++ b/engine/src/flutter/lib/ui/painting/paint.cc
+@@ -6,21 +6,11 @@
+ 
+ #include <optional>
+ 
+-#include "flutter/display_list/dl_builder.h"
+ #include "flutter/fml/logging.h"
+-#include "flutter/lib/ui/floating_point.h"
+ #include "flutter/lib/ui/painting/color_filter.h"
+ #include "flutter/lib/ui/painting/image_filter.h"
+ #include "flutter/lib/ui/painting/shader.h"
+-#include "flutter/runtime_spi/effects/spi_color_filter.h"
+-#include "flutter/runtime_spi/effects/spi_image_filter.h"
+-#include "flutter/runtime_spi/effects/spi_shader.h"
+ #include "flutter/runtime_spi/include/flutter_scene.h"
+-#include "third_party/skia/include/core/SkColorFilter.h"
+-#include "third_party/skia/include/core/SkImageFilter.h"
+-#include "third_party/skia/include/core/SkMaskFilter.h"
+-#include "third_party/skia/include/core/SkShader.h"
+-#include "third_party/skia/include/core/SkString.h"
+ #include "third_party/tonic/typed_data/dart_byte_data.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
+ 
+@@ -44,6 +34,7 @@ constexpr int kFilterQualityIndex = 12;
+ constexpr int kMaskFilterIndex = 13;
+ constexpr int kMaskFilterBlurStyleIndex = 14;
+ constexpr int kMaskFilterSigmaIndex = 15;
++constexpr int kMaskFilterBlur = 1;
+ constexpr int kInvertColorIndex = 16;
+ constexpr size_t kDataByteCount = 72;  // 4 * (last index + 1), plus padding.
+ static_assert(kDataByteCount >= sizeof(uint32_t) * (kInvertColorIndex + 1),
+@@ -64,27 +55,6 @@ constexpr uint32_t kBlendModeDefault =
+ constexpr float kStrokeMiterLimitDefault = 4.0f;
+ 
+ // Must be kept in sync with the MaskFilter private constants in painting.dart.
+-enum MaskFilterType { kNull, kBlur };
+-
+-namespace {
+-DlColor ReadColor(const tonic::DartByteData& byte_data) {
+-  const uint32_t* uint_data = static_cast<const uint32_t*>(byte_data.data());
+-  const float* float_data = static_cast<const float*>(byte_data.data());
+-
+-  float red = float_data[kColorRedIndex];
+-  float green = float_data[kColorGreenIndex];
+-  float blue = float_data[kColorBlueIndex];
+-  // Invert alpha so 0 initialized buffer has default value;
+-  float alpha = 1.f - float_data[kColorAlphaIndex];
+-  uint32_t colorspace = uint_data[kColorSpaceIndex];
+-
+-  DlColor dl_color(alpha, red, green, blue,
+-                   static_cast<DlColorSpace>(colorspace));
+-
+-  return dl_color.withColorSpace(DlColorSpace::kExtendedSRGB);
+-}
+-}  // namespace
+-
+ Paint::Paint(Dart_Handle paint_objects, Dart_Handle paint_data)
+     : paint_objects_(paint_objects), paint_data_(paint_data) {}
+ 
+@@ -94,134 +64,6 @@ Paint::Paint(Dart_Handle paint_objects, const PaintWords& words)
+       paint_words_(words),
+       has_paint_words_(true) {}
+ 
+-const DlPaint* Paint::paint(DlPaint& paint,
+-                            const DisplayListAttributeFlags& flags,
+-                            DlTileMode tile_mode) const {
+-  if (isNull()) {
+-    return nullptr;
+-  }
+-  tonic::DartByteData byte_data(paint_data_);
+-  FML_CHECK(byte_data.length_in_bytes() == kDataByteCount);
+-
+-  const uint32_t* uint_data = static_cast<const uint32_t*>(byte_data.data());
+-  const float* float_data = static_cast<const float*>(byte_data.data());
+-
+-  Dart_Handle values[kObjectCount];
+-  if (Dart_IsNull(paint_objects_)) {
+-    if (flags.applies_shader()) {
+-      paint.setColorSource(nullptr);
+-    }
+-    if (flags.applies_color_filter()) {
+-      paint.setColorFilter(nullptr);
+-    }
+-    if (flags.applies_image_filter()) {
+-      paint.setImageFilter(nullptr);
+-    }
+-  } else {
+-    FML_DCHECK(Dart_IsList(paint_objects_));
+-    intptr_t length = 0;
+-    Dart_ListLength(paint_objects_, &length);
+-
+-    FML_CHECK(length == kObjectCount);
+-    if (Dart_IsError(
+-            Dart_ListGetRange(paint_objects_, 0, kObjectCount, values))) {
+-      return nullptr;
+-    }
+-
+-    if (flags.applies_shader()) {
+-      Dart_Handle shader = values[kShaderIndex];
+-      if (Dart_IsNull(shader)) {
+-        paint.setColorSource(nullptr);
+-      } else {
+-        if (Shader* decoded = tonic::DartConverter<Shader*>::FromDart(shader)) {
+-          auto sampling =
+-              ImageFilter::SamplingFromIndex(uint_data[kFilterQualityIndex]);
+-          paint.setColorSource(decoded->shader(sampling));
+-        } else {
+-          paint.setColorSource(nullptr);
+-        }
+-      }
+-    }
+-
+-    if (flags.applies_color_filter()) {
+-      Dart_Handle color_filter = values[kColorFilterIndex];
+-      if (Dart_IsNull(color_filter)) {
+-        paint.setColorFilter(nullptr);
+-      } else {
+-        ColorFilter* decoded =
+-            tonic::DartConverter<ColorFilter*>::FromDart(color_filter);
+-        paint.setColorFilter(SpiColorFilterGet(decoded->spi_handle()));
+-      }
+-    }
+-
+-    if (flags.applies_image_filter()) {
+-      Dart_Handle image_filter = values[kImageFilterIndex];
+-      if (Dart_IsNull(image_filter)) {
+-        paint.setImageFilter(nullptr);
+-      } else {
+-        ImageFilter* decoded =
+-            tonic::DartConverter<ImageFilter*>::FromDart(image_filter);
+-        paint.setImageFilter(
+-            SpiImageFilterResolve(decoded->spi_handle(), tile_mode));
+-      }
+-    }
+-  }
+-
+-  if (flags.applies_anti_alias()) {
+-    paint.setAntiAlias(uint_data[kIsAntiAliasIndex] == 0);
+-  }
+-
+-  if (flags.applies_alpha_or_color()) {
+-    paint.setColor(ReadColor(byte_data));
+-  }
+-
+-  if (flags.applies_blend()) {
+-    uint32_t encoded_blend_mode = uint_data[kBlendModeIndex];
+-    uint32_t blend_mode = encoded_blend_mode ^ kBlendModeDefault;
+-    paint.setBlendMode(static_cast<DlBlendMode>(blend_mode));
+-  }
+-
+-  if (flags.applies_style()) {
+-    uint32_t style = uint_data[kStyleIndex];
+-    paint.setDrawStyle(static_cast<DlDrawStyle>(style));
+-  }
+-
+-  if (flags.is_stroked(paint.getDrawStyle())) {
+-    float stroke_width = float_data[kStrokeWidthIndex];
+-    paint.setStrokeWidth(stroke_width);
+-
+-    float stroke_miter_limit = float_data[kStrokeMiterLimitIndex];
+-    paint.setStrokeMiter(stroke_miter_limit + kStrokeMiterLimitDefault);
+-
+-    uint32_t stroke_cap = uint_data[kStrokeCapIndex];
+-    paint.setStrokeCap(static_cast<DlStrokeCap>(stroke_cap));
+-
+-    uint32_t stroke_join = uint_data[kStrokeJoinIndex];
+-    paint.setStrokeJoin(static_cast<DlStrokeJoin>(stroke_join));
+-  }
+-
+-  if (flags.applies_color_filter()) {
+-    paint.setInvertColors(uint_data[kInvertColorIndex] != 0);
+-  }
+-
+-  if (flags.applies_mask_filter()) {
+-    switch (uint_data[kMaskFilterIndex]) {
+-      case kNull:
+-        paint.setMaskFilter(nullptr);
+-        break;
+-      case kBlur:
+-        DlBlurStyle blur_style =
+-            static_cast<DlBlurStyle>(uint_data[kMaskFilterBlurStyleIndex]);
+-        double sigma = float_data[kMaskFilterSigmaIndex];
+-        paint.setMaskFilter(
+-            DlBlurMaskFilter::Make(blur_style, SafeNarrow(sigma)));
+-        break;
+-    }
+-  }
+-
+-  return &paint;
+-}
+-
+ void Paint::ToSpiPaint(FlutterSpiPaint* out) const {
+   if (out == nullptr || isNull()) {
+     return;
+@@ -268,7 +110,7 @@ void Paint::ToSpiPaint(FlutterSpiPaint* out) const {
+   out->image_filter =
+       image_filter == nullptr ? nullptr : image_filter->spi_handle();
+ 
+-  if (uint_data[kMaskFilterIndex] == kBlur) {
++  if (uint_data[kMaskFilterIndex] == kMaskFilterBlur) {
+     out->has_mask_blur = true;
+     out->mask_blur_style =
+         static_cast<int32_t>(uint_data[kMaskFilterBlurStyleIndex]);
+diff --git a/engine/src/flutter/lib/ui/painting/paint.h b/engine/src/flutter/lib/ui/painting/paint.h
+index 024b21cee13..4e03851b133 100644
+--- a/engine/src/flutter/lib/ui/painting/paint.h
++++ b/engine/src/flutter/lib/ui/painting/paint.h
+@@ -7,8 +7,6 @@
+ 
+ #include <cstdint>
+ 
+-#include "flutter/display_list/display_list.h"
+-#include "flutter/display_list/dl_op_flags.h"
+ #include "third_party/dart/runtime/include/dart_api.h"
+ #include "flutter/runtime_spi/include/flutter_scene.h"
+ 
+@@ -25,10 +23,6 @@ class Paint {
+   Paint(Dart_Handle paint_objects, Dart_Handle paint_data);
+   Paint(Dart_Handle paint_objects, const PaintWords& words);
+ 
+-  const DlPaint* paint(DlPaint& paint,
+-                       const DisplayListAttributeFlags& flags,
+-                       DlTileMode tile_mode) const;
+-
+   void ToSpiPaint(FlutterSpiPaint* out) const;
+ 
+   bool isNull() const {
+diff --git a/engine/src/flutter/lib/ui/painting/paint_unittests.cc b/engine/src/flutter/lib/ui/painting/paint_unittests.cc
+index ac6bd59aeab..7702de2a672 100644
+--- a/engine/src/flutter/lib/ui/painting/paint_unittests.cc
++++ b/engine/src/flutter/lib/ui/painting/paint_unittests.cc
+@@ -6,6 +6,7 @@
+ 
+ #include "flutter/display_list/dl_op_flags.h"
+ #include "flutter/lib/ui/painting/paint.h"
++#include "flutter/runtime_spi/scene/spi_geometry.h"
+ #include "flutter/runtime_spi/scene/spi_paint.h"
+ #include "flutter/shell/common/shell_test.h"
+ #include "flutter/shell/common/thread_host.h"
+@@ -20,17 +21,17 @@ class PaintTest : public ShellTest {};
+ 
+ TEST_F(ShellTest, ConvertPaintToDlPaint) {
+   auto message_latch = std::make_shared<fml::AutoResetWaitableEvent>();
+-  DlPaint dl_paint;
++  FlutterSpiPaint spi_paint = {};
+ 
+-  auto nativeToDlPaint = [message_latch, &dl_paint](Dart_NativeArguments args) {
++  auto nativeToDlPaint = [message_latch, &spi_paint](Dart_NativeArguments args) {
+     Dart_Handle dart_paint = Dart_GetNativeArgument(args, 0);
+     Dart_Handle paint_objects =
+         Dart_GetField(dart_paint, tonic::ToDart("_objects"));
+     Dart_Handle paint_data = Dart_GetField(dart_paint, tonic::ToDart("_data"));
+     Paint ui_paint(paint_objects, paint_data);
+ 
+-    ui_paint.paint(dl_paint, DisplayListOpFlags::kDrawRectFlags,
+-                   DlTileMode::kClamp);
++    spi_paint.struct_size = sizeof(FlutterSpiPaint);
++    ui_paint.ToSpiPaint(&spi_paint);
+     message_latch->Signal();
+   };
+ 
+@@ -58,38 +59,31 @@ TEST_F(ShellTest, ConvertPaintToDlPaint) {
+   message_latch->Wait();
+   DestroyShell(std::move(shell), task_runners);
+ 
+-  EXPECT_EQ(dl_paint.getBlendMode(), DlBlendMode::kModulate);
+-  EXPECT_EQ(static_cast<uint32_t>(dl_paint.getColor().argb()), 0x11223344u);
+-  if (dl_paint.getColorFilter()) {
+-    std::shared_ptr<const DlColorFilter> expected_filter =
+-        DlColorFilter::MakeBlend(DlColor(0x55667788), DlBlendMode::kXor);
+-    EXPECT_EQ(*dl_paint.getColorFilter(), *expected_filter);
+-  } else {
+-    FAIL() << "color filter was nullptr";
+-  }
+-  if (dl_paint.getMaskFilter()) {
+-    EXPECT_EQ(*dl_paint.getMaskFilter(),
+-              DlBlurMaskFilter(DlBlurStyle::kInner, 0.75));
+-  } else {
+-    FAIL() << "mask filter was nullptr";
+-  }
+-  EXPECT_EQ(dl_paint.getDrawStyle(), DlDrawStyle::kStroke);
+-  EXPECT_FALSE(dl_paint.isAntiAlias());
++  EXPECT_EQ(spi_paint.blend_mode, kFlutterSpiBlendModeModulate);
++  EXPECT_EQ(static_cast<uint32_t>(ToDlColor(spi_paint.color).argb()),
++            0x11223344u);
++  ASSERT_NE(spi_paint.color_filter, nullptr);
++  EXPECT_TRUE(spi_paint.has_mask_blur);
++  EXPECT_EQ(spi_paint.mask_blur_style, kFlutterSpiBlurStyleInner);
++  EXPECT_EQ(spi_paint.mask_blur_sigma, 0.75f);
++  EXPECT_EQ(spi_paint.style, kFlutterSpiPaintStyleStroke);
++  EXPECT_FALSE(spi_paint.anti_alias);
+ }
+ 
+ TEST_F(ShellTest, ConvertDefaultPaintToDlPaint) {
+   auto message_latch = std::make_shared<fml::AutoResetWaitableEvent>();
+-  DlPaint dl_paint;
++  FlutterSpiPaint spi_paint = {};
+ 
+-  auto nativeToDlPaint = [message_latch, &dl_paint](Dart_NativeArguments args) {
++  auto nativeToDlPaint = [message_latch,
++                          &spi_paint](Dart_NativeArguments args) {
+     Dart_Handle dart_paint = Dart_GetNativeArgument(args, 0);
+     Dart_Handle paint_objects =
+         Dart_GetField(dart_paint, tonic::ToDart("_objects"));
+     Dart_Handle paint_data = Dart_GetField(dart_paint, tonic::ToDart("_data"));
+     Paint ui_paint(paint_objects, paint_data);
+ 
+-    ui_paint.paint(dl_paint, DisplayListOpFlags::kDrawRectFlags,
+-                   DlTileMode::kClamp);
++    spi_paint.struct_size = sizeof(FlutterSpiPaint);
++    ui_paint.ToSpiPaint(&spi_paint);
+     message_latch->Signal();
+   };
+ 
+@@ -117,7 +111,7 @@ TEST_F(ShellTest, ConvertDefaultPaintToDlPaint) {
+   message_latch->Wait();
+   DestroyShell(std::move(shell), task_runners);
+ 
+-  EXPECT_TRUE(dl_paint.isAntiAlias());
++  EXPECT_TRUE(spi_paint.anti_alias);
+ }
+ 
+ TEST_F(PaintTest, SpiPaintMatchesDartEncoding) {
+diff --git a/engine/src/flutter/lib/ui/painting/path.cc b/engine/src/flutter/lib/ui/painting/path.cc
+index 193cc725a56..df46e2ca74f 100644
+--- a/engine/src/flutter/lib/ui/painting/path.cc
++++ b/engine/src/flutter/lib/ui/painting/path.cc
+@@ -363,10 +363,6 @@ void CanvasPath::clone(Dart_Handle path_handle) {
+   }
+ }
+ 
+-const DlPath& CanvasPath::path() const {
+-  return SpiPathDlPath(spi_path_);
+-}
+-
+ FlutterSpiPath* CanvasPath::spi_handle() const {
+   return spi_path_;
+ }
+diff --git a/engine/src/flutter/lib/ui/painting/path.h b/engine/src/flutter/lib/ui/painting/path.h
+index 335bc9c7573..a032376ec63 100644
+--- a/engine/src/flutter/lib/ui/painting/path.h
++++ b/engine/src/flutter/lib/ui/painting/path.h
+@@ -112,7 +112,6 @@ class CanvasPath : public RefCountedDartWrappable<CanvasPath> {
+   bool op(CanvasPath* path1, CanvasPath* path2, int operation);
+   void clone(Dart_Handle path_handle);
+ 
+-  const DlPath& path() const;
+   FlutterSpiPath* spi_handle() const;
+ 
+  private:
+diff --git a/engine/src/flutter/lib/ui/painting/path_unittests.cc b/engine/src/flutter/lib/ui/painting/path_unittests.cc
+index f45d43105ad..359c58bba59 100644
+--- a/engine/src/flutter/lib/ui/painting/path_unittests.cc
++++ b/engine/src/flutter/lib/ui/painting/path_unittests.cc
+@@ -9,6 +9,7 @@
+ #include "flutter/common/task_runners.h"
+ #include "flutter/fml/synchronization/waitable_event.h"
+ #include "flutter/runtime/dart_vm.h"
++#include "flutter/runtime_spi/scene/spi_canvas.h"
+ #include "flutter/shell/common/shell_test.h"
+ #include "flutter/shell/common/thread_host.h"
+ #include "flutter/testing/testing.h"
+@@ -29,31 +30,31 @@ TEST_F(ShellTest, PathVolatilityOldPathsBecomeNonVolatile) {
+     EXPECT_TRUE(path);
+ 
+     for (uint32_t i = 0; i <= DlPath::kMaxVolatileUses * 2; i++) {
+-      EXPECT_TRUE(path->path().IsVolatile());
+-      EXPECT_TRUE(path->path().GetSkPath().isVolatile());
++      EXPECT_TRUE(SpiPathDlPath(path->spi_handle()).IsVolatile());
++      EXPECT_TRUE(SpiPathDlPath(path->spi_handle()).GetSkPath().isVolatile());
+       // Getting the SkPath without expressing intent for rendering will not
+       // progress towards non-volatility
+     }
+-    EXPECT_TRUE(path->path().IsVolatile());
+-    EXPECT_TRUE(path->path().GetSkPath().isVolatile());
++    EXPECT_TRUE(SpiPathDlPath(path->spi_handle()).IsVolatile());
++    EXPECT_TRUE(SpiPathDlPath(path->spi_handle()).GetSkPath().isVolatile());
+ 
+     for (uint32_t i = 0; i < DlPath::kMaxVolatileUses; i++) {
+-      path->path().WillRenderSkPath();
+-      EXPECT_TRUE(path->path().IsVolatile());
+-      EXPECT_TRUE(path->path().GetSkPath().isVolatile());
++      SpiPathDlPath(path->spi_handle()).WillRenderSkPath();
++      EXPECT_TRUE(SpiPathDlPath(path->spi_handle()).IsVolatile());
++      EXPECT_TRUE(SpiPathDlPath(path->spi_handle()).GetSkPath().isVolatile());
+     }
+     // One last intent to render will make it non-volatile
+-    path->path().WillRenderSkPath();
+-    EXPECT_FALSE(path->path().IsVolatile());
+-    EXPECT_FALSE(path->path().GetSkPath().isVolatile());
++    SpiPathDlPath(path->spi_handle()).WillRenderSkPath();
++    EXPECT_FALSE(SpiPathDlPath(path->spi_handle()).IsVolatile());
++    EXPECT_FALSE(SpiPathDlPath(path->spi_handle()).GetSkPath().isVolatile());
+ 
+-    DlPath saved_path = path->path();
++    DlPath saved_path = SpiPathDlPath(path->spi_handle());
+     path->addOval(10, 10, 20, 20);
+ 
+     // Meanwhile if the path being constructed by the CanvasPath object
+     // is changed further, new paths extracted via path() are again volatile.
+-    EXPECT_TRUE(path->path().IsVolatile());
+-    EXPECT_TRUE(path->path().GetSkPath().isVolatile());
++    EXPECT_TRUE(SpiPathDlPath(path->spi_handle()).IsVolatile());
++    EXPECT_TRUE(SpiPathDlPath(path->spi_handle()).GetSkPath().isVolatile());
+ 
+     // But the saved versions copied before the changes are still non-volatile
+     EXPECT_FALSE(saved_path.IsVolatile());
+@@ -105,12 +106,12 @@ TEST_F(ShellTest, DeterministicRenderingDisablesPathVolatility) {
+     EXPECT_TRUE(path);
+ 
+     for (uint32_t i = 0; i <= DlPath::kMaxVolatileUses * 2; i++) {
+-      EXPECT_FALSE(path->path().IsVolatile());
+-      EXPECT_FALSE(path->path().GetSkPath().isVolatile());
+-      path->path().WillRenderSkPath();
++      EXPECT_FALSE(SpiPathDlPath(path->spi_handle()).IsVolatile());
++      EXPECT_FALSE(SpiPathDlPath(path->spi_handle()).GetSkPath().isVolatile());
++      SpiPathDlPath(path->spi_handle()).WillRenderSkPath();
+     }
+-    EXPECT_FALSE(path->path().IsVolatile());
+-    EXPECT_FALSE(path->path().GetSkPath().isVolatile());
++    EXPECT_FALSE(SpiPathDlPath(path->spi_handle()).IsVolatile());
++    EXPECT_FALSE(SpiPathDlPath(path->spi_handle()).GetSkPath().isVolatile());
+ 
+     message_latch->Signal();
+   };
+diff --git a/engine/src/flutter/lib/ui/painting/picture.cc b/engine/src/flutter/lib/ui/painting/picture.cc
+index 1ca3e60dbf5..4912bf3153e 100644
+--- a/engine/src/flutter/lib/ui/painting/picture.cc
++++ b/engine/src/flutter/lib/ui/painting/picture.cc
+@@ -4,15 +4,8 @@
+ 
+ #include "flutter/lib/ui/painting/picture.h"
+ 
+-#include <memory>
+-#include <utility>
+-
+-#include "flutter/fml/make_copyable.h"
+-#include "flutter/lib/ui/painting/canvas.h"
+-#include "flutter/lib/ui/painting/image_snapshot.h"
+ #include "flutter/lib/ui/spi_api.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
+-#include "flutter/lib/ui/ui_dart_state.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+@@ -116,35 +109,6 @@ void Picture::toImageSync(uint32_t width,
+   CanvasImage::Create(raw_image_handle, image);
+ }
+ 
+-// static
+-void Picture::RasterizeToImageSync(sk_sp<DisplayList> display_list,
+-                                   uint32_t width,
+-                                   uint32_t height,
+-                                   SnapshotPixelFormat target_format,
+-                                   Dart_Handle raw_image_handle) {
+-  auto* dart_state = UIDartState::Current();
+-  if (!dart_state) {
+-    return;
+-  }
+-  auto unref_queue = dart_state->GetSkiaUnrefQueue();
+-  auto snapshot_delegate = dart_state->GetSnapshotDelegate();
+-  auto raster_task_runner = dart_state->GetTaskRunners().GetRasterTaskRunner();
+-  ImageSnapshotContext context{
+-      dart_state->GetTaskRunners().GetUITaskRunner(),
+-      raster_task_runner,
+-      snapshot_delegate,
+-      unref_queue,
+-      dart_state->IsImpellerEnabled(),
+-  };
+-
+-  auto dl_image = CreateDeferredImage(context, std::move(display_list), width,
+-                                      height, target_format);
+-  FlutterSpiImage* image = nullptr;
+-  if (SpiImageWrap(std::move(dl_image), &image) == kFlutterSpiOk) {
+-    CanvasImage::Create(raw_image_handle, image);
+-  }
+-}
+-
+ void Picture::dispose() {
+   if (spi_picture_ != nullptr) {
+     SpiApi().scene->picture_release(spi_picture_);
+@@ -157,94 +121,4 @@ size_t Picture::GetAllocationSize() const {
+   return sizeof(Picture);
+ }
+ 
+-Dart_Handle Picture::RasterizeToImage(const sk_sp<DisplayList>& display_list,
+-                                      uint32_t width,
+-                                      uint32_t height,
+-                                      Dart_Handle raw_image_callback) {
+-  return DoRasterizeToImage(display_list, nullptr, width, height,
+-                            raw_image_callback);
+-}
+-
+-Dart_Handle Picture::RasterizeLayerTreeToImage(
+-    std::unique_ptr<LayerTree> layer_tree,
+-    Dart_Handle raw_image_callback) {
+-  FML_DCHECK(layer_tree != nullptr);
+-  auto frame_size = layer_tree->frame_size();
+-  return DoRasterizeToImage(nullptr, std::move(layer_tree), frame_size.width,
+-                            frame_size.height, raw_image_callback);
+-}
+-
+-Dart_Handle Picture::DoRasterizeToImage(const sk_sp<DisplayList>& display_list,
+-                                        std::unique_ptr<LayerTree> layer_tree,
+-                                        uint32_t width,
+-                                        uint32_t height,
+-                                        Dart_Handle raw_image_callback) {
+-  // Either display_list or layer_tree should be provided.
+-  FML_DCHECK((display_list == nullptr) != (layer_tree == nullptr));
+-
+-  if (Dart_IsNull(raw_image_callback) || !Dart_IsClosure(raw_image_callback)) {
+-    return tonic::ToDart("Image callback was invalid");
+-  }
+-
+-  if (width == 0 || height == 0) {
+-    return tonic::ToDart("Image dimensions for scene were invalid.");
+-  }
+-
+-  auto* dart_state = UIDartState::Current();
+-  auto image_callback = std::make_unique<tonic::DartPersistentValue>(
+-      dart_state, raw_image_callback);
+-  auto unref_queue = dart_state->GetSkiaUnrefQueue();
+-  auto ui_task_runner = dart_state->GetTaskRunners().GetUITaskRunner();
+-  auto raster_task_runner = dart_state->GetTaskRunners().GetRasterTaskRunner();
+-  auto snapshot_delegate = dart_state->GetSnapshotDelegate();
+-  ImageSnapshotContext context{
+-      ui_task_runner,
+-      raster_task_runner,
+-      snapshot_delegate,
+-      unref_queue,
+-      dart_state->IsImpellerEnabled(),
+-  };
+-
+-  auto on_ui_thread =
+-      // The static leak checker gets confused by the use of fml::MakeCopyable.
+-      // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
+-      fml::MakeCopyable([image_callback = std::move(image_callback)](
+-                            sk_sp<DlImage> image) mutable {
+-        auto dart_state = image_callback->dart_state().lock();
+-        if (!dart_state) {
+-          // The root isolate could have died in the meantime.
+-          return;
+-        }
+-        tonic::DartState::Scope scope(dart_state);
+-
+-        if (!image) {
+-          tonic::DartInvoke(image_callback->Get(), {Dart_Null()});
+-          return;
+-        }
+-
+-        FlutterSpiImage* spi_image = nullptr;
+-        if (SpiImageWrap(std::move(image), &spi_image) != kFlutterSpiOk) {
+-          tonic::DartInvoke(image_callback->Get(), {Dart_Null()});
+-          image_callback.reset();
+-          return;
+-        }
+-        auto dart_image = CanvasImage::Create(spi_image);
+-        auto* raw_dart_image = tonic::ToDart(dart_image);
+-
+-        // All done!
+-        tonic::DartInvoke(image_callback->Get(), {raw_dart_image});
+-
+-        // image_callback is associated with the Dart isolate and must be
+-        // deleted on the UI thread.
+-        image_callback.reset();
+-        // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
+-      });
+-
+-  RasterizeToImageAsync(context, display_list, std::move(layer_tree), width,
+-                        height, std::move(on_ui_thread));
+-
+-  return Dart_Null();
+-  // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
+-}
+-
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/picture.h b/engine/src/flutter/lib/ui/painting/picture.h
+index 8c4fd36bdec..ff32e3b8394 100644
+--- a/engine/src/flutter/lib/ui/painting/picture.h
++++ b/engine/src/flutter/lib/ui/painting/picture.h
+@@ -5,12 +5,9 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_PICTURE_H_
+ #define FLUTTER_LIB_UI_PAINTING_PICTURE_H_
+ 
+-#include "flutter/display_list/display_list.h"
+-#include "flutter/flow/layers/layer_tree.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "flutter/lib/ui/painting/image.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+-#include "flutter/shell/common/snapshot_pixel_format.h"
+ #include "flutter/runtime_spi/include/flutter_scene.h"
+ 
+ namespace flutter {
+@@ -41,31 +38,6 @@ class Picture : public RefCountedDartWrappable<Picture> {
+ 
+   size_t GetAllocationSize() const;
+ 
+-  static void RasterizeToImageSync(sk_sp<DisplayList> display_list,
+-                                   uint32_t width,
+-                                   uint32_t height,
+-                                   SnapshotPixelFormat target_format,
+-                                   Dart_Handle raw_image_handle);
+-
+-  static Dart_Handle RasterizeToImage(const sk_sp<DisplayList>& display_list,
+-                                      uint32_t width,
+-                                      uint32_t height,
+-                                      Dart_Handle raw_image_callback);
+-
+-  static Dart_Handle RasterizeLayerTreeToImage(
+-      std::unique_ptr<LayerTree> layer_tree,
+-      Dart_Handle raw_image_callback);
+-
+-  // Callers may provide either a display list or a layer tree, but not both.
+-  //
+-  // If a layer tree is provided, it will be flattened on the raster thread, and
+-  // picture_bounds should be the layer tree's frame_size().
+-  static Dart_Handle DoRasterizeToImage(const sk_sp<DisplayList>& display_list,
+-                                        std::unique_ptr<LayerTree> layer_tree,
+-                                        uint32_t width,
+-                                        uint32_t height,
+-                                        Dart_Handle raw_image_callback);
+-
+  private:
+   explicit Picture(FlutterSpiPicture* spi_picture);
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/shader.h b/engine/src/flutter/lib/ui/painting/shader.h
+index 41b90ed59c5..26015ecddcf 100644
+--- a/engine/src/flutter/lib/ui/painting/shader.h
++++ b/engine/src/flutter/lib/ui/painting/shader.h
+@@ -5,9 +5,7 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_SHADER_H_
+ #define FLUTTER_LIB_UI_PAINTING_SHADER_H_
+ 
+-#include "flutter/display_list/effects/dl_color_source.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
+-#include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/runtime_spi/include/flutter_paint_effects.h"
+ 
+ namespace flutter {
+@@ -19,7 +17,6 @@ class Shader : public RefCountedDartWrappable<Shader> {
+  public:
+   ~Shader() override;
+ 
+-  virtual std::shared_ptr<DlColorSource> shader(DlImageSampling) = 0;
+   virtual FlutterSpiShader* spi_handle() const = 0;
+ 
+  protected:
+diff --git a/engine/src/flutter/lib/ui/painting/single_frame_codec.cc b/engine/src/flutter/lib/ui/painting/single_frame_codec.cc
+deleted file mode 100644
+index ef9310b7869..00000000000
+--- a/engine/src/flutter/lib/ui/painting/single_frame_codec.cc
++++ /dev/null
+@@ -1,129 +0,0 @@
+-// Copyright 2013 The Flutter Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style license that can be
+-// found in the LICENSE file.
+-
+-#include "flutter/lib/ui/painting/single_frame_codec.h"
+-
+-#include "flutter/lib/ui/ui_dart_state.h"
+-#include "flutter/runtime_spi/image/spi_image.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+-#include "third_party/tonic/logging/dart_invoke.h"
+-
+-namespace flutter {
+-
+-SingleFrameCodec::SingleFrameCodec(
+-    const fml::RefPtr<ImageDescriptor>& descriptor,
+-    uint32_t target_width,
+-    uint32_t target_height,
+-    ImageDecoder::TargetPixelFormat target_format)
+-    : descriptor_(descriptor),
+-      target_width_(target_width),
+-      target_height_(target_height),
+-      target_format_(target_format) {}
+-
+-SingleFrameCodec::~SingleFrameCodec() = default;
+-
+-int SingleFrameCodec::frameCount() const {
+-  return 1;
+-}
+-
+-int SingleFrameCodec::repetitionCount() const {
+-  return 0;
+-}
+-
+-Dart_Handle SingleFrameCodec::getNextFrame(Dart_Handle callback_handle) {
+-  if (!Dart_IsClosure(callback_handle)) {
+-    return tonic::ToDart("Callback must be a function");
+-  }
+-
+-  if (status_ == Status::kComplete) {
+-    if (!cached_image_) {
+-      return tonic::ToDart("Image failed to decode");
+-    }
+-    if (!cached_image_->spi_handle()) {
+-      return tonic::ToDart("Decoded image has been disposed");
+-    }
+-    tonic::DartInvoke(callback_handle, {tonic::ToDart(cached_image_),
+-                                        tonic::ToDart(0), tonic::ToDart("")});
+-    return Dart_Null();
+-  }
+-
+-  // This has to be valid because this method is called from Dart.
+-  auto dart_state = UIDartState::Current();
+-
+-  pending_callbacks_.emplace_back(dart_state, callback_handle);
+-
+-  if (status_ == Status::kInProgress) {
+-    // Another call to getNextFrame is in progress and will invoke the
+-    // pending callbacks when decoding completes.
+-    return Dart_Null();
+-  }
+-
+-  auto decoder = dart_state->GetImageDecoder();
+-
+-  if (!decoder) {
+-    return tonic::ToDart(
+-        "Failed to access the internal image decoder "
+-        "registry on this isolate. Please file a bug on "
+-        "https://github.com/flutter/flutter/issues.");
+-  }
+-
+-  // The SingleFrameCodec must be deleted on the UI thread.  Allocate a RefPtr
+-  // on the heap to ensure that the SingleFrameCodec remains alive until the
+-  // decoder callback is invoked on the UI thread.  The callback can then
+-  // drop the reference.
+-  fml::RefPtr<SingleFrameCodec>* raw_codec_ref =
+-      new fml::RefPtr<SingleFrameCodec>(this);
+-
+-  // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
+-  decoder->Decode(
+-      descriptor_->data_descriptor(),
+-      {.target_width = target_width_,
+-       .target_height = target_height_,
+-       .target_format = target_format_},
+-      [raw_codec_ref](const auto& image, const auto& decode_error) {
+-        std::unique_ptr<fml::RefPtr<SingleFrameCodec>> codec_ref(raw_codec_ref);
+-        fml::RefPtr<SingleFrameCodec> codec(std::move(*codec_ref));
+-
+-        auto state = codec->pending_callbacks_.front().dart_state().lock();
+-
+-        if (!state) {
+-          // This is probably because the isolate has been terminated before the
+-          // image could be decoded.
+-
+-          return;
+-        }
+-
+-        tonic::DartState::Scope scope(state.get());
+-
+-        if (image) {
+-          FlutterSpiImage* spi_image = nullptr;
+-          if (SpiImageWrap(std::move(image), &spi_image) == kFlutterSpiOk) {
+-            codec->cached_image_ = CanvasImage::Create(spi_image);
+-          }
+-        }
+-
+-        // The cached frame is now available and should be returned to any
+-        // future callers.
+-        codec->status_ = Status::kComplete;
+-
+-        // Invoke any callbacks that were provided before the frame was decoded.
+-        for (const tonic::DartPersistentValue& callback :
+-             codec->pending_callbacks_) {
+-          tonic::DartInvoke(callback.value(),
+-                            {tonic::ToDart(codec->cached_image_),
+-                             tonic::ToDart(0), tonic::ToDart(decode_error)});
+-        }
+-        codec->pending_callbacks_.clear();
+-      });
+-
+-  // The encoded data is no longer needed now that it has been handed off
+-  // to the decoder.
+-  descriptor_ = nullptr;
+-
+-  status_ = Status::kInProgress;
+-
+-  return Dart_Null();
+-}
+-
+-}  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/single_frame_codec.h b/engine/src/flutter/lib/ui/painting/single_frame_codec.h
+deleted file mode 100644
+index 1bf0dc2a3a2..00000000000
+--- a/engine/src/flutter/lib/ui/painting/single_frame_codec.h
++++ /dev/null
+@@ -1,50 +0,0 @@
+-// Copyright 2013 The Flutter Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style license that can be
+-// found in the LICENSE file.
+-
+-#ifndef FLUTTER_LIB_UI_PAINTING_SINGLE_FRAME_CODEC_H_
+-#define FLUTTER_LIB_UI_PAINTING_SINGLE_FRAME_CODEC_H_
+-
+-#include "flutter/fml/macros.h"
+-#include "flutter/lib/ui/painting/codec.h"
+-#include "flutter/lib/ui/painting/image.h"
+-#include "flutter/lib/ui/painting/image_decoder.h"
+-#include "flutter/lib/ui/painting/image_descriptor.h"
+-
+-namespace flutter {
+-
+-class SingleFrameCodec : public Codec {
+- public:
+-  SingleFrameCodec(const fml::RefPtr<ImageDescriptor>& descriptor,
+-                   uint32_t target_width,
+-                   uint32_t target_height,
+-                   ImageDecoder::TargetPixelFormat destination_format);
+-
+-  ~SingleFrameCodec() override;
+-
+-  // |Codec|
+-  int frameCount() const override;
+-
+-  // |Codec|
+-  int repetitionCount() const override;
+-
+-  // |Codec|
+-  Dart_Handle getNextFrame(Dart_Handle args) override;
+-
+- private:
+-  enum class Status { kNew, kInProgress, kComplete };
+-  Status status_ = Status::kNew;
+-  fml::RefPtr<ImageDescriptor> descriptor_;
+-  uint32_t target_width_;
+-  uint32_t target_height_;
+-  ImageDecoder::TargetPixelFormat target_format_;
+-  fml::RefPtr<CanvasImage> cached_image_;
+-  std::vector<tonic::DartPersistentValue> pending_callbacks_;
+-
+-  FML_FRIEND_MAKE_REF_COUNTED(SingleFrameCodec);
+-  FML_FRIEND_REF_COUNTED_THREAD_SAFE(SingleFrameCodec);
+-};
+-
+-}  // namespace flutter
+-
+-#endif  // FLUTTER_LIB_UI_PAINTING_SINGLE_FRAME_CODEC_H_
+diff --git a/engine/src/flutter/lib/ui/painting/single_frame_codec_unittests.cc b/engine/src/flutter/lib/ui/painting/single_frame_codec_unittests.cc
+index 29ac6fc7b3c..a58b7923f18 100644
+--- a/engine/src/flutter/lib/ui/painting/single_frame_codec_unittests.cc
++++ b/engine/src/flutter/lib/ui/painting/single_frame_codec_unittests.cc
+@@ -2,124 +2,217 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+-#include "flutter/lib/ui/painting/single_frame_codec.h"
+-
++#include <array>
+ #include <memory>
+ 
+ #include "flutter/common/task_runners.h"
+ #include "flutter/fml/synchronization/waitable_event.h"
+-#include "flutter/runtime/dart_vm.h"
++#include "flutter/runtime_spi/include/flutter_image.h"
++#include "flutter/runtime_spi/spi_runtime_backend_factory.h"
++#include "flutter/runtime_spi/testing/c_test_runtime.h"
++#include "flutter/runtime_spi/testing/test_icu.h"
+ #include "flutter/shell/common/shell_test.h"
+-#include "flutter/shell/common/thread_host.h"
++#include "flutter/shell/common/shell_test_platform_view.h"
+ #include "flutter/testing/testing.h"
+ 
+-// CREATE_NATIVE_ENTRY is leaky by design
+-// NOLINTBEGIN(clang-analyzer-core.StackAddressEscape)
+-
+-#pragma GCC diagnostic ignored "-Wunreachable-code"
+-
+ namespace flutter {
+ namespace testing {
++namespace {
++
++struct FrameCallbackState {
++  fml::AutoResetWaitableEvent completed;
++  FlutterSpiResult result = kFlutterSpiInternalError;
++  FlutterSpiImage* image = nullptr;
++  int32_t duration_ms = -1;
++};
++
++void CaptureFrame(void* user_data,
++                  FlutterSpiResult result,
++                  FlutterSpiImage* image,
++                  int32_t duration_ms) {
++  auto* state = static_cast<FrameCallbackState*>(user_data);
++  state->result = result;
++  state->image = image;
++  state->duration_ms = duration_ms;
++  state->completed.Signal();
++}
+ 
+-TEST_F(ShellTest, SingleFrameCodecAccuratelyReportsSize) {
+-  auto message_latch = std::make_shared<fml::AutoResetWaitableEvent>();
+-
+-  auto validate_codec = [](Dart_NativeArguments args) {
+-    auto handle = Dart_GetNativeArgument(args, 0);
+-    intptr_t peer = 0;
+-    Dart_Handle result = Dart_GetNativeInstanceField(
+-        handle, tonic::DartWrappable::kPeerIndex, &peer);
+-    ASSERT_FALSE(Dart_IsError(result));
+-  };
+-  auto finish = [message_latch](Dart_NativeArguments args) {
+-    message_latch->Signal();
+-  };
+-
+-  Settings settings = CreateSettingsForFixture();
+-  TaskRunners task_runners("test",                  // label
+-                           GetCurrentTaskRunner(),  // platform
+-                           CreateNewThread(),       // raster
+-                           CreateNewThread(),       // ui
+-                           CreateNewThread()        // io
+-  );
+-
+-  AddNativeCallback("ValidateCodec", CREATE_NATIVE_ENTRY(validate_codec));
+-  AddNativeCallback("Finish", CREATE_NATIVE_ENTRY(finish));
+-
+-  std::unique_ptr<Shell> shell = CreateShell(settings, task_runners);
+-
+-  ASSERT_TRUE(shell->IsSetup());
+-  auto configuration = RunConfiguration::InferFromSettings(settings);
+-  configuration.SetEntrypoint("createSingleFrameCodec");
+-
+-  shell->RunEngine(std::move(configuration), [](auto result) {
+-    ASSERT_EQ(result, Engine::RunStatus::Success);
++void PostSync(const fml::RefPtr<fml::TaskRunner>& task_runner,
++              const fml::closure& task) {
++  fml::AutoResetWaitableEvent completed;
++  task_runner->PostTask([&completed, &task] {
++    task();
++    completed.Signal();
+   });
+-
+-  message_latch->Wait();
+-  DestroyShell(std::move(shell), task_runners);
++  completed.Wait();
+ }
+ 
+-TEST_F(ShellTest, SingleFrameCodecHandlesNoGpu) {
+-#ifndef FML_OS_MACOSX
+-  GTEST_SKIP() << "Only works on macOS currently.";
+-#endif
+-
+-  Settings settings = CreateSettingsForFixture();
+-  settings.enable_impeller = true;
+-  TaskRunners task_runners("test",                  // label
+-                           GetCurrentTaskRunner(),  // platform
+-                           CreateNewThread(),       // raster
+-                           CreateNewThread(),       // ui
+-                           CreateNewThread()        // io
+-  );
+-  std::unique_ptr<Shell> shell = CreateShell(settings, task_runners);
+-  ASSERT_TRUE(shell->IsSetup());
+-
+-  auto message_latch = std::make_shared<fml::AutoResetWaitableEvent>();
+-  auto finish = [message_latch](Dart_NativeArguments args) {
+-    message_latch->Signal();
+-  };
+-  AddNativeCallback("Finish", CREATE_NATIVE_ENTRY(finish));
+-
+-  auto turn_off_gpu = [&](Dart_NativeArguments args) {
+-    auto handle = Dart_GetNativeArgument(args, 0);
+-    bool value = true;
+-    ASSERT_TRUE(Dart_IsBoolean(handle));
+-    Dart_BooleanValue(handle, &value);
+-    TurnOffGPU(shell.get(), value);
+-  };
+-  AddNativeCallback("TurnOffGPU", CREATE_NATIVE_ENTRY(turn_off_gpu));
+-
+-  auto flush_awaiting_tasks = [&](Dart_NativeArguments args) {
+-    fml::WeakPtr io_manager = shell->GetIOManager();
+-    task_runners.GetIOTaskRunner()->PostTask([io_manager] {
+-      if (io_manager) {
+-        std::shared_ptr<impeller::Context> impeller_context =
+-            io_manager->GetImpellerContext();
+-        // This will cause the stored tasks to overflow and start throwing them
+-        // away.
+-        for (int i = 0; i < impeller::Context::kMaxTasksAwaitingGPU; i++) {
+-          impeller_context->StoreTaskForGPU([] {}, [] {});
+-        }
+-      }
++class SpiCodecTest : public ShellTest {
++ protected:
++  void SetUp() override {
++    InitializeIcuForTesting();
++    runtime_ = c_test_runtime_create();
++    task_runners_ = std::make_unique<TaskRunners>(GetTaskRunnersForFixture());
++  }
++
++  void TearDown() override {
++    if (shell_ != nullptr) {
++      DestroyShell(std::move(shell_), *task_runners_);
++    }
++    c_test_runtime_free(runtime_);
++  }
++
++  void StartShell(bool enable_impeller) {
++    auto settings = CreateSettingsForFixture();
++    settings.enable_impeller = enable_impeller;
++    settings.icu_data_path = IcuDataPathForTesting();
++    auto factory = std::make_shared<SpiRuntimeBackendFactory>(
++        c_test_runtime_table(runtime_));
++    shell_ = Shell::Create(
++        PlatformData(), *task_runners_, settings,
++        ShellTestPlatformViewBuilder({}),
++        [](Shell& shell) { return std::make_unique<Rasterizer>(shell); },
++        factory);
++    ASSERT_TRUE(shell_->IsSetup());
++    PlatformViewNotifyCreated(shell_.get());
++    RunEngine(shell_.get(), RunConfiguration::InferFromSettings(settings));
++  }
++
++  FlutterSpiImageDescriptor* CreateDescriptor() {
++    FlutterSpiImageDescriptor* descriptor = nullptr;
++    const FlutterSpiPixels pixels = {
++        .struct_size = sizeof(FlutterSpiPixels),
++        .pixels = pixels_.data(),
++        .pixels_size = pixels_.size(),
++        .width = 1,
++        .height = 1,
++        .row_bytes = 0,
++        .pixel_format = kFlutterSpiPixelFormatRGBA8888,
++    };
++    PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++      EXPECT_EQ(runtime_->engine_api->image->image_descriptor_create_raw(
++                    runtime_->engine, &pixels, &descriptor),
++                kFlutterSpiOk);
++    });
++    return descriptor;
++  }
++
++  FlutterSpiCodec* InstantiateCodec(FlutterSpiImageDescriptor* descriptor) {
++    FlutterSpiCodec* codec = nullptr;
++    PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++      const FlutterSpiImageDecodeOptions options = {
++          .struct_size = sizeof(FlutterSpiImageDecodeOptions),
++          .target_width = 0,
++          .target_height = 0,
++          .target_pixel_format = kFlutterSpiPixelFormatRGBA8888,
++      };
++      EXPECT_EQ(runtime_->engine_api->image->image_descriptor_instantiate_codec(
++                    descriptor, &options, &codec),
++                kFlutterSpiOk);
+     });
+-  };
+-  AddNativeCallback("FlushGpuAwaitingTasks",
+-                    CREATE_NATIVE_ENTRY(flush_awaiting_tasks));
++    return codec;
++  }
++
++  FlutterSpiResult GetNextFrame(FlutterSpiCodec* codec,
++                                FrameCallbackState* callback) {
++    FlutterSpiResult result = kFlutterSpiInternalError;
++    PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++      result = runtime_->engine_api->image->codec_get_next_frame(
++          codec, CaptureFrame, callback);
++    });
++    if (result == kFlutterSpiOk) {
++      callback->completed.Wait();
++    }
++    return result;
++  }
++
++  void ReleaseImage(FlutterSpiImage* image) {
++    PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++      EXPECT_EQ(runtime_->engine_api->image->image_release(image),
++                kFlutterSpiOk);
++    });
++  }
+ 
+-  auto configuration = RunConfiguration::InferFromSettings(settings);
+-  configuration.SetEntrypoint("singleFrameCodecHandlesNoGpu");
++  void ReleaseCodec(FlutterSpiCodec* codec) {
++    PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++      EXPECT_EQ(runtime_->engine_api->image->codec_release(codec),
++                kFlutterSpiOk);
++    });
++  }
+ 
+-  shell->RunEngine(std::move(configuration), [](auto result) {
+-    ASSERT_EQ(result, Engine::RunStatus::Success);
++  void ReleaseDescriptor(FlutterSpiImageDescriptor* descriptor) {
++    PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++      EXPECT_EQ(runtime_->engine_api->image->image_descriptor_release(
++                    descriptor),
++                kFlutterSpiOk);
++    });
++  }
++
++  CTestRuntime* runtime_ = nullptr;
++  std::unique_ptr<TaskRunners> task_runners_;
++  std::unique_ptr<Shell> shell_;
++  std::array<uint8_t, 4> pixels_ = {100, 100, 100, 100};
++};
++
++TEST_F(SpiCodecTest, SpiCodecAccuratelyReportsSize) {
++  StartShell(false);
++  FlutterSpiImageDescriptor* descriptor = CreateDescriptor();
++  ASSERT_NE(descriptor, nullptr);
++  FlutterSpiCodec* codec = InstantiateCodec(descriptor);
++  ASSERT_NE(codec, nullptr);
++
++  FrameCallbackState first_frame;
++  ASSERT_EQ(GetNextFrame(codec, &first_frame), kFlutterSpiOk);
++  ASSERT_EQ(first_frame.result, kFlutterSpiOk);
++  ASSERT_NE(first_frame.image, nullptr);
++
++  int32_t width = 0;
++  int32_t height = 0;
++  PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++    EXPECT_EQ(runtime_->engine_api->image->image_get_size(
++                  first_frame.image, &width, &height),
++              kFlutterSpiOk);
+   });
++  EXPECT_EQ(width, 1);
++  EXPECT_EQ(height, 1);
++  ReleaseImage(first_frame.image);
++
++  FrameCallbackState second_frame;
++  ASSERT_EQ(GetNextFrame(codec, &second_frame), kFlutterSpiOk);
++  ASSERT_EQ(second_frame.result, kFlutterSpiOk);
++  ASSERT_NE(second_frame.image, nullptr);
++  ReleaseImage(second_frame.image);
++  ReleaseCodec(codec);
++  ReleaseDescriptor(descriptor);
++}
+ 
+-  message_latch->Wait();
+-  DestroyShell(std::move(shell), task_runners);
++TEST_F(SpiCodecTest, SpiCodecHandlesNoGpu) {
++#ifdef FML_OS_MACOSX
++
++  StartShell(true);
++  FlutterSpiImageDescriptor* descriptor = CreateDescriptor();
++  ASSERT_NE(descriptor, nullptr);
++  TurnOffGPU(shell_.get(), true);
++  FlutterSpiCodec* codec = InstantiateCodec(descriptor);
++  ASSERT_NE(codec, nullptr);
++
++  FrameCallbackState first_frame;
++  ASSERT_EQ(GetNextFrame(codec, &first_frame), kFlutterSpiOk);
++  EXPECT_NE(first_frame.result, kFlutterSpiOk);
++  EXPECT_EQ(first_frame.image, nullptr);
++
++  FrameCallbackState second_frame;
++  ASSERT_EQ(GetNextFrame(codec, &second_frame), kFlutterSpiOk);
++  EXPECT_NE(second_frame.result, kFlutterSpiOk);
++  EXPECT_EQ(second_frame.image, nullptr);
++
++  ReleaseCodec(codec);
++  ReleaseDescriptor(descriptor);
++#else
++  GTEST_SKIP() << "Only works on macOS currently.";
++#endif
+ }
+ 
++}  // namespace
+ }  // namespace testing
+ }  // namespace flutter
+-
+-// NOLINTEND(clang-analyzer-core.StackAddressEscape)
+diff --git a/engine/src/flutter/shell/common/BUILD.gn b/engine/src/flutter/shell/common/BUILD.gn
+index 4866353a0f5..3ca118f181b 100644
+--- a/engine/src/flutter/shell/common/BUILD.gn
++++ b/engine/src/flutter/shell/common/BUILD.gn
+@@ -348,6 +348,7 @@ if (enable_unittests) {
+       "rasterizer_unittests.cc",
+       "resource_cache_limit_calculator_unittests.cc",
+       "shell_unittests.cc",
++      "//flutter/runtime_spi/testing/test_icu.cc",
+       "switches_unittests.cc",
+       "variable_refresh_rate_display_unittests.cc",
+       "vsync_waiter_unittests.cc",
+@@ -361,6 +362,7 @@ if (enable_unittests) {
+       "//flutter/display_list/testing:display_list_testing",
+       "//flutter/runtime_spi:effects",
+       "//flutter/runtime_spi:image",
++      "//flutter/runtime_spi:c_test_runtime",
+       "//flutter/runtime_spi:runtime_spi_c_api",
+       "//flutter/runtime_spi:spi_backend",
+       "//flutter/runtime_spi:text",
+diff --git a/engine/src/flutter/shell/common/shell_io_manager_unittests.cc b/engine/src/flutter/shell/common/shell_io_manager_unittests.cc
+index bb6bab6787c..a1d9b31fd95 100644
+--- a/engine/src/flutter/shell/common/shell_io_manager_unittests.cc
++++ b/engine/src/flutter/shell/common/shell_io_manager_unittests.cc
+@@ -2,108 +2,153 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+-#include "flutter/shell/common/shell_io_manager.h"
++#include <memory>
+ 
+ #include "flutter/common/task_runners.h"
+-#include "flutter/fml/mapping.h"
+-#include "flutter/lib/ui/painting/multi_frame_codec.h"
+-#include "flutter/testing/dart_isolate_runner.h"
+-#include "flutter/testing/fixture_test.h"
+-#include "flutter/testing/post_task_sync.h"
+-#include "flutter/testing/test_gl_surface.h"  // nogncheck
++#include "flutter/fml/synchronization/waitable_event.h"
++#include "flutter/runtime_spi/include/flutter_image.h"
++#include "flutter/runtime_spi/spi_runtime_backend_factory.h"
++#include "flutter/runtime_spi/testing/c_test_runtime.h"
++#include "flutter/runtime_spi/testing/test_icu.h"
++#include "flutter/shell/common/shell_test.h"
++#include "flutter/shell/common/shell_test_platform_view.h"
+ #include "flutter/testing/testing.h"
+ 
+ namespace flutter {
+ namespace testing {
++namespace {
+ 
+-class ShellIOManagerTest : public FixtureTest {};
++struct FrameCallbackState {
++  fml::AutoResetWaitableEvent completed;
++  FlutterSpiResult result = kFlutterSpiInternalError;
++  FlutterSpiImage* image = nullptr;
++  int32_t duration_ms = -1;
++};
++
++void CaptureFrame(void* user_data,
++                  FlutterSpiResult result,
++                  FlutterSpiImage* image,
++                  int32_t duration_ms) {
++  auto* state = static_cast<FrameCallbackState*>(user_data);
++  state->result = result;
++  state->image = image;
++  state->duration_ms = duration_ms;
++  state->completed.Signal();
++}
++
++void PostSync(const fml::RefPtr<fml::TaskRunner>& task_runner,
++              const fml::closure& task) {
++  fml::AutoResetWaitableEvent completed;
++  task_runner->PostTask([&completed, &task] {
++    task();
++    completed.Signal();
++  });
++  completed.Wait();
++}
++
++class ShellIOManagerTest : public ShellTest {
++ protected:
++  void SetUp() override {
++    InitializeIcuForTesting();
++    runtime_ = c_test_runtime_create();
++    task_runners_ = std::make_unique<TaskRunners>(GetTaskRunnersForFixture());
++  }
++
++  void TearDown() override {
++    if (shell_ != nullptr) {
++      DestroyShell(std::move(shell_), *task_runners_);
++    }
++    c_test_runtime_free(runtime_);
++  }
++
++  void StartShell() {
++    auto settings = CreateSettingsForFixture();
++    settings.icu_data_path = IcuDataPathForTesting();
++    auto factory = std::make_shared<SpiRuntimeBackendFactory>(
++        c_test_runtime_table(runtime_));
++    shell_ = Shell::Create(
++        PlatformData(), *task_runners_, settings,
++        ShellTestPlatformViewBuilder({}),
++        [](Shell& shell) { return std::make_unique<Rasterizer>(shell); },
++        factory);
++    ASSERT_TRUE(shell_->IsSetup());
++    PlatformViewNotifyCreated(shell_.get());
++    RunEngine(shell_.get(), RunConfiguration::InferFromSettings(settings));
++  }
++
++  FlutterSpiImageDescriptor* CreateEncodedDescriptor(
++      const sk_sp<SkData>& data) {
++    FlutterSpiImageDescriptor* descriptor = nullptr;
++    PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++      EXPECT_EQ(runtime_->engine_api->image->image_descriptor_create_encoded(
++                    runtime_->engine, data->bytes(), data->size(),
++                    &descriptor),
++                kFlutterSpiOk);
++    });
++    return descriptor;
++  }
++
++  FlutterSpiCodec* InstantiateCodec(FlutterSpiImageDescriptor* descriptor) {
++    FlutterSpiCodec* codec = nullptr;
++    PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++      const FlutterSpiImageDecodeOptions options = {
++          .struct_size = sizeof(FlutterSpiImageDecodeOptions),
++          .target_width = 0,
++          .target_height = 0,
++          .target_pixel_format = kFlutterSpiPixelFormatRGBA8888,
++      };
++      EXPECT_EQ(runtime_->engine_api->image->image_descriptor_instantiate_codec(
++                    descriptor, &options, &codec),
++                kFlutterSpiOk);
++    });
++    return codec;
++  }
++
++  void ReleaseCodec(FlutterSpiCodec* codec) {
++    PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++      EXPECT_EQ(runtime_->engine_api->image->codec_release(codec),
++                kFlutterSpiOk);
++    });
++  }
++
++  void ReleaseDescriptor(FlutterSpiImageDescriptor* descriptor) {
++    PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++      EXPECT_EQ(runtime_->engine_api->image->image_descriptor_release(
++                    descriptor),
++                kFlutterSpiOk);
++    });
++  }
++
++  CTestRuntime* runtime_ = nullptr;
++  std::unique_ptr<TaskRunners> task_runners_;
++  std::unique_ptr<Shell> shell_;
++};
+ 
+ // Regression test for https://github.com/flutter/engine/pull/32106.
+ TEST_F(ShellIOManagerTest,
+        ItDoesNotCrashThatSkiaUnrefQueueDrainAfterIOManagerReset) {
+-  auto settings = CreateSettingsForFixture();
+-  auto vm_ref = DartVMRef::Create(settings);
+-  auto vm_data = vm_ref.GetVMData();
++  StartShell();
+   auto gif_mapping = flutter::testing::OpenFixtureAsSkData("hello_loop_2.gif");
+   ASSERT_TRUE(gif_mapping);
+ 
+-  ImageGeneratorRegistry registry;
+-  std::shared_ptr<ImageGenerator> gif_generator =
+-      registry.CreateCompatibleGenerator(gif_mapping);
+-  ASSERT_TRUE(gif_generator);
+-
+-  TaskRunners runners(GetCurrentTestName(),         // label
+-                      CreateNewThread("platform"),  // platform
+-                      CreateNewThread("raster"),    // raster
+-                      CreateNewThread("ui"),        // ui
+-                      CreateNewThread("io")         // io
+-  );
+-
+-  std::unique_ptr<TestGLSurface> gl_surface;
+-  std::unique_ptr<ShellIOManager> io_manager;
+-  fml::RefPtr<MultiFrameCodec> codec;
+-  std::promise<std::shared_ptr<impeller::Context>> promise;
+-  promise.set_value(nullptr);
+-
+-  // Setup the IO manager.
+-  PostTaskSync(runners.GetIOTaskRunner(), [&]() {
+-    gl_surface = std::make_unique<TestGLSurface>(DlISize(1, 1));
+-    io_manager = std::make_unique<ShellIOManager>(
+-        gl_surface->CreateGrContext(), std::make_shared<fml::SyncSwitch>(),
+-        runners.GetIOTaskRunner(),
+-        std::make_shared<impeller::ImpellerContextFuture>(promise.get_future()),
+-        /*enable_impeller=*/false, fml::TimeDelta::FromMilliseconds(0));
+-  });
++  FlutterSpiImageDescriptor* descriptor =
++      CreateEncodedDescriptor(gif_mapping);
++  ASSERT_NE(descriptor, nullptr);
++  FlutterSpiCodec* codec = InstantiateCodec(descriptor);
++  ASSERT_NE(codec, nullptr);
+ 
+-  auto isolate = RunDartCodeInIsolate(vm_ref, settings, runners, "emptyMain",
+-                                      {}, GetDefaultKernelFilePath(),
+-                                      io_manager->GetWeakIOManager());
+-
+-  PostTaskSync(runners.GetUITaskRunner(), [&]() {
+-    fml::AutoResetWaitableEvent isolate_latch;
+-
+-    EXPECT_TRUE(isolate->RunInIsolateScope([&]() -> bool {
+-      Dart_Handle library = Dart_RootLibrary();
+-      if (Dart_IsError(library)) {
+-        isolate_latch.Signal();
+-        return false;
+-      }
+-      Dart_Handle closure =
+-          Dart_GetField(library, Dart_NewStringFromCString("frameCallback"));
+-      if (Dart_IsError(closure) || !Dart_IsClosure(closure)) {
+-        isolate_latch.Signal();
+-        return false;
+-      }
+-
+-      codec = fml::MakeRefCounted<MultiFrameCodec>(std::move(gif_generator));
+-      codec->getNextFrame(closure);
+-      isolate_latch.Signal();
+-      return true;
+-    }));
+-    isolate_latch.Wait();
++  auto callback = std::make_shared<FrameCallbackState>();
++  PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++    EXPECT_EQ(runtime_->engine_api->image->codec_get_next_frame(
++                  codec, CaptureFrame, callback.get()),
++              kFlutterSpiOk);
+   });
+ 
+-  // Destroy the IO manager
+-  PostTaskSync(runners.GetIOTaskRunner(), [&]() {
+-    // 'SkiaUnrefQueue.Drain' will be called after 'io_manager.reset()' in this
+-    // test, If the resource context has been destroyed at that time, it will
+-    // crash.
+-    //
+-    // 'Drain()' currently checks whether the weak pointer is still valid or not
+-    // before trying to call anything on it.
+-    //
+-    // However, calling 'unref' on the 'SkImage_Lazy' ends up freeing a
+-    // 'GrBackendTexture'. That object seems to assume that something else is
+-    // keeping the context alive. This seems like it might be a bad assumption
+-    // on Skia's part, but in Skia's defense we're doing something pretty weird
+-    // here by keeping GPU resident objects alive without keeping the
+-    // 'GrDirectContext' alive ourselves.
+-    //
+-    // See https://github.com/flutter/flutter/issues/87895
+-    io_manager.reset();
+-    gl_surface.reset();
+-  });
++  ReleaseCodec(codec);
++  ReleaseDescriptor(descriptor);
++  DestroyShell(std::move(shell_), *task_runners_);
+ }
+ 
++}  // namespace
+ }  // namespace testing
+ }  // namespace flutter
