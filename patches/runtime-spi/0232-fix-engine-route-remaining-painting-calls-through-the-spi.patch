@@ -1,0 +1,31 @@
+# Why: complete the mechanical migration of the remaining canvas and shader
+# releases to the public SPI tables.
+diff --git a/engine/src/flutter/lib/ui/painting/canvas.cc b/engine/src/flutter/lib/ui/painting/canvas.cc
+index 35ce3d65c7d..9cb9b11ffb2 100644
+--- a/engine/src/flutter/lib/ui/painting/canvas.cc
++++ b/engine/src/flutter/lib/ui/painting/canvas.cc
+@@ -715,8 +715,9 @@ void Canvas::drawVertices(const Vertices* vertices,
+   FML_DCHECK(paint.isNotNull());
+   if (recorder_ != nullptr) {
+     FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+-    CanvasDrawVertices(recorder_, vertices->spi_handle(),
+-                       static_cast<int32_t>(blend_mode), &spi_paint);
++    SpiApi().paint_effects->canvas_draw_vertices(
++        recorder_, vertices->spi_handle(), static_cast<int32_t>(blend_mode),
++        &spi_paint);
+   }
+ }
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/fragment_shader.cc b/engine/src/flutter/lib/ui/painting/fragment_shader.cc
+index 1fdffa56910..5f4182b3140 100644
+--- a/engine/src/flutter/lib/ui/painting/fragment_shader.cc
++++ b/engine/src/flutter/lib/ui/painting/fragment_shader.cc
+@@ -176,7 +176,7 @@ FlutterSpiShader* ReusableFragmentShader::spi_handle() const {
+ 
+ ReusableFragmentShader::~ReusableFragmentShader() {
+   if (spi_shader_ != nullptr) {
+-    SpiShaderRelease(spi_shader_);
++    SpiApi().paint_effects->shader_release(spi_shader_);
+   }
+   if (spi_fragment_shader_ != nullptr) {
+     SpiApi().fragment->shader_release(spi_fragment_shader_);
