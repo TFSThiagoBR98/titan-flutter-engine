@@ -1,0 +1,52 @@
+# Why: Keep dart:ui PixelFormat values aligned with the SPI enum so raw RGBA
+# and BGRA descriptors reach the decoder without channel swaps or invalid
+# formats.
+diff --git a/engine/src/flutter/lib/ui/painting/image_descriptor.cc b/engine/src/flutter/lib/ui/painting/image_descriptor.cc
+index 45c7af5ea09..cdb74de5c82 100644
+--- a/engine/src/flutter/lib/ui/painting/image_descriptor.cc
++++ b/engine/src/flutter/lib/ui/painting/image_descriptor.cc
+@@ -54,19 +54,19 @@ Dart_Handle ImageDescriptor::initEncoded(Dart_Handle descriptor_handle,
+ 
+ namespace {
+ // Must be kept in sync with painting.dart.
+-ImageDescriptor::PixelFormat toImageDescriptorPixelFormat(int val) {
+-  switch (val) {
++FlutterSpiPixelFormat ToSpiPixelFormat(int dart_pixel_format) {
++  switch (dart_pixel_format) {
+     case 0:
+-      return ImageDescriptor::PixelFormat::kRGBA8888;
++      return kFlutterSpiPixelFormatRGBA8888;
+     case 1:
+-      return ImageDescriptor::PixelFormat::kBGRA8888;
++      return kFlutterSpiPixelFormatBGRA8888;
+     case 2:
+-      return ImageDescriptor::PixelFormat::kRGBAFloat32;
++      return kFlutterSpiPixelFormatRGBAFloat32;
+     case 3:
+-      return ImageDescriptor::PixelFormat::kR32Float;
++      return kFlutterSpiPixelFormatRFloat32;
+     default:
+       FML_DCHECK(false) << "unrecognized format";
+-      return ImageDescriptor::PixelFormat::kRGBA8888;
++      return kFlutterSpiPixelFormatRGBA8888;
+   }
+ }
+ }  // namespace
+@@ -77,8 +77,6 @@ void ImageDescriptor::initRaw(Dart_Handle descriptor_handle,
+                               int height,
+                               int row_bytes,
+                               int pixel_format) {
+-  ImageDescriptor::PixelFormat image_descriptor_pixel_format =
+-      toImageDescriptorPixelFormat(pixel_format);
+   FlutterSpiPixels pixels = {
+       .struct_size = sizeof(FlutterSpiPixels),
+       .pixels = static_cast<const uint8_t*>(data->data()->bytes()),
+@@ -86,7 +84,7 @@ void ImageDescriptor::initRaw(Dart_Handle descriptor_handle,
+       .width = width,
+       .height = height,
+       .row_bytes = row_bytes == -1 ? 0 : row_bytes,
+-      .pixel_format = static_cast<int32_t>(image_descriptor_pixel_format),
++      .pixel_format = static_cast<int32_t>(ToSpiPixelFormat(pixel_format)),
+   };
+   FlutterSpiImageDescriptor* spi_descriptor = nullptr;
+   if (SpiApi().image->image_descriptor_create_raw(

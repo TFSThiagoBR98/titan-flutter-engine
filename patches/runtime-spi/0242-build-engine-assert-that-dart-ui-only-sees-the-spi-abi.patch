@@ -1,0 +1,39 @@
+# Why: Keep the dart:ui target free of implementation dependencies that are
+# owned by ui_text_core, which already carries the test-font dependency for
+# font_collection.cc.
+diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
+index 5a3611bb57e..b590a068eb9 100644
+--- a/engine/src/flutter/lib/ui/BUILD.gn
++++ b/engine/src/flutter/lib/ui/BUILD.gn
+@@ -335,7 +335,6 @@ source_set("ui") {
+     "//flutter/fml",
+     "//flutter/impeller/runtime_stage",
+     "//flutter/runtime:dart_plugin_registrant",
+-    "//flutter/runtime:test_font",
+     "//flutter/runtime_spi:runtime_spi_c_api",
+     "//flutter/skia",
+     "//flutter/third_party/icu",
+@@ -345,6 +344,23 @@ source_set("ui") {
+     "//third_party/zlib",
+   ]
+ 
++  # O alvo Dart do dart:ui só vê o core pela ABI C do SPI (S4i). Exceções até a S7: ui_gpu_bridge fica fora deste alvo.
++  assert_no_deps = [
++    "//flutter/flow/*",
++    "//flutter/display_list/*",
++    "//flutter/txt/*",
++    "//flutter/skia/modules/skparagraph/*",
++    "//flutter/shell/common:common",
++    "//flutter/runtime_spi:spi_backend",
++    "//flutter/runtime_spi:scene",
++    "//flutter/runtime_spi:image",
++    "//flutter/runtime_spi:effects",
++    "//flutter/lib/ui:ui_image_decoding",
++    "//flutter/lib/ui:ui_image_output",
++    "//flutter/lib/ui:ui_text_core",
++    "//flutter/lib/ui:ui_gpu_bridge",
++  ]
++
+   if (!defined(defines)) {
+     defines = []
+   }

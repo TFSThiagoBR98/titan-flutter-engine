@@ -1,0 +1,1012 @@
+# Why: Keep dart:ui on the SPI ABI while declaring direct dependencies for
+# core-only decoder and encoder tests.
+diff --git a/engine/src/flutter/lib/gpu/BUILD.gn b/engine/src/flutter/lib/gpu/BUILD.gn
+index 5dac3d7ce29..cfe869f1d5c 100644
+--- a/engine/src/flutter/lib/gpu/BUILD.gn
++++ b/engine/src/flutter/lib/gpu/BUILD.gn
+@@ -64,6 +64,7 @@ source_set("gpu") {
+     "//flutter/impeller/display_list:skia_conversions",
+     "//flutter/impeller/shader_bundle:shader_bundle_flatbuffers",
+     "//flutter/lib/ui",
++    "//flutter/lib/ui:ui_image_decoding",
+     "//flutter/lib/ui:ui_gpu_bridge",
+     "//flutter/third_party/tonic",
+     "//third_party/abseil-cpp/absl/status",
+diff --git a/engine/src/flutter/lib/gpu/context.cc b/engine/src/flutter/lib/gpu/context.cc
+index fdb183bf4f7..8501857e6c2 100644
+--- a/engine/src/flutter/lib/gpu/context.cc
++++ b/engine/src/flutter/lib/gpu/context.cc
+@@ -7,6 +7,7 @@
+ #include <future>
+ 
+ #include "flutter/lib/gpu/formats.h"
++#include "flutter/lib/ui/io_manager.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "fml/make_copyable.h"
+ #include "impeller/core/allocator.h"
+diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
+index d6c73c7eca4..5a3611bb57e 100644
+--- a/engine/src/flutter/lib/ui/BUILD.gn
++++ b/engine/src/flutter/lib/ui/BUILD.gn
+@@ -325,31 +325,20 @@ source_set("ui") {
+ 
+   public_deps = [
+     ":ui_core_types",
+-    ":ui_image_decoding",
+-    ":ui_image_output",
+-    "//flutter/flow",
+     "//flutter/shell/common:display",
+-    "//flutter/shell/common:platform_message_handler",
+-    "//flutter/shell/common:snapshot_pixel_format",
+-    "//flutter/skia/modules/skparagraph",
+-    "//flutter/txt",
+   ]
+ 
+   deps = [
+     "$dart_src/runtime/bin:common_embedder_dart_io",
+     "//flutter/assets",
+     "//flutter/common",
+-    "//flutter/common/graphics",
+-    "//flutter/display_list",
+     "//flutter/fml",
+     "//flutter/impeller/runtime_stage",
+     "//flutter/runtime:dart_plugin_registrant",
+     "//flutter/runtime:test_font",
+-    "//flutter/runtime_spi:effects",
+-    "//flutter/runtime_spi:image",
+-    "//flutter/runtime_spi:scene",
+-    "//flutter/runtime_spi:spi_backend",
++    "//flutter/runtime_spi:runtime_spi_c_api",
+     "//flutter/skia",
++    "//flutter/third_party/icu",
+     "//flutter/third_party/rapidjson",
+     "//flutter/third_party/tonic",
+     "//third_party/abseil-cpp/absl/status:statusor",
+@@ -450,6 +439,8 @@ if (enable_unittests) {
+     deps = [
+       ":display_list_deferred_image_unittests",
+       ":ui",
++      ":ui_image_decoding",
++      ":ui_image_output",
+       ":ui_testing_mocks",
+       ":ui_unittests_fixtures",
+       "$dart_src/runtime/bin:elf_loader",
+@@ -486,6 +477,7 @@ if (enable_unittests) {
+ 
+     deps = [
+       ":ui",
++      ":ui_image_output",
+       ":ui_testing_mocks",
+       "//flutter/display_list",
+       "//flutter/fml",
+@@ -499,6 +491,7 @@ if (enable_unittests) {
+     sources = [ "painting/testing/mocks.h" ]
+     public_deps = [
+       ":ui",
++      ":ui_image_decoding",
+       "//flutter/common/graphics",
+       "//flutter/display_list",
+       "//third_party/googletest:gmock",
+diff --git a/engine/src/flutter/lib/ui/compositing/scene.cc b/engine/src/flutter/lib/ui/compositing/scene.cc
+index 1bd9e57e157..37e40d58647 100644
+--- a/engine/src/flutter/lib/ui/compositing/scene.cc
++++ b/engine/src/flutter/lib/ui/compositing/scene.cc
+@@ -12,7 +12,6 @@
+ #include "flutter/lib/ui/spi_api.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/lib/ui/window/platform_configuration.h"
+-#include "flutter/runtime_spi/spi_scene.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+@@ -100,11 +99,11 @@ Dart_Handle Scene::toImageSync(uint32_t width,
+           kFlutterSpiOk ||
+       image == nullptr) {
+     if (scene != nullptr) {
+-      SpiSceneRelease(scene);
++      SpiApi().scene_release(scene);
+     }
+     return Dart_Null();
+   }
+-  SpiSceneRelease(scene);
++  SpiApi().scene_release(scene);
+   CanvasImage::Create(raw_image_handle, image);
+   return Dart_Null();
+ }
+@@ -134,7 +133,7 @@ Dart_Handle Scene::toImage(uint32_t width,
+   const FlutterSpiResult result = SpiApi().image->scene_to_image(
+       CanvasImage::GetSpiEngine(), scene, static_cast<int32_t>(width),
+       static_cast<int32_t>(height), InvokeImageCallback, callback);
+-  SpiSceneRelease(scene);
++  SpiApi().scene_release(scene);
+   if (result != kFlutterSpiOk) {
+     delete callback;
+     return tonic::ToDart("Failed to rasterize scene.");
+diff --git a/engine/src/flutter/lib/ui/painting/canvas.cc b/engine/src/flutter/lib/ui/painting/canvas.cc
+index 03ffd4fdaae..016cc5bba9f 100644
+--- a/engine/src/flutter/lib/ui/painting/canvas.cc
++++ b/engine/src/flutter/lib/ui/painting/canvas.cc
+@@ -7,6 +7,7 @@
+ #include <cmath>
+ 
+ #include "flutter/lib/ui/floating_point.h"
++#include "flutter/fml/trace_event.h"
+ #include "flutter/lib/ui/painting/image.h"
+ #include "flutter/lib/ui/painting/image_filter.h"
+ #include "flutter/lib/ui/painting/paint.h"
+diff --git a/engine/src/flutter/lib/ui/painting/image.cc b/engine/src/flutter/lib/ui/painting/image.cc
+index 517a9496aac..36a87150848 100644
+--- a/engine/src/flutter/lib/ui/painting/image.cc
++++ b/engine/src/flutter/lib/ui/painting/image.cc
+@@ -86,9 +86,9 @@ int CanvasImage::colorSpace() {
+     return ColorSpace::kSRGB;
+   }
+   switch (color_space) {
+-    case static_cast<int32_t>(DlColorSpace::kExtendedSRGB):
++    case ColorSpace::kExtendedSRGB:
+       return ColorSpace::kExtendedSRGB;
+-    case static_cast<int32_t>(DlColorSpace::kSRGB):
++    case ColorSpace::kSRGB:
+     default:
+       return ColorSpace::kSRGB;
+   }
+diff --git a/engine/src/flutter/lib/ui/painting/image_decoder_no_gl_unittests.cc b/engine/src/flutter/lib/ui/painting/image_decoder_no_gl_unittests.cc
+index b0f5b335e1c..cb4431df678 100644
+--- a/engine/src/flutter/lib/ui/painting/image_decoder_no_gl_unittests.cc
++++ b/engine/src/flutter/lib/ui/painting/image_decoder_no_gl_unittests.cc
+@@ -6,7 +6,8 @@
+ #include <memory>
+ 
+ #include "flutter/fml/endianness.h"
+-#include "flutter/lib/ui/painting/image_descriptor.h"
++#include "flutter/lib/ui/painting/image_descriptor_data.h"
++#include "flutter/lib/ui/painting/immutable_buffer.h"
+ #include "impeller/renderer/capabilities.h"
+ 
+ #if IMPELLER_SUPPORTS_RENDERING
+@@ -173,8 +174,8 @@ TEST(ImageDecoderNoGLTest, ImpellerWideGamutDisplayP3) {
+       registry.CreateCompatibleGenerator(data);
+   ASSERT_TRUE(generator);
+ 
+-  auto descriptor = fml::MakeRefCounted<ImageDescriptor>(std::move(data),
+-                                                         std::move(generator));
++  auto descriptor = std::make_shared<ImageDescriptorData>(std::move(data),
++                                                          std::move(generator));
+ 
+   ASSERT_FALSE(
+       IsPngWithPLTE(descriptor->data()->bytes(), descriptor->data()->size()));
+@@ -184,7 +185,7 @@ TEST(ImageDecoderNoGLTest, ImpellerWideGamutDisplayP3) {
+       std::make_shared<impeller::TestImpellerAllocator>();
+   absl::StatusOr<ImageDecoderImpeller::DecompressResult> wide_result =
+       ImageDecoderImpeller::DecompressTexture(
+-          descriptor->data_descriptor().get(),
++          descriptor.get(),
+           {.target_width = 100, .target_height = 100},
+           {100, 100},
+           /*supports_wide_gamut=*/true, capabilities, allocator);
+@@ -212,7 +213,7 @@ TEST(ImageDecoderNoGLTest, ImpellerWideGamutDisplayP3) {
+   ASSERT_TRUE(found_deep_red);
+   absl::StatusOr<ImageDecoderImpeller::DecompressResult> narrow_result =
+       ImageDecoderImpeller::DecompressTexture(
+-          descriptor->data_descriptor().get(),
++          descriptor.get(),
+           {.target_width = 100, .target_height = 100},
+           {100, 100},
+           /*supports_wide_gamut=*/false, capabilities, allocator);
+@@ -242,8 +243,8 @@ TEST(ImageDecoderNoGLTest, ImpellerWideGamutIndexedPng) {
+       registry.CreateCompatibleGenerator(data);
+   ASSERT_TRUE(generator);
+ 
+-  auto descriptor = fml::MakeRefCounted<ImageDescriptor>(std::move(data),
+-                                                         std::move(generator));
++  auto descriptor = std::make_shared<ImageDescriptorData>(std::move(data),
++                                                          std::move(generator));
+ 
+   ASSERT_TRUE(
+       IsPngWithPLTE(descriptor->data()->bytes(), descriptor->data()->size()));
+@@ -253,7 +254,7 @@ TEST(ImageDecoderNoGLTest, ImpellerWideGamutIndexedPng) {
+       std::make_shared<impeller::TestImpellerAllocator>();
+   absl::StatusOr<ImageDecoderImpeller::DecompressResult> wide_result =
+       ImageDecoderImpeller::DecompressTexture(
+-          descriptor->data_descriptor().get(),
++          descriptor.get(),
+           {.target_width = 100, .target_height = 100},
+           {100, 100},
+           /*supports_wide_gamut=*/true, capabilities, allocator);
+@@ -281,7 +282,7 @@ TEST(ImageDecoderNoGLTest, ImpellerWideGamutIndexedPng) {
+   ASSERT_TRUE(found_deep_red);
+   absl::StatusOr<ImageDecoderImpeller::DecompressResult> narrow_result =
+       ImageDecoderImpeller::DecompressTexture(
+-          descriptor->data_descriptor().get(),
++          descriptor.get(),
+           {.target_width = 100, .target_height = 100},
+           {100, 100},
+           /*supports_wide_gamut=*/false, capabilities, allocator);
+@@ -304,14 +305,14 @@ TEST(ImageDecoderNoGLTest, ImpellerRGBA32FDecode) {
+   auto immutable_buffer =
+       fml::MakeRefCounted<ImmutableBuffer>(std::move(sk_data));
+ 
+-  // 2. Create an ImageDescriptor using the private constructor.
+-  ImageDescriptor::ImageInfo image_info = {
++  // 2. Create an ImageDescriptorData using its raw-data constructor.
++  ImageDescriptorData::ImageInfo image_info = {
+       .width = 1,
+       .height = 1,
+-      .format = ImageDescriptor::PixelFormat::kRGBAFloat32,
++      .format = ImageDescriptorData::PixelFormat::kRGBAFloat32,
+       .alpha_type = kUnpremul_SkAlphaType,
+   };
+-  auto descriptor = fml::MakeRefCounted<ImageDescriptor>(
++  auto descriptor = std::make_shared<ImageDescriptorData>(
+       immutable_buffer->data(), image_info, sizeof(pixel_data));
+ 
+   // Set up Impeller capabilities and allocator.
+@@ -325,7 +326,7 @@ TEST(ImageDecoderNoGLTest, ImpellerRGBA32FDecode) {
+   // 3. Call ImageDecoderImpeller::DecompressTexture with this ImageDescriptor.
+   absl::StatusOr<ImageDecoderImpeller::DecompressResult> result =
+       ImageDecoderImpeller::DecompressTexture(
+-          descriptor->data_descriptor().get(),
++          descriptor.get(),
+           /*options=*/
+           {.target_width = 1,
+            .target_height = 1,
+@@ -366,14 +367,14 @@ TEST(ImageDecoderNoGLTest, ImpellerR32FDecode) {
+   auto immutable_buffer =
+       fml::MakeRefCounted<ImmutableBuffer>(std::move(sk_data));
+ 
+-  // 2. Create an ImageDescriptor using the private constructor.
+-  ImageDescriptor::ImageInfo image_info = {
++  // 2. Create an ImageDescriptorData using its raw-data constructor.
++  ImageDescriptorData::ImageInfo image_info = {
+       .width = 1,
+       .height = 1,
+-      .format = ImageDescriptor::PixelFormat::kR32Float,
++      .format = ImageDescriptorData::PixelFormat::kR32Float,
+       .alpha_type = kUnpremul_SkAlphaType,
+   };
+-  auto descriptor = fml::MakeRefCounted<ImageDescriptor>(
++  auto descriptor = std::make_shared<ImageDescriptorData>(
+       immutable_buffer->data(), image_info, sizeof(pixel_data));
+ 
+   // Set up Impeller capabilities and allocator.
+@@ -387,7 +388,7 @@ TEST(ImageDecoderNoGLTest, ImpellerR32FDecode) {
+   // 3. Call ImageDecoderImpeller::DecompressTexture with this ImageDescriptor.
+   absl::StatusOr<ImageDecoderImpeller::DecompressResult> result =
+       ImageDecoderImpeller::DecompressTexture(
+-          descriptor->data_descriptor().get(),
++          descriptor.get(),
+           /*options=*/
+           {.target_width = 1,
+            .target_height = 1,
+@@ -428,15 +429,15 @@ TEST(ImageDecoderNoGLTest, ImpellerUnmultipliedAlphaPng) {
+       registry.CreateCompatibleGenerator(data);
+   ASSERT_TRUE(generator);
+ 
+-  auto descriptor = fml::MakeRefCounted<ImageDescriptor>(std::move(data),
+-                                                         std::move(generator));
++  auto descriptor = std::make_shared<ImageDescriptorData>(std::move(data),
++                                                          std::move(generator));
+ 
+ #if IMPELLER_SUPPORTS_RENDERING
+   std::shared_ptr<impeller::Allocator> allocator =
+       std::make_shared<impeller::TestImpellerAllocator>();
+   absl::StatusOr<ImageDecoderImpeller::DecompressResult> result =
+       ImageDecoderImpeller::DecompressTexture(
+-          descriptor->data_descriptor().get(),
++          descriptor.get(),
+           {.target_width = 11, .target_height = 11}, {11, 11},
+           /*supports_wide_gamut=*/true, capabilities, allocator);
+   ASSERT_TRUE(result.ok());
+@@ -462,14 +463,14 @@ void ExpectDecodedFormat(sk_sp<SkColorSpace> color_space,
+   auto immutable_buffer =
+       fml::MakeRefCounted<ImmutableBuffer>(std::move(sk_data));
+ 
+-  ImageDescriptor::ImageInfo image_info = {
++  ImageDescriptorData::ImageInfo image_info = {
+       .width = 1,
+       .height = 1,
+-      .format = ImageDescriptor::PixelFormat::kRGBA8888,
++      .format = ImageDescriptorData::PixelFormat::kRGBA8888,
+       .alpha_type = kOpaque_SkAlphaType,
+       .color_space = std::move(color_space),
+   };
+-  auto descriptor = fml::MakeRefCounted<ImageDescriptor>(
++  auto descriptor = std::make_shared<ImageDescriptorData>(
+       immutable_buffer->data(), image_info, sizeof(pixel_data));
+ 
+   std::shared_ptr<impeller::Capabilities> capabilities =
+@@ -481,7 +482,7 @@ void ExpectDecodedFormat(sk_sp<SkColorSpace> color_space,
+ 
+   absl::StatusOr<ImageDecoderImpeller::DecompressResult> result =
+       ImageDecoderImpeller::DecompressTexture(
+-          descriptor->data_descriptor().get(),
++          descriptor.get(),
+           {.target_width = 1, .target_height = 1}, {1, 1},
+           supports_wide_gamut, capabilities, allocator);
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/image_decoder_unittests.cc b/engine/src/flutter/lib/ui/painting/image_decoder_unittests.cc
+index 0261a427162..46f7489db49 100644
+--- a/engine/src/flutter/lib/ui/painting/image_decoder_unittests.cc
++++ b/engine/src/flutter/lib/ui/painting/image_decoder_unittests.cc
+@@ -15,7 +15,7 @@
+ #include "flutter/lib/ui/painting/image_decoder_impeller.h"
+ #include "flutter/lib/ui/painting/image_decoder_no_gl_unittests.h"
+ #include "flutter/lib/ui/painting/image_decoder_skia.h"
+-#include "flutter/lib/ui/painting/image_descriptor.h"
++#include "flutter/lib/ui/painting/image_descriptor_data.h"
+ #include "flutter/runtime/dart_vm.h"
+ #include "flutter/runtime/dart_vm_lifecycle.h"
+ #include "flutter/runtime_spi/include/flutter_image.h"
+@@ -415,9 +415,8 @@ TEST_F(ImageDecoderFixtureTest, InvalidImageResultsError) {
+     auto data = flutter::testing::OpenFixtureAsSkData("ThisDoesNotExist.jpg");
+     ASSERT_FALSE(data);
+ 
+-    fml::RefPtr<ImageDescriptor> image_descriptor =
+-        fml::MakeRefCounted<ImageDescriptor>(
+-            std::move(data), std::make_unique<UnknownImageGenerator>());
++    auto image_descriptor = std::make_shared<ImageDescriptorData>(
++        std::move(data), std::make_shared<UnknownImageGenerator>());
+ 
+     ImageDecoder::ImageResult callback = [&](const sk_sp<DlImage>& image,
+                                              const std::string& decode_error) {
+@@ -425,7 +424,7 @@ TEST_F(ImageDecoderFixtureTest, InvalidImageResultsError) {
+       ASSERT_FALSE(image);
+       latch.Signal();
+     };
+-    decoder->Decode(image_descriptor->data_descriptor(),
++    decoder->Decode(image_descriptor,
+                     {.target_width = 0, .target_height = 0},
+                     callback);
+   });
+@@ -465,7 +464,7 @@ TEST_F(ImageDecoderFixtureTest, ValidImageResultsInSuccess) {
+         registry.CreateCompatibleGenerator(data);
+     ASSERT_TRUE(generator);
+ 
+-    auto descriptor = fml::MakeRefCounted<ImageDescriptor>(
++    auto descriptor = std::make_shared<ImageDescriptorData>(
+         std::move(data), std::move(generator));
+ 
+     ImageDecoder::ImageResult callback = [&](const sk_sp<DlImage>& image,
+@@ -479,7 +478,7 @@ TEST_F(ImageDecoderFixtureTest, ValidImageResultsInSuccess) {
+ 
+     EXPECT_FALSE(io_manager->did_access_is_gpu_disabled_sync_switch_);
+     image_decoder->Decode(
+-        descriptor->data_descriptor(),
++        descriptor,
+         {.target_width = static_cast<uint32_t>(descriptor->width()),
+          .target_height = static_cast<uint32_t>(descriptor->height())},
+         callback);
+@@ -600,8 +599,8 @@ TEST_F(ImageDecoderFixtureTest, ImpellerNullColorspace) {
+   EXPECT_EQ(SkISize::Make(10, 10), image->dimensions());
+   EXPECT_EQ(nullptr, image->colorSpace());
+ 
+-  auto descriptor = fml::MakeRefCounted<ImageDescriptor>(
+-      std::move(data), ImageDescriptor::CreateImageInfo(image->imageInfo()),
++  auto descriptor = std::make_shared<ImageDescriptorData>(
++      std::move(data), ImageDescriptorData::CreateImageInfo(image->imageInfo()),
+       10 * 4);
+ 
+ #if IMPELLER_SUPPORTS_RENDERING
+@@ -613,7 +612,7 @@ TEST_F(ImageDecoderFixtureTest, ImpellerNullColorspace) {
+       std::make_shared<impeller::TestImpellerAllocator>();
+   absl::StatusOr<ImageDecoderImpeller::DecompressResult> decompressed =
+       ImageDecoderImpeller::DecompressTexture(
+-          descriptor->data_descriptor().get(),
++          descriptor.get(),
+           {.target_width = 100, .target_height = 100},
+           {100, 100},
+           /*supports_wide_gamut=*/true, capabilities, allocator);
+@@ -635,8 +634,8 @@ TEST_F(ImageDecoderFixtureTest, ImpellerPixelConversion32F) {
+   EXPECT_EQ(SkISize::Make(10, 10), image->dimensions());
+   EXPECT_EQ(nullptr, image->colorSpace());
+ 
+-  auto descriptor = fml::MakeRefCounted<ImageDescriptor>(
+-      std::move(data), ImageDescriptor::CreateImageInfo(image->imageInfo()),
++  auto descriptor = std::make_shared<ImageDescriptorData>(
++      std::move(data), ImageDescriptorData::CreateImageInfo(image->imageInfo()),
+       10 * 16);
+ 
+ #if IMPELLER_SUPPORTS_RENDERING
+@@ -648,7 +647,7 @@ TEST_F(ImageDecoderFixtureTest, ImpellerPixelConversion32F) {
+       std::make_shared<impeller::TestImpellerAllocator>();
+   absl::StatusOr<ImageDecoderImpeller::DecompressResult> decompressed =
+       ImageDecoderImpeller::DecompressTexture(
+-          descriptor->data_descriptor().get(),
++          descriptor.get(),
+           {.target_width = 100, .target_height = 100},
+           {100, 100},
+           /*supports_wide_gamut=*/true, capabilities, allocator);
+@@ -670,8 +669,8 @@ TEST_F(ImageDecoderFixtureTest, ImpellerWideGamutDisplayP3Opaque) {
+       registry.CreateCompatibleGenerator(data);
+   ASSERT_TRUE(generator);
+ 
+-  auto descriptor = fml::MakeRefCounted<ImageDescriptor>(std::move(data),
+-                                                         std::move(generator));
++  auto descriptor = std::make_shared<ImageDescriptorData>(std::move(data),
++                                                          std::move(generator));
+ 
+ #if IMPELLER_SUPPORTS_RENDERING
+   std::shared_ptr<impeller::Capabilities> capabilities =
+@@ -682,7 +681,7 @@ TEST_F(ImageDecoderFixtureTest, ImpellerWideGamutDisplayP3Opaque) {
+       std::make_shared<impeller::TestImpellerAllocator>();
+   absl::StatusOr<ImageDecoderImpeller::DecompressResult> wide_result =
+       ImageDecoderImpeller::DecompressTexture(
+-          descriptor->data_descriptor().get(),
++          descriptor.get(),
+           {.target_width = 100, .target_height = 100},
+           {100, 100},
+           /*supports_wide_gamut=*/true, capabilities, allocator);
+@@ -711,7 +710,7 @@ TEST_F(ImageDecoderFixtureTest, ImpellerWideGamutDisplayP3Opaque) {
+ 
+   absl::StatusOr<ImageDecoderImpeller::DecompressResult> narrow_result =
+       ImageDecoderImpeller::DecompressTexture(
+-          descriptor->data_descriptor().get(),
++          descriptor.get(),
+           {.target_width = 100, .target_height = 100},
+           {100, 100},
+           /*supports_wide_gamut=*/false, capabilities, allocator);
+@@ -733,8 +732,8 @@ TEST_F(ImageDecoderFixtureTest, ImpellerNonWideGamut) {
+       registry.CreateCompatibleGenerator(data);
+   ASSERT_TRUE(generator);
+ 
+-  auto descriptor = fml::MakeRefCounted<ImageDescriptor>(std::move(data),
+-                                                         std::move(generator));
++  auto descriptor = std::make_shared<ImageDescriptorData>(std::move(data),
++                                                          std::move(generator));
+ 
+ #if IMPELLER_SUPPORTS_RENDERING
+   std::shared_ptr<impeller::Capabilities> capabilities =
+@@ -745,7 +744,7 @@ TEST_F(ImageDecoderFixtureTest, ImpellerNonWideGamut) {
+       std::make_shared<impeller::TestImpellerAllocator>();
+   absl::StatusOr<ImageDecoderImpeller::DecompressResult> result =
+       ImageDecoderImpeller::DecompressTexture(
+-          descriptor->data_descriptor().get(),
++          descriptor.get(),
+           {.target_width = 600, .target_height = 200},
+           {600, 200},
+           /*supports_wide_gamut=*/true, capabilities, allocator);
+@@ -791,7 +790,7 @@ TEST_F(ImageDecoderFixtureTest, ExifDataIsRespectedOnDecode) {
+         registry.CreateCompatibleGenerator(data);
+     ASSERT_TRUE(generator);
+ 
+-    auto descriptor = fml::MakeRefCounted<ImageDescriptor>(
++    auto descriptor = std::make_shared<ImageDescriptorData>(
+         std::move(data), std::move(generator));
+ 
+     ImageDecoder::ImageResult callback = [&](const sk_sp<DlImage>& image,
+@@ -805,7 +804,7 @@ TEST_F(ImageDecoderFixtureTest, ExifDataIsRespectedOnDecode) {
+       runners.GetIOTaskRunner()->PostTask(release_io_manager);
+     };
+     image_decoder->Decode(
+-        descriptor->data_descriptor(),
++        descriptor,
+         {.target_width = static_cast<uint32_t>(descriptor->width()),
+          .target_height = static_cast<uint32_t>(descriptor->height())},
+         callback);
+@@ -858,7 +857,7 @@ TEST_F(ImageDecoderFixtureTest, CanDecodeWithoutAGPUContext) {
+         registry.CreateCompatibleGenerator(data);
+     ASSERT_TRUE(generator);
+ 
+-    auto descriptor = fml::MakeRefCounted<ImageDescriptor>(
++    auto descriptor = std::make_shared<ImageDescriptorData>(
+         std::move(data), std::move(generator));
+ 
+     ImageDecoder::ImageResult callback = [&](const sk_sp<DlImage>& image,
+@@ -871,7 +870,7 @@ TEST_F(ImageDecoderFixtureTest, CanDecodeWithoutAGPUContext) {
+       runners.GetIOTaskRunner()->PostTask(release_io_manager);
+     };
+     image_decoder->Decode(
+-        descriptor->data_descriptor(),
++        descriptor,
+         {.target_width = static_cast<uint32_t>(descriptor->width()),
+          .target_height = static_cast<uint32_t>(descriptor->height())},
+         callback);
+@@ -939,7 +938,7 @@ TEST_F(ImageDecoderFixtureTest, CanDecodeWithResizes) {
+           registry.CreateCompatibleGenerator(data);
+       ASSERT_TRUE(generator);
+ 
+-      auto descriptor = fml::MakeRefCounted<ImageDescriptor>(
++      auto descriptor = std::make_shared<ImageDescriptorData>(
+           std::move(data), std::move(generator));
+ 
+       ImageDecoder::ImageResult callback =
+@@ -952,7 +951,7 @@ TEST_F(ImageDecoderFixtureTest, CanDecodeWithResizes) {
+             latch.Signal();
+           };
+       image_decoder->Decode(
+-          descriptor->data_descriptor(),
++          descriptor,
+           {.target_width = target_width, .target_height = target_height},
+           callback);
+     });
+@@ -1009,10 +1008,10 @@ TEST(ImageDecoderTest, VerifySimpleDecoding) {
+       registry.CreateCompatibleGenerator(data);
+   ASSERT_TRUE(generator);
+ 
+-  auto descriptor = fml::MakeRefCounted<ImageDescriptor>(std::move(data),
+-                                                         std::move(generator));
++  auto descriptor = std::make_shared<ImageDescriptorData>(std::move(data),
++                                                          std::move(generator));
+   auto compressed_image = ImageDecoderSkia::ImageFromCompressedData(
+-      descriptor->data_descriptor().get(), 6, 2,
++      descriptor.get(), 6, 2,
+       fml::tracing::TraceFlow(""));
+   EXPECT_EQ(compressed_image->width(), 6);
+   EXPECT_EQ(compressed_image->height(), 2);
+@@ -1032,7 +1031,7 @@ TEST(ImageDecoderTest, VerifySimpleDecoding) {
+   std::shared_ptr<impeller::Allocator> allocator =
+       std::make_shared<impeller::TestImpellerAllocator>();
+   auto result_1 = ImageDecoderImpeller::DecompressTexture(
+-      descriptor->data_descriptor().get(),
++      descriptor.get(),
+       {.target_width = 6, .target_height = 2}, {1000, 1000},
+       /*supports_wide_gamut=*/false, capabilities, allocator);
+   ASSERT_TRUE(result_1.ok());
+@@ -1042,7 +1041,7 @@ TEST(ImageDecoderTest, VerifySimpleDecoding) {
+   // Bitmap sizes reflect the scaled size if the source size is larger than
+   // max texture size even if destination size isn't max texture size.
+   auto result_2 = ImageDecoderImpeller::DecompressTexture(
+-      descriptor->data_descriptor().get(),
++      descriptor.get(),
+       {.target_width = 6, .target_height = 2}, {10, 10},
+       /*supports_wide_gamut=*/false, capabilities, allocator);
+   ASSERT_TRUE(result_2.ok());
+@@ -1052,7 +1051,7 @@ TEST(ImageDecoderTest, VerifySimpleDecoding) {
+   // If the destination size is larger than the max texture size the image
+   // is scaled down, keeping its aspect ratio.
+   auto result_3 = ImageDecoderImpeller::DecompressTexture(
+-      descriptor->data_descriptor().get(),
++      descriptor.get(),
+       {.target_width = 60, .target_height = 20}, {10, 10},
+       /*supports_wide_gamut=*/false, capabilities, allocator);
+   ASSERT_TRUE(result_3.ok());
+@@ -1061,7 +1060,7 @@ TEST(ImageDecoderTest, VerifySimpleDecoding) {
+ 
+   // Same for a tall destination size.
+   auto result_tall = ImageDecoderImpeller::DecompressTexture(
+-      descriptor->data_descriptor().get(),
++      descriptor.get(),
+       {.target_width = 20, .target_height = 60}, {10, 10},
+       /*supports_wide_gamut=*/false, capabilities, allocator);
+   ASSERT_TRUE(result_tall.ok());
+@@ -1070,7 +1069,7 @@ TEST(ImageDecoderTest, VerifySimpleDecoding) {
+ 
+   // CPU resize is forced.
+   auto result_4 = ImageDecoderImpeller::DecompressTexture(
+-      descriptor->data_descriptor().get(),
++      descriptor.get(),
+       {.target_width = 6, .target_height = 2}, {1000, 1000},
+       /*supports_wide_gamut=*/false, capabilities_no_blit, allocator);
+   ASSERT_TRUE(result_4.ok());
+@@ -1087,10 +1086,10 @@ TEST(ImageDecoderTest, ImagesWithTransparencyArePremulAlpha) {
+       registry.CreateCompatibleGenerator(data);
+   ASSERT_TRUE(generator);
+ 
+-  auto descriptor = fml::MakeRefCounted<ImageDescriptor>(std::move(data),
+-                                                         std::move(generator));
++  auto descriptor = std::make_shared<ImageDescriptorData>(std::move(data),
++                                                          std::move(generator));
+   auto compressed_image = ImageDecoderSkia::ImageFromCompressedData(
+-      descriptor->data_descriptor().get(), 250, 250,
++      descriptor.get(), 250, 250,
+       fml::tracing::TraceFlow(""));
+   ASSERT_TRUE(compressed_image);
+   ASSERT_EQ(compressed_image->width(), 250);
+@@ -1106,7 +1105,7 @@ TEST(ImageDecoderTest, VerifySubpixelDecodingPreservesExifOrientation) {
+       registry.CreateCompatibleGenerator(data);
+   ASSERT_TRUE(generator);
+   auto descriptor =
+-      fml::MakeRefCounted<ImageDescriptor>(data, std::move(generator));
++      std::make_shared<ImageDescriptorData>(data, std::move(generator));
+ 
+   // If Exif metadata is ignored, the height and width will be swapped because
+   // "Rotate 90 CW" is what is encoded there.
+diff --git a/engine/src/flutter/lib/ui/painting/image_descriptor.cc b/engine/src/flutter/lib/ui/painting/image_descriptor.cc
+index 1dbbb477c03..45c7af5ea09 100644
+--- a/engine/src/flutter/lib/ui/painting/image_descriptor.cc
++++ b/engine/src/flutter/lib/ui/painting/image_descriptor.cc
+@@ -18,17 +18,6 @@ namespace flutter {
+ 
+ IMPLEMENT_WRAPPERTYPEINFO(ui, ImageDescriptor);
+ 
+-ImageDescriptor::ImageDescriptor(sk_sp<SkData> buffer,
+-                                 const ImageInfo& image_info,
+-                                 std::optional<size_t> row_bytes)
+-    : data_(std::shared_ptr<ImageDescriptorData>(new ImageDescriptorData(
+-          std::move(buffer), image_info, row_bytes))) {}
+-
+-ImageDescriptor::ImageDescriptor(sk_sp<SkData> buffer,
+-                                 std::shared_ptr<ImageGenerator> generator)
+-    : data_(std::shared_ptr<ImageDescriptorData>(new ImageDescriptorData(
+-          std::move(buffer), std::move(generator)))) {}
+-
+ ImageDescriptor::~ImageDescriptor() {
+   if (spi_descriptor_ != nullptr) {
+     SpiApi().image->image_descriptor_release(spi_descriptor_);
+@@ -139,77 +128,34 @@ void ImageDescriptor::dispose() {
+     SpiApi().image->image_descriptor_release(spi_descriptor_);
+     spi_descriptor_ = nullptr;
+   }
+-  data_.reset();
+   ClearDartWrapper();
+ }
+ 
+ int ImageDescriptor::width() const {
+-  if (spi_descriptor_ != nullptr) {
+-    int32_t width = 0;
+-    int32_t height = 0;
+-    int32_t bytes_per_pixel = 0;
+-    SpiApi().image->image_descriptor_get_info(spi_descriptor_, &width, &height,
+-                                             &bytes_per_pixel);
+-    return width;
+-  }
+-  return data_->width();
++  int32_t width = 0;
++  int32_t height = 0;
++  int32_t bytes_per_pixel = 0;
++  SpiApi().image->image_descriptor_get_info(spi_descriptor_, &width, &height,
++                                            &bytes_per_pixel);
++  return width;
+ }
+ 
+ int ImageDescriptor::height() const {
+-  if (spi_descriptor_ != nullptr) {
+-    int32_t width = 0;
+-    int32_t height = 0;
+-    int32_t bytes_per_pixel = 0;
+-    SpiApi().image->image_descriptor_get_info(spi_descriptor_, &width, &height,
+-                                             &bytes_per_pixel);
+-    return height;
+-  }
+-  return data_->height();
++  int32_t width = 0;
++  int32_t height = 0;
++  int32_t bytes_per_pixel = 0;
++  SpiApi().image->image_descriptor_get_info(spi_descriptor_, &width, &height,
++                                            &bytes_per_pixel);
++  return height;
+ }
+ 
+ int ImageDescriptor::bytesPerPixel() const {
+-  if (spi_descriptor_ != nullptr) {
+-    int32_t width = 0;
+-    int32_t height = 0;
+-    int32_t bytes_per_pixel = 0;
+-    SpiApi().image->image_descriptor_get_info(spi_descriptor_, &width, &height,
+-                                             &bytes_per_pixel);
+-    return bytes_per_pixel;
+-  }
+-  return data_->bytesPerPixel();
+-}
+-
+-int ImageDescriptor::row_bytes() const {
+-  return data_ == nullptr ? width() * bytesPerPixel() : data_->row_bytes();
+-}
+-
+-bool ImageDescriptor::should_resize(int target_width, int target_height) const {
+-  return data_ == nullptr ? target_width > 0 || target_height > 0
+-                          : data_->should_resize(target_width, target_height);
+-}
+-
+-sk_sp<SkData> ImageDescriptor::data() const {
+-  return data_ == nullptr ? nullptr : data_->data();
+-}
+-
+-bool ImageDescriptor::is_compressed() const {
+-  return data_ != nullptr && data_->is_compressed();
+-}
+-
+-const ImageDescriptor::ImageInfo& ImageDescriptor::image_info() const {
+-  return data_->image_info();
+-}
+-
+-SkISize ImageDescriptor::get_scaled_dimensions(float scale) const {
+-  return data_->get_scaled_dimensions(scale);
+-}
+-
+-bool ImageDescriptor::get_pixels(const SkPixmap& pixmap) const {
+-  return data_ != nullptr && data_->get_pixels(pixmap);
+-}
+-
+-sk_sp<SkImage> ImageDescriptor::image() const {
+-  return data_ == nullptr ? nullptr : data_->image();
++  int32_t width = 0;
++  int32_t height = 0;
++  int32_t bytes_per_pixel = 0;
++  SpiApi().image->image_descriptor_get_info(spi_descriptor_, &width, &height,
++                                            &bytes_per_pixel);
++  return bytes_per_pixel;
+ }
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/image_descriptor.h b/engine/src/flutter/lib/ui/painting/image_descriptor.h
+index 78b12b4f5d1..eadb0521c7f 100644
+--- a/engine/src/flutter/lib/ui/painting/image_descriptor.h
++++ b/engine/src/flutter/lib/ui/painting/image_descriptor.h
+@@ -6,17 +6,9 @@
+ #define FLUTTER_LIB_UI_PAINTING_IMAGE_DESCRIPTOR_H_
+ 
+ #include <cstdint>
+-#include <memory>
+-#include <optional>
+-
+ #include "flutter/fml/macros.h"
+-#include "flutter/lib/ui/painting/image_descriptor_data.h"
+-#include "flutter/lib/ui/painting/image_generator_registry.h"
+ #include "flutter/lib/ui/painting/immutable_buffer.h"
+ #include "flutter/runtime_spi/include/flutter_image.h"
+-#include "third_party/skia/include/core/SkData.h"
+-#include "third_party/skia/include/core/SkImage.h"
+-#include "third_party/skia/include/core/SkImageInfo.h"
+ #include "third_party/tonic/dart_library_natives.h"
+ 
+ namespace flutter {
+@@ -30,9 +22,6 @@ namespace flutter {
+ /// @see    `ImageGenerator`
+ class ImageDescriptor : public RefCountedDartWrappable<ImageDescriptor> {
+  public:
+-  using ImageInfo = ImageDescriptorData::ImageInfo;
+-  using PixelFormat = ImageDescriptorData::PixelFormat;
+-
+   ~ImageDescriptor() override;
+ 
+   /// @brief  Asynchronously initializes an ImageDescriptor for an encoded
+@@ -69,71 +58,20 @@ class ImageDescriptor : public RefCountedDartWrappable<ImageDescriptor> {
+   /// @brief  The bytes per pixel of the image.
+   int bytesPerPixel() const;
+ 
+-  /// @brief  The byte length of the first row of the image.
+-  ///         Defaults to width() * 4.
+-  int row_bytes() const;
+-
+-  /// @brief  Whether the given `target_width` or `target_height` differ from
+-  ///         `width()` and `height()` respectively.
+-  bool should_resize(int target_width, int target_height) const;
+-
+-  /// @brief  The underlying buffer for this image.
+-  sk_sp<SkData> data() const;
+-
+-  sk_sp<SkImage> image() const;
+-
+-  /// @brief  Whether this descriptor represents compressed (encoded) data or
+-  ///         not.
+-  bool is_compressed() const;
+-
+-  /// @brief  The orientation corrected image info for this image.
+-  const ImageInfo& image_info() const;
+-
+-  /// @brief  Gets the scaled dimensions of this image, if backed by an
+-  ///         `ImageGenerator` that can perform efficient subpixel scaling.
+-  /// @see    `ImageGenerator::GetScaledDimensions`
+-  SkISize get_scaled_dimensions(float scale) const;
+-
+-  /// @brief  Gets pixels for this image transformed based on the EXIF
+-  ///         orientation tag, if applicable.
+-  bool get_pixels(const SkPixmap& pixmap) const;
+-
+   void dispose();
+ 
+-  static ImageInfo CreateImageInfo(const SkImageInfo& sk_image_info) {
+-    return ImageDescriptorData::CreateImageInfo(sk_image_info);
+-  }
+-  static SkImageInfo ToSkImageInfo(const ImageInfo& image_info) {
+-    return ImageDescriptorData::ToSkImageInfo(image_info);
+-  }
+-
+-  const std::shared_ptr<ImageDescriptorData>& data_descriptor() const {
+-    return data_;
+-  }
+-
+   FlutterSpiImageDescriptor* spi_handle() const { return spi_descriptor_; }
+ 
+  private:
+-  ImageDescriptor(sk_sp<SkData> buffer,
+-                  const ImageInfo& image_info,
+-                  std::optional<size_t> row_bytes);
+-  ImageDescriptor(sk_sp<SkData> buffer,
+-                  std::shared_ptr<ImageGenerator> generator);
+-
+-  explicit ImageDescriptor(std::shared_ptr<ImageDescriptorData> data)
+-      : data_(std::move(data)) {}
+-
+   explicit ImageDescriptor(FlutterSpiImageDescriptor* descriptor)
+       : spi_descriptor_(descriptor) {}
+ 
+-  std::shared_ptr<ImageDescriptorData> data_;
+   FlutterSpiImageDescriptor* spi_descriptor_ = nullptr;
+ 
+   DEFINE_WRAPPERTYPEINFO();
+   FML_FRIEND_MAKE_REF_COUNTED(ImageDescriptor);
+   FML_DISALLOW_COPY_AND_ASSIGN(ImageDescriptor);
+ 
+-  friend class ImageDecoderFixtureTest;
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/image_descriptor_data.h b/engine/src/flutter/lib/ui/painting/image_descriptor_data.h
+index dd7c77f4557..f7c04518849 100644
+--- a/engine/src/flutter/lib/ui/painting/image_descriptor_data.h
++++ b/engine/src/flutter/lib/ui/painting/image_descriptor_data.h
+@@ -88,19 +88,18 @@ class ImageDescriptorData final {
+   static ImageInfo CreateImageInfo(const SkImageInfo& sk_image_info);
+   static SkImageInfo ToSkImageInfo(const ImageInfo& image_info);
+ 
+- private:
+   ImageDescriptorData(sk_sp<SkData> buffer,
+                       const ImageInfo& image_info,
+                       std::optional<size_t> row_bytes);
+   ImageDescriptorData(sk_sp<SkData> buffer,
+                       std::shared_ptr<ImageGenerator> generator);
+ 
++ private:
+   sk_sp<SkData> buffer_;
+   const ImageInfo image_info_;
+   std::shared_ptr<ImageGenerator> generator_;
+   std::optional<size_t> row_bytes_;
+ 
+-  friend class ImageDescriptor;
+   FML_DISALLOW_COPY_AND_ASSIGN(ImageDescriptorData);
+ };
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/image_dispose_unittests.cc b/engine/src/flutter/lib/ui/painting/image_dispose_unittests.cc
+index 26668325bc1..05f89703139 100644
+--- a/engine/src/flutter/lib/ui/painting/image_dispose_unittests.cc
++++ b/engine/src/flutter/lib/ui/painting/image_dispose_unittests.cc
+@@ -7,6 +7,7 @@
+ #include "flutter/common/task_runners.h"
+ #include "flutter/fml/synchronization/count_down_latch.h"
+ #include "flutter/fml/synchronization/waitable_event.h"
++#include "flutter/lib/ui/io_manager.h"
+ #include "flutter/lib/ui/painting/canvas.h"
+ #include "flutter/lib/ui/painting/image.h"
+ #include "flutter/lib/ui/painting/picture.h"
+diff --git a/engine/src/flutter/lib/ui/painting/image_encoding.cc b/engine/src/flutter/lib/ui/painting/image_encoding.cc
+index f69040ce767..184d148f390 100644
+--- a/engine/src/flutter/lib/ui/painting/image_encoding.cc
++++ b/engine/src/flutter/lib/ui/painting/image_encoding.cc
+@@ -8,7 +8,6 @@
+ #include <utility>
+ 
+ #include "flutter/lib/ui/painting/image.h"
+-#include "flutter/lib/ui/painting/image_readback.h"
+ #include "flutter/lib/ui/spi_api.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "third_party/tonic/dart_persistent_value.h"
+@@ -25,6 +24,15 @@ class Context;
+ namespace flutter {
+ namespace {
+ 
++// Must be kept in sync with ImageByteFormat in painting.dart.
++enum class ImageByteFormat {
++  kRawRGBA = 0,
++  kRawStraightRGBA = 1,
++  kRawUnmodified = 2,
++  kRawExtendedRgba128 = 3,
++  kPNG = 4,
++};
++
+ void FinalizeSkData(void* isolate_callback_data, void* peer) {
+   SkData* buffer = reinterpret_cast<SkData*>(peer);
+   buffer->unref();
+@@ -112,9 +120,4 @@ Dart_Handle EncodeImage(CanvasImage* canvas_image,
+   return Dart_Null();
+ }
+ 
+-fml::StatusOr<sk_sp<SkData>> EncodeImage(const sk_sp<SkImage>& raster_image,
+-                                         ImageByteFormat format) {
+-  return EncodeRasterImage(raster_image, format);
+-}
+-
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/image_encoding.h b/engine/src/flutter/lib/ui/painting/image_encoding.h
+index 1537f4e0685..df7801302d9 100644
+--- a/engine/src/flutter/lib/ui/painting/image_encoding.h
++++ b/engine/src/flutter/lib/ui/painting/image_encoding.h
+@@ -5,7 +5,6 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_IMAGE_ENCODING_H_
+ #define FLUTTER_LIB_UI_PAINTING_IMAGE_ENCODING_H_
+ 
+-#include "flutter/lib/ui/painting/image_readback.h"
+ #include "third_party/tonic/dart_library_natives.h"
+ 
+ namespace flutter {
+@@ -16,9 +15,6 @@ Dart_Handle EncodeImage(CanvasImage* canvas_image,
+                         int format,
+                         Dart_Handle callback_handle);
+ 
+-fml::StatusOr<sk_sp<SkData>> EncodeImage(const sk_sp<SkImage>& raster_image,
+-                                         ImageByteFormat format);
+-
+ }  // namespace flutter
+ 
+ #endif  // FLUTTER_LIB_UI_PAINTING_IMAGE_ENCODING_H_
+diff --git a/engine/src/flutter/lib/ui/painting/image_encoding_unittests.cc b/engine/src/flutter/lib/ui/painting/image_encoding_unittests.cc
+index c93f55c446c..708bbcc7242 100644
+--- a/engine/src/flutter/lib/ui/painting/image_encoding_unittests.cc
++++ b/engine/src/flutter/lib/ui/painting/image_encoding_unittests.cc
+@@ -10,7 +10,9 @@
+ #include "flutter/common/task_runners.h"
+ #include "flutter/display_list/image/dl_image_skia.h"
+ #include "flutter/fml/synchronization/waitable_event.h"
++#include "flutter/lib/ui/io_manager.h"
+ #include "flutter/lib/ui/painting/image.h"
++#include "flutter/lib/ui/painting/image_readback.h"
+ #include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "flutter/lib/ui/painting/testing/mocks.h"
+ #include "flutter/runtime/dart_vm.h"
+@@ -611,7 +613,8 @@ TEST(ImageEncodingImpellerTest, PngEncoding10XR) {
+ 
+   sk_sp<SkImage> image = surface->makeImageSnapshot();
+ 
+-  fml::StatusOr<sk_sp<SkData>> png = EncodeImage(image, ImageByteFormat::kPNG);
++  fml::StatusOr<sk_sp<SkData>> png =
++      EncodeRasterImage(image, ImageByteFormat::kPNG);
+   EXPECT_TRUE(png.ok());
+ }
+ 
+@@ -708,7 +711,8 @@ TEST(ImageEncodingImpellerTest, PngEncodingBGRA10XR) {
+ 
+   sk_sp<SkImage> image = surface->makeImageSnapshot();
+ 
+-  fml::StatusOr<sk_sp<SkData>> png = EncodeImage(image, ImageByteFormat::kPNG);
++  fml::StatusOr<sk_sp<SkData>> png =
++      EncodeRasterImage(image, ImageByteFormat::kPNG);
+   ASSERT_TRUE(png.ok());
+   fml::StatusOr<std::vector<uint32_t>> pixels =
+       ReadPngFromMemory(png.value()->bytes(), png.value()->size());
+diff --git a/engine/src/flutter/lib/ui/ui_dart_state.h b/engine/src/flutter/lib/ui/ui_dart_state.h
+index 030a2bb013d..6356392e265 100644
+--- a/engine/src/flutter/lib/ui/ui_dart_state.h
++++ b/engine/src/flutter/lib/ui/ui_dart_state.h
+@@ -16,7 +16,6 @@
+ #include "flutter/fml/concurrent_message_loop.h"
+ #include "flutter/fml/memory/weak_ptr.h"
+ #include "flutter/fml/synchronization/waitable_event.h"
+-#include "flutter/lib/ui/io_manager.h"
+ #include "flutter/lib/ui/isolate_name_server/isolate_name_server.h"
+ #include "impeller/core/runtime_types.h"
+ #include "impeller/runtime_stage/runtime_stage.h"
+@@ -28,6 +27,7 @@
+ 
+ namespace flutter {
+ class FontSelector;
++class IOManager;
+ class PlatformConfiguration;
+ class PlatformMessage;
+ class PlatformMessageSender;
+diff --git a/engine/src/flutter/runtime/BUILD.gn b/engine/src/flutter/runtime/BUILD.gn
+index d9b48d16452..5c9df21f9ff 100644
+--- a/engine/src/flutter/runtime/BUILD.gn
++++ b/engine/src/flutter/runtime/BUILD.gn
+@@ -140,6 +140,7 @@ source_set("runtime") {
+     ":runtime_delegate",
+     "//flutter/lib/gpu",
+     "//flutter/lib/ui",
++    "//flutter/lib/ui:ui_image_decoding",
+     "//flutter/lib/ui:ui_text_core",
+     "//flutter/runtime_spi:runtime_spi",
+     "//flutter/runtime_spi:runtime_spi_c_api",
+diff --git a/engine/src/flutter/runtime/dart_vm_unittests.cc b/engine/src/flutter/runtime/dart_vm_unittests.cc
+index 18b4647dc10..6d400e0a934 100644
+--- a/engine/src/flutter/runtime/dart_vm_unittests.cc
++++ b/engine/src/flutter/runtime/dart_vm_unittests.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "flutter/runtime/dart_vm.h"
+ 
++#include "flutter/fml/trace_event.h"
+ #include "flutter/runtime/dart_vm_lifecycle.h"
+ #include "flutter/testing/fixture_test.h"
+ #include "gtest/gtest.h"
+diff --git a/engine/src/flutter/shell/common/BUILD.gn b/engine/src/flutter/shell/common/BUILD.gn
+index aa48a43c689..b09c9ee4be7 100644
+--- a/engine/src/flutter/shell/common/BUILD.gn
++++ b/engine/src/flutter/shell/common/BUILD.gn
+@@ -145,6 +145,7 @@ source_set("common") {
+     ":display",
+     ":platform_message_handler",
+     ":snapshot_pixel_format",
++    "//flutter/lib/ui:ui_image_decoding",
+     "//flutter/lib/ui:ui_core_types",
+     "//flutter/lib/ui:ui_text_core",
+     "//flutter/runtime_spi:runtime_spi",
