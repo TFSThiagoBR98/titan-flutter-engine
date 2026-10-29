@@ -1033,6 +1033,34 @@ O que fica: a cópia e a validação das strings são o preço do ABI C (o core 
 pode adotar memória do runtime nem confiar em UTF-8 que não validou). Resultado
 em [runtime-spi-s55b.md](medidas/runtime-spi-s55b.md).
 
+## S5.5c: Texto e codecs medidos de novo
+
+No texto, o A/B intercalado em 10 rodadas contra `s4f-cbase` (antes do texto
+pelo SPI) registrou `BM_DartParagraphFrame` em 3674 → 3861 µs (+5,1%) e
+`BM_DartCompositeFrame` em 533 → 576 µs (+8,1%, que soma todas as fases depois
+da S4f). O perfil callgrind de `BM_DartParagraphFrame` mostra que a camada SPI
+do texto já quase não custa: `layout` e `paint` ficaram iguais dentro e fora
+do SPI; `computeLineMetrics` ficou em +0,7%, `addText` em +0,56% e `pushStyle`
+em +0,28% do quadro, em trabalho que o upstream também faz (typed data do
+Dart, validação UTF-16); `ToTxtTextStyle` ficou em 0,45%. Somado, o custo do
+SPI no texto é ≤ 1% do quadro: o custo fixo por chamada que motivou o portão da
+S4f caiu com a busca sem trava da S5.5a, e agrupar chamadas por trecho não
+compensa mais. O resto da diferença contra `s4f-cbase` não está na camada SPI;
+a hipótese é a correção do `impeller_enabled` da S4f (o core usava `false`
+fixo), que mudou o caminho do texto — não comprovada, porque o binário base
+não tem símbolos.
+
+Nos codecs, o A/B contra `s4g3-base` registrou `BM_DartCodecFrame` em 450 →
+476 µs (+5,8%). A contagem de tarefas por decode no callgrind mostrou somente
+as tarefas de `ImageDecoderSkia::Decode` (ida ao IO, volta à UI, uma tarefa
+concorrente), iguais ao upstream — nenhum salto extra sobrou. As instruções
+totais ficaram em +2,7% (≈ 1 µs por decode: o handle da imagem é criado, aberto,
+liberado e criado de novo entre `SpiImageDecoding` e `SpiImageCodec`); o resto
+da diferença é latência que, sem símbolos no binário base, não deu para
+atribuir. Decisão: sem mudança de código.
+
+O resultado está em [runtime-spi-s55c.md](medidas/runtime-spi-s55c.md).
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos

@@ -30,3 +30,6 @@ O portão foi aprovado com +5,4% no `BM_DartCodecFrame`, conforme decisão do
 usuário. O custo restante, aproximadamente 3 µs por imagem, fica para a S5.5,
 junto com as otimizações estruturais de tabelas de handles e número de
 chamadas, como na S4f.
+
+Atualização (2026-10-29): remedido na S5.5c; ver
+[runtime-spi-s55c.md](runtime-spi-s55c.md).

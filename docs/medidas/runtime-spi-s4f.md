@@ -71,3 +71,6 @@ NVIDIA só aparece ao rodar o binário de teste à mão, sem esse ambiente.
 Os brutos das medições estão em `.build_flutter/bench/s4f-ab6.txt`,
 `.build_flutter/bench/s4f-text-ab.txt` e
 `.build_flutter/bench/s4f-comp-ab.txt`.
+
+Atualização (2026-10-29): remedido na S5.5c; ver
+[runtime-spi-s55c.md](runtime-spi-s55c.md).
