@@ -273,6 +273,8 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0264-fix-engine-keep-core-shell-initialization-in-its-namespace.patch` | The initialization definition must remain in the flutter namespace after moving it out of shell_dart.cc, so the core shell implementation compiles without changing its behavior. | |
 | `0265-build-engine-add-the-titan-flutter-runtime-dart-gn-arg.patch` | allow the Flutter embedder graph to omit Dart-backed targets while retaining the core runtime. | |
 | `0266-test-engine-smoke-test-the-core-library-from-c.patch` | exercise the core runtime through a C executable and keep the smoke test linked only to the core library and its C test runtime. | |
+| `0267-perf-engine-look-up-runtime-spi-handles-without-a-lock.patch` | remove mutex contention from raw handle lookup while preserving generation validation and the handle lifetime contract. | |
+| `0268-perf-engine-convert-cache-misses-in-place.patch` | avoid the temporary paint and vector allocation on cache misses while invalidating failed conversions safely. | |
 
 O fluxo é:
 

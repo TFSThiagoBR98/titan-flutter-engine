@@ -993,6 +993,29 @@ dedicada à otimização da série e do código. O roadmap também passa a preve
 S8, um estudo de voltar ao modelo em que o `.so` Dart depende do core, caso a
 otimização e o empacotamento tornem essa composição preferível.
 
+## S5.5a: Busca de handles sem trava
+
+O perfil callgrind de `BM_DartCompositeFrame`, com 10 000 quadros, mostrou o
+mutex das tabelas em aproximadamente 2,2% do quadro (11,6 milhões de travas).
+`FindPath`, `FindBuilder`, `FindRecorder` e `FindParagraph` foram os principais
+chamadores. O `SpiPaintCache::Convert` respondeu por aproximadamente 1,5%:
+seu cache guardava somente um paint e errava em toda chamada desse quadro.
+
+A S5.5a faz `FindRaw` ler sem trava. O armazenamento passa a ser segmentado em
+blocos de 64, 128, 256 e mais entradas, que nunca se movem. Cada entrada tem
+uma geração viva e um ponteiro atômicos; a geração é lida antes e depois do
+ponteiro. `Insert`, `Release`, `Retain`, `Find` e `size()` continuam protegidos
+pela trava, e a destruição continua fora dela. A capacidade da tabela não
+muda.
+
+O cache de paint converte no próprio `paint_` e guarda os bytes em um
+`std::array`. Uma conversão que falha invalida o cache.
+
+Foram acrescentados quatro testes: busca em vários segmentos, reutilização de
+slot com handle antigo, leitura enquanto outras threads crescem a tabela e
+cache não envenenado por uma conversão que falha. O resultado está em
+[runtime-spi-s55a.md](medidas/runtime-spi-s55a.md).
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos
@@ -1022,6 +1045,9 @@ regras de propriedade dos handles permanecem inalteradas.
 
 O custo medido e a candidata de otimização estão registrados em
 [runtime-spi-handle-locks.md](medidas/runtime-spi-handle-locks.md).
+
+A partir da S5.5a, somente a busca de ponteiro (`FindRaw`) é sem trava; as
+demais operações continuam serializadas.
 
 ## Ciclo de vida e falhas
 

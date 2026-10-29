@@ -52,3 +52,6 @@ geração atômica e entradas em blocos fixos que não se movem, enquanto o mute
 permaneceria apenas em `Insert` e `Release`. A proposta mantém a ABI e precisa
 ser validada contra a propriedade do objeto, a reutilização de gerações e a
 destruição reentrante antes de substituir a implementação atual.
+
+Atualização (2026-10-29): a S5.5a tirou a trava da busca; ver
+[runtime-spi-s55a.md](runtime-spi-s55a.md).
