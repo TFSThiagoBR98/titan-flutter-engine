@@ -1,0 +1,683 @@
+# Why: keep worker-runner access behind RuntimeBackendFactory and retain the
+# Dart VM include at the embedder boundary while moving Dart engine
+# construction out of the core.
+diff --git a/engine/src/flutter/runtime_spi/text/spi_paragraph_draw_parity_unittests.cc b/engine/src/flutter/runtime_spi/text/spi_paragraph_draw_parity_unittests.cc
+index 91e9da529d0..0c21ae3dc1e 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_paragraph_draw_parity_unittests.cc
++++ b/engine/src/flutter/runtime_spi/text/spi_paragraph_draw_parity_unittests.cc
+@@ -23,6 +23,7 @@
+ #include "flutter/runtime_spi/text/spi_text_style.h"
+ #include "flutter/runtime_spi/spi_runtime_backend.h"
+ #include "flutter/runtime/runtime_controller.h"
++#include "flutter/shell/common/engine_dart.h"
+ #include "flutter/shell/common/engine.h"
+ #include "flutter/testing/testing.h"
+ #include "flutter/third_party/skia/include/core/SkTextBlob.h"
+@@ -291,7 +292,7 @@ TEST_F(SpiParagraphDrawTest, ImpellerEngineRecordsTextFrames) {
+                            task_runner, task_runner);
+   TestEngineDelegate engine_delegate;
+   Settings settings;
+-  auto engine = std::make_unique<Engine>(
++  auto engine = MakeDartEngine(
+       engine_delegate, nullptr, task_runners, settings,
+       std::unique_ptr<Animator>(), fml::WeakPtr<IOManager>(), font_collection_,
+       std::unique_ptr<RuntimeController>(), nullptr);
+diff --git a/engine/src/flutter/shell/common/BUILD.gn b/engine/src/flutter/shell/common/BUILD.gn
+index d5b6afb1e14..35872b87850 100644
+--- a/engine/src/flutter/shell/common/BUILD.gn
++++ b/engine/src/flutter/shell/common/BUILD.gn
+@@ -106,6 +106,8 @@ source_set("common") {
+     "dl_op_spy.cc",
+     "dl_op_spy.h",
+     "engine.cc",
++    "engine_dart.cc",
++    "engine_dart.h",
+     "engine.h",
+     "pipeline.cc",
+     "pipeline.h",
+diff --git a/engine/src/flutter/shell/common/engine.cc b/engine/src/flutter/shell/common/engine.cc
+index 83765595c47..74f96002903 100644
+--- a/engine/src/flutter/shell/common/engine.cc
++++ b/engine/src/flutter/shell/common/engine.cc
+@@ -21,9 +21,6 @@
+ #include "flutter/runtime_spi/spi_runtime_backend.h"
+ #include "flutter/runtime_spi/semantics/spi_semantics.h"
+ #include "flutter/shell/common/animator.h"
+-#include "flutter/shell/common/dart_runtime_backend_factory.h"
+-#include "flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.h"
+-#include "flutter/shell/common/dart_runtime/flutter_dart_runtime.h"
+ #include "flutter/shell/common/shell_dart.h"
+ #include "rapidjson/document.h"
+ 
+@@ -58,64 +55,6 @@ FlutterSpiMapping MakeSpiMapping(std::unique_ptr<const fml::Mapping> mapping) {
+ }
+ }  // namespace
+ 
+-std::unique_ptr<RuntimeBackend> MakeDartRuntimeBackend(
+-    RuntimeDelegate& runtime_delegate,
+-    const TaskRunners& task_runners,
+-    std::unique_ptr<RuntimeController> controller,
+-    const Settings& settings,
+-    const fml::closure& root_isolate_create_callback,
+-    fml::WeakPtr<IOManager> io_manager,
+-    fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
+-    fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
+-        image_generator_registry,
+-    const std::shared_ptr<fml::ConcurrentTaskRunner>&
+-        concurrent_worker_task_runner) {
+-  auto delegate_bridge = std::make_unique<DartRuntimeDelegateBridge>();
+-  auto runtime = std::make_unique<FlutterDartRuntime>(
+-      std::move(controller), std::move(delegate_bridge), settings,
+-      root_isolate_create_callback);
+-  auto backend = std::make_unique<SpiRuntimeBackend>(
+-      runtime_delegate, task_runners, runtime->table(),
+-      std::move(io_manager),
+-      std::move(image_decoder), std::move(image_generator_registry),
+-      fml::TaskRunnerAffineWeakPtr<SnapshotDelegate>{}, nullptr, false,
+-      std::shared_future<impeller::RuntimeStageBackend>{},
+-      concurrent_worker_task_runner);
+-  runtime.release();
+-  return backend;
+-}
+-
+-Engine::Engine(
+-    Delegate& delegate,
+-    const std::shared_ptr<fml::ConcurrentTaskRunner>& image_decoder_task_runner,
+-    const TaskRunners& task_runners,
+-    const Settings& settings,
+-    std::unique_ptr<Animator> animator,
+-    const fml::WeakPtr<IOManager>& io_manager,
+-    const std::shared_ptr<FontCollection>& font_collection,
+-    std::unique_ptr<RuntimeController> runtime_controller,
+-    const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch)
+-    : Engine(
+-          delegate,
+-          image_decoder_task_runner,
+-          task_runners,
+-          settings,
+-          std::move(animator),
+-          io_manager,
+-          font_collection,
+-          std::unique_ptr<RuntimeBackend>{},
+-          gpu_disabled_switch) {
+-  if (runtime_controller == nullptr) {
+-    return;
+-  }
+-  SetRootIsolateCreateCallback();
+-  runtime_backend_factory_ = std::make_shared<DartRuntimeBackendFactory>();
+-  runtime_backend_ = MakeDartRuntimeBackend(
+-      *this, task_runners, std::move(runtime_controller), settings,
+-      root_isolate_create_callback_, io_manager, image_decoder_->GetWeakPtr(),
+-      image_generator_registry_.GetWeakPtr(), image_decoder_task_runner);
+-}
+-
+ Engine::Engine(
+     Delegate& delegate,
+     const std::shared_ptr<fml::ConcurrentTaskRunner>& image_decoder_task_runner,
+@@ -139,38 +78,6 @@ Engine::Engine(
+       task_runners_(task_runners),
+       weak_factory_(this) {}
+ 
+-Engine::Engine(Delegate& delegate,
+-               DartVM& vm,
+-               fml::RefPtr<const DartSnapshot> isolate_snapshot,
+-               const TaskRunners& task_runners,
+-               const PlatformData& platform_data,
+-               const Settings& settings,
+-               std::unique_ptr<Animator> animator,
+-               fml::WeakPtr<IOManager> io_manager,
+-               const fml::RefPtr<SkiaUnrefQueue>& unref_queue,
+-               fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
+-               const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch,
+-               const std::shared_future<impeller::RuntimeStageBackend>&
+-                   runtime_stage_backend)
+-    : Engine(delegate,
+-             vm.GetConcurrentWorkerTaskRunner(),
+-             task_runners,
+-             settings,
+-             std::move(animator),
+-             io_manager,
+-             std::make_shared<FontCollection>(),
+-             std::unique_ptr<RuntimeBackend>{},
+-             gpu_disabled_switch) {
+-  SetRootIsolateCreateCallback();
+-  runtime_backend_factory_ = std::make_shared<DartRuntimeBackendFactory>(
+-      DartVMRef::Create(settings_), isolate_snapshot);
+-  runtime_backend_ = runtime_backend_factory_->Create(
+-      *this, task_runners_, platform_data, settings_, std::move(io_manager),
+-      unref_queue, std::move(snapshot_delegate), image_decoder_->GetWeakPtr(),
+-      image_generator_registry_.GetWeakPtr(), root_isolate_create_callback_,
+-      runtime_stage_backend);
+-}
+-
+ Engine::Engine(Delegate& delegate,
+                const TaskRunners& task_runners,
+                const PlatformData& platform_data,
+diff --git a/engine/src/flutter/shell/common/engine.h b/engine/src/flutter/shell/common/engine.h
+index b0339bcb810..12aac628fc6 100644
+--- a/engine/src/flutter/shell/common/engine.h
++++ b/engine/src/flutter/shell/common/engine.h
+@@ -21,7 +21,6 @@
+ #include "flutter/lib/ui/text/font_collection.h"
+ #include "flutter/lib/ui/window/platform_message.h"
+ #include "flutter/lib/ui/window/viewport_metrics.h"
+-#include "flutter/runtime/dart_vm.h"
+ #include "flutter/runtime/platform_data.h"
+ #include "flutter/runtime/runtime_delegate.h"
+ #include "flutter/runtime_spi/runtime_backend.h"
+@@ -30,6 +29,9 @@
+ 
+ namespace flutter {
+ 
++class DartSnapshot;
++class DartVM;
++class NativeAssetsManager;
+ class RuntimeController;
+ class RuntimeBackendFactory;
+ 
+@@ -363,22 +365,6 @@ class Engine final : public RuntimeDelegate {
+     virtual void OnEngineResetInternalState() = 0;
+   };
+ 
+-  //----------------------------------------------------------------------------
+-  /// @brief      Creates an instance of the engine with a supplied
+-  ///             `RuntimeController`.  Use the other constructor except for
+-  ///             tests.
+-  ///
+-  Engine(Delegate& delegate,
+-         const std::shared_ptr<fml::ConcurrentTaskRunner>&
+-             image_decoder_task_runner,
+-         const TaskRunners& task_runners,
+-         const Settings& settings,
+-         std::unique_ptr<Animator> animator,
+-         const fml::WeakPtr<IOManager>& io_manager,
+-         const std::shared_ptr<FontCollection>& font_collection,
+-         std::unique_ptr<RuntimeController> runtime_controller,
+-         const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch);
+-
+   Engine(Delegate& delegate,
+          const std::shared_ptr<fml::ConcurrentTaskRunner>&
+              image_decoder_task_runner,
+@@ -390,56 +376,6 @@ class Engine final : public RuntimeDelegate {
+          std::unique_ptr<RuntimeBackend> runtime_backend,
+          const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch);
+ 
+-  //----------------------------------------------------------------------------
+-  /// @brief      Creates an instance of the engine. This is done by the Shell
+-  ///             on the UI task runner.
+-  ///
+-  /// @param      delegate           The object used by the engine to perform
+-  ///                                tasks that require access to components
+-  ///                                that cannot be safely accessed by the
+-  ///                                engine. This is the shell.
+-  /// @param      vm                 An instance of the running Dart VM.
+-  /// @param[in]  isolate_snapshot   The snapshot used to create the root
+-  ///                                isolate. Even though the isolate is not
+-  ///                                `DartIsolate::Phase::Running` phase, it is
+-  ///                                created when the engine is created. This
+-  ///                                requires access to the isolate snapshot
+-  ///                                upfront.
+-  //  TODO(chinmaygarde): This is probably redundant now that the IO manager is
+-  //  it's own object.
+-  /// @param[in]  task_runners       The task runners used by the shell that
+-  ///                                hosts this engine.
+-  /// @param[in]  settings           The settings used to initialize the shell
+-  ///                                and the engine.
+-  /// @param[in]  animator           The animator used to schedule frames.
+-  //  TODO(chinmaygarde): Move this to `Engine::Delegate`
+-  /// @param[in]  snapshot_delegate  The delegate used to fulfill requests to
+-  ///                                snapshot a specified scene. The engine
+-  ///                                cannot snapshot a scene on the UI thread
+-  ///                                directly because the scene (described via
+-  ///                                a `DisplayList`) may reference resources on
+-  ///                                the GPU and there is no GPU context current
+-  ///                                on the UI thread. The delegate is a
+-  ///                                component that has access to all the
+-  ///                                requisite GPU resources.
+-  /// @param[in]  io_manager         The IO manager used by this root isolate to
+-  ///                                schedule tasks that manage resources on the
+-  ///                                GPU.
+-  ///
+-  Engine(Delegate& delegate,
+-         DartVM& vm,
+-         fml::RefPtr<const DartSnapshot> isolate_snapshot,
+-         const TaskRunners& task_runners,
+-         const PlatformData& platform_data,
+-         const Settings& settings,
+-         std::unique_ptr<Animator> animator,
+-         fml::WeakPtr<IOManager> io_manager,
+-         const fml::RefPtr<SkiaUnrefQueue>& unref_queue,
+-         fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
+-         const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch,
+-         const std::shared_future<impeller::RuntimeStageBackend>&
+-             runtime_stage_backend);
+-
+   Engine(Delegate& delegate,
+          const TaskRunners& task_runners,
+          const PlatformData& platform_data,
+@@ -1056,6 +992,33 @@ class Engine final : public RuntimeDelegate {
+  private:
+   friend class Shell;
+ 
++  friend std::unique_ptr<Engine> MakeDartEngine(
++      Delegate& delegate,
++      const std::shared_ptr<fml::ConcurrentTaskRunner>&
++          image_decoder_task_runner,
++      const TaskRunners& task_runners,
++      const Settings& settings,
++      std::unique_ptr<Animator> animator,
++      const fml::WeakPtr<IOManager>& io_manager,
++      const std::shared_ptr<FontCollection>& font_collection,
++      std::unique_ptr<RuntimeController> runtime_controller,
++      const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch);
++
++  friend std::unique_ptr<Engine> MakeDartEngine(
++      Delegate& delegate,
++      DartVM& vm,
++      fml::RefPtr<const DartSnapshot> isolate_snapshot,
++      const TaskRunners& task_runners,
++      const PlatformData& platform_data,
++      const Settings& settings,
++      std::unique_ptr<Animator> animator,
++      fml::WeakPtr<IOManager> io_manager,
++      const fml::RefPtr<SkiaUnrefQueue>& unref_queue,
++      fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
++      const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch,
++      const std::shared_future<impeller::RuntimeStageBackend>&
++          runtime_stage_backend);
++
+   void SetRootIsolateCreateCallback();
+ 
+   // |RuntimeDelegate|
+diff --git a/engine/src/flutter/shell/common/engine_animator_unittests.cc b/engine/src/flutter/shell/common/engine_animator_unittests.cc
+index 84bed0318ec..f0961d00bfe 100644
+--- a/engine/src/flutter/shell/common/engine_animator_unittests.cc
++++ b/engine/src/flutter/shell/common/engine_animator_unittests.cc
+@@ -8,6 +8,7 @@
+ 
+ #include "flutter/common/constants.h"
+ #include "flutter/lib/ui/compositing/scene_builder.h"
++#include "flutter/shell/common/engine_dart.h"
+ #include "flutter/runtime_spi/scene/spi_scene_builder.h"
+ #include "flutter/shell/common/shell_dart.h"
+ #include "flutter/shell/common/shell_test.h"
+@@ -241,7 +242,7 @@ class EngineContext {
+              [this, &settings, &animator, &delegate, &isolate_snapshot] {
+                std::promise<impeller::RuntimeStageBackend> rsb;
+                rsb.set_value(impeller::RuntimeStageBackend::kVulkan);
+-               engine_ = std::make_unique<Engine>(
++               engine_ = MakeDartEngine(
+                    /*delegate=*/delegate,
+                    /*vm=*/*&vm_,
+                    /*isolate_snapshot=*/std::move(isolate_snapshot),
+diff --git a/engine/src/flutter/shell/common/engine_dart.cc b/engine/src/flutter/shell/common/engine_dart.cc
+new file mode 100644
+index 00000000000..0c89e9d31bf
+--- /dev/null
++++ b/engine/src/flutter/shell/common/engine_dart.cc
+@@ -0,0 +1,112 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/shell/common/engine_dart.h"
++
++#include <memory>
++#include <utility>
++
++#include "flutter/common/settings.h"
++#include "flutter/lib/ui/painting/image_decoder.h"
++#include "flutter/lib/ui/painting/image_generator_registry.h"
++#include "flutter/lib/ui/snapshot_delegate.h"
++#include "flutter/runtime/runtime_controller.h"
++#include "flutter/runtime_spi/spi_runtime_backend.h"
++#include "flutter/shell/common/dart_runtime_backend_factory.h"
++#include "flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.h"
++#include "flutter/shell/common/dart_runtime/flutter_dart_runtime.h"
++
++namespace flutter {
++
++namespace {
++
++std::unique_ptr<RuntimeBackend> MakeDartRuntimeBackend(
++    RuntimeDelegate& runtime_delegate,
++    const TaskRunners& task_runners,
++    std::unique_ptr<RuntimeController> controller,
++    const Settings& settings,
++    const fml::closure& root_isolate_create_callback,
++    fml::WeakPtr<IOManager> io_manager,
++    fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
++    fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
++        image_generator_registry,
++    const std::shared_ptr<fml::ConcurrentTaskRunner>&
++        concurrent_worker_task_runner) {
++  auto delegate_bridge = std::make_unique<DartRuntimeDelegateBridge>();
++  auto runtime = std::make_unique<FlutterDartRuntime>(
++      std::move(controller), std::move(delegate_bridge), settings,
++      root_isolate_create_callback);
++  auto backend = std::make_unique<SpiRuntimeBackend>(
++      runtime_delegate, task_runners, runtime->table(),
++      std::move(io_manager), std::move(image_decoder),
++      std::move(image_generator_registry),
++      fml::TaskRunnerAffineWeakPtr<SnapshotDelegate>{}, nullptr, false,
++      std::shared_future<impeller::RuntimeStageBackend>{},
++      concurrent_worker_task_runner);
++  runtime.release();
++  return backend;
++}
++
++}  // namespace
++
++std::unique_ptr<Engine> MakeDartEngine(
++    Engine::Delegate& delegate,
++    const std::shared_ptr<fml::ConcurrentTaskRunner>& image_decoder_task_runner,
++    const TaskRunners& task_runners,
++    const Settings& settings,
++    std::unique_ptr<Animator> animator,
++    const fml::WeakPtr<IOManager>& io_manager,
++    const std::shared_ptr<FontCollection>& font_collection,
++    std::unique_ptr<RuntimeController> runtime_controller,
++    const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch) {
++  auto engine = std::make_unique<Engine>(
++      delegate, image_decoder_task_runner, task_runners, settings,
++      std::move(animator), io_manager, font_collection,
++      std::unique_ptr<RuntimeBackend>{}, gpu_disabled_switch);
++  if (runtime_controller == nullptr) {
++    return engine;
++  }
++  engine->SetRootIsolateCreateCallback();
++  engine->runtime_backend_factory_ =
++      std::make_shared<DartRuntimeBackendFactory>();
++  engine->runtime_backend_ = MakeDartRuntimeBackend(
++      *engine, task_runners, std::move(runtime_controller), settings,
++      engine->root_isolate_create_callback_, io_manager,
++      engine->image_decoder_->GetWeakPtr(),
++      engine->image_generator_registry_.GetWeakPtr(), image_decoder_task_runner);
++  return engine;
++}
++
++std::unique_ptr<Engine> MakeDartEngine(
++    Engine::Delegate& delegate,
++    DartVM& vm,
++    fml::RefPtr<const DartSnapshot> isolate_snapshot,
++    const TaskRunners& task_runners,
++    const PlatformData& platform_data,
++    const Settings& settings,
++    std::unique_ptr<Animator> animator,
++    fml::WeakPtr<IOManager> io_manager,
++    const fml::RefPtr<SkiaUnrefQueue>& unref_queue,
++    fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
++    const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch,
++    const std::shared_future<impeller::RuntimeStageBackend>&
++        runtime_stage_backend) {
++  auto engine = std::make_unique<Engine>(
++      delegate, vm.GetConcurrentWorkerTaskRunner(), task_runners, settings,
++      std::move(animator), io_manager, std::make_shared<FontCollection>(),
++      std::unique_ptr<RuntimeBackend>{}, gpu_disabled_switch);
++  engine->SetRootIsolateCreateCallback();
++  engine->runtime_backend_factory_ =
++      std::make_shared<DartRuntimeBackendFactory>(
++          DartVMRef::Create(engine->settings_), isolate_snapshot);
++  engine->runtime_backend_ = engine->runtime_backend_factory_->Create(
++      *engine, engine->task_runners_, platform_data, engine->settings_,
++      std::move(io_manager), unref_queue, std::move(snapshot_delegate),
++      engine->image_decoder_->GetWeakPtr(),
++      engine->image_generator_registry_.GetWeakPtr(),
++      engine->root_isolate_create_callback_, runtime_stage_backend);
++  return engine;
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/shell/common/engine_dart.h b/engine/src/flutter/shell/common/engine_dart.h
+new file mode 100644
+index 00000000000..6ae907c3e30
+--- /dev/null
++++ b/engine/src/flutter/shell/common/engine_dart.h
+@@ -0,0 +1,44 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_SHELL_COMMON_ENGINE_DART_H_
++#define FLUTTER_SHELL_COMMON_ENGINE_DART_H_
++
++#include "flutter/runtime/dart_vm.h"
++#include "flutter/runtime/runtime_controller.h"
++#include "flutter/shell/common/engine.h"
++
++namespace flutter {
++
++/// Creates an engine backed by a Dart runtime controller.
++std::unique_ptr<Engine> MakeDartEngine(
++    Engine::Delegate& delegate,
++    const std::shared_ptr<fml::ConcurrentTaskRunner>& image_decoder_task_runner,
++    const TaskRunners& task_runners,
++    const Settings& settings,
++    std::unique_ptr<Animator> animator,
++    const fml::WeakPtr<IOManager>& io_manager,
++    const std::shared_ptr<FontCollection>& font_collection,
++    std::unique_ptr<RuntimeController> runtime_controller,
++    const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch);
++
++/// Creates an engine backed by a Dart VM and isolate snapshot.
++std::unique_ptr<Engine> MakeDartEngine(
++    Engine::Delegate& delegate,
++    DartVM& vm,
++    fml::RefPtr<const DartSnapshot> isolate_snapshot,
++    const TaskRunners& task_runners,
++    const PlatformData& platform_data,
++    const Settings& settings,
++    std::unique_ptr<Animator> animator,
++    fml::WeakPtr<IOManager> io_manager,
++    const fml::RefPtr<SkiaUnrefQueue>& unref_queue,
++    fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
++    const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch,
++    const std::shared_future<impeller::RuntimeStageBackend>&
++        runtime_stage_backend);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_SHELL_COMMON_ENGINE_DART_H_
+diff --git a/engine/src/flutter/shell/common/engine_unittests.cc b/engine/src/flutter/shell/common/engine_unittests.cc
+index e8d151dcfbd..59945311a92 100644
+--- a/engine/src/flutter/shell/common/engine_unittests.cc
++++ b/engine/src/flutter/shell/common/engine_unittests.cc
+@@ -9,6 +9,7 @@
+ #include "flutter/flow/layers/container_layer.h"
+ #include "flutter/runtime/dart_vm_lifecycle.h"
+ #include "flutter/runtime_spi/include/flutter_runtime_extensions.h"
++#include "flutter/shell/common/engine_dart.h"
+ #include "flutter/shell/common/fake_runtime_backend.h"
+ #include "flutter/shell/common/thread_host.h"
+ #include "flutter/shell/common/vsync_waiters_test.h"
+@@ -275,7 +276,7 @@ class SpiRuntimeExtensions : public EngineTest {};
+ 
+ TEST_F(EngineTest, Create) {
+   PostUITaskSync([this] {
+-    auto engine = std::make_unique<Engine>(
++    auto engine = MakeDartEngine(
+         /*delegate=*/delegate_,
+         /*image_decoder_task_runner=*/image_decoder_task_runner_,
+         /*task_runners=*/task_runners_,
+@@ -389,7 +390,7 @@ TEST_F(EngineTest, DartRuntimeControllerAvailableThroughSpi) {
+     auto engine_runtime_controller =
+         std::make_unique<MockRuntimeController>(client, task_runners_);
+     auto* engine_runtime_controller_pointer = engine_runtime_controller.get();
+-    auto engine = std::make_unique<Engine>(
++    auto engine = MakeDartEngine(
+         delegate_, image_decoder_task_runner_, task_runners_, settings_,
+         nullptr, io_manager_, std::make_shared<FontCollection>(),
+         std::move(engine_runtime_controller),
+@@ -407,7 +408,7 @@ TEST_F(EngineTest, DispatchPlatformMessageUnknown) {
+         std::make_unique<MockRuntimeController>(client, task_runners_);
+     EXPECT_CALL(*mock_runtime_controller, IsRootIsolateRunning())
+         .WillRepeatedly(::testing::Return(false));
+-    auto engine = std::make_unique<Engine>(
++    auto engine = MakeDartEngine(
+         /*delegate=*/delegate_,
+         /*image_decoder_task_runner=*/image_decoder_task_runner_,
+         /*task_runners=*/task_runners_,
+@@ -433,7 +434,7 @@ TEST_F(EngineTest, DispatchPlatformMessageInitialRoute) {
+         std::make_unique<MockRuntimeController>(client, task_runners_);
+     EXPECT_CALL(*mock_runtime_controller, IsRootIsolateRunning())
+         .WillRepeatedly(::testing::Return(false));
+-    auto engine = std::make_unique<Engine>(
++    auto engine = MakeDartEngine(
+         /*delegate=*/delegate_,
+         /*image_decoder_task_runner=*/image_decoder_task_runner_,
+         /*task_runners=*/task_runners_,
+@@ -466,7 +467,7 @@ TEST_F(EngineTest, DispatchPlatformMessageInitialRouteIgnored) {
+         .WillRepeatedly(::testing::Return(true));
+     EXPECT_CALL(*mock_runtime_controller, DispatchPlatformMessage(::testing::_))
+         .WillRepeatedly(::testing::Return(true));
+-    auto engine = std::make_unique<Engine>(
++    auto engine = MakeDartEngine(
+         /*delegate=*/delegate_,
+         /*image_decoder_task_runner=*/image_decoder_task_runner_,
+         /*task_runners=*/task_runners_,
+@@ -498,7 +499,7 @@ TEST_F(EngineTest, SpawnSharesFontLibrary) {
+     auto vm_ref = DartVMRef::Create(settings_);
+     EXPECT_CALL(*mock_runtime_controller, GetDartVM())
+         .WillRepeatedly(::testing::Return(vm_ref.get()));
+-    auto engine = std::make_unique<Engine>(
++    auto engine = MakeDartEngine(
+         /*delegate=*/delegate_,
+         /*image_decoder_task_runner=*/image_decoder_task_runner_,
+         /*task_runners=*/task_runners_,
+@@ -524,7 +525,7 @@ TEST_F(EngineTest, SpawnWithCustomInitialRoute) {
+     auto vm_ref = DartVMRef::Create(settings_);
+     EXPECT_CALL(*mock_runtime_controller, GetDartVM())
+         .WillRepeatedly(::testing::Return(vm_ref.get()));
+-    auto engine = std::make_unique<Engine>(
++    auto engine = MakeDartEngine(
+         /*delegate=*/delegate_,
+         /*image_decoder_task_runner=*/image_decoder_task_runner_,
+         /*task_runners=*/task_runners_,
+@@ -550,7 +551,7 @@ TEST_F(EngineTest, SpawnWithCustomSettings) {
+     auto vm_ref = DartVMRef::Create(settings_);
+     EXPECT_CALL(*mock_runtime_controller, GetDartVM())
+         .WillRepeatedly(::testing::Return(vm_ref.get()));
+-    auto engine = std::make_unique<Engine>(
++    auto engine = MakeDartEngine(
+         /*delegate=*/delegate_,
+         /*image_decoder_task_runner=*/image_decoder_task_runner_,
+         /*task_runners=*/task_runners_,
+@@ -590,7 +591,7 @@ TEST_F(EngineTest, PassesLoadDartDeferredLibraryErrorToRuntime) {
+     EXPECT_CALL(*mock_runtime_controller,
+                 LoadDartDeferredLibraryError(error_id, error_message, true))
+         .Times(1);
+-    auto engine = std::make_unique<Engine>(
++    auto engine = MakeDartEngine(
+         /*delegate=*/delegate_,
+         /*image_decoder_task_runner=*/image_decoder_task_runner_,
+         /*task_runners=*/task_runners_,
+@@ -617,7 +618,7 @@ TEST_F(EngineTest, SpawnedEngineInheritsAssetManager) {
+     // auto mock_font_collection = std::make_shared<MockFontCollection>();
+     // EXPECT_CALL(*mock_font_collection, RegisterFonts(::testing::_))
+     //     .WillOnce(::testing::Return());
+-    auto engine = std::make_unique<Engine>(
++    auto engine = MakeDartEngine(
+         /*delegate=*/delegate_,
+         /*image_decoder_task_runner=*/image_decoder_task_runner_,
+         /*task_runners=*/task_runners_,
+@@ -654,7 +655,7 @@ TEST_F(EngineTest, UpdateAssetManagerWithEqualManagers) {
+     auto mock_font_collection = std::make_shared<MockFontCollection>();
+     EXPECT_CALL(*mock_font_collection, RegisterFonts(::testing::_))
+         .WillOnce(::testing::Return());
+-    auto engine = std::make_unique<Engine>(
++    auto engine = MakeDartEngine(
+         /*delegate=*/delegate_,
+         /*image_decoder_task_runner=*/image_decoder_task_runner_,
+         /*task_runners=*/task_runners_,
+diff --git a/engine/src/flutter/shell/common/platform_view.h b/engine/src/flutter/shell/common/platform_view.h
+index 68d1e879436..e00bccf421b 100644
+--- a/engine/src/flutter/shell/common/platform_view.h
++++ b/engine/src/flutter/shell/common/platform_view.h
+@@ -10,6 +10,7 @@
+ 
+ #include "flutter/common/graphics/texture.h"
+ #include "flutter/common/task_runners.h"
++#include "flutter/assets/asset_resolver.h"
+ #include "flutter/flow/embedded_views.h"
+ #include "flutter/flow/surface.h"
+ #include "flutter/fml/macros.h"
+@@ -18,10 +19,12 @@
+ #include "flutter/lib/ui/semantics/custom_accessibility_action.h"
+ #include "flutter/lib/ui/semantics/semantics_node.h"
+ #include "flutter/lib/ui/window/key_data_packet.h"
++#include "flutter/lib/ui/window/hit_test_response.h"
++#include "flutter/lib/ui/window/point_data.h"
+ #include "flutter/lib/ui/window/platform_message.h"
+ #include "flutter/lib/ui/window/pointer_data_packet.h"
+ #include "flutter/lib/ui/window/viewport_metrics.h"
+-#include "flutter/runtime/runtime_controller.h"
++#include "flutter/lib/ui/window/view_focus.h"
+ #include "flutter/shell/common/animator.h"
+ #include "flutter/shell/common/platform_message_handler.h"
+ #include "flutter/shell/common/vsync_waiter.h"
+diff --git a/engine/src/flutter/shell/common/shell.cc b/engine/src/flutter/shell/common/shell.cc
+index bdee81ac563..8fc9f113cc7 100644
+--- a/engine/src/flutter/shell/common/shell.cc
++++ b/engine/src/flutter/shell/common/shell.cc
+@@ -2468,12 +2468,7 @@ const std::weak_ptr<VsyncWaiter> Shell::GetVsyncWaiter() const {
+ 
+ const std::shared_ptr<fml::ConcurrentTaskRunner>
+ Shell::GetConcurrentWorkerTaskRunner() const {
+-  auto* vm = GetDartVM();
+-  FML_DCHECK(vm);
+-  if (!vm) {
+-    return nullptr;
+-  }
+-  return vm->GetConcurrentWorkerTaskRunner();
++  return runtime_backend_factory_->GetConcurrentWorkerTaskRunner();
+ }
+ 
+ BoxConstraints Shell::ExpectedFrameConstraints(int64_t view_id) {
+diff --git a/engine/src/flutter/shell/common/shell_unittests.cc b/engine/src/flutter/shell/common/shell_unittests.cc
+index f5a3d2b7b85..d4301281b8c 100644
+--- a/engine/src/flutter/shell/common/shell_unittests.cc
++++ b/engine/src/flutter/shell/common/shell_unittests.cc
+@@ -36,6 +36,7 @@
+ #include "flutter/fml/synchronization/waitable_event.h"
+ #include "flutter/runtime/dart_vm.h"
+ #include "flutter/runtime/dart_vm_lifecycle.h"
++#include "flutter/runtime/runtime_controller.h"
+ #include "flutter/shell/common/platform_view.h"
+ #include "flutter/shell/common/rasterizer.h"
+ #include "flutter/shell/common/shell_test.h"
+diff --git a/engine/src/flutter/shell/platform/embedder/BUILD.gn b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+index 3a57dd9e07c..da7f303ade3 100644
+--- a/engine/src/flutter/shell/platform/embedder/BUILD.gn
++++ b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+@@ -110,6 +110,7 @@ template("embedder_source_set") {
+       "//flutter/lib/ui",
+       "//flutter/lib/ui:ui_core_types",
+       "//flutter/runtime:libdart",
++      "//flutter/runtime",
+       "//flutter/shell/common",
+       "//flutter/skia",
+       "//flutter/third_party/tonic",
+diff --git a/engine/src/flutter/shell/platform/embedder/embedder.cc b/engine/src/flutter/shell/platform/embedder/embedder.cc
+index e0ad14c91d5..930ee53e10e 100644
+--- a/engine/src/flutter/shell/platform/embedder/embedder.cc
++++ b/engine/src/flutter/shell/platform/embedder/embedder.cc
+@@ -52,6 +52,7 @@ extern const intptr_t kPlatformStrongDillSize;
+ #include "flutter/fml/message_loop.h"
+ #include "flutter/fml/paths.h"
+ #include "flutter/fml/trace_event.h"
++#include "flutter/runtime/dart_vm.h"
+ #include "flutter/shell/common/rasterizer.h"
+ #include "flutter/shell/common/switches.h"
+ #include "flutter/shell/platform/embedder/embedder.h"
+diff --git a/engine/src/flutter/shell/platform/embedder/embedder_engine.cc b/engine/src/flutter/shell/platform/embedder/embedder_engine.cc
+index d3e78ee5536..b4cd107d1aa 100644
+--- a/engine/src/flutter/shell/platform/embedder/embedder_engine.cc
++++ b/engine/src/flutter/shell/platform/embedder/embedder_engine.cc
+@@ -5,6 +5,7 @@
+ #include "flutter/shell/platform/embedder/embedder_engine.h"
+ 
+ #include "flutter/fml/make_copyable.h"
++#include "flutter/runtime/dart_vm.h"
+ #include "flutter/shell/platform/embedder/vsync_waiter_embedder.h"
+ 
+ namespace flutter {
