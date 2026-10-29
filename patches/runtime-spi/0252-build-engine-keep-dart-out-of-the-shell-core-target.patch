@@ -1,0 +1,247 @@
+# Why: isolate Dart shell sources and dependencies in a dedicated target while
+# proving the common shell core cannot depend on Dart.
+diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
+index b590a068eb9..f64134fc20f 100644
+--- a/engine/src/flutter/lib/ui/BUILD.gn
++++ b/engine/src/flutter/lib/ui/BUILD.gn
+@@ -464,6 +464,7 @@ if (enable_unittests) {
+       "//flutter/impeller",
+       "//flutter/impeller/renderer/testing:mocks",
+       "//flutter/lib/snapshot",
++      "//flutter/shell/common:dart",
+       "//flutter/shell/common:shell_test_fixture_sources",
+       "//flutter/testing",
+       "//flutter/testing:dart",
+diff --git a/engine/src/flutter/runtime/BUILD.gn b/engine/src/flutter/runtime/BUILD.gn
+index 820d02f4e08..085f152fbf0 100644
+--- a/engine/src/flutter/runtime/BUILD.gn
++++ b/engine/src/flutter/runtime/BUILD.gn
+@@ -197,6 +197,7 @@ if (enable_unittests) {
+       "//flutter/fml",
+       "//flutter/lib/snapshot",
+       "//flutter/runtime_spi:semantics",
++      "//flutter/shell/common:dart",
+       "//flutter/shell/common:shell_test_fixture_sources",
+       "//flutter/skia",
+       "//flutter/testing",
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index c6ee308b05b..61ecf621d5f 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -280,6 +280,7 @@ if (enable_unittests) {
+       "//flutter/lib/ui/fixtures/shaders/general_shaders:compile_general_shaders",
+       "//flutter/lib/ui/fixtures/shaders:sampler_order_fixture",
+       "//flutter/runtime",
++      "//flutter/shell/common:dart",
+       "//flutter/shell/common:shell_test_fixture_sources",
+       "//flutter/shell/common:shell_unittests_fixtures",
+       "//flutter/testing",
+diff --git a/engine/src/flutter/shell/common/BUILD.gn b/engine/src/flutter/shell/common/BUILD.gn
+index 35872b87850..8f2f54c90fb 100644
+--- a/engine/src/flutter/shell/common/BUILD.gn
++++ b/engine/src/flutter/shell/common/BUILD.gn
+@@ -95,19 +95,11 @@ source_set("common") {
+     "animator.h",
+     "context_options.cc",
+     "context_options.h",
+-    "dart_runtime_backend_factory.cc",
+-    "dart_runtime_backend_factory.h",
+-    "dart_runtime/dart_runtime_delegate_bridge.cc",
+-    "dart_runtime/dart_runtime_delegate_bridge.h",
+-    "dart_runtime/flutter_dart_runtime.cc",
+-    "dart_runtime/flutter_dart_runtime.h",
+     "display_manager.cc",
+     "display_manager.h",
+     "dl_op_spy.cc",
+     "dl_op_spy.h",
+     "engine.cc",
+-    "engine_dart.cc",
+-    "engine_dart.h",
+     "engine.h",
+     "pipeline.cc",
+     "pipeline.h",
+@@ -119,13 +111,10 @@ source_set("common") {
+     "resource_cache_limit_calculator.h",
+     "run_configuration.cc",
+     "run_configuration.h",
+-    "run_configuration_dart.cc",
+     "serialization_callbacks.cc",
+     "serialization_callbacks.h",
+     "shell.cc",
+     "shell.h",
+-    "shell_dart.cc",
+-    "shell_dart.h",
+     "shell_service_protocol.cc",
+     "shell_service_protocol.h",
+     "shell_io_manager.cc",
+@@ -154,6 +143,8 @@ source_set("common") {
+     ":platform_message_handler",
+     ":runtime_launch_configuration",
+     ":snapshot_pixel_format",
++    "//flutter/runtime:platform_data",
++    "//flutter/runtime:runtime_delegate",
+     "//flutter/lib/ui:ui_image_decoding",
+     "//flutter/lib/ui:ui_core_types",
+     "//flutter/lib/ui:ui_text_core",
+@@ -163,25 +154,30 @@ source_set("common") {
+     "//flutter/runtime_spi:spi_backend",
+     "//flutter/shell/version",
+     "//flutter/third_party/rapidjson",
+-    "//flutter/third_party/tonic",
+     "//flutter/txt",
+   ]
+ 
+   deps = [
+-    "$dart_src/runtime:dart_api",
+     "//flutter/assets",
+     "//flutter/common",
+     "//flutter/common/graphics",
+     "//flutter/flow",
+     "//flutter/fml",
+-    "//flutter/lib/ui",
+-    "//flutter/runtime",
+     "//flutter/shell/common:base64",
+     "//flutter/shell/geometry",
+-    "//flutter/shell/profiling",
+     "//flutter/skia",
+   ]
+ 
++  # O core do shell não contém nem depende de Dart (ADR-0027, S5a).
++  assert_no_deps = [
++    "//flutter/third_party/dart/*",
++    "//flutter/third_party/tonic/*",
++    "//flutter/lib/ui:ui",
++    "//flutter/runtime:runtime",
++    "//flutter/runtime:libdart",
++    "//flutter/shell/common:dart",
++  ]
++
+   if (impeller_supports_rendering) {
+     sources += [
+       "snapshot_controller_impeller.cc",
+@@ -192,6 +188,49 @@ source_set("common") {
+   }
+ }
+ 
++source_set("dart") {
++  sources = [
++    "dart_runtime_backend_factory.cc",
++    "dart_runtime_backend_factory.h",
++    "dart_runtime/dart_runtime_delegate_bridge.cc",
++    "dart_runtime/dart_runtime_delegate_bridge.h",
++    "dart_runtime/flutter_dart_runtime.cc",
++    "dart_runtime/flutter_dart_runtime.h",
++    "engine_dart.cc",
++    "engine_dart.h",
++    "run_configuration_dart.cc",
++    "shell_dart.cc",
++    "shell_dart.h",
++  ]
++
++  public_configs = [ "//flutter:config" ]
++
++  public_deps = [
++    ":common",
++    "$dart_src/runtime:dart_api",
++    "//flutter/lib/ui",
++    "//flutter/runtime",
++    "//flutter/runtime:libdart",
++    "//flutter/third_party/tonic",
++  ]
++
++  deps = [
++    "//flutter/assets",
++    "//flutter/common",
++    "//flutter/common/graphics",
++    "//flutter/flow",
++    "//flutter/fml",
++    "//flutter/shell/geometry",
++    "//flutter/shell/profiling",
++    "//flutter/skia",
++    "//flutter/txt",
++  ]
++
++  if (impeller_supports_rendering) {
++    deps += [ "//flutter/impeller" ]
++  }
++}
++
+ # These are in their own source_set to avoid a dependency cycle with //common/graphics
+ source_set("base64") {
+   sources = [
+@@ -213,6 +252,7 @@ template("shell_host_executable") {
+ 
+     deps += [
+       ":common",
++      ":dart",
+       "//flutter/lib/snapshot",
+       "//flutter/runtime:libdart",
+     ]
+diff --git a/engine/src/flutter/shell/platform/android/BUILD.gn b/engine/src/flutter/shell/platform/android/BUILD.gn
+index f4d41d4d73d..fa468ecf164 100644
+--- a/engine/src/flutter/shell/platform/android/BUILD.gn
++++ b/engine/src/flutter/shell/platform/android/BUILD.gn
+@@ -176,6 +176,7 @@ source_set("flutter_shell_native_src") {
+     "//flutter/runtime",
+     "//flutter/runtime:libdart",
+     "//flutter/shell/common",
++    "//flutter/shell/common:dart",
+     "//flutter/shell/platform/android/context",
+     "//flutter/shell/platform/android/external_view_embedder",
+     "//flutter/shell/platform/android/jni",
+diff --git a/engine/src/flutter/shell/platform/darwin/ios/BUILD.gn b/engine/src/flutter/shell/platform/darwin/ios/BUILD.gn
+index 0a7828b513b..571b58c9e22 100644
+--- a/engine/src/flutter/shell/platform/darwin/ios/BUILD.gn
++++ b/engine/src/flutter/shell/platform/darwin/ios/BUILD.gn
+@@ -210,6 +210,7 @@ source_set("flutter_framework_source") {
+     "//flutter/lib/ui",
+     "//flutter/runtime",
+     "//flutter/shell/common",
++    "//flutter/shell/common:dart",
+     "//flutter/shell/platform/common:common_cpp_input",
+     "//flutter/shell/platform/darwin/common",
+     "//flutter/shell/platform/darwin/common:framework_common",
+diff --git a/engine/src/flutter/shell/platform/embedder/BUILD.gn b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+index da7f303ade3..de5589c8db0 100644
+--- a/engine/src/flutter/shell/platform/embedder/BUILD.gn
++++ b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+@@ -112,6 +112,7 @@ template("embedder_source_set") {
+       "//flutter/runtime:libdart",
+       "//flutter/runtime",
+       "//flutter/shell/common",
++      "//flutter/shell/common:dart",
+       "//flutter/skia",
+       "//flutter/third_party/tonic",
+     ]
+diff --git a/engine/src/flutter/shell/platform/fuchsia/flutter/BUILD.gn b/engine/src/flutter/shell/platform/fuchsia/flutter/BUILD.gn
+index d4a052244b7..4e4039737d1 100644
+--- a/engine/src/flutter/shell/platform/fuchsia/flutter/BUILD.gn
++++ b/engine/src/flutter/shell/platform/fuchsia/flutter/BUILD.gn
+@@ -124,6 +124,7 @@ template("runner_sources") {
+       "//flutter/lib/ui",
+       "//flutter/runtime",
+       "//flutter/shell/common",
++      "//flutter/shell/common:dart",
+       "//flutter/shell/platform/common/client_wrapper",
+     ]
+ 
+@@ -485,6 +486,7 @@ if (enable_unittests) {
+       "//flutter/flow",
+       "//flutter/lib/ui",
+       "//flutter/shell/common",
++      "//flutter/shell/common:dart",
+     ]
+ 
+     deps = [
+diff --git a/engine/src/flutter/shell/testing/BUILD.gn b/engine/src/flutter/shell/testing/BUILD.gn
+index f97ae91ae83..7580937f9d0 100644
+--- a/engine/src/flutter/shell/testing/BUILD.gn
++++ b/engine/src/flutter/shell/testing/BUILD.gn
+@@ -73,6 +73,7 @@ template("tester") {
+       "//flutter/fml",
+       "//flutter/lib/snapshot",
+       "//flutter/shell/common",
++      "//flutter/shell/common:dart",
+       "//flutter/shell/gpu:gpu_surface_software",
+       "//flutter/skia",
+       "//flutter/third_party/tonic",
