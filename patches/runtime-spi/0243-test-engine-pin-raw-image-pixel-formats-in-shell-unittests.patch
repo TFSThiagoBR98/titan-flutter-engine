@@ -1,0 +1,82 @@
+# Why: prove in a gtest that the check runs that raw RGBA and BGRA pixels keep
+# their channels through the SPI.
+diff --git a/engine/src/flutter/shell/common/fixtures/shell_test.dart b/engine/src/flutter/shell/common/fixtures/shell_test.dart
+index 5557ea4e268..f7faf5444f8 100644
+--- a/engine/src/flutter/shell/common/fixtures/shell_test.dart
++++ b/engine/src/flutter/shell/common/fixtures/shell_test.dart
+@@ -723,6 +723,33 @@ void canCreateImageFromDecompressedData() {
+   });
+ }
+ 
++@Native<Void Function(Int, Int)>(symbol: 'NotifyRawPixels')
++external void notifyRawPixels(int rgba, int bgra);
++
++Future<Image> _decodeRawImage(Uint8List pixels, PixelFormat format) {
++  final Completer<Image> completer = Completer<Image>();
++  decodeImageFromPixels(pixels, 1, 1, format, completer.complete);
++  return completer.future;
++}
++
++@pragma('vm:entry-point')
++Future<void> rawImagePixelFormatsKeepChannels() async {
++  final Image rgbaImage = await _decodeRawImage(
++    Uint8List.fromList(<int>[255, 0, 0, 255]),
++    PixelFormat.rgba8888,
++  );
++  final Image bgraImage = await _decodeRawImage(
++    Uint8List.fromList(<int>[0, 0, 255, 255]),
++    PixelFormat.bgra8888,
++  );
++  final ByteData rgbaData = (await rgbaImage.toByteData(format: ImageByteFormat.rawRgba))!;
++  final ByteData bgraData = (await bgraImage.toByteData(format: ImageByteFormat.rawRgba))!;
++
++  notifyRawPixels(rgbaData.getUint32(0), bgraData.getUint32(0));
++  rgbaImage.dispose();
++  bgraImage.dispose();
++}
++
+ @pragma('vm:entry-point')
+ void canAccessIsolateLaunchData() {
+   notifyMessage(
+diff --git a/engine/src/flutter/shell/common/shell_unittests.cc b/engine/src/flutter/shell/common/shell_unittests.cc
+index 675f1a1347f..75169f875c5 100644
+--- a/engine/src/flutter/shell/common/shell_unittests.cc
++++ b/engine/src/flutter/shell/common/shell_unittests.cc
+@@ -2279,6 +2279,37 @@ TEST_F(ShellTest, CanCreateImagefromDecompressedBytes) {
+   DestroyShell(std::move(shell), task_runners);
+ }
+ 
++TEST_F(ShellTest, RawImagePixelFormatsKeepChannels) {
++  Settings settings = CreateSettingsForFixture();
++  auto task_runner = CreateNewThread();
++  TaskRunners task_runners("test", task_runner, task_runner, task_runner,
++                           task_runner);
++  std::unique_ptr<Shell> shell = CreateShell(settings, task_runners);
++
++  auto configuration = RunConfiguration::InferFromSettings(settings);
++  configuration.SetEntrypoint("rawImagePixelFormatsKeepChannels");
++
++  int rgba_pixel = 0;
++  int bgra_pixel = 0;
++  fml::AutoResetWaitableEvent latch;
++  AddFfiNativeCallback(
++      "NotifyRawPixels",
++      CREATE_FFI_LAMBDA([&](int rgba, int bgra) {
++        rgba_pixel = rgba;
++        bgra_pixel = bgra;
++        latch.Signal();
++      }));
++
++  RunEngine(shell.get(), std::move(configuration));
++
++  const bool timed_out =
++      latch.WaitWithTimeout(fml::TimeDelta::FromSeconds(10));
++  ASSERT_FALSE(timed_out);
++  EXPECT_EQ(rgba_pixel, 0xFF0000FF);
++  EXPECT_EQ(bgra_pixel, 0xFF0000FF);
++  DestroyShell(std::move(shell), task_runners);
++}
++
+ class MockTexture : public Texture {
+  public:
+   MockTexture(int64_t textureId,
