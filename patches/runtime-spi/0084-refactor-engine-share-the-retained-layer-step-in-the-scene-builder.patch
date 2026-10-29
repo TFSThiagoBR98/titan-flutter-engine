@@ -1,0 +1,300 @@
+# Why: keep every SceneBuilder push balanced and retain layers through one
+# error-aware path.
+diff --git a/engine/src/flutter/lib/ui/compositing/scene_builder.cc b/engine/src/flutter/lib/ui/compositing/scene_builder.cc
+index 29cb21b1802..5fe9e09f136 100644
+--- a/engine/src/flutter/lib/ui/compositing/scene_builder.cc
++++ b/engine/src/flutter/lib/ui/compositing/scene_builder.cc
+@@ -8,6 +8,7 @@
+ 
+ #include "dart_api.h"
+ #include "flutter/fml/build_config.h"
++#include "flutter/fml/logging.h"
+ #include "flutter/lib/ui/compositing/scene.h"
+ #include "flutter/lib/ui/floating_point.h"
+ #include "flutter/lib/ui/painting/matrix.h"
+@@ -80,16 +81,19 @@ void SceneBuilder::RetainLayer(
+   }
+ }
+ 
+-void SceneBuilder::pushTransform(
++void SceneBuilder::RetainPushedLayer(
++    FlutterSpiResult push_result,
+     Dart_Handle layer_handle,
+-    tonic::Float64List& matrix4,
+     const fml::RefPtr<EngineLayer>& old_layer) {
+-  const DlMatrix matrix = ToDlMatrix(matrix4);
+-  const FlutterSpiMatrix spi_matrix = ToSpiMatrix(matrix);
+-  matrix4.Release();
+-
+-  if (Api()->scene_push_transform(builder_, &spi_matrix) != kFlutterSpiOk) {
+-    return;
++  if (push_result != kFlutterSpiOk) {
++    FML_DLOG(ERROR) << "SceneBuilder push failed with result " << push_result;
++    const FlutterSpiResult fallback_result =
++        Api()->scene_push_offset(builder_, 0.0f, 0.0f);
++    if (fallback_result != kFlutterSpiOk) {
++      FML_DLOG(ERROR) << "SceneBuilder fallback push failed with result "
++                      << fallback_result;
++      return;
++    }
+   }
+ 
+   FlutterSpiEngineLayer* spi_layer = nullptr;
+@@ -99,20 +103,26 @@ void SceneBuilder::pushTransform(
+   RetainLayer(layer_handle, spi_layer, old_layer);
+ }
+ 
++void SceneBuilder::pushTransform(
++    Dart_Handle layer_handle,
++    tonic::Float64List& matrix4,
++    const fml::RefPtr<EngineLayer>& old_layer) {
++  const DlMatrix matrix = ToDlMatrix(matrix4);
++  const FlutterSpiMatrix spi_matrix = ToSpiMatrix(matrix);
++  matrix4.Release();
++
++  const FlutterSpiResult push_result =
++      Api()->scene_push_transform(builder_, &spi_matrix);
++  RetainPushedLayer(push_result, layer_handle, old_layer);
++}
++
+ void SceneBuilder::pushOffset(Dart_Handle layer_handle,
+                               double dx,
+                               double dy,
+                               const fml::RefPtr<EngineLayer>& old_layer) {
+-  if (Api()->scene_push_offset(builder_, SafeNarrow(dx), SafeNarrow(dy)) !=
+-      kFlutterSpiOk) {
+-    return;
+-  }
+-
+-  FlutterSpiEngineLayer* spi_layer = nullptr;
+-  if (Api()->scene_take_last_layer(builder_, &spi_layer) != kFlutterSpiOk) {
+-    return;
+-  }
+-  RetainLayer(layer_handle, spi_layer, old_layer);
++  const FlutterSpiResult push_result =
++      Api()->scene_push_offset(builder_, SafeNarrow(dx), SafeNarrow(dy));
++  RetainPushedLayer(push_result, layer_handle, old_layer);
+ }
+ 
+ void SceneBuilder::pushClipRect(Dart_Handle layer_handle,
+@@ -124,16 +134,9 @@ void SceneBuilder::pushClipRect(Dart_Handle layer_handle,
+                                 const fml::RefPtr<EngineLayer>& old_layer) {
+   const FlutterSpiRect rect = {SafeNarrow(left), SafeNarrow(top),
+                                SafeNarrow(right), SafeNarrow(bottom)};
+-  if (Api()->scene_push_clip_rect(builder_, &rect, clip_behavior) !=
+-      kFlutterSpiOk) {
+-    return;
+-  }
+-
+-  FlutterSpiEngineLayer* spi_layer = nullptr;
+-  if (Api()->scene_take_last_layer(builder_, &spi_layer) != kFlutterSpiOk) {
+-    return;
+-  }
+-  RetainLayer(layer_handle, spi_layer, old_layer);
++  const FlutterSpiResult push_result =
++      Api()->scene_push_clip_rect(builder_, &rect, clip_behavior);
++  RetainPushedLayer(push_result, layer_handle, old_layer);
+ }
+ 
+ void SceneBuilder::pushClipRRect(Dart_Handle layer_handle,
+@@ -141,16 +144,9 @@ void SceneBuilder::pushClipRRect(Dart_Handle layer_handle,
+                                  int clip_behavior,
+                                  const fml::RefPtr<EngineLayer>& old_layer) {
+   const FlutterSpiRRect shape = ToSpiRRect(rrect.rrect);
+-  if (Api()->scene_push_clip_rrect(builder_, &shape, clip_behavior) !=
+-      kFlutterSpiOk) {
+-    return;
+-  }
+-
+-  FlutterSpiEngineLayer* spi_layer = nullptr;
+-  if (Api()->scene_take_last_layer(builder_, &spi_layer) != kFlutterSpiOk) {
+-    return;
+-  }
+-  RetainLayer(layer_handle, spi_layer, old_layer);
++  const FlutterSpiResult push_result =
++      Api()->scene_push_clip_rrect(builder_, &shape, clip_behavior);
++  RetainPushedLayer(push_result, layer_handle, old_layer);
+ }
+ 
+ void SceneBuilder::pushClipRSuperellipse(
+@@ -159,32 +155,18 @@ void SceneBuilder::pushClipRSuperellipse(
+     int clip_behavior,
+     const fml::RefPtr<EngineLayer>& old_layer) {
+   const FlutterSpiRSuperellipse shape = ToSpiRRect(rse->rsuperellipse());
+-  if (Api()->scene_push_clip_rsuperellipse(builder_, &shape, clip_behavior) !=
+-      kFlutterSpiOk) {
+-    return;
+-  }
+-
+-  FlutterSpiEngineLayer* spi_layer = nullptr;
+-  if (Api()->scene_take_last_layer(builder_, &spi_layer) != kFlutterSpiOk) {
+-    return;
+-  }
+-  RetainLayer(layer_handle, spi_layer, old_layer);
++  const FlutterSpiResult push_result =
++      Api()->scene_push_clip_rsuperellipse(builder_, &shape, clip_behavior);
++  RetainPushedLayer(push_result, layer_handle, old_layer);
+ }
+ 
+ void SceneBuilder::pushClipPath(Dart_Handle layer_handle,
+                                 const CanvasPath* path,
+                                 int clip_behavior,
+                                 const fml::RefPtr<EngineLayer>& old_layer) {
+-  if (Api()->scene_push_clip_path(builder_, path->spi_handle(), clip_behavior) !=
+-      kFlutterSpiOk) {
+-    return;
+-  }
+-
+-  FlutterSpiEngineLayer* spi_layer = nullptr;
+-  if (Api()->scene_take_last_layer(builder_, &spi_layer) != kFlutterSpiOk) {
+-    return;
+-  }
+-  RetainLayer(layer_handle, spi_layer, old_layer);
++  const FlutterSpiResult push_result =
++      Api()->scene_push_clip_path(builder_, path->spi_handle(), clip_behavior);
++  RetainPushedLayer(push_result, layer_handle, old_layer);
+ }
+ 
+ void SceneBuilder::pushOpacity(Dart_Handle layer_handle,
+@@ -192,16 +174,10 @@ void SceneBuilder::pushOpacity(Dart_Handle layer_handle,
+                                double dx,
+                                double dy,
+                                const fml::RefPtr<EngineLayer>& old_layer) {
+-  if (Api()->scene_push_opacity(builder_, alpha, SafeNarrow(dx),
+-                                SafeNarrow(dy)) != kFlutterSpiOk) {
+-    return;
+-  }
+-
+-  FlutterSpiEngineLayer* spi_layer = nullptr;
+-  if (Api()->scene_take_last_layer(builder_, &spi_layer) != kFlutterSpiOk) {
+-    return;
+-  }
+-  RetainLayer(layer_handle, spi_layer, old_layer);
++  const FlutterSpiResult push_result =
++      Api()->scene_push_opacity(builder_, alpha, SafeNarrow(dx),
++                                SafeNarrow(dy));
++  RetainPushedLayer(push_result, layer_handle, old_layer);
+ }
+ 
+ void SceneBuilder::pushColorFilter(
+@@ -210,21 +186,12 @@ void SceneBuilder::pushColorFilter(
+     const fml::RefPtr<EngineLayer>& old_layer) {
+   FlutterSpiColorFilter* filter =
+       SpiColorFilterFromDl(color_filter->filter());
+-  if (Api()->scene_push_color_filter(builder_, filter) != kFlutterSpiOk) {
+-    if (filter != nullptr) {
+-      SpiColorFilterRelease(filter);
+-    }
+-    return;
+-  }
++  const FlutterSpiResult push_result =
++      Api()->scene_push_color_filter(builder_, filter);
+   if (filter != nullptr) {
+     SpiColorFilterRelease(filter);
+   }
+-
+-  FlutterSpiEngineLayer* spi_layer = nullptr;
+-  if (Api()->scene_take_last_layer(builder_, &spi_layer) != kFlutterSpiOk) {
+-    return;
+-  }
+-  RetainLayer(layer_handle, spi_layer, old_layer);
++  RetainPushedLayer(push_result, layer_handle, old_layer);
+ }
+ 
+ void SceneBuilder::pushImageFilter(
+@@ -235,22 +202,12 @@ void SceneBuilder::pushImageFilter(
+     const fml::RefPtr<EngineLayer>& old_layer) {
+   FlutterSpiImageFilter* filter =
+       SpiImageFilterFromDl(image_filter->filter(DlTileMode::kDecal));
+-  if (Api()->scene_push_image_filter(builder_, filter, SafeNarrow(dx),
+-                                     SafeNarrow(dy)) != kFlutterSpiOk) {
+-    if (filter != nullptr) {
+-      SpiImageFilterRelease(filter);
+-    }
+-    return;
+-  }
++  const FlutterSpiResult push_result = Api()->scene_push_image_filter(
++      builder_, filter, SafeNarrow(dx), SafeNarrow(dy));
+   if (filter != nullptr) {
+     SpiImageFilterRelease(filter);
+   }
+-
+-  FlutterSpiEngineLayer* spi_layer = nullptr;
+-  if (Api()->scene_take_last_layer(builder_, &spi_layer) != kFlutterSpiOk) {
+-    return;
+-  }
+-  RetainLayer(layer_handle, spi_layer, old_layer);
++  RetainPushedLayer(push_result, layer_handle, old_layer);
+ }
+ 
+ void SceneBuilder::pushBackdropFilter(
+@@ -267,23 +224,13 @@ void SceneBuilder::pushBackdropFilter(
+ 
+   FlutterSpiImageFilter* image_filter =
+       SpiImageFilterFromDl(filter->filter(DlTileMode::kMirror));
+-  if (Api()->scene_push_backdrop_filter(
+-          builder_, image_filter, blend_mode, has_backdrop_id,
+-          converted_backdrop_id) != kFlutterSpiOk) {
+-    if (image_filter != nullptr) {
+-      SpiImageFilterRelease(image_filter);
+-    }
+-    return;
+-  }
++  const FlutterSpiResult push_result = Api()->scene_push_backdrop_filter(
++      builder_, image_filter, blend_mode, has_backdrop_id,
++      converted_backdrop_id);
+   if (image_filter != nullptr) {
+     SpiImageFilterRelease(image_filter);
+   }
+-
+-  FlutterSpiEngineLayer* spi_layer = nullptr;
+-  if (Api()->scene_take_last_layer(builder_, &spi_layer) != kFlutterSpiOk) {
+-    return;
+-  }
+-  RetainLayer(layer_handle, spi_layer, old_layer);
++  RetainPushedLayer(push_result, layer_handle, old_layer);
+ }
+ 
+ void SceneBuilder::pushShaderMask(
+@@ -302,23 +249,12 @@ void SceneBuilder::pushShaderMask(
+   FlutterSpiShader* spi_shader =
+       SpiShaderFromColorSource(shader->shader(
+           ImageFilter::SamplingFromIndex(filter_quality_index)));
+-  if (Api()->scene_push_shader_mask(builder_, spi_shader, &mask_rect,
+-                                    blend_mode, filter_quality_index) !=
+-      kFlutterSpiOk) {
+-    if (spi_shader != nullptr) {
+-      SpiShaderRelease(spi_shader);
+-    }
+-    return;
+-  }
++  const FlutterSpiResult push_result = Api()->scene_push_shader_mask(
++      builder_, spi_shader, &mask_rect, blend_mode, filter_quality_index);
+   if (spi_shader != nullptr) {
+     SpiShaderRelease(spi_shader);
+   }
+-
+-  FlutterSpiEngineLayer* spi_layer = nullptr;
+-  if (Api()->scene_take_last_layer(builder_, &spi_layer) != kFlutterSpiOk) {
+-    return;
+-  }
+-  RetainLayer(layer_handle, spi_layer, old_layer);
++  RetainPushedLayer(push_result, layer_handle, old_layer);
+ }
+ 
+ void SceneBuilder::addRetained(
+diff --git a/engine/src/flutter/lib/ui/compositing/scene_builder.h b/engine/src/flutter/lib/ui/compositing/scene_builder.h
+index 6e24b2a1bf3..6176ad6b71b 100644
+--- a/engine/src/flutter/lib/ui/compositing/scene_builder.h
++++ b/engine/src/flutter/lib/ui/compositing/scene_builder.h
+@@ -134,6 +134,10 @@ class SceneBuilder : public RefCountedDartWrappable<SceneBuilder> {
+   void RetainLayer(Dart_Handle layer_handle,
+                    FlutterSpiEngineLayer* spi_layer,
+                    const fml::RefPtr<EngineLayer>& old_layer);
++  void RetainPushedLayer(
++      FlutterSpiResult push_result,
++      Dart_Handle layer_handle,
++      const fml::RefPtr<EngineLayer>& old_layer);
+ 
+   FlutterSpiSceneBuilder* builder_ = nullptr;
+ 

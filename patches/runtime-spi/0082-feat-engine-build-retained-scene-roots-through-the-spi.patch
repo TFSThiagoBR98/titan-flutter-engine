@@ -1,0 +1,342 @@
+# Why: let dart:ui retain a root layer and create reusable scenes with view-
+# specific dimensions without copying the scene tree.
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index bba7d324848..a4f478da2ac 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -842,7 +842,11 @@ SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_measure_next_contour,
+                   sizeof(void*) == 8 ? 808 : 404);
+ SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_measure_release,
+                   sizeof(void*) == 8 ? 816 : 408);
+-SPI_EXPECT_SIZE(FlutterSpiSceneApi, sizeof(void*) == 8 ? 824 : 412);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_build_root,
++                  sizeof(void*) == 8 ? 824 : 412);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_create_from_root,
++                  sizeof(void*) == 8 ? 832 : 416);
++SPI_EXPECT_SIZE(FlutterSpiSceneApi, sizeof(void*) == 8 ? 840 : 420);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiPixels, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiPixels, pixels,
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index 12b532faed8..77a82d86af4 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 16
++#define FLUTTER_SPI_VERSION_MINOR 17
+ 
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_scene.h b/engine/src/flutter/runtime_spi/include/flutter_scene.h
+index 7157387a3bc..d4e14e94562 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_scene.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_scene.h
+@@ -524,6 +524,12 @@ struct FlutterSpiSceneApi {
+   FlutterSpiResult (*path_measure_next_contour)(FlutterSpiPathMeasure* measure,
+                                                 bool* out);
+   FlutterSpiResult (*path_measure_release)(FlutterSpiPathMeasure* measure);
++  FlutterSpiResult (*scene_build_root)(FlutterSpiSceneBuilder* builder,
++                                       FlutterSpiEngineLayer** out_root);
++  FlutterSpiResult (*scene_create_from_root)(FlutterSpiEngineLayer* root,
++                                             int64_t width_px,
++                                             int64_t height_px,
++                                             FlutterSpiScene** out_scene);
+ };
+ 
+ #ifdef __cplusplus
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+index 0018d8841ee..2cda6b70ab3 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+@@ -19,6 +19,7 @@
+ #include "flutter/runtime_spi/scene/spi_path_measure.h"
+ #include "flutter/runtime_spi/scene/spi_scene_builder.h"
+ #include "flutter/runtime_spi/scene/spi_scene_trace.h"
++#include "flutter/runtime_spi/spi_scene.h"
+ #include "flutter/runtime_spi/text/spi_paragraph.h"
+ 
+ namespace flutter {
+@@ -1517,6 +1518,8 @@ const FlutterSpiSceneApi kSceneApi = {
+     .path_measure_is_closed = PathMeasureIsClosed,
+     .path_measure_next_contour = PathMeasureNextContour,
+     .path_measure_release = PathMeasureRelease,
++    .scene_build_root = SpiSceneBuildRoot,
++    .scene_create_from_root = SpiSceneCreateFromRoot,
+ };
+ 
+ }  // namespace
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
+index a7099e2deb4..5187d9c3f6b 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.cc
+@@ -517,6 +517,32 @@ FlutterSpiResult SpiSceneBuild(FlutterSpiSceneBuilder* builder,
+   return result;
+ }
+ 
++FlutterSpiResult SpiSceneBuildRoot(FlutterSpiSceneBuilder* builder,
++                                   FlutterSpiEngineLayer** out_root) {
++  const auto builder_value = FindBuilder(builder);
++  if (builder_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (out_root == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  while (builder_value->layer_stack.size() > 1) {
++    builder_value->layer_stack.pop_back();
++  }
++
++  FlutterSpiEngineLayer* root = SpiEngineLayerCreate(builder_value->root);
++  if (root == nullptr) {
++    return kFlutterSpiInternalError;
++  }
++  const bool released = Builders().Release(HandleValue(builder));
++  if (!released) {
++    SpiEngineLayerRelease(root);
++    return kFlutterSpiInvalidHandle;
++  }
++  *out_root = root;
++  return kFlutterSpiOk;
++}
++
+ FlutterSpiResult SpiSceneBuilderRelease(FlutterSpiSceneBuilder* builder) {
+   return ToResult(Builders().Release(HandleValue(builder)));
+ }
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.h b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.h
+index 101d2496175..3dbb3d15a13 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_scene_builder.h
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_builder.h
+@@ -84,6 +84,8 @@ FlutterSpiResult SpiSceneBuild(FlutterSpiSceneBuilder* builder,
+                                int64_t width_px,
+                                int64_t height_px,
+                                FlutterSpiScene** out_scene);
++FlutterSpiResult SpiSceneBuildRoot(FlutterSpiSceneBuilder* builder,
++                                   FlutterSpiEngineLayer** out_root);
+ FlutterSpiResult SpiSceneBuilderRelease(FlutterSpiSceneBuilder* builder);
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_scene_builder_parity_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_scene_builder_parity_unittests.cc
+index 8c1cab0a508..3a368f66b02 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_scene_builder_parity_unittests.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_scene_builder_parity_unittests.cc
+@@ -5,6 +5,7 @@
+ #include "flutter/runtime_spi/scene/spi_canvas.h"
+ 
+ #include <memory>
++#include <string>
+ 
+ #include "flutter/display_list/dl_builder.h"
+ #include "flutter/display_list/geometry/dl_path_builder.h"
+@@ -188,5 +189,126 @@ TEST_F(SpiSceneBuilderTest, BuildClosesOpenLayersAndConsumesBuilder) {
+   EXPECT_EQ(SpiSceneRelease(scene), kFlutterSpiOk);
+ }
+ 
++FlutterSpiEngineLayer* BuildRetainedRoot(const FlutterSpiSceneApi* api,
++                                         FlutterSpiEngine* engine) {
++  FlutterSpiSceneBuilder* builder = nullptr;
++  EXPECT_EQ(api->scene_builder_create(engine, &builder), kFlutterSpiOk);
++  EXPECT_EQ(api->scene_push_offset(builder, 3.0f, 4.0f), kFlutterSpiOk);
++  EXPECT_EQ(api->scene_push_opacity(builder, 128, 5.0f, 6.0f), kFlutterSpiOk);
++
++  FlutterSpiEngineLayer* root = nullptr;
++  EXPECT_EQ(api->scene_build_root(builder, &root), kFlutterSpiOk);
++  return root;
++}
++
++std::string SceneTraceFor(const FlutterSpiScene* scene) {
++  EXPECT_NE(scene, nullptr);
++  EXPECT_NE(scene->layer_tree, nullptr);
++  return SceneTrace(*scene->layer_tree);
++}
++
++TEST_F(SpiSceneBuilderTest, BuildRootMatchesBuild) {
++  ASSERT_NE(api()->scene_build_root, nullptr);
++  ASSERT_NE(api()->scene_create_from_root, nullptr);
++  FlutterSpiEngineLayer* root = BuildRetainedRoot(api(), engine());
++  ASSERT_NE(root, nullptr);
++
++  FlutterSpiScene* root_scene = nullptr;
++  ASSERT_EQ(api()->scene_create_from_root(root, 100, 80, &root_scene),
++            kFlutterSpiOk);
++
++  FlutterSpiSceneBuilder* builder = nullptr;
++  ASSERT_EQ(api()->scene_builder_create(engine(), &builder), kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_push_offset(builder, 3.0f, 4.0f), kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_push_opacity(builder, 128, 5.0f, 6.0f),
++            kFlutterSpiOk);
++  FlutterSpiScene* built_scene = nullptr;
++  ASSERT_EQ(api()->scene_build(builder, 100, 80, &built_scene), kFlutterSpiOk);
++
++  EXPECT_EQ(SceneTraceFor(root_scene), SceneTraceFor(built_scene));
++  EXPECT_EQ(SpiSceneRelease(root_scene), kFlutterSpiOk);
++  EXPECT_EQ(SpiSceneRelease(built_scene), kFlutterSpiOk);
++  EXPECT_EQ(api()->engine_layer_release(root), kFlutterSpiOk);
++}
++
++TEST_F(SpiSceneBuilderTest, RootIsReusableAcrossScenes) {
++  ASSERT_NE(api()->scene_build_root, nullptr);
++  ASSERT_NE(api()->scene_create_from_root, nullptr);
++  FlutterSpiEngineLayer* root = BuildRetainedRoot(api(), engine());
++  ASSERT_NE(root, nullptr);
++
++  FlutterSpiScene* first_scene = nullptr;
++  FlutterSpiScene* second_scene = nullptr;
++  ASSERT_EQ(api()->scene_create_from_root(root, 100, 80, &first_scene),
++            kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_create_from_root(root, 100, 80, &second_scene),
++            kFlutterSpiOk);
++  const std::string expected_trace = SceneTraceFor(first_scene);
++  ASSERT_EQ(SpiSceneRelease(first_scene), kFlutterSpiOk);
++
++  EXPECT_EQ(SceneTraceFor(second_scene), expected_trace);
++  EXPECT_EQ(SpiSceneRelease(second_scene), kFlutterSpiOk);
++  EXPECT_EQ(api()->engine_layer_release(root), kFlutterSpiOk);
++}
++
++TEST_F(SpiSceneBuilderTest, RootOutlivesBuilderAndScenes) {
++  ASSERT_NE(api()->scene_build_root, nullptr);
++  ASSERT_NE(api()->scene_create_from_root, nullptr);
++  ASSERT_NE(api()->scene_add_retained, nullptr);
++  FlutterSpiEngineLayer* root = BuildRetainedRoot(api(), engine());
++  ASSERT_NE(root, nullptr);
++
++  FlutterSpiScene* scene = nullptr;
++  ASSERT_EQ(api()->scene_create_from_root(root, 100, 80, &scene), kFlutterSpiOk);
++  const std::string expected_trace =
++      "scene 100x80\ncontainer\n  container\n    transform [1 0 0 0 0 1 0 0 0 0 1 0 3 4 0 1]\n"
++      "      opacity 128 5 6\n";
++  ASSERT_EQ(SpiSceneRelease(scene), kFlutterSpiOk);
++
++  FlutterSpiSceneBuilder* builder = nullptr;
++  ASSERT_EQ(api()->scene_builder_create(engine(), &builder), kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_add_retained(builder, root), kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_builder_release(builder), kFlutterSpiOk);
++
++  ASSERT_EQ(api()->scene_builder_create(engine(), &builder), kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_add_retained(builder, root), kFlutterSpiOk);
++  ASSERT_EQ(api()->scene_build(builder, 100, 80, &scene), kFlutterSpiOk);
++  EXPECT_EQ(SceneTraceFor(scene), expected_trace);
++  EXPECT_EQ(SpiSceneRelease(scene), kFlutterSpiOk);
++  EXPECT_EQ(api()->engine_layer_release(root), kFlutterSpiOk);
++}
++
++TEST_F(SpiSceneBuilderTest, InvalidRootArgumentsAreRejected) {
++  ASSERT_NE(api()->scene_build_root, nullptr);
++  ASSERT_NE(api()->scene_create_from_root, nullptr);
++  ASSERT_NE(api()->scene_builder_release, nullptr);
++
++  FlutterSpiSceneBuilder* builder = nullptr;
++  ASSERT_EQ(api()->scene_builder_create(engine(), &builder), kFlutterSpiOk);
++  FlutterSpiEngineLayer* root = nullptr;
++  EXPECT_EQ(api()->scene_build_root(builder, nullptr), kFlutterSpiInvalidArgument);
++  EXPECT_EQ(api()->scene_build_root(nullptr, &root), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(api()->scene_builder_release(builder), kFlutterSpiOk);
++
++  FlutterSpiScene* scene = nullptr;
++  EXPECT_EQ(api()->scene_create_from_root(nullptr, 100, 80, &scene),
++            kFlutterSpiInvalidHandle);
++  EXPECT_EQ(api()->scene_create_from_root(nullptr, 0, 80, &scene),
++            kFlutterSpiInvalidHandle);
++
++  root = BuildRetainedRoot(api(), engine());
++  ASSERT_NE(root, nullptr);
++  EXPECT_EQ(api()->scene_create_from_root(root, 0, 80, &scene),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(api()->scene_create_from_root(root, 100, 0, &scene),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(api()->scene_create_from_root(root, 100, 80, nullptr),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(api()->scene_create_from_root(root, 100, 80, &scene),
++            kFlutterSpiOk);
++  EXPECT_EQ(SpiSceneRelease(scene), kFlutterSpiOk);
++  EXPECT_EQ(api()->engine_layer_release(root), kFlutterSpiOk);
++}
++
+ }  // namespace
+ }  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index 96cb7b867bc..57f507983d9 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -93,7 +93,7 @@ TEST(SpiAbi, ImageEnumValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawUnmodified, 2);
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawExtendedRGBA128, 3);
+   EXPECT_EQ(kFlutterSpiImageByteFormatPNG, 4);
+-  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 16);
++  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 17);
+ }
+ 
+ TEST(SpiAbi, SemanticsLayoutIsFrozen) {
+@@ -711,7 +711,9 @@ TEST(SpiAbi, SceneApiLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_measure_is_closed, 800, 400);
+   EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_measure_next_contour, 808, 404);
+   EXPECT_SPI_OFFSET(FlutterSpiSceneApi, path_measure_release, 816, 408);
+-  EXPECT_EQ(sizeof(FlutterSpiSceneApi), sizeof(void*) == 8 ? 824u : 412u);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, scene_build_root, 824, 412);
++  EXPECT_SPI_OFFSET(FlutterSpiSceneApi, scene_create_from_root, 832, 416);
++  EXPECT_EQ(sizeof(FlutterSpiSceneApi), sizeof(void*) == 8 ? 840u : 420u);
+ }
+ 
+ TEST(SpiAbi, ImageLayoutIsFrozen) {
+diff --git a/engine/src/flutter/runtime_spi/spi_scene.cc b/engine/src/flutter/runtime_spi/spi_scene.cc
+index 9f3554c659e..d4a628cbce2 100644
+--- a/engine/src/flutter/runtime_spi/spi_scene.cc
++++ b/engine/src/flutter/runtime_spi/spi_scene.cc
+@@ -6,6 +6,7 @@
+ 
+ #include "flutter/flow/layers/container_layer.h"
+ #include "flutter/flow/layers/layer_tree.h"
++#include "flutter/runtime_spi/scene/spi_engine_layer.h"
+ 
+ FlutterSpiResult SpiSceneCreateEmpty(int64_t width_px,
+                                      int64_t height_px,
+@@ -48,6 +49,30 @@ FlutterSpiResult SpiSceneCreateFromLayerTree(
+   return kFlutterSpiOk;
+ }
+ 
++FlutterSpiResult SpiSceneCreateFromRoot(FlutterSpiEngineLayer* root,
++                                        int64_t width_px,
++                                        int64_t height_px,
++                                        FlutterSpiScene** out_scene) {
++  const std::shared_ptr<flutter::Layer> root_layer =
++      flutter::SpiEngineLayerGet(root);
++  if (root_layer == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (out_scene == nullptr || width_px <= 0 || height_px <= 0) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const flutter::ContainerLayer* container_layer =
++      root_layer->as_container_layer();
++  if (container_layer == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  return SpiSceneCreateFromLayerTree(
++      width_px, height_px,
++      std::shared_ptr<flutter::ContainerLayer>(
++          root_layer, const_cast<flutter::ContainerLayer*>(container_layer)),
++      out_scene);
++}
++
+ FlutterSpiResult SpiSceneRelease(FlutterSpiScene* scene) {
+   delete scene;
+   return kFlutterSpiOk;
+diff --git a/engine/src/flutter/runtime_spi/spi_scene.h b/engine/src/flutter/runtime_spi/spi_scene.h
+index 9900007621d..26da2a0ed07 100644
+--- a/engine/src/flutter/runtime_spi/spi_scene.h
++++ b/engine/src/flutter/runtime_spi/spi_scene.h
+@@ -34,6 +34,11 @@ FlutterSpiResult SpiSceneCreateFromLayerTree(
+     std::shared_ptr<flutter::ContainerLayer> root_layer,
+     FlutterSpiScene** out_scene);
+ 
++FlutterSpiResult SpiSceneCreateFromRoot(FlutterSpiEngineLayer* root,
++                                        int64_t width_px,
++                                        int64_t height_px,
++                                        FlutterSpiScene** out_scene);
++
+ FlutterSpiResult SpiSceneRelease(FlutterSpiScene* scene);
+ 
+ #endif  // FLUTTER_RUNTIME_SPI_SPI_SCENE_H_

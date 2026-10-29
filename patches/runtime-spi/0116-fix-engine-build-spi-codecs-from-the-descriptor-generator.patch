@@ -1,0 +1,184 @@
+# Why: Reuse the generator and registry selected by the engine descriptor,
+# including registered image decoders.
+diff --git a/engine/src/flutter/lib/ui/painting/image_descriptor_data.h b/engine/src/flutter/lib/ui/painting/image_descriptor_data.h
+index f4438874db6..dd7c77f4557 100644
+--- a/engine/src/flutter/lib/ui/painting/image_descriptor_data.h
++++ b/engine/src/flutter/lib/ui/painting/image_descriptor_data.h
+@@ -69,6 +69,9 @@ class ImageDescriptorData final {
+   }
+ 
+   sk_sp<SkData> data() const { return buffer_; }
++  const std::shared_ptr<ImageGenerator>& generator() const {
++    return generator_;
++  }
+   sk_sp<SkImage> image() const;
+   bool is_compressed() const { return !!generator_; }
+   const ImageInfo& image_info() const { return image_info_; }
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_codec.cc b/engine/src/flutter/runtime_spi/image/spi_image_codec.cc
+index 6c7bdd09c50..4a67122c381 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_codec.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_codec.cc
+@@ -13,7 +13,6 @@
+ #include "flutter/fml/synchronization/sync_switch.h"
+ #include "flutter/lib/ui/painting/animated_image_frames.h"
+ #include "flutter/lib/ui/painting/image_descriptor_data.h"
+-#include "flutter/lib/ui/painting/image_generator_registry.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
+ #include "flutter/runtime_spi/image/spi_image_decoding.h"
+ #include "flutter/runtime_spi/scene/spi_handle_table.h"
+@@ -234,11 +233,7 @@ FlutterSpiResult CreateCodecFromDescriptor(
+   int32_t repetition_count = 0;
+   std::shared_ptr<AnimatedImageFrames> animated_frames;
+   if (descriptor->is_compressed()) {
+-    auto registry = std::make_unique<ImageGeneratorRegistry>();
+-    auto generator = registry->CreateCompatibleGenerator(descriptor->data());
+-    if (generator == nullptr) {
+-      return kFlutterSpiInvalidArgument;
+-    }
++    const auto& generator = descriptor->generator();
+     frame_count = static_cast<int32_t>(generator->GetFrameCount());
+     const unsigned int play_count = generator->GetPlayCount();
+     repetition_count =
+@@ -248,8 +243,7 @@ FlutterSpiResult CreateCodecFromDescriptor(
+                   ? -1
+                   : static_cast<int32_t>(play_count - 1);
+     if (frame_count > 1) {
+-      animated_frames =
+-          std::make_shared<AnimatedImageFrames>(std::move(generator), false);
++      animated_frames = std::make_shared<AnimatedImageFrames>(generator, false);
+     }
+   }
+   FlutterSpiImageDecodeOptions decode_options = {
+@@ -288,7 +282,10 @@ FlutterSpiResult SpiCodecCreate(
+       out_codec == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+-  auto registry = std::make_unique<ImageGeneratorRegistry>();
++  auto* registry = image_decoding->registry();
++  if (registry == nullptr) {
++    return kFlutterSpiInternalError;
++  }
+   auto descriptor = ImageDescriptorData::MakeEncoded(
+       SkData::MakeWithCopy(data, size), *registry);
+   return CreateCodecFromDescriptor(image_decoding, task_runners,
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_codec_unittests.cc b/engine/src/flutter/runtime_spi/image/spi_image_codec_unittests.cc
+index 633389124af..ea0b6068aef 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_codec_unittests.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_codec_unittests.cc
+@@ -8,6 +8,7 @@
+ 
+ #include "flutter/fml/synchronization/waitable_event.h"
+ #include "flutter/fml/time/time_delta.h"
++#include "flutter/lib/ui/painting/image_generator.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
+ #include "flutter/runtime_spi/spi_runtime_backend_factory.h"
+ #include "flutter/runtime_spi/testing/c_test_runtime.h"
+@@ -132,6 +133,44 @@ sk_sp<SkData> MakeAnimatedWebp() {
+   return stream.detachAsData();
+ }
+ 
++class SinglePixelImageGenerator final : public ImageGenerator {
++ public:
++  SinglePixelImageGenerator()
++      : image_info_(
++            SkImageInfo::MakeN32(1, 1, SkAlphaType::kOpaque_SkAlphaType)) {}
++  ~SinglePixelImageGenerator() override = default;
++
++  const SkImageInfo& GetInfo() override { return image_info_; }
++
++  unsigned int GetFrameCount() const override { return 1; }
++
++  unsigned int GetPlayCount() const override { return 1; }
++
++  const ImageGenerator::FrameInfo GetFrameInfo(
++      unsigned int frame_index) override {
++    return {std::nullopt, 0, SkCodecAnimation::DisposalMethod::kKeep};
++  }
++
++  SkISize GetScaledDimensions(float scale) override {
++    return SkISize::Make(1, 1);
++  }
++
++  bool GetPixels(const SkImageInfo& info,
++                 void* pixels,
++                 size_t row_bytes,
++                 unsigned int frame_index,
++                 std::optional<unsigned int> prior_frame) override {
++    if (info.width() != 1 || info.height() != 1 || row_bytes != 4) {
++      return false;
++    }
++    reinterpret_cast<uint32_t*>(pixels)[0] = 0x00ff00ff;
++    return true;
++  }
++
++ private:
++  SkImageInfo image_info_;
++};
++
+ class SpiImageCodecTest : public ShellTest {
+  protected:
+   void SetUp() override {
+@@ -239,6 +278,21 @@ class SpiImageCodecTest : public ShellTest {
+     state->completed.Wait();
+   }
+ 
++  void RegisterSinglePixelImageDecoder() {
++    fml::AutoResetWaitableEvent registered;
++    fml::TaskRunner::RunNowOrPostTask(
++        shell_->GetTaskRunners().GetPlatformTaskRunner(),
++        [this, &registered]() {
++          shell_->RegisterImageDecoder(
++              [](const sk_sp<SkData>&) {
++                return std::make_unique<SinglePixelImageGenerator>();
++              },
++              100);
++          registered.Signal();
++        });
++    registered.Wait();
++  }
++
+   FlutterSpiImageDescriptor* CreateRawDescriptor(
+       const FlutterSpiPixels& pixels) {
+     FlutterSpiImageDescriptor* descriptor = nullptr;
+@@ -575,5 +629,28 @@ TEST_F(SpiImageCodecTest,
+   EXPECT_EQ(state.descriptor, nullptr);
+ }
+ 
++TEST_F(SpiImageCodecTest, InstantiateCodecUsesRegisteredDecoders) {
++  StartShell();
++  RegisterSinglePixelImageDecoder();
++  const uint8_t bytes[] = {0xde, 0xad, 0xbe, 0xef};
++  const auto encoded = SkData::MakeWithCopy(bytes, sizeof(bytes));
++
++  DescriptorCallbackState descriptor_state;
++  CreateEncodedDescriptor(encoded, &descriptor_state);
++  ASSERT_EQ(descriptor_state.result, kFlutterSpiOk);
++  ASSERT_NE(descriptor_state.descriptor, nullptr);
++
++  FlutterSpiCodec* codec = InstantiateCodec(descriptor_state.descriptor, 0, 0);
++  ASSERT_NE(codec, nullptr);
++  FrameCallbackState frame;
++  ASSERT_EQ(GetNextFrame(codec, &frame), kFlutterSpiOk);
++  ASSERT_EQ(frame.result, kFlutterSpiOk);
++  ASSERT_NE(frame.image, nullptr);
++  EXPECT_EQ(GetImageSize(frame.image), (std::pair<int32_t, int32_t>{1, 1}));
++  ReleaseImage(frame.image);
++  ReleaseCodec(codec);
++  ReleaseDescriptor(descriptor_state.descriptor);
++}
++
+ }  // namespace
+ }  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_decoding.h b/engine/src/flutter/runtime_spi/image/spi_image_decoding.h
+index 282e5d541e4..cd4c82e8336 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_decoding.h
++++ b/engine/src/flutter/runtime_spi/image/spi_image_decoding.h
+@@ -65,6 +65,8 @@ class SpiImageDecoding final {
+                                        const TaskRunners& task_runners,
+                                        FlutterSpiImageDescriptor** out);
+ 
++  ImageGeneratorRegistry* registry() const { return registry_.get(); }
++
+  private:
+   FlutterSpiResult ValidateCallback(FlutterSpiImageCallback callback) const;
+   void PostResult(FlutterSpiImageCallback callback,

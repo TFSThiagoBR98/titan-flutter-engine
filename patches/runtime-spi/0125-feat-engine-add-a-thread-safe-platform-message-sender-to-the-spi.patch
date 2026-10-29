@@ -1,0 +1,751 @@
+# Why: let background-isolate platform messages reach the platform handler
+# through a thread-safe SPI sender.
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 31090438e5e..1c0694b4c3e 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -507,7 +507,13 @@ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, complete_add_view,
+                   sizeof(void*) == 8 ? 280 : 152);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, asset_read,
+                   sizeof(void*) == 8 ? 288 : 156);
+-SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 296 : 160);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, platform_message_sender_create,
++                  sizeof(void*) == 8 ? 296 : 160);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, platform_message_sender_send,
++                  sizeof(void*) == 8 ? 304 : 164);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, platform_message_sender_release,
++                  sizeof(void*) == 8 ? 312 : 168);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 320 : 176);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, color, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, offset, 20);
+@@ -746,7 +752,7 @@ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, fragment,
+                   sizeof(void*) == 8 ? 144 : 84);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, semantics,
+                   sizeof(void*) == 8 ? 152 : 88);
+-SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 296 : 160);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 320 : 176);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, name,
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index 59f59b34bc6..474c870c6b4 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 21
++#define FLUTTER_SPI_VERSION_MINOR 22
+ 
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+@@ -30,11 +30,13 @@ enum {
+   kFlutterSpiCapSceneLayers = 1ULL << 12,
+   kFlutterSpiCapFragmentPrograms = 1ULL << 13,
+   kFlutterSpiCapSemanticsUpdate = 1ULL << 14,
++  kFlutterSpiCapBackgroundPlatformMessages = 1ULL << 15,
+ };
+ 
+ typedef struct FlutterSpiEngine FlutterSpiEngine;
+ typedef struct FlutterSpiScene FlutterSpiScene;
+ typedef struct FlutterSpiResponseHandle FlutterSpiResponseHandle;
++typedef struct FlutterSpiPlatformMessageSender FlutterSpiPlatformMessageSender;
+ typedef struct FlutterSpiEngineApi FlutterSpiEngineApi;
+ 
+ #include "flutter_scene.h"
+@@ -323,6 +325,22 @@ struct FlutterSpiEngineApi {
+                                  const char* name,
+                                  FlutterSpiBytesCallback callback,
+                                  void* user_data);
++  /* UI runner. The sender remains valid until sender_release, including after
++   * the engine is destroyed. */
++  FlutterSpiResult (*platform_message_sender_create)(
++      FlutterSpiEngine* engine,
++      FlutterSpiPlatformMessageSender** out_sender);
++  /* Any thread. on_reply is optional and is called at most once. */
++  FlutterSpiResult (*platform_message_sender_send)(
++      FlutterSpiPlatformMessageSender* sender,
++      const char* channel,
++      const uint8_t* data,
++      size_t data_size,
++      void (*on_reply)(void* user_data, const uint8_t* data, size_t size),
++      void* reply_user_data);
++  /* Any thread. */
++  FlutterSpiResult (*platform_message_sender_release)(
++      FlutterSpiPlatformMessageSender* sender);
+ };
+ 
+ /*
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index 6dc1c85f101..7705ffb61a4 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -56,6 +56,7 @@ TEST(SpiAbi, CapabilityValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiCapSceneLayers, 1ULL << 12);
+   EXPECT_EQ(kFlutterSpiCapFragmentPrograms, 1ULL << 13);
+   EXPECT_EQ(kFlutterSpiCapSemanticsUpdate, 1ULL << 14);
++  EXPECT_EQ(kFlutterSpiCapBackgroundPlatformMessages, 1ULL << 15);
+ }
+ 
+ TEST(SpiAbi, SemanticsEnumValuesMatchCore) {
+@@ -93,7 +94,7 @@ TEST(SpiAbi, ImageEnumValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawUnmodified, 2);
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawExtendedRGBA128, 3);
+   EXPECT_EQ(kFlutterSpiImageByteFormatPNG, 4);
+-  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 21);
++  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 22);
+ }
+ 
+ TEST(SpiAbi, SemanticsLayoutIsFrozen) {
+@@ -600,7 +601,19 @@ TEST(SpiAbi, EngineApiLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, asset_get, 272, 148);
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, complete_add_view, 280, 152);
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, asset_read, 288, 156);
+-  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 296u : 160u);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi,
++                    platform_message_sender_create,
++                    296,
++                    160);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi,
++                    platform_message_sender_send,
++                    304,
++                    164);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi,
++                    platform_message_sender_release,
++                    312,
++                    168);
++  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 320u : 176u);
+ }
+ 
+ TEST(SpiAbi, FragmentUniformInfoLayoutIsFrozen) {
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index 168860de1b7..654cc541f93 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -245,7 +245,8 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+                       kFlutterSpiCapImageOutput | kFlutterSpiCapPaintEffects |
+                       kFlutterSpiCapSceneLayers |
+                       kFlutterSpiCapFragmentPrograms |
+-                      kFlutterSpiCapSemanticsUpdate,
++                      kFlutterSpiCapSemanticsUpdate |
++                      kFlutterSpiCapBackgroundPlatformMessages,
+       .request_frame = RequestFrame,
+       .scene_create_empty = SceneCreateEmpty,
+       .scene_release = SceneRelease,
+@@ -280,6 +281,9 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+       .asset_get = AssetGet,
+       .complete_add_view = CompleteAddView,
+       .asset_read = AssetRead,
++      .platform_message_sender_create = PlatformMessageSenderCreate,
++      .platform_message_sender_send = PlatformMessageSenderSend,
++      .platform_message_sender_release = PlatformMessageSenderRelease,
+   };
+ }
+ 
+@@ -786,6 +790,31 @@ FlutterSpiResult SpiEngineApi::SendPlatformMessage(
+                                               on_reply, reply_user_data);
+ }
+ 
++FlutterSpiResult SpiEngineApi::PlatformMessageSenderCreate(
++    FlutterSpiEngine* engine,
++    FlutterSpiPlatformMessageSender** out_sender) {
++  if (engine == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return engine->backend->CreatePlatformMessageSender(out_sender);
++}
++
++FlutterSpiResult SpiEngineApi::PlatformMessageSenderSend(
++    FlutterSpiPlatformMessageSender* sender,
++    const char* channel,
++    const uint8_t* data,
++    size_t data_size,
++    void (*on_reply)(void* user_data, const uint8_t* data, size_t size),
++    void* reply_user_data) {
++  return SpiRuntimeBackend::SendPlatformMessageFromSender(
++      sender, channel, data, data_size, on_reply, reply_user_data);
++}
++
++FlutterSpiResult SpiEngineApi::PlatformMessageSenderRelease(
++    FlutterSpiPlatformMessageSender* sender) {
++  return SpiRuntimeBackend::ReleasePlatformMessageSender(sender);
++}
++
+ FlutterSpiResult SpiEngineApi::Respond(FlutterSpiResponseHandle* response,
+                                        const uint8_t* data,
+                                        size_t data_size) {
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.h b/engine/src/flutter/runtime_spi/spi_engine_api.h
+index da6064adca7..89b2477f4a6 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.h
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.h
+@@ -32,6 +32,18 @@ class SpiEngineApi final {
+       size_t data_size,
+       void (*on_reply)(void* user_data, const uint8_t* data, size_t size),
+       void* reply_user_data);
++  static FlutterSpiResult PlatformMessageSenderCreate(
++      FlutterSpiEngine* engine,
++      FlutterSpiPlatformMessageSender** out_sender);
++  static FlutterSpiResult PlatformMessageSenderSend(
++      FlutterSpiPlatformMessageSender* sender,
++      const char* channel,
++      const uint8_t* data,
++      size_t data_size,
++      void (*on_reply)(void* user_data, const uint8_t* data, size_t size),
++      void* reply_user_data);
++  static FlutterSpiResult PlatformMessageSenderRelease(
++      FlutterSpiPlatformMessageSender* sender);
+   static FlutterSpiResult Respond(FlutterSpiResponseHandle* response,
+                                   const uint8_t* data,
+                                   size_t data_size);
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+index f58780e57aa..99fa9c82ad9 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+@@ -17,6 +17,8 @@
+ #include "flutter/lib/ui/window/key_data.h"
+ #include "flutter/lib/ui/window/platform_message_response.h"
+ #include "flutter/runtime/runtime_delegate.h"
++#include "flutter/lib/ui/window/platform_message.h"
++#include "flutter/shell/common/platform_message_handler.h"
+ #include "flutter/runtime_spi/image/spi_image_readback.h"
+ #include "flutter/runtime_spi/spi_engine_api.h"
+ #include "flutter/runtime_spi/spi_scene.h"
+@@ -119,6 +121,50 @@ class SpiEngineResponse final : public PlatformMessageResponse {
+   std::atomic_bool completed_ = false;
+ };
+ 
++class SpiPlatformMessageSenderResponse final : public PlatformMessageResponse {
++ public:
++  SpiPlatformMessageSenderResponse(
++      void (*on_reply)(void*, const uint8_t*, size_t),
++      void* user_data)
++      : on_reply_(on_reply), user_data_(user_data) {}
++
++  void Complete(std::unique_ptr<fml::Mapping> data) override {
++    std::vector<uint8_t> bytes;
++    if (data != nullptr && data->GetSize() != 0) {
++      bytes.assign(data->GetMapping(),
++                   data->GetMapping() + data->GetSize());
++    }
++    CompleteReply(std::move(bytes));
++  }
++
++  void CompleteEmpty() override { CompleteReply({}); }
++
++ private:
++  void CompleteReply(std::vector<uint8_t> data) {
++    if (completed_.exchange(true) || on_reply_ == nullptr) {
++      return;
++    }
++    const uint8_t* bytes = data.empty() ? nullptr : data.data();
++    on_reply_(user_data_, bytes, data.size());
++  }
++
++  void (*on_reply_)(void*, const uint8_t*, size_t) = nullptr;
++  void* user_data_ = nullptr;
++  std::atomic_bool completed_ = false;
++};
++
++std::unique_ptr<PlatformMessage> CreatePlatformMessage(
++    const char* channel,
++    const uint8_t* data,
++    size_t data_size,
++    fml::RefPtr<PlatformMessageResponse> response) {
++  if (data == nullptr) {
++    return std::make_unique<PlatformMessage>(channel, response);
++  }
++  return std::make_unique<PlatformMessage>(
++      channel, fml::MallocMapping::Copy(data, data + data_size), response);
++}
++
+ }  // namespace
+ 
+ std::unordered_set<SpiRuntimeBackend*> SpiRuntimeBackend::live_backends_;
+@@ -821,17 +867,62 @@ FlutterSpiResult SpiRuntimeBackend::SendPlatformMessage(
+     response = fml::AdoptRef(new SpiEngineResponse(
+         task_runners_.GetUITaskRunner(), on_reply, reply_user_data));
+   }
+-  std::unique_ptr<PlatformMessage> message;
+-  if (data == nullptr) {
+-    message = std::make_unique<PlatformMessage>(channel, response);
+-  } else {
+-    message = std::make_unique<PlatformMessage>(
+-        channel, fml::MallocMapping::Copy(data, data_size), response);
+-  }
++  std::unique_ptr<PlatformMessage> message =
++      CreatePlatformMessage(channel, data, data_size, response);
+   runtime_delegate_.HandlePlatformMessage(std::move(message));
+   return kFlutterSpiOk;
+ }
+ 
++FlutterSpiResult SpiRuntimeBackend::CreatePlatformMessageSender(
++    FlutterSpiPlatformMessageSender** out_sender) {
++  if (out_sender == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (!HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  *out_sender = new FlutterSpiPlatformMessageSender{
++      runtime_delegate_.GetPlatformMessageHandler()};
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiRuntimeBackend::SendPlatformMessageFromSender(
++    FlutterSpiPlatformMessageSender* sender,
++    const char* channel,
++    const uint8_t* data,
++    size_t data_size,
++    void (*on_reply)(void* user_data, const uint8_t* data, size_t size),
++    void* reply_user_data) {
++  if (sender == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  const std::shared_ptr<PlatformMessageHandler> handler =
++      sender->handler.lock();
++  if (handler == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (channel == nullptr || (data == nullptr && data_size != 0)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  fml::RefPtr<PlatformMessageResponse> response;
++  if (on_reply != nullptr) {
++    response = fml::AdoptRef(
++        new SpiPlatformMessageSenderResponse(on_reply, reply_user_data));
++  }
++  handler->HandlePlatformMessage(
++      CreatePlatformMessage(channel, data, data_size, response));
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiRuntimeBackend::ReleasePlatformMessageSender(
++    FlutterSpiPlatformMessageSender* sender) {
++  if (sender == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  delete sender;
++  return kFlutterSpiOk;
++}
++
+ FlutterSpiResult SpiRuntimeBackend::Respond(FlutterSpiResponseHandle* response,
+                                             const uint8_t* data,
+                                             size_t data_size) {
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.h b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+index c6c1aa19daa..39c04f2b4e1 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.h
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+@@ -46,6 +46,10 @@ struct FlutterSpiResponseHandle {
+   fml::RefPtr<flutter::PlatformMessageResponse> response;
+ };
+ 
++struct FlutterSpiPlatformMessageSender {
++  std::weak_ptr<flutter::PlatformMessageHandler> handler;
++};
++
+ namespace flutter {
+ 
+ class SpiRuntimeBackend final : public RuntimeBackend {
+@@ -117,6 +121,17 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+       size_t data_size,
+       void (*on_reply)(void* user_data, const uint8_t* data, size_t size),
+       void* reply_user_data);
++  FlutterSpiResult CreatePlatformMessageSender(
++      FlutterSpiPlatformMessageSender** out_sender);
++  static FlutterSpiResult SendPlatformMessageFromSender(
++      FlutterSpiPlatformMessageSender* sender,
++      const char* channel,
++      const uint8_t* data,
++      size_t data_size,
++      void (*on_reply)(void* user_data, const uint8_t* data, size_t size),
++      void* reply_user_data);
++  static FlutterSpiResult ReleasePlatformMessageSender(
++      FlutterSpiPlatformMessageSender* sender);
+   FlutterSpiResult Respond(FlutterSpiResponseHandle* response,
+                            const uint8_t* data,
+                            size_t data_size);
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
+index 7d49aff881e..7736a131dd1 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
+@@ -116,7 +116,7 @@ class FakeRuntimeDelegate final : public RuntimeDelegate {
+ 
+   std::weak_ptr<PlatformMessageHandler> GetPlatformMessageHandler()
+       const override {
+-    return {};
++    return platform_message_handler;
+   }
+ 
+   void SendChannelUpdate(std::string name, bool listening) override {
+@@ -150,6 +150,7 @@ class FakeRuntimeDelegate final : public RuntimeDelegate {
+   ViewFocusDirection focus_direction = ViewFocusDirection::kUndefined;
+   bool internal_state_reset = false;
+   std::shared_ptr<AssetManager> asset_manager;
++  std::shared_ptr<PlatformMessageHandler> platform_message_handler;
+   size_t schedule_frame_count = 0;
+   size_t all_views_rendered_count = 0;
+   size_t render_count = 0;
+@@ -165,6 +166,65 @@ class FakeRuntimeDelegate final : public RuntimeDelegate {
+ 
+ };
+ 
++class SenderTestPlatformMessageHandler final : public PlatformMessageHandler {
++ public:
++  explicit SenderTestPlatformMessageHandler(bool complete_empty)
++      : complete_empty_(complete_empty) {}
++
++  void HandlePlatformMessage(
++      std::unique_ptr<PlatformMessage> message) override {
++    channel_ = message->channel();
++    if (message->data().GetSize() != 0) {
++      payload_.assign(message->data().GetMapping(),
++                      message->data().GetMapping() +
++                          message->data().GetSize());
++    }
++    if (!message->response()) {
++      return;
++    }
++    if (complete_empty_) {
++      message->response()->CompleteEmpty();
++      return;
++    }
++    const std::vector<uint8_t> reply = {4, 5};
++    message->response()->Complete(std::make_unique<fml::MallocMapping>(
++        fml::MallocMapping::Copy(reply.data(), reply.data() + reply.size())));
++  }
++
++  bool DoesHandlePlatformMessageOnPlatformThread() const override {
++    return false;
++  }
++
++  void InvokePlatformMessageResponseCallback(
++      int response_id,
++      std::unique_ptr<fml::Mapping> mapping) override {}
++
++  void InvokePlatformMessageEmptyResponseCallback(int response_id) override {}
++
++  const std::string& channel() const { return channel_; }
++  const std::vector<uint8_t>& payload() const { return payload_; }
++
++ private:
++  bool complete_empty_;
++  std::string channel_;
++  std::vector<uint8_t> payload_;
++};
++
++struct SenderReplyCapture {
++  bool called = false;
++  std::vector<uint8_t> bytes;
++};
++
++void CaptureSenderReply(void* user_data,
++                        const uint8_t* data,
++                        size_t size) {
++  auto* capture = static_cast<SenderReplyCapture*>(user_data);
++  capture->called = true;
++  if (data != nullptr) {
++    capture->bytes.assign(data, data + size);
++  }
++}
++
+ struct RuntimeCallbackCapture {
+   std::vector<FlutterSpiDisplay> displays;
+   std::vector<int64_t> timings;
+@@ -477,6 +537,7 @@ class SpiRuntimeBackendTest : public ::testing::Test {
+ };
+ 
+ class SpiRuntimeBackendSemantics : public SpiRuntimeBackendTest {};
++class SpiPlatformMessageSender : public SpiRuntimeBackendTest {};
+ 
+ TEST_F(SpiRuntimeBackendTest, RejectsMajorVersionMismatch) {
+   auto table = c_test_runtime_table(runtime);
+@@ -1340,6 +1401,138 @@ TEST_F(SpiRuntimeBackendTest, CallsFromOtherThreadsAreRejected) {
+   EXPECT_EQ(result.load(), kFlutterSpiWrongThread);
+ }
+ 
++TEST_F(SpiPlatformMessageSender, SendsFromAnotherThread) {
++  auto handler = std::make_shared<SenderTestPlatformMessageHandler>(false);
++  delegate.platform_message_handler = handler;
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  const FlutterSpiEngineApi* api = runtime->engine_api;
++  ASSERT_NE(api->platform_message_sender_create, nullptr);
++  ASSERT_NE(api->platform_message_sender_send, nullptr);
++  ASSERT_NE(api->platform_message_sender_release, nullptr);
++
++  FlutterSpiPlatformMessageSender* sender = nullptr;
++  ASSERT_EQ(api->platform_message_sender_create(runtime->engine, &sender),
++            kFlutterSpiOk);
++  ASSERT_NE(sender, nullptr);
++
++  SenderReplyCapture reply;
++  std::atomic<FlutterSpiResult> result{kFlutterSpiInternalError};
++  std::thread worker([&] {
++    const uint8_t payload[] = {1, 2, 3};
++    result = api->platform_message_sender_send(
++        sender, "background", payload, sizeof(payload), CaptureSenderReply,
++        &reply);
++  });
++  worker.join();
++
++  EXPECT_EQ(result.load(), kFlutterSpiOk);
++  EXPECT_EQ(handler->channel(), "background");
++  EXPECT_EQ(handler->payload(), std::vector<uint8_t>({1, 2, 3}));
++  EXPECT_TRUE(reply.called);
++  EXPECT_EQ(reply.bytes, std::vector<uint8_t>({4, 5}));
++  EXPECT_EQ(api->platform_message_sender_release(sender), kFlutterSpiOk);
++}
++
++TEST_F(SpiPlatformMessageSender, EmptyReplyIsNull) {
++  auto handler = std::make_shared<SenderTestPlatformMessageHandler>(true);
++  delegate.platform_message_handler = handler;
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  const FlutterSpiEngineApi* api = runtime->engine_api;
++  ASSERT_NE(api->platform_message_sender_create, nullptr);
++  ASSERT_NE(api->platform_message_sender_send, nullptr);
++  ASSERT_NE(api->platform_message_sender_release, nullptr);
++
++  FlutterSpiPlatformMessageSender* sender = nullptr;
++  ASSERT_EQ(api->platform_message_sender_create(runtime->engine, &sender),
++            kFlutterSpiOk);
++  ASSERT_NE(sender, nullptr);
++
++  SenderReplyCapture reply;
++  const uint8_t payload[] = {1};
++  EXPECT_EQ(api->platform_message_sender_send(
++                sender, "empty-reply", payload, sizeof(payload),
++                CaptureSenderReply, &reply),
++            kFlutterSpiOk);
++  EXPECT_TRUE(reply.called);
++  EXPECT_TRUE(reply.bytes.empty());
++  EXPECT_EQ(api->platform_message_sender_release(sender), kFlutterSpiOk);
++}
++
++TEST_F(SpiPlatformMessageSender, SendAfterHandlerIsGoneFails) {
++  auto handler = std::make_shared<SenderTestPlatformMessageHandler>(false);
++  delegate.platform_message_handler = handler;
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  const FlutterSpiEngineApi* api = runtime->engine_api;
++  ASSERT_NE(api->platform_message_sender_create, nullptr);
++  ASSERT_NE(api->platform_message_sender_send, nullptr);
++  ASSERT_NE(api->platform_message_sender_release, nullptr);
++
++  FlutterSpiPlatformMessageSender* sender = nullptr;
++  ASSERT_EQ(api->platform_message_sender_create(runtime->engine, &sender),
++            kFlutterSpiOk);
++  ASSERT_NE(sender, nullptr);
++  delegate.platform_message_handler.reset();
++  handler.reset();
++
++  SenderReplyCapture reply;
++  const uint8_t payload[] = {1};
++  EXPECT_EQ(api->platform_message_sender_send(
++                sender, "gone", payload, sizeof(payload), CaptureSenderReply,
++                &reply),
++            kFlutterSpiInvalidHandle);
++  EXPECT_FALSE(reply.called);
++  EXPECT_EQ(api->platform_message_sender_release(sender), kFlutterSpiOk);
++}
++
++TEST_F(SpiPlatformMessageSender, ReleaseAfterBackendDestroyed) {
++  auto handler = std::make_shared<SenderTestPlatformMessageHandler>(false);
++  delegate.platform_message_handler = handler;
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  const FlutterSpiEngineApi* api = runtime->engine_api;
++  ASSERT_NE(api->platform_message_sender_create, nullptr);
++  ASSERT_NE(api->platform_message_sender_release, nullptr);
++
++  FlutterSpiPlatformMessageSender* sender = nullptr;
++  ASSERT_EQ(api->platform_message_sender_create(runtime->engine, &sender),
++            kFlutterSpiOk);
++  ASSERT_NE(sender, nullptr);
++  const auto release = api->platform_message_sender_release;
++  backend.reset();
++
++  EXPECT_EQ(release(sender), kFlutterSpiOk);
++}
++
++TEST_F(SpiPlatformMessageSender, CreateOffUiThreadIsRejected) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++
++  ASSERT_NE(runtime->engine_api, nullptr);
++  const FlutterSpiEngineApi* api = runtime->engine_api;
++  ASSERT_NE(api->platform_message_sender_create, nullptr);
++
++  FlutterSpiPlatformMessageSender* sender = nullptr;
++  std::atomic<FlutterSpiResult> result{kFlutterSpiInternalError};
++  std::thread worker([&] {
++    result = api->platform_message_sender_create(runtime->engine, &sender);
++  });
++  worker.join();
++
++  EXPECT_EQ(result.load(), kFlutterSpiWrongThread);
++  EXPECT_EQ(sender, nullptr);
++}
++
+ TEST_F(SpiRuntimeBackendTest, RespondTwiceIsInvalidHandle) {
+   auto backend = CreateBackend(c_test_runtime_table(runtime));
+   LaunchBackend(backend.get());
+diff --git a/engine/src/flutter/shell/common/fixtures/shell_test.dart b/engine/src/flutter/shell/common/fixtures/shell_test.dart
+index 7067de6d308..709ad70a94f 100644
+--- a/engine/src/flutter/shell/common/fixtures/shell_test.dart
++++ b/engine/src/flutter/shell/common/fixtures/shell_test.dart
+@@ -600,6 +600,45 @@ void testCanLaunchSecondaryIsolate() {
+   notifyNative();
+ }
+ 
++void _backgroundIsolatePlatformMessageMain(List<Object?> arguments) {
++  final RootIsolateToken token = arguments[0]! as RootIsolateToken;
++  final SendPort resultPort = arguments[1]! as SendPort;
++  PlatformDispatcher.instance.registerBackgroundIsolate(token);
++
++  final ReceivePort replyPort = ReceivePort();
++  replyPort.listen((Object? message) {
++    final List<Object?> response = message! as List<Object?>;
++    final Uint8List? bytes = response[1] as Uint8List?;
++    resultPort.send(
++      bytes != null && bytes.length == 2 && bytes[0] == 4 && bytes[1] == 5,
++    );
++    replyPort.close();
++  });
++
++  PlatformDispatcher.instance.sendPortPlatformMessage(
++    'titan/background',
++    ByteData.sublistView(Uint8List.fromList(<int>[1, 2, 3])),
++    1,
++    replyPort.sendPort,
++  );
++}
++
++@pragma('vm:entry-point')
++Future<void> backgroundIsolatePlatformMessage() async {
++  final ReceivePort resultPort = ReceivePort();
++  final Isolate isolate = await Isolate.spawn(
++    _backgroundIsolatePlatformMessageMain,
++    <Object?>[RootIsolateToken.instance!, resultPort.sendPort],
++  );
++  final bool result = await resultPort.first as bool;
++  resultPort.close();
++  isolate.kill();
++  notifyBackgroundReply(result);
++}
++
++@Native<Void Function(Bool)>(symbol: 'NotifyBackgroundReply')
++external void notifyBackgroundReply(bool result);
++
+ @pragma('vm:entry-point')
+ void testSkiaResourceCacheSendsResponse() {
+   void callback(ByteData? data) {
+diff --git a/engine/src/flutter/shell/common/shell_unittests.cc b/engine/src/flutter/shell/common/shell_unittests.cc
+index 5298518ae55..51f3994d671 100644
+--- a/engine/src/flutter/shell/common/shell_unittests.cc
++++ b/engine/src/flutter/shell/common/shell_unittests.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <atomic>
+ #include <ctime>
+ #include <future>
+ #include <memory>
+@@ -70,6 +71,7 @@ namespace testing {
+ constexpr int64_t kImplicitViewId = 0ll;
+ 
+ using ::testing::_;
++using ::testing::Invoke;
+ using ::testing::Return;
+ 
+ namespace {
+@@ -4131,6 +4133,78 @@ TEST_F(ShellTest, UsesPlatformMessageHandler) {
+   DestroyShell(std::move(shell));
+ }
+ 
++TEST_F(ShellTest, BackgroundIsolateSendsPlatformMessages) {
++  TaskRunners task_runners = GetTaskRunnersForFixture();
++  auto settings = CreateSettingsForFixture();
++  MockPlatformViewDelegate platform_view_delegate;
++  auto platform_message_handler =
++      std::make_shared<MockPlatformMessageHandler>();
++  fml::AutoResetWaitableEvent reply_latch;
++  std::atomic<bool> background_message_valid{false};
++  bool reply_received = false;
++
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wdeprecated-declarations"  // Justification: Task 1 explicitly requires WillRepeatedly(Invoke(...)).
++  EXPECT_CALL(*platform_message_handler, HandlePlatformMessage(_))
++      .WillRepeatedly(Invoke([&](std::unique_ptr<PlatformMessage> message) {
++        if (message->channel() != "titan/background") {
++          if (auto response = message->response()) {
++            response->CompleteEmpty();
++          }
++          return;
++        }
++
++        const bool received_expected_message =
++            std::vector<uint8_t>(message->data().GetMapping(),
++                                 message->data().GetMapping() +
++                                     message->data().GetSize()) ==
++                std::vector<uint8_t>{1, 2, 3} &&
++            !task_runners.GetUITaskRunner()->RunsTasksOnCurrentThread() &&
++            !task_runners.GetPlatformTaskRunner()->RunsTasksOnCurrentThread();
++        background_message_valid.store(received_expected_message);
++
++        const std::array<uint8_t, 2> reply = {4, 5};
++        if (auto response = message->response()) {
++          response->Complete(std::make_unique<fml::MallocMapping>(
++              fml::MallocMapping::Copy(reply.data(),
++                                       reply.data() + reply.size())));
++        }
++      }));
++#pragma clang diagnostic pop
++
++  Shell::CreateCallback<PlatformView> platform_view_create_callback =
++      [&platform_view_delegate, task_runners,
++       platform_message_handler](flutter::Shell& shell) {
++        auto result = std::make_unique<MockPlatformView>(platform_view_delegate,
++                                                         task_runners);
++        EXPECT_CALL(*result, GetPlatformMessageHandler())
++            .WillOnce(Return(platform_message_handler));
++        return result;
++      };
++  auto shell = CreateShell({
++      .settings = settings,
++      .task_runners = task_runners,
++      .platform_view_create_callback = platform_view_create_callback,
++  });
++
++  AddFfiNativeCallback(
++      "NotifyBackgroundReply",
++      CREATE_FFI_LAMBDA([&](bool result) {
++        reply_received = result;
++        reply_latch.Signal();
++      }));
++  auto configuration = RunConfiguration::InferFromSettings(settings);
++  ASSERT_TRUE(configuration.IsValid());
++  configuration.SetEntrypoint("backgroundIsolatePlatformMessage");
++  RunEngine(shell.get(), std::move(configuration));
++
++  const bool timed_out =
++      reply_latch.WaitWithTimeout(fml::TimeDelta::FromSeconds(10));
++  ASSERT_FALSE(timed_out);
++  EXPECT_TRUE(background_message_valid.load());
++  DestroyShell(std::move(shell));
++}
++
+ TEST_F(ShellTest, SpawnWorksWithOnError) {
+   auto settings = CreateSettingsForFixture();
+   auto shell = CreateShell(settings);

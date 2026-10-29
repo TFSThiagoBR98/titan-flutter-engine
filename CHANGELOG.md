@@ -61,6 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime SPI S5.5a: busca de handles sem trava e cache de paint sem alocação no miss (quadro composto −1,7%).
 - Runtime SPI S5.5b: atualização de semântica sem nó temporário nem vetores por nó (quadro de semântica −3,2%).
 - Runtime SPI S5.5c: texto e codecs remedidos; a camada SPI custa ≤ 1% do quadro de texto e nenhum salto de tarefa extra sobrou nos codecs.
+- Runtime SPI S5.5d: série `runtime-spi` reorganizada (270 → 153 patches; correções, testes vermelhos e otimizações juntados ao commit de origem; árvore final idêntica).
 
 ### Fixed
 

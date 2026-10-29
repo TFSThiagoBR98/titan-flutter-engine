@@ -1,0 +1,1170 @@
+# Why: Move dart:ui image ownership, encoding, snapshots, shaders, and canvas
+# consumers to the runtime SPI image handles while preserving the existing
+# DisplayList fallback paths.
+diff --git a/engine/src/flutter/lib/gpu/surface.cc b/engine/src/flutter/lib/gpu/surface.cc
+index d1757bc6161..f833b7503fe 100644
+--- a/engine/src/flutter/lib/gpu/surface.cc
++++ b/engine/src/flutter/lib/gpu/surface.cc
+@@ -160,8 +160,7 @@ Dart_Handle Surface::CreateImage(const sk_sp<DlImage>& image) const {
+   if (!image) {
+     return Dart_Null();
+   }
+-  auto canvas_image = CanvasImage::Create();
+-  canvas_image->set_image(image);
++  auto canvas_image = CanvasImage::CreateFromDlImageForGpu(image);
+   return canvas_image->CreateOuterWrapping();
+ }
+ 
+diff --git a/engine/src/flutter/lib/gpu/texture.cc b/engine/src/flutter/lib/gpu/texture.cc
+index e5ba0615e05..1f41b5aeb4a 100644
+--- a/engine/src/flutter/lib/gpu/texture.cc
++++ b/engine/src/flutter/lib/gpu/texture.cc
+@@ -168,7 +168,7 @@ static std::shared_ptr<impeller::Texture> GetTextureFromImage(
+   if (!canvas_image) {
+     return nullptr;
+   }
+-  sk_sp<flutter::DlImage> dl_image = canvas_image->image();
++  sk_sp<flutter::DlImage> dl_image = canvas_image->GetDlImageForGpu();
+   if (!dl_image) {
+     return nullptr;
+   }
+@@ -186,9 +186,9 @@ Dart_Handle Texture::AsImage() const {
+   // Impeller is disabled, it's impossible to get here anyhow, so just ifdef it
+   // out.
+ #if IMPELLER_SUPPORTS_RENDERING
+-  auto image = flutter::CanvasImage::Create();
+   auto dl_image = impeller::DlImageImpeller::Make(texture_);
+-  image->set_image(dl_image);
++  auto image = flutter::CanvasImage::CreateFromDlImageForGpu(
++      std::move(dl_image));
+   auto wrapped = image->CreateOuterWrapping();
+   return wrapped;
+ #else
+diff --git a/engine/src/flutter/lib/ui/compositing/scene.cc b/engine/src/flutter/lib/ui/compositing/scene.cc
+index 87ed18d63a2..12fdedaea7a 100644
+--- a/engine/src/flutter/lib/ui/compositing/scene.cc
++++ b/engine/src/flutter/lib/ui/compositing/scene.cc
+@@ -4,21 +4,46 @@
+ 
+ #include "flutter/lib/ui/compositing/scene.h"
+ 
++#include <memory>
++
+ #include "flutter/fml/trace_event.h"
+ #include "flutter/lib/ui/painting/image.h"
+-#include "flutter/lib/ui/painting/image_snapshot.h"
+ #include "flutter/lib/ui/painting/picture.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/lib/ui/window/platform_configuration.h"
+ #include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "flutter/runtime_spi/scene/spi_canvas.h"
++#include "flutter/runtime_spi/spi_scene.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+ #include "third_party/tonic/dart_library_natives.h"
++#include "third_party/tonic/logging/dart_invoke.h"
+ 
+ namespace flutter {
+ 
++namespace {
++
++void InvokeImageCallback(void* user_data,
++                         FlutterSpiResult result,
++                         FlutterSpiImage* image) {
++  auto callback = std::unique_ptr<tonic::DartPersistentValue>(
++      static_cast<tonic::DartPersistentValue*>(user_data));
++  auto dart_state = callback->dart_state().lock();
++  if (!dart_state) {
++    return;
++  }
++  tonic::DartState::Scope scope(dart_state);
++  if (result != kFlutterSpiOk || image == nullptr) {
++    tonic::DartInvoke(callback->value(), {Dart_Null()});
++    return;
++  }
++  auto dart_image = CanvasImage::Create(image);
++  tonic::DartInvoke(callback->value(), {tonic::ToDart(dart_image)});
++}
++
++}  // namespace
++
+ IMPLEMENT_WRAPPERTYPEINFO(ui, Scene);
+ 
+ void Scene::create(Dart_Handle scene_handle, FlutterSpiEngineLayer* root_layer) {
+@@ -67,7 +92,21 @@ Dart_Handle Scene::toImageSync(uint32_t width,
+     return tonic::ToDart("Scene has been disposed.");
+   }
+ 
+-  Scene::RasterizeToImage(width, height, raw_image_handle);
++  FlutterSpiScene* scene = CreateSpiScene(width, height);
++  FlutterSpiImage* image = nullptr;
++  if (scene == nullptr ||
++      SpiImageApi()->scene_to_image_sync(CanvasImage::GetSpiEngine(), scene,
++                                         static_cast<int32_t>(width),
++                                         static_cast<int32_t>(height), &image) !=
++          kFlutterSpiOk ||
++      image == nullptr) {
++    if (scene != nullptr) {
++      SpiSceneRelease(scene);
++    }
++    return Dart_Null();
++  }
++  SpiSceneRelease(scene);
++  CanvasImage::Create(raw_image_handle, image);
+   return Dart_Null();
+ }
+ 
+@@ -80,33 +119,28 @@ Dart_Handle Scene::toImage(uint32_t width,
+     return tonic::ToDart("Scene has been disposed.");
+   }
+ 
+-  return Picture::RasterizeLayerTreeToImage(
+-      SpiSceneTakeLayerTree(CreateSpiScene(width, height)), raw_image_callback);
+-}
+-
+-void Scene::RasterizeToImage(uint32_t width,
+-                             uint32_t height,
+-                             Dart_Handle raw_image_handle) {
+-  auto* dart_state = UIDartState::Current();
+-  if (!dart_state) {
+-    return;
++  if (Dart_IsNull(raw_image_callback) ||
++      !Dart_IsClosure(raw_image_callback)) {
++    return tonic::ToDart("Image callback was invalid");
+   }
+-  auto unref_queue = dart_state->GetSkiaUnrefQueue();
+-  auto snapshot_delegate = dart_state->GetSnapshotDelegate();
+-  auto raster_task_runner = dart_state->GetTaskRunners().GetRasterTaskRunner();
+-  ImageSnapshotContext context{
+-      dart_state->GetTaskRunners().GetUITaskRunner(),
+-      raster_task_runner,
+-      snapshot_delegate,
+-      unref_queue,
+-      dart_state->IsImpellerEnabled(),
+-  };
+-
+-  auto image = CanvasImage::Create();
+-  auto dl_image = CreateDeferredImage(
+-      context, SpiSceneTakeLayerTree(CreateSpiScene(width, height)));
+-  image->set_image(dl_image);
+-  image->AssociateWithDartWrapper(raw_image_handle);
++  if (width == 0 || height == 0) {
++    return tonic::ToDart("Image dimensions for scene were invalid.");
++  }
++  FlutterSpiScene* scene = CreateSpiScene(width, height);
++  if (scene == nullptr) {
++    return tonic::ToDart("Scene is null");
++  }
++  auto* callback = new tonic::DartPersistentValue(
++      tonic::DartState::Current(), raw_image_callback);
++  const FlutterSpiResult result = SpiImageApi()->scene_to_image(
++      CanvasImage::GetSpiEngine(), scene, static_cast<int32_t>(width),
++      static_cast<int32_t>(height), InvokeImageCallback, callback);
++  SpiSceneRelease(scene);
++  if (result != kFlutterSpiOk) {
++    delete callback;
++    return tonic::ToDart("Failed to rasterize scene.");
++  }
++  return Dart_Null();
+ }
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/compositing/scene.h b/engine/src/flutter/lib/ui/compositing/scene.h
+index f6d19d452ed..f545d07b468 100644
+--- a/engine/src/flutter/lib/ui/compositing/scene.h
++++ b/engine/src/flutter/lib/ui/compositing/scene.h
+@@ -39,10 +39,6 @@ class Scene : public RefCountedDartWrappable<Scene> {
+   // Returns true if `dispose()` has not been called.
+   bool valid();
+ 
+-  void RasterizeToImage(uint32_t width,
+-                        uint32_t height,
+-                        Dart_Handle raw_image_handle);
+-
+   FlutterSpiEngineLayer* root_ = nullptr;
+ };
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/canvas.cc b/engine/src/flutter/lib/ui/painting/canvas.cc
+index e3c3efb1e0d..db628b87a3d 100644
+--- a/engine/src/flutter/lib/ui/painting/canvas.cc
++++ b/engine/src/flutter/lib/ui/painting/canvas.cc
+@@ -552,14 +552,9 @@ Dart_Handle Canvas::drawImage(const CanvasImage* image,
+     return ToDart("Canvas.drawImage called with non-genuine Image.");
+   }
+ 
+-  auto dl_image = image->image();
+-  if (!dl_image) {
++  if (!image->spi_handle()) {
+     return Dart_Null();
+   }
+-  auto error = dl_image->get_error();
+-  if (error) {
+-    return ToDart(error.value());
+-  }
+ 
+   if (recorder_ != nullptr) {
+     FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+@@ -597,14 +592,9 @@ Dart_Handle Canvas::drawImageRect(const CanvasImage* image,
+     return ToDart("Canvas.drawImageRect called with non-genuine Image.");
+   }
+ 
+-  auto dl_image = image->image();
+-  if (!dl_image) {
++  if (!image->spi_handle()) {
+     return Dart_Null();
+   }
+-  auto error = dl_image->get_error();
+-  if (error) {
+-    return ToDart(error.value());
+-  }
+ 
+   DlRect src = DlRect::MakeLTRB(SafeNarrow(src_left), SafeNarrow(src_top),
+                                 SafeNarrow(src_right), SafeNarrow(src_bottom));
+@@ -646,14 +636,9 @@ Dart_Handle Canvas::drawImageNine(const CanvasImage* image,
+   if (!image) {
+     return ToDart("Canvas.drawImageNine called with non-genuine Image.");
+   }
+-  auto dl_image = image->image();
+-  if (!dl_image) {
++  if (!image->spi_handle()) {
+     return Dart_Null();
+   }
+-  auto error = dl_image->get_error();
+-  if (error) {
+-    return ToDart(error.value());
+-  }
+ 
+   DlRect center =
+       DlRect::MakeLTRB(SafeNarrow(center_left), SafeNarrow(center_top),
+@@ -762,10 +747,8 @@ Dart_Handle Canvas::drawAtlas(Dart_Handle paint_objects,
+         "non-genuine Image.");
+   }
+ 
+-  auto dl_image = atlas->image();
+-  auto error = dl_image->get_error();
+-  if (error) {
+-    return ToDart(error.value());
++  if (!atlas->spi_handle()) {
++    return Dart_Null();
+   }
+ 
+   static_assert(sizeof(DlRSTransform) == sizeof(float) * 4,
+diff --git a/engine/src/flutter/lib/ui/painting/fragment_shader.cc b/engine/src/flutter/lib/ui/painting/fragment_shader.cc
+index c462e3a5c43..34b4600651d 100644
+--- a/engine/src/flutter/lib/ui/painting/fragment_shader.cc
++++ b/engine/src/flutter/lib/ui/painting/fragment_shader.cc
+@@ -12,6 +12,7 @@
+ #include "flutter/lib/ui/painting/fragment_program.h"
+ #include "flutter/lib/ui/painting/image_filter.h"
+ #include "flutter/runtime_spi/effects/spi_shader.h"
++#include "flutter/runtime_spi/image/spi_image.h"
+ #include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ 
+@@ -72,11 +73,12 @@ void ReusableFragmentShader::SetImageSampler(Dart_Handle index_handle,
+     Dart_ThrowException(tonic::ToDart("Sampler index out of bounds"));
+     return;
+   }
+-  if (!image || !image->image()) {
++  if (!image || !image->spi_handle()) {
+     Dart_ThrowException(tonic::ToDart("Image has been disposed"));
+     return;
+   }
+-  if (!image->image()->isUIThreadSafe()) {
++  auto dl_image = SpiImageGet(image->spi_handle());
++  if (!dl_image || !dl_image->isUIThreadSafe()) {
+     Dart_ThrowException(tonic::ToDart("Image is not thread-safe"));
+     return;
+   }
+@@ -84,7 +86,7 @@ void ReusableFragmentShader::SetImageSampler(Dart_Handle index_handle,
+   // TODO(115794): Once the DlImageSampling enum is replaced, expose the
+   //               sampling options as a new default parameter for users.
+   samplers_[index] = DlColorSource::MakeImage(
+-      image->image(), DlTileMode::kClamp, DlTileMode::kClamp,
++      std::move(dl_image), DlTileMode::kClamp, DlTileMode::kClamp,
+       ImageFilter::SamplingFromIndex(filterQualityIndex), nullptr);
+   if (spi_shader_ != nullptr) {
+     SpiShaderRelease(spi_shader_);
+diff --git a/engine/src/flutter/lib/ui/painting/image.cc b/engine/src/flutter/lib/ui/painting/image.cc
+index a05ba64661f..317427884de 100644
+--- a/engine/src/flutter/lib/ui/painting/image.cc
++++ b/engine/src/flutter/lib/ui/painting/image.cc
+@@ -4,15 +4,14 @@
+ 
+ #include "flutter/lib/ui/painting/image.h"
+ 
++#include <utility>
++
+ #include "tonic/logging/dart_invoke.h"
+ 
+-#if IMPELLER_SUPPORTS_RENDERING
+-#include "flutter/lib/ui/painting/image_encoding_impeller.h"
+-#include "flutter/lib/ui/painting/pixel_deferred_image_gpu_impeller.h"
+-#endif
+ #include "flutter/display_list/image/dl_image.h"
+ #include "flutter/lib/ui/painting/image_encoding.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
++#include "flutter/lib/ui/window/platform_configuration.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
+ #include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+@@ -35,11 +34,44 @@ CanvasImage::~CanvasImage() {
+   }
+ }
+ 
+-FlutterSpiImage* CanvasImage::spi_handle() const {
+-  if (spi_image_ == nullptr && image_ != nullptr) {
+-    spi_image_ = SpiImageFromDlImage(image_);
++FlutterSpiImage* CanvasImage::spi_handle() const { return spi_image_; }
++
++FlutterSpiEngine* CanvasImage::GetSpiEngine() {
++  return UIDartState::Current()
++      ->platform_configuration()
++      ->client()
++      ->GetSpiEngine();
++}
++
++fml::RefPtr<CanvasImage> CanvasImage::CreateFromDlImageForGpu(
++    sk_sp<DlImage> image) {
++  return Create(SpiImageFromDlImage(std::move(image)));
++}
++
++sk_sp<DlImage> CanvasImage::GetDlImageForGpu() const {
++  return SpiImageGet(spi_image_);
++}
++
++int CanvasImage::width() {
++  int32_t width = 0;
++  int32_t height = 0;
++  if (spi_image_ == nullptr || SpiImageApi()->image_get_size(
++                                   spi_image_, &width, &height) !=
++                                   kFlutterSpiOk) {
++    return 0;
++  }
++  return width;
++}
++
++int CanvasImage::height() {
++  int32_t width = 0;
++  int32_t height = 0;
++  if (spi_image_ == nullptr || SpiImageApi()->image_get_size(
++                                   spi_image_, &width, &height) !=
++                                   kFlutterSpiOk) {
++    return 0;
+   }
+-  return spi_image_;
++  return height;
+ }
+ 
+ Dart_Handle CanvasImage::CreateOuterWrapping() {
+@@ -56,16 +88,20 @@ void CanvasImage::dispose() {
+     SpiImageRelease(spi_image_);
+     spi_image_ = nullptr;
+   }
+-  image_.reset();
+   ClearDartWrapper();
+ }
+ 
+ int CanvasImage::colorSpace() {
+-  DlColorSpace cs = image_->GetColorSpace();
+-  switch (cs) {
+-    case DlColorSpace::kExtendedSRGB:
++  int32_t color_space = 0;
++  if (spi_image_ == nullptr ||
++      SpiImageApi()->image_get_color_space(spi_image_, &color_space) !=
++          kFlutterSpiOk) {
++    return ColorSpace::kSRGB;
++  }
++  switch (color_space) {
++    case static_cast<int32_t>(DlColorSpace::kExtendedSRGB):
+       return ColorSpace::kExtendedSRGB;
+-    case DlColorSpace::kSRGB:
++    case static_cast<int32_t>(DlColorSpace::kSRGB):
+     default:
+       return ColorSpace::kSRGB;
+   }
+@@ -89,20 +125,6 @@ int BytesPerPixel(PixelFormat pixel_format) {
+   return 4;
+ }
+ 
+-SkColorType PixelFormatToSkColorType(PixelFormat pixel_format) {
+-  switch (pixel_format) {
+-    case PixelFormat::kRgba8888:
+-      return kRGBA_8888_SkColorType;
+-    case PixelFormat::kBgra8888:
+-      return kBGRA_8888_SkColorType;
+-    case PixelFormat::kRgbaFloat32:
+-      return kRGBA_F32_SkColorType;
+-    case PixelFormat::kRFloat32:
+-      return kUnknown_SkColorType;
+-  }
+-  return kUnknown_SkColorType;
+-}
+-
+ // Returns only static strings.
+ const char* DoDecodeImageFromPixelsSync(Dart_Handle pixels_handle,
+                                         uint32_t width,
+@@ -110,14 +132,10 @@ const char* DoDecodeImageFromPixelsSync(Dart_Handle pixels_handle,
+                                         int32_t pixel_format,
+                                         Dart_Handle raw_image_handle) {
+   auto* dart_state = UIDartState::Current();
+-  if (!dart_state) {
++  if (dart_state == nullptr) {
+     return "Dart state is null.";
+   }
+ 
+-  if (!dart_state->IsImpellerEnabled()) {
+-    return "decodeImageFromPixelsSync is not implemented on Skia.";
+-  }
+-
+   if (width == 0 || height == 0) {
+     return "Image dimensions must be greater than zero.";
+   }
+@@ -128,48 +146,28 @@ const char* DoDecodeImageFromPixelsSync(Dart_Handle pixels_handle,
+   }
+   PixelFormat format = static_cast<PixelFormat>(pixel_format);
+ 
+-  sk_sp<SkData> sk_data;
+-  sk_sp<SkImage> sk_image;
+-  {
+-    tonic::Uint8List pixels(pixels_handle);
+-    if (!pixels.data()) {
+-      return "Pixels must not be null.";
+-    }
+-
+-    int32_t row_bytes = width * BytesPerPixel(format);
+-    SkColorType color_type = PixelFormatToSkColorType(format);
+-    if (color_type == kUnknown_SkColorType) {
+-      return "Unsupported pixel format.";
+-    }
+-
+-    SkImageInfo image_info =
+-        SkImageInfo::Make(width, height, color_type, kUnpremul_SkAlphaType);
+-    if (pixel_format == 2) {  // rgbaFloat32
+-      image_info = image_info.makeAlphaType(kUnpremul_SkAlphaType);
+-    } else {
+-      image_info = image_info.makeAlphaType(kPremul_SkAlphaType);
+-    }
+-
+-    sk_data = SkData::MakeWithCopy(pixels.data(), pixels.num_elements());
+-    sk_image = SkImages::RasterFromData(image_info, sk_data, row_bytes);
+-    if (!sk_image) {
+-      return "Failed to create image from pixels.";
+-    }
++  tonic::Uint8List pixels(pixels_handle);
++  if (!pixels.data()) {
++    return "Pixels must not be null.";
+   }
+ 
+-  auto snapshot_delegate = dart_state->GetSnapshotDelegate();
+-  auto raster_task_runner = dart_state->GetTaskRunners().GetRasterTaskRunner();
+-
+-  auto result_image = CanvasImage::Create();
+-  sk_sp<DlImage> deferred_image;
+-
+-#if IMPELLER_SUPPORTS_RENDERING
+-  deferred_image = PixelDeferredImageGPUImpeller::Make(
+-      sk_image, std::move(snapshot_delegate), std::move(raster_task_runner));
+-#endif  // IMPELLER_SUPPORTS_RENDERING
+-
+-  result_image->set_image(deferred_image);
+-  result_image->AssociateWithDartWrapper(raw_image_handle);
++  FlutterSpiPixels spi_pixels = {
++      .struct_size = sizeof(FlutterSpiPixels),
++      .pixels = pixels.data(),
++      .pixels_size = static_cast<size_t>(pixels.num_elements()),
++      .width = static_cast<int32_t>(width),
++      .height = static_cast<int32_t>(height),
++      .row_bytes = static_cast<int32_t>(width * BytesPerPixel(format)),
++      .pixel_format = pixel_format,
++  };
++  FlutterSpiImage* image = nullptr;
++  if (SpiImageApi()->image_create_from_pixels_sync(
++          CanvasImage::GetSpiEngine(), &spi_pixels, nullptr, &image) !=
++              kFlutterSpiOk ||
++      image == nullptr) {
++    return "Failed to create image from pixels.";
++  }
++  CanvasImage::Create(raw_image_handle, image);
+ 
+   return nullptr;
+ }
+diff --git a/engine/src/flutter/lib/ui/painting/image.h b/engine/src/flutter/lib/ui/painting/image.h
+index fe254fd1b6c..a212e4d63ef 100644
+--- a/engine/src/flutter/lib/ui/painting/image.h
++++ b/engine/src/flutter/lib/ui/painting/image.h
+@@ -34,15 +34,25 @@ class CanvasImage final : public RefCountedDartWrappable<CanvasImage> {
+  public:
+   ~CanvasImage() override;
+ 
+-  static fml::RefPtr<CanvasImage> Create() {
+-    return fml::MakeRefCounted<CanvasImage>();
++  static fml::RefPtr<CanvasImage> Create(FlutterSpiImage* image) {
++    auto result = fml::MakeRefCounted<CanvasImage>();
++    result->spi_image_ = image;
++    return result;
+   }
+ 
++  static void Create(Dart_Handle wrapper, FlutterSpiImage* image) {
++    auto result = Create(image);
++    result->AssociateWithDartWrapper(wrapper);
++  }
++
++  static fml::RefPtr<CanvasImage> CreateFromDlImageForGpu(
++      sk_sp<DlImage> image);
++
+   Dart_Handle CreateOuterWrapping();
+ 
+-  int width() { return image_ ? image_->width() : 0; }
++  int width();
+ 
+-  int height() { return image_ ? image_->height() : 0; }
++  int height();
+ 
+   static void decodeImageFromPixelsSync(Dart_Handle pixels_handle,
+                                         uint32_t width,
+@@ -54,21 +64,18 @@ class CanvasImage final : public RefCountedDartWrappable<CanvasImage> {
+ 
+   void dispose();
+ 
+-  sk_sp<DlImage> image() const { return image_; }
+   FlutterSpiImage* spi_handle() const;
+ 
+-  void set_image(const sk_sp<DlImage>& image) {
+-    FML_DCHECK(image->isUIThreadSafe());
+-    image_ = image;
+-  }
++  static FlutterSpiEngine* GetSpiEngine();
++
++  sk_sp<DlImage> GetDlImageForGpu() const;
+ 
+   int colorSpace();
+ 
+  private:
+   CanvasImage();
+ 
+-  sk_sp<DlImage> image_;
+-  mutable FlutterSpiImage* spi_image_ = nullptr;
++  FlutterSpiImage* spi_image_ = nullptr;
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/image_dispose_unittests.cc b/engine/src/flutter/lib/ui/painting/image_dispose_unittests.cc
+index 93600ca83c9..afa5a0c62d3 100644
+--- a/engine/src/flutter/lib/ui/painting/image_dispose_unittests.cc
++++ b/engine/src/flutter/lib/ui/painting/image_dispose_unittests.cc
+@@ -12,6 +12,7 @@
+ #include "flutter/lib/ui/painting/picture.h"
+ #include "flutter/lib/ui/painting/picture_recorder.h"
+ #include "flutter/runtime/dart_vm.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "flutter/shell/common/shell_test.h"
+ #include "flutter/shell/common/thread_host.h"
+ #include "flutter/testing/testing.h"
+@@ -47,10 +48,11 @@ TEST_F(ImageDisposeTest, ImageReleasedAfterFrameAndDisposePictureAndLayer) {
+     ASSERT_FALSE(Dart_IsNull(native_image_handle));
+     CanvasImage* image = GetNativePeer<CanvasImage>(native_image_handle);
+     Picture* picture = GetNativePeer<Picture>(Dart_GetNativeArgument(args, 1));
+-    ASSERT_FALSE(image->image()->unique());
++    auto dl_image = SpiImageToDlImage(image->spi_handle());
++    ASSERT_FALSE(dl_image->unique());
+     ASSERT_FALSE(picture->display_list()->unique());
+     current_display_list_ = picture->display_list();
+-    current_image_ = image->image();
++    current_image_ = std::move(dl_image);
+   };
+ 
+   auto native_finish = [&](Dart_NativeArguments args) {
+diff --git a/engine/src/flutter/lib/ui/painting/image_encoding.cc b/engine/src/flutter/lib/ui/painting/image_encoding.cc
+index d6b9a894642..0d15233d137 100644
+--- a/engine/src/flutter/lib/ui/painting/image_encoding.cc
++++ b/engine/src/flutter/lib/ui/painting/image_encoding.cc
+@@ -7,10 +7,10 @@
+ #include <memory>
+ #include <utility>
+ 
+-#include "flutter/fml/make_copyable.h"
+ #include "flutter/lib/ui/painting/image.h"
+ #include "flutter/lib/ui/painting/image_readback.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/tonic/dart_persistent_value.h"
+ #include "third_party/tonic/logging/dart_invoke.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
+@@ -30,58 +30,57 @@ void FinalizeSkData(void* isolate_callback_data, void* peer) {
+   buffer->unref();
+ }
+ 
+-void InvokeDataCallback(std::unique_ptr<DartPersistentValue> callback,
+-                        fml::StatusOr<sk_sp<SkData>>&& buffer) {
++bool ToSpiImageByteFormat(int format, int32_t* spi_format) {
++  switch (static_cast<ImageByteFormat>(format)) {
++    case ImageByteFormat::kRawRGBA:
++      *spi_format = kFlutterSpiImageByteFormatRawRGBA;
++      return true;
++    case ImageByteFormat::kRawStraightRGBA:
++      *spi_format = kFlutterSpiImageByteFormatRawStraightRGBA;
++      return true;
++    case ImageByteFormat::kRawUnmodified:
++      *spi_format = kFlutterSpiImageByteFormatRawUnmodified;
++      return true;
++    case ImageByteFormat::kRawExtendedRgba128:
++      *spi_format = kFlutterSpiImageByteFormatRawExtendedRGBA128;
++      return true;
++    case ImageByteFormat::kPNG:
++      *spi_format = kFlutterSpiImageByteFormatPNG;
++      return true;
++  }
++  return false;
++}
++
++void InvokeSpiBytesCallback(void* user_data,
++                            FlutterSpiResult result,
++                            const uint8_t* bytes,
++                            size_t size) {
++  auto callback = std::unique_ptr<DartPersistentValue>(
++      static_cast<DartPersistentValue*>(user_data));
+   std::shared_ptr<tonic::DartState> dart_state = callback->dart_state().lock();
+   if (!dart_state) {
+     return;
+   }
+   tonic::DartState::Scope scope(dart_state);
+-  if (!buffer.ok()) {
+-    std::string error_copy(buffer.status().message());
+-    Dart_Handle dart_string = ToDart(error_copy);
+-    DartInvoke(callback->value(), {Dart_Null(), dart_string});
++  if (result != kFlutterSpiOk || (bytes == nullptr && size != 0)) {
++    DartInvoke(callback->value(),
++               {Dart_Null(), ToDart("Failed to encode image.")});
++    return;
++  }
++  sk_sp<SkData> data = SkData::MakeWithCopy(bytes, size);
++  if (!data) {
++    DartInvoke(callback->value(),
++               {Dart_Null(), ToDart("Failed to encode image.")});
+     return;
+   }
+-  // Skia will not modify the buffer, and it is backed by memory that is
+-  // read/write, so Dart can be given direct access to the buffer through an
+-  // external Uint8List.
+-  void* bytes = const_cast<void*>(buffer.value()->data());
+-  const intptr_t length = buffer.value()->size();
+-  void* peer = reinterpret_cast<void*>(buffer.value().release());
++  void* data_bytes = const_cast<void*>(data->data());
++  const intptr_t length = static_cast<intptr_t>(data->size());
++  void* peer = reinterpret_cast<void*>(data.release());
+   Dart_Handle dart_data = Dart_NewExternalTypedDataWithFinalizer(
+-      Dart_TypedData_kUint8, bytes, length, peer, length, FinalizeSkData);
++      Dart_TypedData_kUint8, data_bytes, length, peer, length, FinalizeSkData);
+   DartInvoke(callback->value(), {dart_data, Dart_Null()});
+ }
+ 
+-void EncodeImageAndInvokeDataCallback(
+-    const sk_sp<DlImage>& image,
+-    std::unique_ptr<DartPersistentValue> callback,
+-    ImageByteFormat format,
+-    ImageReadbackContext context) {
+-  auto callback_task =
+-      fml::MakeCopyable([callback = std::move(callback)](
+-                            fml::StatusOr<sk_sp<SkData>>&& encoded) mutable {
+-        InvokeDataCallback(std::move(callback), std::move(encoded));
+-      });
+-  // The static leak checker gets confused by the use of fml::MakeCopyable in
+-  // EncodeImage.
+-  // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
+-  ConvertToRasterImageAsync(
+-      context, image,
+-      [callback_task = std::move(callback_task), format](
+-          fml::StatusOr<sk_sp<SkImage>> raster_image) mutable {
+-        if (raster_image.ok()) {
+-          callback_task(
+-              EncodeRasterImage(raster_image.value(), format));
+-        } else {
+-          callback_task(raster_image.status());
+-        }
+-      });
+-
+-  FML_DCHECK(image);
+-}
+-
+ }  // namespace
+ 
+ Dart_Handle EncodeImage(CanvasImage* canvas_image,
+@@ -95,42 +94,20 @@ Dart_Handle EncodeImage(CanvasImage* canvas_image,
+     return ToDart("Callback must be a function.");
+   }
+ 
+-  ImageByteFormat image_format = static_cast<ImageByteFormat>(format);
+-
+-  auto callback = std::make_unique<DartPersistentValue>(
+-      tonic::DartState::Current(), callback_handle);
+-
+-  const auto& task_runners = UIDartState::Current()->GetTaskRunners();
+-
+-  // The static leak checker gets confused by the use of fml::MakeCopyable.
+-  // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
+-  task_runners.GetIOTaskRunner()->PostTask(fml::MakeCopyable(
+-      [callback = std::move(callback), image = canvas_image->image(),
+-       image_format, ui_task_runner = task_runners.GetUITaskRunner(),
+-       raster_task_runner = task_runners.GetRasterTaskRunner(),
+-       io_task_runner = task_runners.GetIOTaskRunner(),
+-       io_manager = UIDartState::Current()->GetIOManager(),
+-       snapshot_delegate = UIDartState::Current()->GetSnapshotDelegate(),
+-       is_impeller_enabled =
+-           UIDartState::Current()->IsImpellerEnabled(),
+-       impeller_context =
+-           UIDartState::Current()->GetIOManager()->GetImpellerContext(),
+-       gpu_disabled_switch = UIDartState::Current()
+-                                 ->GetIOManager()
+-                                 ->GetIsGpuDisabledSyncSwitch()]() mutable {
+-        ImageReadbackContext context{
+-            ui_task_runner,
+-            raster_task_runner,
+-            io_task_runner,
+-            snapshot_delegate,
+-            io_manager,
+-            gpu_disabled_switch,
+-            is_impeller_enabled,
+-            impeller_context,
+-        };
+-        EncodeImageAndInvokeDataCallback(
+-            image, std::move(callback), image_format, std::move(context));
+-      }));
++  int32_t spi_format = 0;
++  if (!ToSpiImageByteFormat(format, &spi_format)) {
++    return ToDart("Invalid image byte format.");
++  }
++
++  auto* callback = new DartPersistentValue(tonic::DartState::Current(),
++                                           callback_handle);
++  const FlutterSpiResult result = SpiImageApi()->image_to_bytes(
++      CanvasImage::GetSpiEngine(), canvas_image->spi_handle(), spi_format,
++      InvokeSpiBytesCallback, callback);
++  if (result != kFlutterSpiOk) {
++    delete callback;
++    return ToDart("Failed to encode image.");
++  }
+ 
+   return Dart_Null();
+ }
+diff --git a/engine/src/flutter/lib/ui/painting/image_encoding_unittests.cc b/engine/src/flutter/lib/ui/painting/image_encoding_unittests.cc
+index 35f4957c576..c93f55c446c 100644
+--- a/engine/src/flutter/lib/ui/painting/image_encoding_unittests.cc
++++ b/engine/src/flutter/lib/ui/painting/image_encoding_unittests.cc
+@@ -11,6 +11,7 @@
+ #include "flutter/display_list/image/dl_image_skia.h"
+ #include "flutter/fml/synchronization/waitable_event.h"
+ #include "flutter/lib/ui/painting/image.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "flutter/lib/ui/painting/testing/mocks.h"
+ #include "flutter/runtime/dart_vm.h"
+ #include "flutter/shell/common/shell_test.h"
+@@ -151,8 +152,8 @@ TEST_F(ShellTest, EncodeImageAccessesSyncSwitch) {
+           .WillOnce([](const MockSyncSwitch::Handlers& handlers) {
+             handlers.true_handler();
+           });
+-      auto skia_image = canvas_image->image()
+-                            ? canvas_image->image()->asSkiaImage()
++      auto dl_image = SpiImageToDlImage(canvas_image->spi_handle());
++      auto skia_image = dl_image ? dl_image->asSkiaImage()
+                             : nullptr;
+       ConvertToRasterUsingResourceContext(
+           skia_image ? skia_image->skia_image() : nullptr,
+diff --git a/engine/src/flutter/lib/ui/painting/image_shader.cc b/engine/src/flutter/lib/ui/painting/image_shader.cc
+index 0e10b6429e7..71da8b06027 100644
+--- a/engine/src/flutter/lib/ui/painting/image_shader.cc
++++ b/engine/src/flutter/lib/ui/painting/image_shader.cc
+@@ -3,12 +3,11 @@
+ // found in the LICENSE file.
+ 
+ #include "flutter/lib/ui/painting/image_shader.h"
+-#include "flutter/lib/ui/painting/image_filter.h"
+ 
+-#include "flutter/display_list/effects/color_sources/dl_image_color_source.h"
+-#include "flutter/lib/ui/painting/display_list_image_gpu.h"
++#include "flutter/lib/ui/floating_point.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/runtime_spi/effects/spi_shader.h"
++#include "flutter/runtime_spi/image/spi_image.h"
+ #include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+@@ -31,40 +30,58 @@ Dart_Handle ImageShader::initWithImage(CanvasImage* image,
+                                        DlTileMode tmy,
+                                        int filter_quality_index,
+                                        Dart_Handle matrix_handle) {
+-  // CanvasImage should have already checked for a UI thread safe image.
+-  if (!image || !image->image()->isUIThreadSafe()) {
++  if (!image || !image->spi_handle()) {
+     return ToDart("ImageShader constructor called with non-genuine Image.");
+   }
+ 
+-  image_ = image->image();
++  image_ = image->spi_handle();
++  if (SpiImageRetain(image_) != kFlutterSpiOk) {
++    image_ = nullptr;
++    return ToDart("ImageShader constructor called with non-genuine Image.");
++  }
+   tonic::Float64List matrix4(matrix_handle);
+-  DlMatrix local_matrix = ToDlMatrix(matrix4);
++  FlutterSpiMatrix matrix;
++  for (size_t index = 0; index < 16; index++) {
++    matrix.m[index] = SafeNarrow(matrix4[index]);
++  }
+   matrix4.Release();
+   sampling_is_locked_ = filter_quality_index >= 0;
+-  DlImageSampling sampling =
+-      sampling_is_locked_ ? ImageFilter::SamplingFromIndex(filter_quality_index)
+-                          : DlImageSampling::kLinear;
+-  cached_shader_ =
+-      DlColorSource::MakeImage(image_, tmx, tmy, sampling, &local_matrix);
+-  FML_DCHECK(cached_shader_->isUIThreadSafe());
++  const FlutterSpiResult result =
++      SpiPaintEffectsApi()->shader_image(
++          CanvasImage::GetSpiEngine(), image_, static_cast<int32_t>(tmx),
++          static_cast<int32_t>(tmy), filter_quality_index, &matrix,
++          &spi_shader_);
++  if (result != kFlutterSpiOk) {
++    SpiImageRelease(image_);
++    image_ = nullptr;
++    return ToDart("ImageShader constructor called with non-genuine Image.");
++  }
+   return Dart_Null();
+ }
+ 
+ std::shared_ptr<DlColorSource> ImageShader::shader(DlImageSampling sampling) {
+-  const DlImageColorSource* image_shader = cached_shader_->asImage();
+-  FML_DCHECK(image_shader);
+-  if (sampling_is_locked_ || sampling == image_shader->sampling()) {
+-    return cached_shader_;
+-  }
+-  return image_shader->WithSampling(sampling);
++  (void)sampling;
++  return SpiShaderGet(spi_shader_);
+ }
+ 
+ int ImageShader::width() {
+-  return image_->width();
++  int32_t width = 0;
++  int32_t height = 0;
++  if (image_ == nullptr || SpiImageGetSize(image_, &width, &height) !=
++                                kFlutterSpiOk) {
++    return 0;
++  }
++  return width;
+ }
+ 
+ int ImageShader::height() {
+-  return image_->height();
++  int32_t width = 0;
++  int32_t height = 0;
++  if (image_ == nullptr || SpiImageGetSize(image_, &width, &height) !=
++                                kFlutterSpiOk) {
++    return 0;
++  }
++  return height;
+ }
+ 
+ void ImageShader::dispose() {
+@@ -72,24 +89,24 @@ void ImageShader::dispose() {
+     SpiShaderRelease(spi_shader_);
+     spi_shader_ = nullptr;
+   }
+-  cached_shader_.reset();
+-  image_.reset();
++  if (image_ != nullptr) {
++    SpiImageRelease(image_);
++    image_ = nullptr;
++  }
+   ClearDartWrapper();
+ }
+ 
+ ImageShader::ImageShader() = default;
+ 
+-FlutterSpiShader* ImageShader::spi_handle() const {
+-  if (spi_shader_ == nullptr && cached_shader_ != nullptr) {
+-    spi_shader_ = SpiShaderFromColorSource(cached_shader_);
+-  }
+-  return spi_shader_;
+-}
++FlutterSpiShader* ImageShader::spi_handle() const { return spi_shader_; }
+ 
+ ImageShader::~ImageShader() {
+   if (spi_shader_ != nullptr) {
+     SpiShaderRelease(spi_shader_);
+   }
++  if (image_ != nullptr) {
++    SpiImageRelease(image_);
++  }
+ }
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/image_shader.h b/engine/src/flutter/lib/ui/painting/image_shader.h
+index 5c8e62da6a2..83cf7b9e0a3 100644
+--- a/engine/src/flutter/lib/ui/painting/image_shader.h
++++ b/engine/src/flutter/lib/ui/painting/image_shader.h
+@@ -6,12 +6,9 @@
+ #define FLUTTER_LIB_UI_PAINTING_IMAGE_SHADER_H_
+ 
+ #include "flutter/lib/ui/dart_wrapper.h"
+-#include "flutter/lib/ui/painting/gradient.h"
+ #include "flutter/lib/ui/painting/image.h"
+ #include "flutter/lib/ui/painting/matrix.h"
+ #include "flutter/lib/ui/painting/shader.h"
+-#include "third_party/skia/include/core/SkMatrix.h"
+-#include "third_party/skia/include/core/SkShader.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
+ 
+ namespace flutter {
+@@ -41,11 +38,9 @@ class ImageShader : public Shader {
+  private:
+   ImageShader();
+ 
+-  sk_sp<const DlImage> image_;
++  FlutterSpiImage* image_ = nullptr;
+   bool sampling_is_locked_;
+-
+-  std::shared_ptr<DlColorSource> cached_shader_;
+-  mutable FlutterSpiShader* spi_shader_ = nullptr;
++  FlutterSpiShader* spi_shader_ = nullptr;
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/multi_frame_codec.cc b/engine/src/flutter/lib/ui/painting/multi_frame_codec.cc
+index 894b22c9d24..6d8e0163391 100644
+--- a/engine/src/flutter/lib/ui/painting/multi_frame_codec.cc
++++ b/engine/src/flutter/lib/ui/painting/multi_frame_codec.cc
+@@ -11,6 +11,7 @@
+ #include "flutter/lib/ui/io_manager.h"
+ #include "flutter/lib/ui/painting/image.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/dart/runtime/include/dart_api.h"
+ #include "third_party/tonic/logging/dart_invoke.h"
+ 
+@@ -61,8 +62,7 @@ void GetNextFrameAndInvokeCallback(
+   AnimatedImageFrames::Frame frame = frames->DecodeNextFrame(context);
+   fml::RefPtr<CanvasImage> image = nullptr;
+   if (frame.image) {
+-    image = CanvasImage::Create();
+-    image->set_image(frame.image);
++    image = CanvasImage::Create(SpiImageFromDlImage(std::move(frame.image)));
+   }
+ 
+   ui_task_runner->PostTask(fml::MakeCopyable(
+diff --git a/engine/src/flutter/lib/ui/painting/picture.cc b/engine/src/flutter/lib/ui/painting/picture.cc
+index 01bbeefc8de..17c611646d1 100644
+--- a/engine/src/flutter/lib/ui/painting/picture.cc
++++ b/engine/src/flutter/lib/ui/painting/picture.cc
+@@ -22,6 +22,44 @@
+ 
+ namespace flutter {
+ 
++namespace {
++
++void InvokeImageCallback(void* user_data,
++                         FlutterSpiResult result,
++                         FlutterSpiImage* image) {
++  auto callback = std::unique_ptr<tonic::DartPersistentValue>(
++      static_cast<tonic::DartPersistentValue*>(user_data));
++  auto dart_state = callback->dart_state().lock();
++  if (!dart_state) {
++    return;
++  }
++  tonic::DartState::Scope scope(dart_state);
++  if (result != kFlutterSpiOk || image == nullptr) {
++    tonic::DartInvoke(callback->value(), {Dart_Null()});
++    return;
++  }
++  auto dart_image = CanvasImage::Create(image);
++  tonic::DartInvoke(callback->value(), {tonic::ToDart(dart_image)});
++}
++
++bool ToSpiPixelFormat(int32_t target_format, int32_t* pixel_format) {
++  switch (target_format) {
++    case 0:
++      *pixel_format = kFlutterSpiPixelFormatRGBA8888;
++      return true;
++    case 1:
++      *pixel_format = kFlutterSpiPixelFormatRGBAFloat32;
++      return true;
++    case 2:
++      *pixel_format = kFlutterSpiPixelFormatRFloat32;
++      return true;
++    default:
++      return false;
++  }
++}
++
++}  // namespace
++
+ IMPLEMENT_WRAPPERTYPEINFO(ui, Picture);
+ 
+ void Picture::CreateAndAssociateWithDartWrapper(
+@@ -60,6 +98,25 @@ sk_sp<DisplayList> Picture::display_list() const {
+ Dart_Handle Picture::toImage(uint32_t width,
+                              uint32_t height,
+                              Dart_Handle raw_image_callback) {
++  if (spi_picture_ != nullptr) {
++    if (Dart_IsNull(raw_image_callback) ||
++        !Dart_IsClosure(raw_image_callback)) {
++      return tonic::ToDart("Image callback was invalid");
++    }
++    if (width == 0 || height == 0) {
++      return tonic::ToDart("Image dimensions for scene were invalid.");
++    }
++    auto* callback = new tonic::DartPersistentValue(
++        tonic::DartState::Current(), raw_image_callback);
++    const FlutterSpiResult result = SpiImageApi()->picture_to_image(
++        CanvasImage::GetSpiEngine(), spi_picture_, static_cast<int32_t>(width),
++        static_cast<int32_t>(height), InvokeImageCallback, callback);
++    if (result != kFlutterSpiOk) {
++      delete callback;
++      return tonic::ToDart("Failed to rasterize picture.");
++    }
++    return Dart_Null();
++  }
+   auto recorded_display_list = display_list();
+   if (!recorded_display_list) {
+     return tonic::ToDart("Picture is null");
+@@ -72,6 +129,23 @@ void Picture::toImageSync(uint32_t width,
+                           uint32_t height,
+                           int32_t target_format,
+                           Dart_Handle raw_image_handle) {
++  if (spi_picture_ != nullptr) {
++    int32_t pixel_format = 0;
++    if (!ToSpiPixelFormat(target_format, &pixel_format)) {
++      return;
++    }
++    FlutterSpiImage* image = nullptr;
++    if (SpiImageApi()->picture_to_image_sync_with_format(
++            CanvasImage::GetSpiEngine(), spi_picture_,
++            static_cast<int32_t>(width),
++            static_cast<int32_t>(height), pixel_format, &image) !=
++            kFlutterSpiOk ||
++        image == nullptr) {
++      return;
++    }
++    CanvasImage::Create(raw_image_handle, image);
++    return;
++  }
+   auto recorded_display_list = display_list();
+   FML_DCHECK(recorded_display_list);
+   SnapshotPixelFormat snapshot_pixel_format;
+@@ -116,11 +190,9 @@ void Picture::RasterizeToImageSync(sk_sp<DisplayList> display_list,
+       dart_state->IsImpellerEnabled(),
+   };
+ 
+-  auto image = CanvasImage::Create();
+   auto dl_image = CreateDeferredImage(context, std::move(display_list), width,
+                                       height, target_format);
+-  image->set_image(dl_image);
+-  image->AssociateWithDartWrapper(raw_image_handle);
++  CanvasImage::Create(raw_image_handle, SpiImageFromDlImage(std::move(dl_image)));
+ }
+ 
+ void Picture::dispose() {
+@@ -206,8 +278,7 @@ Dart_Handle Picture::DoRasterizeToImage(const sk_sp<DisplayList>& display_list,
+           return;
+         }
+ 
+-        auto dart_image = CanvasImage::Create();
+-        dart_image->set_image(image);
++        auto dart_image = CanvasImage::Create(SpiImageFromDlImage(image));
+         auto* raw_dart_image = tonic::ToDart(dart_image);
+ 
+         // All done!
+diff --git a/engine/src/flutter/lib/ui/painting/single_frame_codec.cc b/engine/src/flutter/lib/ui/painting/single_frame_codec.cc
+index 1b35f8f02bb..0f8e074e0a5 100644
+--- a/engine/src/flutter/lib/ui/painting/single_frame_codec.cc
++++ b/engine/src/flutter/lib/ui/painting/single_frame_codec.cc
+@@ -5,6 +5,7 @@
+ #include "flutter/lib/ui/painting/single_frame_codec.h"
+ 
+ #include "flutter/lib/ui/ui_dart_state.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/tonic/logging/dart_invoke.h"
+ 
+ namespace flutter {
+@@ -38,7 +39,7 @@ Dart_Handle SingleFrameCodec::getNextFrame(Dart_Handle callback_handle) {
+     if (!cached_image_) {
+       return tonic::ToDart("Image failed to decode");
+     }
+-    if (!cached_image_->image()) {
++    if (!cached_image_->spi_handle()) {
+       return tonic::ToDart("Decoded image has been disposed");
+     }
+     tonic::DartInvoke(callback_handle, {tonic::ToDart(cached_image_),
+@@ -95,8 +96,8 @@ Dart_Handle SingleFrameCodec::getNextFrame(Dart_Handle callback_handle) {
+         tonic::DartState::Scope scope(state.get());
+ 
+         if (image) {
+-          auto canvas_image = fml::MakeRefCounted<CanvasImage>();
+-          canvas_image->set_image(std::move(image));
++          auto canvas_image = CanvasImage::Create(
++              SpiImageFromDlImage(std::move(image)));
+ 
+           codec->cached_image_ = std::move(canvas_image);
+         }
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
+index f1e592f81f4..8985adb6d9a 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
+@@ -33,6 +33,10 @@ const FlutterSpiPaintEffectsApi* SpiPaintEffectsApi() {
+   return SpiEngineApi::Create().paint_effects;
+ }
+ 
++const FlutterSpiImageApi* SpiImageApi() {
++  return SpiEngineApi::Create().image;
++}
++
+ FlutterSpiImageFilter* SpiImageFilterFromDl(
+     std::shared_ptr<DlImageFilter> filter) {
+   FlutterSpiImageFilter* handle = nullptr;
+@@ -50,6 +54,10 @@ FlutterSpiImage* SpiImageFromDlImage(sk_sp<DlImage> image) {
+   return handle;
+ }
+ 
++sk_sp<DlImage> SpiImageToDlImage(FlutterSpiImage* image) {
++  return SpiImageGet(image);
++}
++
+ const DisplayList* SpiPictureDisplayList(FlutterSpiPicture* picture) {
+   return SpiPictureDisplayListForTesting(picture);
+ }
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+index b0e5a7a6e74..9e4629384c0 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+@@ -29,6 +29,8 @@ FlutterSpiShader* SpiShaderFromColorSource(std::shared_ptr<DlColorSource>);
+ 
+ const FlutterSpiPaintEffectsApi* SpiPaintEffectsApi();
+ 
++const FlutterSpiImageApi* SpiImageApi();
++
+ // Temporary bridge for fragment shader image filters until S4g-2 moves the
+ // remaining Dl dependency behind dart:ui SPI.
+ FlutterSpiImageFilter* SpiImageFilterFromDl(std::shared_ptr<DlImageFilter>);
+@@ -36,6 +38,8 @@ FlutterSpiImageFilter* SpiImageFilterFromDl(std::shared_ptr<DlImageFilter>);
+ // Temporary bridge until S4g moves image creation behind dart:ui SPI.
+ FlutterSpiImage* SpiImageFromDlImage(sk_sp<DlImage>);
+ 
++sk_sp<DlImage> SpiImageToDlImage(FlutterSpiImage*);
++
+ // Temporary bridge until S4e moves picture ownership behind dart:ui SPI.
+ const DisplayList* SpiPictureDisplayList(FlutterSpiPicture*);
+ 
+diff --git a/engine/src/flutter/shell/platform/embedder/tests/embedder_gl_unittests.cc b/engine/src/flutter/shell/platform/embedder/tests/embedder_gl_unittests.cc
+index c657209e479..2aab1c9d0f6 100644
+--- a/engine/src/flutter/shell/platform/embedder/tests/embedder_gl_unittests.cc
++++ b/engine/src/flutter/shell/platform/embedder/tests/embedder_gl_unittests.cc
+@@ -4277,7 +4277,7 @@ TEST_F(EmbedderTest, SnapshotRenderTargetScalesDownToDriverMax) {
+         CanvasImage* small_image = get_arg(small_handle);
+         ASSERT_TRUE(ImageMatchesFixture(
+             "snapshot_large_scene.png",
+-            small_image->image()->asSkiaImage()->skia_image()));
++            small_image->GetDlImageForGpu()->asSkiaImage()->skia_image()));
+ 
+         latch.Signal();
+       })));

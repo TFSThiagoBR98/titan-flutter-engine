@@ -1,0 +1,285 @@
+# Why: Validate SPI strings with the Unicode well-formedness table and an
+# ASCII fast path while preserving ICU's accepted domain.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 836a8d6b6a4..b2f1a7a230a 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -39,6 +39,8 @@ source_set("spi_backend") {
+     "spi_runtime_backend_factory.h",
+     "internal/spi_internal_bridges.cc",
+     "internal/spi_internal_bridges.h",
++    "internal/spi_utf8.cc",
++    "internal/spi_utf8.h",
+     "spi_scene.cc",
+     "spi_scene.h",
+   ]
+@@ -242,6 +244,7 @@ if (enable_unittests) {
+       "scene/spi_retained_layers_unittests.cc",
+       "scene/spi_scene_trace_unittests.cc",
+       "internal/spi_internal_bridges_unittests.cc",
++      "internal/spi_utf8_unittests.cc",
+       "effects/spi_effects_parity_unittests.cc",
+       "effects/spi_fragment_unittests.cc",
+       "effects/spi_vertices_unittests.cc",
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_utf8.cc b/engine/src/flutter/runtime_spi/internal/spi_utf8.cc
+new file mode 100644
+index 00000000000..0f695897162
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/internal/spi_utf8.cc
+@@ -0,0 +1,134 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/internal/spi_utf8.h"
++
++#include <cstdint>
++#include <cstring>
++
++namespace flutter {
++namespace {
++
++constexpr uint8_t kAsciiMaximum = 0x7f;
++constexpr uint8_t kContinuationMinimum = 0x80;
++constexpr uint8_t kContinuationMaximum = 0xbf;
++constexpr uint8_t kTwoByteLeadMinimum = 0xc2;
++constexpr uint8_t kTwoByteLeadMaximum = 0xdf;
++constexpr uint8_t kThreeByteLeadMinimum = 0xe0;
++constexpr uint8_t kThreeByteLeadMaximum = 0xef;
++constexpr uint8_t kThreeByteLeadE0 = 0xe0;
++constexpr uint8_t kThreeByteLeadED = 0xed;
++constexpr uint8_t kFourByteLeadMinimum = 0xf0;
++constexpr uint8_t kFourByteLeadMaximum = 0xf4;
++constexpr uint8_t kFourByteLeadF0 = 0xf0;
++constexpr uint8_t kFourByteLeadF4 = 0xf4;
++constexpr uint8_t kE0SecondMinimum = 0xa0;
++constexpr uint8_t kEDSecondMaximum = 0x9f;
++constexpr uint8_t kF0SecondMinimum = 0x90;
++constexpr uint8_t kF4SecondMaximum = 0x8f;
++constexpr uint64_t kAsciiWordHighBitMask = 0x8080808080808080ULL;
++constexpr size_t kAsciiWordSize = sizeof(uint64_t);
++
++bool IsContinuationByte(uint8_t byte) {
++  return byte >= kContinuationMinimum && byte <= kContinuationMaximum;
++}
++
++bool IsValidTwoByteSequence(const uint8_t* bytes, size_t remaining) {
++  return remaining >= 2 && bytes[0] >= kTwoByteLeadMinimum &&
++         bytes[0] <= kTwoByteLeadMaximum && IsContinuationByte(bytes[1]);
++}
++
++bool IsValidThreeByteSequence(const uint8_t* bytes, size_t remaining) {
++  if (remaining < 3 || bytes[0] < kThreeByteLeadMinimum ||
++      bytes[0] > kThreeByteLeadMaximum) {
++    return false;
++  }
++
++  const uint8_t second = bytes[1];
++  if (bytes[0] == kThreeByteLeadE0) {
++    if (!IsContinuationByte(second) || second < kE0SecondMinimum) {
++      return false;
++    }
++  } else if (bytes[0] == kThreeByteLeadED) {
++    if (!IsContinuationByte(second) || second > kEDSecondMaximum) {
++      return false;
++    }
++  } else if (!IsContinuationByte(second)) {
++    return false;
++  }
++  return IsContinuationByte(bytes[2]);
++}
++
++bool IsValidFourByteSequence(const uint8_t* bytes, size_t remaining) {
++  if (remaining < 4 || bytes[0] < kFourByteLeadMinimum ||
++      bytes[0] > kFourByteLeadMaximum) {
++    return false;
++  }
++
++  const uint8_t second = bytes[1];
++  if (bytes[0] == kFourByteLeadF0) {
++    if (!IsContinuationByte(second) || second < kF0SecondMinimum) {
++      return false;
++    }
++  } else if (bytes[0] == kFourByteLeadF4) {
++    if (!IsContinuationByte(second) || second > kF4SecondMaximum) {
++      return false;
++    }
++  } else if (!IsContinuationByte(second)) {
++    return false;
++  }
++  return IsContinuationByte(bytes[2]) && IsContinuationByte(bytes[3]);
++}
++
++}  // namespace
++
++bool SpiIsValidUtf8(const char* data, size_t size) {
++  if (data == nullptr) {
++    return size == 0;
++  }
++
++  const auto* bytes = reinterpret_cast<const uint8_t*>(data);
++  size_t index = 0;
++  while (size - index >= kAsciiWordSize) {
++    uint64_t word = 0;
++    std::memcpy(&word, bytes + index, kAsciiWordSize);
++    if ((word & kAsciiWordHighBitMask) != 0) {
++      break;
++    }
++    index += kAsciiWordSize;
++  }
++
++  while (index < size) {
++    const uint8_t lead = bytes[index];
++    if (lead <= kAsciiMaximum) {
++      index++;
++      continue;
++    }
++
++    const size_t remaining = size - index;
++    if (lead >= kTwoByteLeadMinimum && lead <= kTwoByteLeadMaximum) {
++      if (!IsValidTwoByteSequence(bytes + index, remaining)) {
++        return false;
++      }
++      index += 2;
++    } else if (lead >= kThreeByteLeadMinimum &&
++               lead <= kThreeByteLeadMaximum) {
++      if (!IsValidThreeByteSequence(bytes + index, remaining)) {
++        return false;
++      }
++      index += 3;
++    } else if (lead >= kFourByteLeadMinimum &&
++               lead <= kFourByteLeadMaximum) {
++      if (!IsValidFourByteSequence(bytes + index, remaining)) {
++        return false;
++      }
++      index += 4;
++    } else {
++      return false;
++    }
++  }
++  return true;
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_utf8.h b/engine/src/flutter/runtime_spi/internal/spi_utf8.h
+new file mode 100644
+index 00000000000..2ac45955ad5
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/internal/spi_utf8.h
+@@ -0,0 +1,16 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_INTERNAL_SPI_UTF8_H_
++#define FLUTTER_RUNTIME_SPI_INTERNAL_SPI_UTF8_H_
++
++#include <cstddef>
++
++namespace flutter {
++
++bool SpiIsValidUtf8(const char* data, size_t size);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_INTERNAL_SPI_UTF8_H_
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_utf8_unittests.cc b/engine/src/flutter/runtime_spi/internal/spi_utf8_unittests.cc
+new file mode 100644
+index 00000000000..c4d86cd1ab5
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/internal/spi_utf8_unittests.cc
+@@ -0,0 +1,94 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/internal/spi_utf8.h"
++
++#include <cstdint>
++#include <random>
++#include <string>
++#include <vector>
++
++#include "flutter/runtime_spi/testing/test_icu.h"
++#include "flutter/testing/testing.h"
++#include "third_party/icu/source/common/unicode/ustring.h"
++
++namespace flutter::testing {
++namespace {
++
++constexpr size_t kRandomBufferCount = 100000;
++constexpr size_t kMaxRandomBufferSize = 24;
++constexpr uint32_t kRandomSeed = 20261028;
++constexpr uint8_t kHighByteMinimum = 0x80;
++constexpr uint8_t kByteMaximum = 0xff;
++
++bool IcuAcceptsUtf8(const char* data, size_t size) {
++  UErrorCode error = U_ZERO_ERROR;
++  int32_t utf16_length = 0;
++  u_strFromUTF8(nullptr, 0, &utf16_length, data, static_cast<int32_t>(size),
++                &error);
++  return U_SUCCESS(error) || error == U_BUFFER_OVERFLOW_ERROR;
++}
++
++class SpiUtf8Test : public ::testing::Test {
++ protected:
++  void SetUp() override { InitializeIcuForTesting(); }
++};
++
++TEST_F(SpiUtf8Test, AcceptsAscii) {
++  constexpr char kAscii[] = "Titan Runtime SPI";
++
++  EXPECT_TRUE(SpiIsValidUtf8(kAscii, sizeof(kAscii) - 1));
++  EXPECT_TRUE(SpiIsValidUtf8(nullptr, 0));
++}
++
++TEST_F(SpiUtf8Test, AcceptsMultibyte) {
++  constexpr char kTwoByte[] = "\xc2\x80";
++  constexpr char kThreeByte[] = "\xe2\x82\xac";
++  constexpr char kFourByte[] = "\xf4\x8f\xbf\xbf";
++
++  EXPECT_TRUE(SpiIsValidUtf8(kTwoByte, sizeof(kTwoByte) - 1));
++  EXPECT_TRUE(SpiIsValidUtf8(kThreeByte, sizeof(kThreeByte) - 1));
++  EXPECT_TRUE(SpiIsValidUtf8(kFourByte, sizeof(kFourByte) - 1));
++}
++
++TEST_F(SpiUtf8Test, RejectsMalformed) {
++  const std::vector<std::string> malformed = {
++      "\x80",       "\xc2",       "\xe0\xa0",       "\xf0\x90\x80",
++      "\xc0\x80",  "\xc1\xbf",  "\xe0\x80\x80",  "\xe0\x9f\xbf",
++      "\xf0\x80\x80\x80",       "\xed\xa0\x80",  "\xed\xbf\xbf",
++      "\xf4\x90\x80\x80",       "\xf5\x80\x80\x80", "\xff",
++  };
++
++  for (const std::string& value : malformed) {
++    EXPECT_FALSE(SpiIsValidUtf8(value.data(), value.size())) << value;
++  }
++}
++
++TEST_F(SpiUtf8Test, MatchesIcuOnRandomBytes) {
++  std::mt19937 generator(kRandomSeed);
++  std::uniform_int_distribution<size_t> size_distribution(
++      0, kMaxRandomBufferSize);
++  std::uniform_int_distribution<uint16_t> byte_distribution(0,
++                                                              kByteMaximum);
++  std::uniform_int_distribution<uint16_t> high_byte_distribution(
++      kHighByteMinimum, kByteMaximum);
++
++  for (size_t iteration = 0; iteration < kRandomBufferCount; iteration++) {
++    const size_t size = size_distribution(generator);
++    std::string value(size, '\0');
++    for (char& byte : value) {
++      const uint16_t generated =
++          iteration % 2 == 0 ? high_byte_distribution(generator)
++                             : byte_distribution(generator);
++      byte = static_cast<char>(generated);
++    }
++
++    const char* data = value.empty() ? nullptr : value.data();
++    EXPECT_EQ(SpiIsValidUtf8(data, size), IcuAcceptsUtf8(data, size))
++        << "iteration=" << iteration << " size=" << size;
++  }
++}
++
++}  // namespace
++}  // namespace flutter::testing

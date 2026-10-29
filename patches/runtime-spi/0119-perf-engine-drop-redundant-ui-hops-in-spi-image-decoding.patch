@@ -1,0 +1,174 @@
+# Why: Keep decoder and codec callbacks on the UI thread without reposting
+# work that is already there, while preserving asynchronous delivery for
+# cached frames.
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_codec.cc b/engine/src/flutter/runtime_spi/image/spi_image_codec.cc
+index 2733d4f6018..dd6a67c347e 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_codec.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_codec.cc
+@@ -20,6 +20,15 @@
+ namespace flutter {
+ namespace {
+ 
++class ApiCallDepthGuard final {
++ public:
++  explicit ApiCallDepthGuard(int* depth) : depth_(depth) { ++*depth_; }
++  ~ApiCallDepthGuard() { --*depth_; }
++
++ private:
++  int* const depth_;
++};
++
+ template <typename Handle>
+ uintptr_t HandleValue(Handle* handle) {
+   return reinterpret_cast<uintptr_t>(handle);
+@@ -62,6 +71,7 @@ class SpiImageCodec final : public std::enable_shared_from_this<SpiImageCodec> {
+ 
+   FlutterSpiResult GetNextFrame(FlutterSpiFrameCallback callback,
+                                 void* user_data) {
++    const ApiCallDepthGuard api_call_guard(&api_call_depth_);
+     if (callback == nullptr) {
+       return kFlutterSpiInvalidArgument;
+     }
+@@ -101,7 +111,8 @@ class SpiImageCodec final : public std::enable_shared_from_this<SpiImageCodec> {
+   FlutterSpiResult GetNextStaticFrame(FlutterSpiFrameCallback callback,
+                                       void* user_data) {
+     if (cached_image_ != nullptr) {
+-      PostFrame(callback, user_data, kFlutterSpiOk, cached_image_, 0);
++      PostFrame(callback, user_data, kFlutterSpiOk, cached_image_, 0,
++                true);
+       return kFlutterSpiOk;
+     }
+ 
+@@ -157,7 +168,8 @@ class SpiImageCodec final : public std::enable_shared_from_this<SpiImageCodec> {
+     auto pending_callbacks = std::move(pending_callbacks_);
+     pending_callbacks_.clear();
+     for (const PendingCallback& pending : pending_callbacks) {
+-      PostFrame(pending.callback, pending.user_data, result, cached_image_, 0);
++      PostFrame(pending.callback, pending.user_data, result, cached_image_, 0,
++                false);
+     }
+   }
+ 
+@@ -167,16 +179,17 @@ class SpiImageCodec final : public std::enable_shared_from_this<SpiImageCodec> {
+     const FlutterSpiResult result =
+         frame.image == nullptr ? kFlutterSpiInternalError : kFlutterSpiOk;
+     PostFrame(callback, user_data, result, std::move(frame.image),
+-              frame.duration_ms);
++              frame.duration_ms, false);
+   }
+ 
+   void PostFrame(FlutterSpiFrameCallback callback,
+                  void* user_data,
+                  FlutterSpiResult result,
+                  sk_sp<DlImage> image,
+-                 int32_t duration_ms) {
++                 int32_t duration_ms,
++                 bool post_async) {
+     const auto self = shared_from_this();
+-    ui_task_runner_->PostTask(
++    auto deliver_frame =
+         [self, callback, user_data, result, image = std::move(image),
+          duration_ms]() mutable {
+           FlutterSpiImage* handle = nullptr;
+@@ -187,7 +200,13 @@ class SpiImageCodec final : public std::enable_shared_from_this<SpiImageCodec> {
+           }
+           callback(user_data, callback_result, handle,
+                    callback_result == kFlutterSpiOk ? duration_ms : 0);
+-        });
++        };
++    if (!post_async && ui_task_runner_->RunsTasksOnCurrentThread() &&
++        api_call_depth_ == 0) {
++      deliver_frame();
++    } else {
++      ui_task_runner_->PostTask(deliver_frame);
++    }
+   }
+ 
+   SpiImageDecoding* image_decoding_;
+@@ -203,6 +222,7 @@ class SpiImageCodec final : public std::enable_shared_from_this<SpiImageCodec> {
+   bool decoding_in_progress_ = false;
+   sk_sp<DlImage> cached_image_;
+   std::vector<PendingCallback> pending_callbacks_;
++  int api_call_depth_ = 0;
+ };
+ 
+ SpiHandleTable<SpiImageCodec>& Codecs() {
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_decoding.cc b/engine/src/flutter/runtime_spi/image/spi_image_decoding.cc
+index c8d0e12bcf2..3246af11375 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_decoding.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_decoding.cc
+@@ -22,6 +22,15 @@
+ namespace flutter {
+ namespace {
+ 
++class ApiCallDepthGuard final {
++ public:
++  explicit ApiCallDepthGuard(int* depth) : depth_(depth) { ++*depth_; }
++  ~ApiCallDepthGuard() { --*depth_; }
++
++ private:
++  int* const depth_;
++};
++
+ struct PixelFormatInfo {
+   ImageDescriptorData::PixelFormat format;
+   size_t bytes_per_pixel;
+@@ -141,7 +150,7 @@ void SpiImageDecoding::PostResult(FlutterSpiImageCallback callback,
+                                   FlutterSpiResult result,
+                                   sk_sp<DlImage> image) {
+   const auto weak_this = weak_factory_.GetWeakPtr();
+-  ui_task_runner_->PostTask(
++  auto deliver_result =
+       [weak_this, callback, user_data, result,
+        image = std::move(image)]() mutable {
+         if (!weak_this) {
+@@ -154,7 +163,12 @@ void SpiImageDecoding::PostResult(FlutterSpiImageCallback callback,
+           callback_result = kFlutterSpiInternalError;
+         }
+         callback(user_data, callback_result, handle);
+-      });
++      };
++  if (ui_task_runner_->RunsTasksOnCurrentThread() && api_call_depth_ == 0) {
++    deliver_result();
++  } else {
++    ui_task_runner_->PostTask(deliver_result);
++  }
+ }
+ 
+ FlutterSpiResult SpiImageDecoding::DecodeEncoded(
+@@ -163,6 +177,7 @@ FlutterSpiResult SpiImageDecoding::DecodeEncoded(
+     const FlutterSpiImageDecodeOptions* options,
+     FlutterSpiImageCallback callback,
+     void* user_data) {
++  const ApiCallDepthGuard api_call_guard(&api_call_depth_);
+   if (ValidateCallback(callback) != kFlutterSpiOk || data == nullptr ||
+       size == 0) {
+     return kFlutterSpiInvalidArgument;
+@@ -184,6 +199,7 @@ FlutterSpiResult SpiImageDecoding::DecodePixels(
+     const FlutterSpiImageDecodeOptions* options,
+     FlutterSpiImageCallback callback,
+     void* user_data) {
++  const ApiCallDepthGuard api_call_guard(&api_call_depth_);
+   if (ValidateCallback(callback) != kFlutterSpiOk || pixels == nullptr ||
+       pixels->pixels == nullptr || pixels->width <= 0 || pixels->height <= 0) {
+     return kFlutterSpiInvalidArgument;
+@@ -217,6 +233,7 @@ FlutterSpiResult SpiImageDecoding::DecodeDescriptor(
+     const FlutterSpiImageDecodeOptions* options,
+     FlutterSpiImageCallback callback,
+     void* user_data) {
++  const ApiCallDepthGuard api_call_guard(&api_call_depth_);
+   if (ValidateCallback(callback) != kFlutterSpiOk || descriptor == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_decoding.h b/engine/src/flutter/runtime_spi/image/spi_image_decoding.h
+index 14c4a243cd0..562e1e0a63d 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_decoding.h
++++ b/engine/src/flutter/runtime_spi/image/spi_image_decoding.h
+@@ -83,6 +83,7 @@ class SpiImageDecoding final {
+   fml::RefPtr<fml::TaskRunner> ui_task_runner_;
+   fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate_;
+   fml::RefPtr<fml::TaskRunner> raster_task_runner_;
++  int api_call_depth_ = 0;
+   fml::TaskRunnerAffineWeakPtrFactory<SpiImageDecoding> weak_factory_;
+ };
+ 

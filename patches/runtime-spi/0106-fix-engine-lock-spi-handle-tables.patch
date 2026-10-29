@@ -1,0 +1,509 @@
+# Why: serialize handle table access across engine and finalizer threads while
+# destroying released values outside the table lock.
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_handle_table.h b/engine/src/flutter/runtime_spi/scene/spi_handle_table.h
+index 50c77a1e5ef..484709bdc28 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_handle_table.h
++++ b/engine/src/flutter/runtime_spi/scene/spi_handle_table.h
+@@ -5,9 +5,13 @@
+ #ifndef FLUTTER_RUNTIME_SPI_SCENE_SPI_HANDLE_TABLE_H_
+ #define FLUTTER_RUNTIME_SPI_SCENE_SPI_HANDLE_TABLE_H_
+ 
++#include <array>
++#include <atomic>
++#include <bit>
+ #include <cstddef>
+ #include <cstdint>
+ #include <memory>
++#include <mutex>
+ #include <vector>
+ 
+ namespace flutter {
+@@ -15,11 +19,18 @@ namespace flutter {
+ template <typename T>
+ class SpiHandleTable final {
+  public:
++  ~SpiHandleTable() {
++    for (std::atomic<Entry*>& segment : segments_) {
++      delete[] segment.load(std::memory_order_relaxed);
++    }
++  }
++
+   uintptr_t Insert(std::shared_ptr<T> value) {
++    std::lock_guard<std::mutex> lock(mutex_);
+     while (!free_slots_.empty()) {
+       const std::size_t index = free_slots_.back();
+       free_slots_.pop_back();
+-      Entry& entry = entries_[index];
++      Entry& entry = EntryAt(index);
+       if (entry.generation == kMaxGeneration) {
+         continue;
+       }
+@@ -27,28 +38,60 @@ class SpiHandleTable final {
+       entry.value = std::move(value);
+       entry.reference_count = 1;
+       active_count_++;
++      entry.raw.store(entry.value.get(), std::memory_order_relaxed);
++      entry.live_generation.store(entry.generation, std::memory_order_release);
+       return EncodeHandle(index, entry.generation);
+     }
+ 
+-    if (entries_.size() >= static_cast<std::size_t>(kSlotMask)) {
++    if (slot_count_ >= static_cast<std::size_t>(kSlotMask)) {
+       return 0;
+     }
+-    entries_.push_back(Entry{std::move(value), 1, 1});
++    const std::size_t index = slot_count_;
++    EnsureSegment(index);
++    Entry& entry = EntryAt(index);
++    entry.value = std::move(value);
++    entry.reference_count = 1;
+     active_count_++;
+-    return EncodeHandle(entries_.size() - 1, entries_.back().generation);
++    slot_count_++;
++    entry.raw.store(entry.value.get(), std::memory_order_relaxed);
++    entry.live_generation.store(entry.generation, std::memory_order_release);
++    return EncodeHandle(index, entry.generation);
+   }
+ 
+   std::shared_ptr<T> Find(uintptr_t handle) const {
++    std::lock_guard<std::mutex> lock(mutex_);
+     const Entry* entry = FindEntry(handle);
+     return entry == nullptr ? nullptr : entry->value;
+   }
+ 
++  // Reads without the lock; the caller must keep the handle alive while using
++  // the returned pointer.
+   T* FindRaw(uintptr_t handle) const {
+-    const Entry* entry = FindEntry(handle);
+-    return entry == nullptr ? nullptr : entry->value.get();
++    std::size_t index = 0;
++    uint32_t generation = 0;
++    if (!DecodeHandle(handle, &index, &generation) ||
++        index >= static_cast<std::size_t>(kSlotMask)) {
++      return nullptr;
++    }
++    const SegmentLocation location = GetSegmentLocation(index);
++    Entry* const segment =
++        segments_[location.segment].load(std::memory_order_acquire);
++    if (segment == nullptr) {
++      return nullptr;
++    }
++    const Entry& entry = segment[location.offset];
++    const uint32_t first_generation =
++        entry.live_generation.load(std::memory_order_acquire);
++    T* const raw = entry.raw.load(std::memory_order_acquire);
++    const uint32_t second_generation =
++        entry.live_generation.load(std::memory_order_acquire);
++    return first_generation == generation && second_generation == generation
++               ? raw
++               : nullptr;
+   }
+ 
+   bool Retain(uintptr_t handle) {
++    std::lock_guard<std::mutex> lock(mutex_);
+     Entry* entry = FindEntry(handle);
+     if (entry == nullptr) {
+       return false;
+@@ -58,34 +101,54 @@ class SpiHandleTable final {
+   }
+ 
+   bool Release(uintptr_t handle) {
+-    std::size_t index = 0;
+-    uint32_t generation = 0;
+-    if (!DecodeHandle(handle, &index, &generation) ||
+-        index >= entries_.size()) {
+-      return false;
+-    }
+-    Entry& entry = entries_[index];
+-    if (entry.reference_count == 0 || entry.generation != generation) {
+-      return false;
+-    }
+-    if (--entry.reference_count == 0) {
+-      entry.value.reset();
+-      free_slots_.push_back(index);
+-      active_count_--;
++    std::shared_ptr<T> value_to_destroy;
++    {
++      std::lock_guard<std::mutex> lock(mutex_);
++      std::size_t index = 0;
++      uint32_t generation = 0;
++      if (!DecodeHandle(handle, &index, &generation) || index >= slot_count_) {
++        return false;
++      }
++      Entry& entry = EntryAt(index);
++      if (entry.reference_count == 0 || entry.generation != generation) {
++        return false;
++      }
++      if (--entry.reference_count == 0) {
++        entry.live_generation.store(0, std::memory_order_release);
++        entry.raw.store(nullptr, std::memory_order_relaxed);
++        value_to_destroy = std::move(entry.value);
++        free_slots_.push_back(index);
++        active_count_--;
++      }
++      return true;
+     }
+-    return true;
+   }
+ 
+-  std::size_t size() const { return active_count_; }
++  std::size_t size() const {
++    std::lock_guard<std::mutex> lock(mutex_);
++    return active_count_;
++  }
+ 
+  private:
+   struct Entry {
++    Entry() : live_generation(0), raw(nullptr) {}
++
++    std::atomic<uint32_t> live_generation;
++    std::atomic<T*> raw;
+     std::shared_ptr<T> value;
+-    std::size_t reference_count;
+-    uint32_t generation;
++    std::size_t reference_count = 0;
++    uint32_t generation = 1;
++  };
++
++  struct SegmentLocation {
++    std::size_t segment;
++    std::size_t offset;
+   };
+ 
+   static constexpr unsigned kSlotBits = sizeof(uintptr_t) == 8u ? 32u : 20u;
++  static constexpr std::size_t kFirstSegmentSize = 64;
++  static constexpr unsigned kFirstSegmentBits = 6;
++  static constexpr unsigned kSegmentCount = kSlotBits - kFirstSegmentBits + 1;
+   static constexpr uintptr_t kSlotMask =
+       (uintptr_t{1} << kSlotBits) - uintptr_t{1};
+   static constexpr uint32_t kMaxGeneration =
+@@ -113,6 +176,37 @@ class SpiHandleTable final {
+     return true;
+   }
+ 
++  static SegmentLocation GetSegmentLocation(std::size_t index) {
++    const std::size_t value = index + kFirstSegmentSize;
++    const unsigned segment =
++        static_cast<unsigned>(std::bit_width(value)) - 1u - kFirstSegmentBits;
++    const std::size_t segment_size = kFirstSegmentSize << segment;
++    return {segment, value - segment_size};
++  }
++
++  void EnsureSegment(std::size_t index) {
++    const SegmentLocation location = GetSegmentLocation(index);
++    if (segments_[location.segment].load(std::memory_order_relaxed) !=
++        nullptr) {
++      return;
++    }
++    const std::size_t segment_size = kFirstSegmentSize << location.segment;
++    segments_[location.segment].store(new Entry[segment_size],
++                                      std::memory_order_release);
++  }
++
++  Entry& EntryAt(std::size_t index) {
++    const SegmentLocation location = GetSegmentLocation(index);
++    return segments_[location.segment].load(
++        std::memory_order_relaxed)[location.offset];
++  }
++
++  const Entry& EntryAt(std::size_t index) const {
++    const SegmentLocation location = GetSegmentLocation(index);
++    return segments_[location.segment].load(
++        std::memory_order_relaxed)[location.offset];
++  }
++
+   Entry* FindEntry(uintptr_t handle) {
+     return const_cast<Entry*>(
+         static_cast<const SpiHandleTable*>(this)->FindEntry(handle));
+@@ -121,19 +215,20 @@ class SpiHandleTable final {
+   const Entry* FindEntry(uintptr_t handle) const {
+     std::size_t index = 0;
+     uint32_t generation = 0;
+-    if (!DecodeHandle(handle, &index, &generation) ||
+-        index >= entries_.size()) {
++    if (!DecodeHandle(handle, &index, &generation) || index >= slot_count_) {
+       return nullptr;
+     }
+-    const Entry& entry = entries_[index];
++    const Entry& entry = EntryAt(index);
+     if (entry.reference_count == 0 || entry.generation != generation) {
+       return nullptr;
+     }
+     return &entry;
+   }
+ 
+-  std::vector<Entry> entries_;
++  mutable std::mutex mutex_;
++  std::array<std::atomic<Entry*>, kSegmentCount> segments_{};
+   std::vector<std::size_t> free_slots_;
++  std::size_t slot_count_ = 0;
+   std::size_t active_count_ = 0;
+ };
+ 
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_handle_table_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_handle_table_unittests.cc
+index 31cd11efd26..b683c0c5fc2 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_handle_table_unittests.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_handle_table_unittests.cc
+@@ -4,8 +4,11 @@
+ 
+ #include "flutter/runtime_spi/scene/spi_handle_table.h"
+ 
++#include <atomic>
+ #include <cstdint>
+ #include <memory>
++#include <thread>
++#include <vector>
+ 
+ #include "flutter/testing/testing.h"
+ 
+@@ -69,6 +72,55 @@ TEST(SpiHandleTable, FindRawMatchesFind) {
+   EXPECT_EQ(table.Find(handle).get(), table.FindRaw(handle));
+ }
+ 
++TEST(SpiHandleTable, FindRawFindsHandlesAcrossSegments) {
++  constexpr int kValueCount = 10000;
++
++  SpiHandleTable<int> table;
++  std::vector<uintptr_t> handles;
++  handles.reserve(kValueCount);
++  for (int value = 0; value < kValueCount; value++) {
++    const uintptr_t handle = table.Insert(std::make_shared<int>(value));
++    ASSERT_NE(handle, 0u);
++    handles.push_back(handle);
++  }
++
++  for (int value = 0; value < kValueCount; value++) {
++    ASSERT_NE(table.FindRaw(handles[value]), nullptr);
++    EXPECT_EQ(*table.FindRaw(handles[value]), value);
++  }
++
++  for (int value = 0; value < kValueCount; value += 2) {
++    EXPECT_TRUE(table.Release(handles[value]));
++  }
++  for (int value = 0; value < kValueCount; value++) {
++    if (value % 2 == 0) {
++      EXPECT_EQ(table.FindRaw(handles[value]), nullptr);
++    } else {
++      ASSERT_NE(table.FindRaw(handles[value]), nullptr);
++      EXPECT_EQ(*table.FindRaw(handles[value]), value);
++    }
++  }
++  for (int value = 1; value < kValueCount; value += 2) {
++    EXPECT_TRUE(table.Release(handles[value]));
++  }
++}
++
++TEST(SpiHandleTable, FindRawRejectsAReusedSlotWithTheOldHandle) {
++  SpiHandleTable<int> table;
++  const uintptr_t old_handle = table.Insert(std::make_shared<int>(1));
++
++  ASSERT_NE(old_handle, 0u);
++  EXPECT_TRUE(table.Release(old_handle));
++
++  const uintptr_t new_handle = table.Insert(std::make_shared<int>(2));
++
++  ASSERT_NE(new_handle, 0u);
++  EXPECT_EQ(table.FindRaw(old_handle), nullptr);
++  ASSERT_NE(table.FindRaw(new_handle), nullptr);
++  EXPECT_EQ(*table.FindRaw(new_handle), 2);
++  EXPECT_TRUE(table.Release(new_handle));
++}
++
+ TEST(SpiHandleTable, RetainKeepsUntilLastRelease) {
+   SpiHandleTable<int> table;
+   const uintptr_t handle = table.Insert(std::make_shared<int>(7));
+@@ -89,5 +141,194 @@ TEST(SpiHandleTable, UnknownIdIsNotFound) {
+   EXPECT_FALSE(table.Release(999));
+ }
+ 
++TEST(SpiHandleTable, ConcurrentInsertFindReleaseKeepsHandlesConsistent) {
++  constexpr int kThreadCount = 8;
++  constexpr int kCyclesPerThread = 20000;
++
++  SpiHandleTable<int> table;
++  std::atomic<int> ready_threads = 0;
++  std::atomic<bool> start = false;
++  std::atomic<bool> failed = false;
++  std::vector<std::thread> threads;
++  threads.reserve(kThreadCount);
++
++  for (int thread_index = 0; thread_index < kThreadCount; thread_index++) {
++    threads.emplace_back([&table, &ready_threads, &start, &failed,
++                          thread_index]() {
++      ready_threads.fetch_add(1, std::memory_order_relaxed);
++      while (!start.load(std::memory_order_acquire)) {
++        std::this_thread::yield();
++      }
++
++      for (int cycle = 0; cycle < kCyclesPerThread; cycle++) {
++        auto value = std::make_shared<int>(thread_index);
++        const uintptr_t handle = table.Insert(value);
++        if (handle == 0 || table.FindRaw(handle) != value.get() ||
++            !table.Release(handle) || table.FindRaw(handle) != nullptr) {
++          failed.store(true, std::memory_order_relaxed);
++        }
++      }
++    });
++  }
++
++  while (ready_threads.load(std::memory_order_acquire) != kThreadCount) {
++    std::this_thread::yield();
++  }
++  start.store(true, std::memory_order_release);
++
++  for (auto& thread : threads) {
++    thread.join();
++  }
++
++  EXPECT_FALSE(failed.load(std::memory_order_relaxed));
++  EXPECT_EQ(table.size(), 0u);
++}
++
++TEST(SpiHandleTable, FindRawWhileOtherThreadsGrowTheTable) {
++  constexpr int kReaderCount = 4;
++  constexpr int kWriterCount = 4;
++  constexpr int kStableHandleCount = 64;
++  constexpr int kValuesPerWriter = 3000;
++  constexpr int kThreadCount = kReaderCount + kWriterCount;
++
++  SpiHandleTable<int> table;
++  std::vector<std::shared_ptr<int>> stable_values;
++  std::vector<uintptr_t> stable_handles;
++  stable_values.reserve(kStableHandleCount);
++  stable_handles.reserve(kStableHandleCount);
++  for (int value = 0; value < kStableHandleCount; value++) {
++    stable_values.push_back(std::make_shared<int>(value));
++    const uintptr_t handle = table.Insert(stable_values.back());
++    ASSERT_NE(handle, 0u);
++    stable_handles.push_back(handle);
++  }
++
++  std::atomic<int> ready_threads = 0;
++  std::atomic<int> writers_ready = 0;
++  std::atomic<int> readers_observed = 0;
++  std::atomic<bool> start = false;
++  std::atomic<bool> release_writers = false;
++  std::atomic<bool> failed = false;
++  std::vector<std::thread> threads;
++  threads.reserve(kThreadCount);
++
++  for (int reader_index = 0; reader_index < kReaderCount; reader_index++) {
++    threads.emplace_back([&table, &stable_handles, &stable_values,
++                          &ready_threads, &writers_ready, &readers_observed,
++                          &start, &release_writers, &failed]() {
++      ready_threads.fetch_add(1, std::memory_order_relaxed);
++      while (!start.load(std::memory_order_acquire)) {
++        std::this_thread::yield();
++      }
++
++      bool observed_growth = false;
++      while (!release_writers.load(std::memory_order_acquire)) {
++        for (std::size_t value = 0; value < stable_handles.size(); value++) {
++          if (table.FindRaw(stable_handles[value]) !=
++              stable_values[value].get()) {
++            failed.store(true, std::memory_order_relaxed);
++          }
++        }
++        if (!observed_growth &&
++            writers_ready.load(std::memory_order_acquire) == kWriterCount) {
++          observed_growth = true;
++          readers_observed.fetch_add(1, std::memory_order_release);
++        }
++      }
++    });
++  }
++
++  for (int writer_index = 0; writer_index < kWriterCount; writer_index++) {
++    threads.emplace_back([&table, &ready_threads, &writers_ready, &start,
++                          &release_writers, writer_index]() {
++      ready_threads.fetch_add(1, std::memory_order_relaxed);
++      while (!start.load(std::memory_order_acquire)) {
++        std::this_thread::yield();
++      }
++
++      std::vector<uintptr_t> handles;
++      handles.reserve(kValuesPerWriter);
++      for (int value = 0; value < kValuesPerWriter; value++) {
++        const uintptr_t handle =
++            table.Insert(std::make_shared<int>(writer_index));
++        if (handle != 0u) {
++          handles.push_back(handle);
++        }
++      }
++      writers_ready.fetch_add(1, std::memory_order_release);
++      while (!release_writers.load(std::memory_order_acquire)) {
++        std::this_thread::yield();
++      }
++      for (const uintptr_t handle : handles) {
++        table.Release(handle);
++      }
++    });
++  }
++
++  while (ready_threads.load(std::memory_order_acquire) != kThreadCount) {
++    std::this_thread::yield();
++  }
++  start.store(true, std::memory_order_release);
++
++  while (writers_ready.load(std::memory_order_acquire) != kWriterCount ||
++         readers_observed.load(std::memory_order_acquire) != kReaderCount) {
++    std::this_thread::yield();
++  }
++  EXPECT_GT(table.size(), 10000u);
++  release_writers.store(true, std::memory_order_release);
++
++  for (auto& thread : threads) {
++    thread.join();
++  }
++
++  EXPECT_FALSE(failed.load(std::memory_order_relaxed));
++  EXPECT_EQ(table.size(), static_cast<std::size_t>(kStableHandleCount));
++  for (const uintptr_t handle : stable_handles) {
++    EXPECT_TRUE(table.Release(handle));
++  }
++  EXPECT_EQ(table.size(), 0u);
++}
++
++class ReentrantValue final {
++ public:
++  ReentrantValue(SpiHandleTable<ReentrantValue>* table,
++                 std::atomic<uintptr_t>* inserted_handle,
++                 bool insert_on_destroy)
++      : table_(table),
++        inserted_handle_(inserted_handle),
++        insert_on_destroy_(insert_on_destroy) {}
++
++  ~ReentrantValue() {
++    if (insert_on_destroy_) {
++      inserted_handle_->store(
++          table_->Insert(std::make_shared<ReentrantValue>(
++              table_, inserted_handle_, false)),
++          std::memory_order_relaxed);
++    }
++  }
++
++ private:
++  SpiHandleTable<ReentrantValue>* table_;
++  std::atomic<uintptr_t>* inserted_handle_;
++  bool insert_on_destroy_;
++};
++
++TEST(SpiHandleTable, ReleaseDestroysOutsideTheLock) {
++  SpiHandleTable<ReentrantValue> table;
++  std::atomic<uintptr_t> inserted_handle = 0;
++  const uintptr_t handle = table.Insert(std::make_shared<ReentrantValue>(
++      &table, &inserted_handle, true));
++
++  ASSERT_NE(handle, 0u);
++  EXPECT_TRUE(table.Release(handle));
++
++  const uintptr_t reentrant_handle =
++      inserted_handle.load(std::memory_order_relaxed);
++  ASSERT_NE(reentrant_handle, 0u);
++  EXPECT_EQ(table.size(), 1u);
++  EXPECT_TRUE(table.Release(reentrant_handle));
++  EXPECT_EQ(table.size(), 0u);
++}
++
+ }  // namespace
+ }  // namespace flutter::testing

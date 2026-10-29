@@ -1061,6 +1061,23 @@ atribuir. Decisão: sem mudança de código.
 
 O resultado está em [runtime-spi-s55c.md](medidas/runtime-spi-s55c.md).
 
+## S5.5d: Série reorganizada
+
+Com a otimização encerrada, a série `runtime-spi` foi reorganizada para ir num
+PR só. Cada correção, teste vermelho, ajuste de estilo e otimização foi juntado
+ao commit de origem, e a ordem das fases foi mantida: 270 patches viraram
+**153**. Quando o teste vem antes da implementação, o commit resultante fica com
+a mensagem da implementação. Seis correções reais, achadas fases depois do
+código que corrigem, continuam em commits próprios, porque juntá-las à origem
+gerava conflitos. A reorganização só reordenou e juntou commits, sem resolver
+nenhum conflito à mão, e a árvore final é idêntica à da série anterior (`git
+diff` vazio). Os commits intermediários não precisam compilar sozinhos; a prova
+é a árvore final: o check com 1431 PASS e 0 FAIL, o probe `9afdbcd18abd9b35` e
+o `tools/ci.sh engine`. A série anterior está no worktree do engine
+(`backup/runtime-spi-pre-rewrite` e a tag
+`backup-runtime-spi-pre-rewrite-2026-10-29`) e num bundle e num tarball em
+`.build_flutter/backups/`.
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos

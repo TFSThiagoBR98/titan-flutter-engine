@@ -1,0 +1,1227 @@
+# Why: make CanvasPath and CanvasPathMeasure own scene API handles while
+# preserving Skia geometry behavior.
+diff --git a/engine/src/flutter/lib/ui/compositing/scene_builder.cc b/engine/src/flutter/lib/ui/compositing/scene_builder.cc
+index bbed17a69a7..896c736d1a9 100644
+--- a/engine/src/flutter/lib/ui/compositing/scene_builder.cc
++++ b/engine/src/flutter/lib/ui/compositing/scene_builder.cc
+@@ -27,6 +27,7 @@
+ #include "flutter/lib/ui/floating_point.h"
+ #include "flutter/lib/ui/painting/matrix.h"
+ #include "flutter/lib/ui/painting/shader.h"
++#include "flutter/runtime_spi/scene/spi_canvas.h"
+ 
+ namespace flutter {
+ 
+@@ -125,7 +126,8 @@ void SceneBuilder::pushClipPath(Dart_Handle layer_handle,
+       static_cast<flutter::Clip>(clip_behavior);
+   FML_DCHECK(flutter_clip_behavior != flutter::Clip::kNone);
+   auto layer = std::make_shared<flutter::ClipPathLayer>(
+-      path->path(), static_cast<flutter::Clip>(flutter_clip_behavior));
++      SpiPathDlPath(path->spi_handle()),
++      static_cast<flutter::Clip>(flutter_clip_behavior));
+   PushLayer(layer);
+   EngineLayer::MakeRetained(layer_handle, layer);
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/path.cc b/engine/src/flutter/lib/ui/painting/path.cc
+index b293d0111d9..cf4cd073bc0 100644
+--- a/engine/src/flutter/lib/ui/painting/path.cc
++++ b/engine/src/flutter/lib/ui/painting/path.cc
+@@ -6,12 +6,9 @@
+ 
+ #include <cmath>
+ 
+-#include "flutter/display_list/geometry/dl_geometry_conversions.h"
+-#include "flutter/display_list/geometry/dl_path_builder.h"
+ #include "flutter/lib/ui/floating_point.h"
+ #include "flutter/lib/ui/painting/matrix.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "flutter/runtime_spi/scene/spi_canvas.h"
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_args.h"
+@@ -21,15 +18,35 @@
+ using tonic::ToDart;
+ 
+ namespace flutter {
++namespace {
++
++constexpr float kRadiansToDegrees = 180.0f / static_cast<float>(M_PI);
++
++FlutterSpiRect ToSpiRect(const DlRect& rect) {
++  return {rect.GetLeft(), rect.GetTop(), rect.GetRight(), rect.GetBottom()};
++}
++
++template <typename RoundRect>
++FlutterSpiRRect ToSpiRRect(const RoundRect& round_rect) {
++  const auto& bounds = round_rect.GetBounds();
++  const auto& radii = round_rect.GetRadii();
++  return {ToSpiRect(bounds),
++          {{radii.top_left.width, radii.top_left.height},
++           {radii.top_right.width, radii.top_right.height},
++           {radii.bottom_right.width, radii.bottom_right.height},
++           {radii.bottom_left.width, radii.bottom_left.height}}};
++}
++
++}  // namespace
+ 
+ typedef CanvasPath Path;
+ 
+ IMPLEMENT_WRAPPERTYPEINFO(ui, Path);
+ 
+ CanvasPath::CanvasPath() {
+-  sk_path_.setIsVolatile(
+-      !UIDartState::Current()->IsDeterministicRenderingEnabled());
+-  resetVolatility();
++  SpiSceneApi()->path_create(nullptr, &spi_path_);
++  SpiPathSetVolatile(
++      spi_path_, !UIDartState::Current()->IsDeterministicRenderingEnabled());
+ }
+ 
+ CanvasPath::~CanvasPath() {
+@@ -38,56 +55,60 @@ CanvasPath::~CanvasPath() {
+   }
+ }
+ 
+-void CanvasPath::resetVolatility() {
+-  if (spi_path_ != nullptr) {
+-    SpiSceneApi()->path_release(spi_path_);
+-    spi_path_ = nullptr;
+-  }
+-  dl_path_.reset();
++void CanvasPath::CreateFrom(Dart_Handle path_handle, const SkPath& src) {
++  auto path = fml::MakeRefCounted<CanvasPath>();
++  path->AssociateWithDartWrapper(path_handle);
++  path->ReplacePath(SpiPathWrap(src));
++  SpiPathSetVolatile(path->spi_path_, src.isVolatile());
++}
++
++void CanvasPath::ReplacePath(FlutterSpiPath* path) {
++  SpiSceneApi()->path_release(spi_path_);
++  spi_path_ = path;
+ }
+ 
+ int CanvasPath::getFillType() {
+-  return static_cast<int>(sk_path_.fillType());
++  int32_t fill_type = kFlutterSpiFillTypeNonZero;
++  SpiSceneApi()->path_get_fill_type(spi_path_, &fill_type);
++  return fill_type;
+ }
+ 
+ void CanvasPath::setFillType(int fill_type) {
+-  sk_path_.setFillType(static_cast<SkPathFillType>(fill_type));
+-  resetVolatility();
++  SpiSceneApi()->path_set_fill_type(spi_path_, fill_type);
+ }
+ 
+ void CanvasPath::moveTo(double x, double y) {
+-  sk_path_.moveTo(SafeNarrow(x), SafeNarrow(y));
+-  resetVolatility();
++  SpiSceneApi()->path_move_to(spi_path_, SafeNarrow(x), SafeNarrow(y));
+ }
+ 
+ void CanvasPath::relativeMoveTo(double x, double y) {
+-  sk_path_.rMoveTo({SafeNarrow(x), SafeNarrow(y)});
+-  resetVolatility();
++  SpiSceneApi()->path_relative_move_to(spi_path_, SafeNarrow(x), SafeNarrow(y));
+ }
+ 
+ void CanvasPath::lineTo(double x, double y) {
+-  sk_path_.lineTo({SafeNarrow(x), SafeNarrow(y)});
+-  resetVolatility();
++  SpiSceneApi()->path_line_to(spi_path_, SafeNarrow(x), SafeNarrow(y));
+ }
+ 
+ void CanvasPath::relativeLineTo(double x, double y) {
+-  sk_path_.rLineTo({SafeNarrow(x), SafeNarrow(y)});
+-  resetVolatility();
++  SpiSceneApi()->path_relative_line_to(spi_path_, SafeNarrow(x),
++                                       SafeNarrow(y));
+ }
+ 
+-void CanvasPath::quadraticBezierTo(double x1, double y1, double x2, double y2) {
+-  sk_path_.quadTo({SafeNarrow(x1), SafeNarrow(y1)},
+-                  {SafeNarrow(x2), SafeNarrow(y2)});
+-  resetVolatility();
++void CanvasPath::quadraticBezierTo(double x1,
++                                   double y1,
++                                   double x2,
++                                   double y2) {
++  SpiSceneApi()->path_quad_to(spi_path_, SafeNarrow(x1), SafeNarrow(y1),
++                              SafeNarrow(x2), SafeNarrow(y2));
+ }
+ 
+ void CanvasPath::relativeQuadraticBezierTo(double x1,
+                                            double y1,
+                                            double x2,
+                                            double y2) {
+-  sk_path_.rQuadTo({SafeNarrow(x1), SafeNarrow(y1)},
+-                   {SafeNarrow(x2), SafeNarrow(y2)});
+-  resetVolatility();
++  SpiSceneApi()->path_relative_quad_to(spi_path_, SafeNarrow(x1),
++                                       SafeNarrow(y1), SafeNarrow(x2),
++                                       SafeNarrow(y2));
+ }
+ 
+ void CanvasPath::cubicTo(double x1,
+@@ -96,10 +117,9 @@ void CanvasPath::cubicTo(double x1,
+                          double y2,
+                          double x3,
+                          double y3) {
+-  sk_path_.cubicTo({SafeNarrow(x1), SafeNarrow(y1)},
+-                   {SafeNarrow(x2), SafeNarrow(y2)},
+-                   {SafeNarrow(x3), SafeNarrow(y3)});
+-  resetVolatility();
++  SpiSceneApi()->path_cubic_to(spi_path_, SafeNarrow(x1), SafeNarrow(y1),
++                               SafeNarrow(x2), SafeNarrow(y2), SafeNarrow(x3),
++                               SafeNarrow(y3));
+ }
+ 
+ void CanvasPath::relativeCubicTo(double x1,
+@@ -108,16 +128,18 @@ void CanvasPath::relativeCubicTo(double x1,
+                                  double y2,
+                                  double x3,
+                                  double y3) {
+-  sk_path_.rCubicTo({SafeNarrow(x1), SafeNarrow(y1)},
+-                    {SafeNarrow(x2), SafeNarrow(y2)},
+-                    {SafeNarrow(x3), SafeNarrow(y3)});
+-  resetVolatility();
++  SpiSceneApi()->path_relative_cubic_to(
++      spi_path_, SafeNarrow(x1), SafeNarrow(y1), SafeNarrow(x2), SafeNarrow(y2),
++      SafeNarrow(x3), SafeNarrow(y3));
+ }
+ 
+-void CanvasPath::conicTo(double x1, double y1, double x2, double y2, double w) {
+-  sk_path_.conicTo({SafeNarrow(x1), SafeNarrow(y1)},
+-                   {SafeNarrow(x2), SafeNarrow(y2)}, SafeNarrow(w));
+-  resetVolatility();
++void CanvasPath::conicTo(double x1,
++                         double y1,
++                         double x2,
++                         double y2,
++                         double w) {
++  SpiSceneApi()->path_conic_to(spi_path_, SafeNarrow(x1), SafeNarrow(y1),
++                               SafeNarrow(x2), SafeNarrow(y2), SafeNarrow(w));
+ }
+ 
+ void CanvasPath::relativeConicTo(double x1,
+@@ -125,9 +147,9 @@ void CanvasPath::relativeConicTo(double x1,
+                                  double x2,
+                                  double y2,
+                                  double w) {
+-  sk_path_.rConicTo({SafeNarrow(x1), SafeNarrow(y1)},
+-                    {SafeNarrow(x2), SafeNarrow(y2)}, SafeNarrow(w));
+-  resetVolatility();
++  SpiSceneApi()->path_relative_conic_to(
++      spi_path_, SafeNarrow(x1), SafeNarrow(y1), SafeNarrow(x2), SafeNarrow(y2),
++      SafeNarrow(w));
+ }
+ 
+ void CanvasPath::arcTo(double left,
+@@ -137,12 +159,12 @@ void CanvasPath::arcTo(double left,
+                        double startAngle,
+                        double sweepAngle,
+                        bool forceMoveTo) {
+-  sk_path_.arcTo(SkRect::MakeLTRB(SafeNarrow(left), SafeNarrow(top),
+-                                  SafeNarrow(right), SafeNarrow(bottom)),
+-                 SafeNarrow(startAngle) * 180.0f / static_cast<float>(M_PI),
+-                 SafeNarrow(sweepAngle) * 180.0f / static_cast<float>(M_PI),
+-                 forceMoveTo);
+-  resetVolatility();
++  const FlutterSpiRect oval = {SafeNarrow(left), SafeNarrow(top),
++                               SafeNarrow(right), SafeNarrow(bottom)};
++  SpiSceneApi()->path_arc_to(spi_path_, &oval,
++                             SafeNarrow(startAngle) / kRadiansToDegrees,
++                             SafeNarrow(sweepAngle) / kRadiansToDegrees,
++                             forceMoveTo);
+ }
+ 
+ void CanvasPath::arcToPoint(double arcEndX,
+@@ -152,15 +174,10 @@ void CanvasPath::arcToPoint(double arcEndX,
+                             double xAxisRotation,
+                             bool isLargeArc,
+                             bool isClockwiseDirection) {
+-  const auto arcSize = isLargeArc ? SkPathBuilder::ArcSize::kLarge_ArcSize
+-                                  : SkPathBuilder::ArcSize::kSmall_ArcSize;
+-  const auto direction =
+-      isClockwiseDirection ? SkPathDirection::kCW : SkPathDirection::kCCW;
+-
+-  sk_path_.arcTo({SafeNarrow(radiusX), SafeNarrow(radiusY)},
+-                 SafeNarrow(xAxisRotation), arcSize, direction,
+-                 {SafeNarrow(arcEndX), SafeNarrow(arcEndY)});
+-  resetVolatility();
++  SpiSceneApi()->path_arc_to_point(
++      spi_path_, SafeNarrow(arcEndX), SafeNarrow(arcEndY), SafeNarrow(radiusX),
++      SafeNarrow(radiusY), SafeNarrow(xAxisRotation), isLargeArc,
++      isClockwiseDirection);
+ }
+ 
+ void CanvasPath::relativeArcToPoint(double arcEndDeltaX,
+@@ -170,26 +187,22 @@ void CanvasPath::relativeArcToPoint(double arcEndDeltaX,
+                                     double xAxisRotation,
+                                     bool isLargeArc,
+                                     bool isClockwiseDirection) {
+-  const auto arcSize = isLargeArc ? SkPathBuilder::ArcSize::kLarge_ArcSize
+-                                  : SkPathBuilder::ArcSize::kSmall_ArcSize;
+-  const auto direction =
+-      isClockwiseDirection ? SkPathDirection::kCW : SkPathDirection::kCCW;
+-  sk_path_.rArcTo({SafeNarrow(radiusX), SafeNarrow(radiusY)},
+-                  SafeNarrow(xAxisRotation), arcSize, direction,
+-                  {SafeNarrow(arcEndDeltaX), SafeNarrow(arcEndDeltaY)});
+-  resetVolatility();
++  SpiSceneApi()->path_relative_arc_to_point(
++      spi_path_, SafeNarrow(arcEndDeltaX), SafeNarrow(arcEndDeltaY),
++      SafeNarrow(radiusX), SafeNarrow(radiusY), SafeNarrow(xAxisRotation),
++      isLargeArc, isClockwiseDirection);
+ }
+ 
+ void CanvasPath::addRect(double left, double top, double right, double bottom) {
+-  sk_path_.addRect(SkRect::MakeLTRB(SafeNarrow(left), SafeNarrow(top),
+-                                    SafeNarrow(right), SafeNarrow(bottom)));
+-  resetVolatility();
++  const FlutterSpiRect rect = {SafeNarrow(left), SafeNarrow(top),
++                               SafeNarrow(right), SafeNarrow(bottom)};
++  SpiSceneApi()->path_add_rect(spi_path_, &rect);
+ }
+ 
+ void CanvasPath::addOval(double left, double top, double right, double bottom) {
+-  sk_path_.addOval(SkRect::MakeLTRB(SafeNarrow(left), SafeNarrow(top),
+-                                    SafeNarrow(right), SafeNarrow(bottom)));
+-  resetVolatility();
++  const FlutterSpiRect bounds = {SafeNarrow(left), SafeNarrow(top),
++                                 SafeNarrow(right), SafeNarrow(bottom)};
++  SpiSceneApi()->path_add_oval(spi_path_, &bounds);
+ }
+ 
+ void CanvasPath::addArc(double left,
+@@ -198,33 +211,28 @@ void CanvasPath::addArc(double left,
+                         double bottom,
+                         double startAngle,
+                         double sweepAngle) {
+-  sk_path_.addArc(SkRect::MakeLTRB(SafeNarrow(left), SafeNarrow(top),
+-                                   SafeNarrow(right), SafeNarrow(bottom)),
+-                  SafeNarrow(startAngle) * 180.0f / static_cast<float>(M_PI),
+-                  SafeNarrow(sweepAngle) * 180.0f / static_cast<float>(M_PI));
+-  resetVolatility();
++  const FlutterSpiRect oval = {SafeNarrow(left), SafeNarrow(top),
++                               SafeNarrow(right), SafeNarrow(bottom)};
++  SpiSceneApi()->path_add_arc(spi_path_, &oval,
++                              SafeNarrow(startAngle) / kRadiansToDegrees,
++                              SafeNarrow(sweepAngle) / kRadiansToDegrees);
+ }
+ 
+ void CanvasPath::addPolygon(const tonic::Float32List& points, bool close) {
+-  SkSpan<const SkPoint> ptsSpan = {
+-      reinterpret_cast<const SkPoint*>(points.data()),
+-      points.num_elements() / 2};
+-  sk_path_.addPolygon(ptsSpan, close);
+-  resetVolatility();
++  SpiSceneApi()->path_add_polygon(
++      spi_path_, reinterpret_cast<const FlutterSpiPoint*>(points.data()),
++      points.num_elements() / 2, close);
+ }
+ 
+ void CanvasPath::addRRect(const RRect& rrect) {
+-  sk_path_.addRRect(ToSkRRect(rrect.rrect));
+-  resetVolatility();
++  const FlutterSpiRRect spi_rrect = ToSpiRRect(rrect.rrect);
++  SpiSceneApi()->path_add_rrect(spi_path_, &spi_rrect);
+ }
+ 
+ void CanvasPath::addRSuperellipse(const RSuperellipse* rsuperellipse) {
+-  DlPathBuilder builder;
+-  builder.AddRoundSuperellipse(DlRoundSuperellipse::MakeRectRadii(
+-      rsuperellipse->bounds(), rsuperellipse->radii()));
+-  sk_path_.addPath(builder.TakePath().GetSkPath(), SkPath::kAppend_AddPathMode);
+-
+-  resetVolatility();
++  const FlutterSpiRSuperellipse spi_rsuperellipse =
++      ToSpiRRect(rsuperellipse->rsuperellipse());
++  SpiSceneApi()->path_add_rsuperellipse(spi_path_, &spi_rsuperellipse);
+ }
+ 
+ void CanvasPath::addPath(CanvasPath* path, double dx, double dy) {
+@@ -232,9 +240,9 @@ void CanvasPath::addPath(CanvasPath* path, double dx, double dy) {
+     Dart_ThrowException(ToDart("Path.addPath called with non-genuine Path."));
+     return;
+   }
+-  sk_path_.addPath(path->path().GetSkPath(), SafeNarrow(dx), SafeNarrow(dy),
+-                   SkPath::kAppend_AddPathMode);
+-  resetVolatility();
++  SpiSceneApi()->path_add_path(spi_path_, path->spi_handle(), SafeNarrow(dx),
++                               SafeNarrow(dy), nullptr,
++                               kFlutterSpiPathAddModeAppend);
+ }
+ 
+ void CanvasPath::addPathWithMatrix(CanvasPath* path,
+@@ -250,13 +258,10 @@ void CanvasPath::addPathWithMatrix(CanvasPath* path,
+     return;
+   }
+ 
+-  SkMatrix matrix = ToSkMatrix(matrix4);
++  SpiSceneApi()->path_add_path(spi_path_, path->spi_handle(), SafeNarrow(dx),
++                               SafeNarrow(dy), matrix4.data(),
++                               kFlutterSpiPathAddModeAppend);
+   matrix4.Release();
+-  matrix.setTranslateX(matrix.getTranslateX() + SafeNarrow(dx));
+-  matrix.setTranslateY(matrix.getTranslateY() + SafeNarrow(dy));
+-  sk_path_.addPath(path->path().GetSkPath(), matrix,
+-                   SkPath::kAppend_AddPathMode);
+-  resetVolatility();
+ }
+ 
+ void CanvasPath::extendWithPath(CanvasPath* path, double dx, double dy) {
+@@ -265,9 +270,9 @@ void CanvasPath::extendWithPath(CanvasPath* path, double dx, double dy) {
+         ToDart("Path.extendWithPath called with non-genuine Path."));
+     return;
+   }
+-  sk_path_.addPath(path->path().GetSkPath(), SafeNarrow(dx), SafeNarrow(dy),
+-                   SkPath::kExtend_AddPathMode);
+-  resetVolatility();
++  SpiSceneApi()->path_add_path(spi_path_, path->spi_handle(), SafeNarrow(dx),
++                               SafeNarrow(dy), nullptr,
++                               kFlutterSpiPathAddModeExtend);
+ }
+ 
+ void CanvasPath::extendWithPathAndMatrix(CanvasPath* path,
+@@ -283,85 +288,85 @@ void CanvasPath::extendWithPathAndMatrix(CanvasPath* path,
+     return;
+   }
+ 
+-  SkMatrix matrix = ToSkMatrix(matrix4);
++  SpiSceneApi()->path_add_path(spi_path_, path->spi_handle(), SafeNarrow(dx),
++                               SafeNarrow(dy), matrix4.data(),
++                               kFlutterSpiPathAddModeExtend);
+   matrix4.Release();
+-  matrix.setTranslateX(matrix.getTranslateX() + SafeNarrow(dx));
+-  matrix.setTranslateY(matrix.getTranslateY() + SafeNarrow(dy));
+-  sk_path_.addPath(path->path().GetSkPath(), matrix,
+-                   SkPath::kExtend_AddPathMode);
+-  resetVolatility();
+ }
+ 
+ void CanvasPath::close() {
+-  sk_path_.close();
+-  resetVolatility();
++  SpiSceneApi()->path_close(spi_path_);
+ }
+ 
+ void CanvasPath::reset() {
+-  sk_path_.reset();
+-  resetVolatility();
++  SpiSceneApi()->path_reset(spi_path_);
+ }
+ 
+ bool CanvasPath::contains(double x, double y) {
+-  return sk_path_.contains({SafeNarrow(x), SafeNarrow(y)});
++  bool result = false;
++  SpiSceneApi()->path_contains(spi_path_, SafeNarrow(x), SafeNarrow(y),
++                               &result);
++  return result;
+ }
+ 
+ void CanvasPath::shift(Dart_Handle path_handle, double dx, double dy) {
+   fml::RefPtr<CanvasPath> path = Create(path_handle);
+-  path->sk_path_ = sk_path_;
+-  path->sk_path_.offset(SafeNarrow(dx), SafeNarrow(dy));
++  FlutterSpiPath* shifted = nullptr;
++  if (SpiSceneApi()->path_shift(spi_path_, SafeNarrow(dx), SafeNarrow(dy),
++                                &shifted) == kFlutterSpiOk) {
++    path->ReplacePath(shifted);
++  }
+ }
+ 
+ void CanvasPath::transform(Dart_Handle path_handle,
+                            Dart_Handle matrix4_handle) {
+   tonic::Float64List matrix4(matrix4_handle);
+-  auto sk_matrix = ToSkMatrix(matrix4);
++  FlutterSpiPath* transformed = nullptr;
++  const FlutterSpiResult result = SpiSceneApi()->path_transform(
++      spi_path_, matrix4.data(), &transformed);
+   matrix4.Release();
+-  fml::RefPtr<CanvasPath> path = Create(path_handle);
+-  path->sk_path_ = sk_path_;
+-  path->sk_path_.transform(sk_matrix);
++  if (result == kFlutterSpiOk) {
++    fml::RefPtr<CanvasPath> path = Create(path_handle);
++    path->ReplacePath(transformed);
++  }
+ }
+ 
+ tonic::Float32List CanvasPath::getBounds() {
+   tonic::Float32List rect(Dart_NewTypedData(Dart_TypedData_kFloat32, 4));
+-  const SkRect& bounds = sk_path_.computeFiniteBounds().value_or(SkRect());
+-  rect[0] = bounds.left();
+-  rect[1] = bounds.top();
+-  rect[2] = bounds.right();
+-  rect[3] = bounds.bottom();
++  FlutterSpiRect bounds = {};
++  SpiSceneApi()->path_get_bounds(spi_path_, &bounds);
++  rect[0] = bounds.left;
++  rect[1] = bounds.top;
++  rect[2] = bounds.right;
++  rect[3] = bounds.bottom;
+   return rect;
+ }
+ 
+ bool CanvasPath::op(CanvasPath* path1, CanvasPath* path2, int operation) {
+-  std::optional<SkPath> result =
+-      Op(path1->path().GetSkPath(), path2->path().GetSkPath(),
+-         static_cast<SkPathOp>(operation));
+-  if (result) {
+-    sk_path_ = result.value();
+-    resetVolatility();
+-    return true;
++  FlutterSpiPath* result = nullptr;
++  const FlutterSpiResult spi_result =
++      SpiSceneApi()->path_op(path1->spi_handle(), path2->spi_handle(),
++                             operation, &result);
++  if (spi_result != kFlutterSpiOk) {
++    return false;
+   }
+-  return false;
++  ReplacePath(result);
++  return true;
+ }
+ 
+ void CanvasPath::clone(Dart_Handle path_handle) {
+-  fml::RefPtr<CanvasPath> path = Create(path_handle);
+-  // per Skia docs, this will create a fast copy
+-  // data is shared until the source path or dest path are mutated
+-  path->sk_path_ = this->sk_path_;
++  FlutterSpiPath* copy = nullptr;
++  if (SpiSceneApi()->path_copy(spi_path_, &copy) == kFlutterSpiOk) {
++    fml::RefPtr<CanvasPath> path = Create(path_handle);
++    path->ReplacePath(copy);
++  }
+ }
+ 
+ const DlPath& CanvasPath::path() const {
+-  if (!dl_path_.has_value()) {
+-    dl_path_.emplace(sk_path_.snapshot());
+-  }
+-  return dl_path_.value();
++  return SpiPathDlPath(spi_path_);
+ }
+ 
+ FlutterSpiPath* CanvasPath::spi_handle() const {
+-  if (spi_path_ == nullptr) {
+-    spi_path_ = SpiPathFromDlPath(path());
+-  }
+   return spi_path_;
+ }
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/path.h b/engine/src/flutter/lib/ui/painting/path.h
+index 3c35f1a2d98..335bc9c7573 100644
+--- a/engine/src/flutter/lib/ui/painting/path.h
++++ b/engine/src/flutter/lib/ui/painting/path.h
+@@ -5,14 +5,13 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_PATH_H_
+ #define FLUTTER_LIB_UI_PAINTING_PATH_H_
+ 
++#include "flutter/display_list/geometry/dl_path.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "flutter/lib/ui/painting/rrect.h"
+ #include "flutter/lib/ui/painting/rsuperellipse.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/runtime_spi/include/flutter_scene.h"
+ #include "third_party/skia/include/core/SkPath.h"
+-#include "third_party/skia/include/core/SkPathBuilder.h"
+-#include "third_party/skia/include/pathops/SkPathOps.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
+ 
+ namespace flutter {
+@@ -24,11 +23,7 @@ class CanvasPath : public RefCountedDartWrappable<CanvasPath> {
+  public:
+   ~CanvasPath() override;
+ 
+-  static void CreateFrom(Dart_Handle path_handle, const SkPath& src) {
+-    auto path = fml::MakeRefCounted<CanvasPath>();
+-    path->AssociateWithDartWrapper(path_handle);
+-    path->sk_path_ = src;
+-  }
++  static void CreateFrom(Dart_Handle path_handle, const SkPath& src);
+ 
+   static fml::RefPtr<CanvasPath> Create(Dart_Handle wrapper) {
+     UIDartState::ThrowIfUIOperationsProhibited();
+@@ -123,12 +118,9 @@ class CanvasPath : public RefCountedDartWrappable<CanvasPath> {
+  private:
+   CanvasPath();
+ 
+-  SkPathBuilder sk_path_;
+-  mutable std::optional<const DlPath> dl_path_;
+   mutable FlutterSpiPath* spi_path_ = nullptr;
+ 
+-  // Must be called whenever the path is created or mutated.
+-  void resetVolatility();
++  void ReplacePath(FlutterSpiPath* path);
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/path_measure.cc b/engine/src/flutter/lib/ui/painting/path_measure.cc
+index 3263668b0a4..5129b160efe 100644
+--- a/engine/src/flutter/lib/ui/painting/path_measure.cc
++++ b/engine/src/flutter/lib/ui/painting/path_measure.cc
+@@ -4,13 +4,9 @@
+ 
+ #include "flutter/lib/ui/painting/path_measure.h"
+ 
+-#include <cmath>
+-
+ #include "flutter/lib/ui/floating_point.h"
+-#include "flutter/lib/ui/painting/matrix.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+-#include "third_party/tonic/converter/dart_converter.h"
+-#include "third_party/tonic/dart_args.h"
++#include "flutter/runtime_spi/scene/spi_canvas.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+ #include "third_party/tonic/dart_library_natives.h"
+ 
+@@ -24,58 +20,61 @@ void CanvasPathMeasure::Create(Dart_Handle wrapper,
+                                const CanvasPath* path,
+                                bool forceClosed) {
+   UIDartState::ThrowIfUIOperationsProhibited();
+-  fml::RefPtr<CanvasPathMeasure> pathMeasure =
++  fml::RefPtr<CanvasPathMeasure> path_measure =
+       fml::MakeRefCounted<CanvasPathMeasure>();
+-  if (path) {
+-    const SkPath& skPath = path->path().GetSkPath();
+-    SkScalar resScale = 1;
+-    pathMeasure->path_measure_ =
+-        std::make_unique<SkContourMeasureIter>(skPath, forceClosed, resScale);
+-  } else {
+-    pathMeasure->path_measure_ = std::make_unique<SkContourMeasureIter>();
++
++  FlutterSpiPath* empty_path = nullptr;
++  FlutterSpiPath* path_handle = path == nullptr ? empty_path : path->spi_handle();
++  if (path_handle == nullptr) {
++    SpiSceneApi()->path_create(nullptr, &empty_path);
++    path_handle = empty_path;
+   }
+-  pathMeasure->AssociateWithDartWrapper(wrapper);
++  SpiSceneApi()->path_measure_create(path_handle, forceClosed,
++                                     &path_measure->path_measure_);
++  if (empty_path != nullptr) {
++    SpiSceneApi()->path_release(empty_path);
++  }
++  path_measure->AssociateWithDartWrapper(wrapper);
+ }
+ 
+-CanvasPathMeasure::CanvasPathMeasure() {}
++CanvasPathMeasure::CanvasPathMeasure() = default;
+ 
+-CanvasPathMeasure::~CanvasPathMeasure() {}
++CanvasPathMeasure::~CanvasPathMeasure() {
++  if (path_measure_ != nullptr) {
++    SpiSceneApi()->path_measure_release(path_measure_);
++  }
++}
+ 
+ void CanvasPathMeasure::setPath(const CanvasPath* path, bool isClosed) {
+-  path_measure_->reset(path->path().GetSkPath(), isClosed);
++  SpiSceneApi()->path_measure_set_path(path_measure_, path->spi_handle(),
++                                       isClosed);
+ }
+ 
+ double CanvasPathMeasure::getLength(int contour_index) {
+-  if (static_cast<std::vector<sk_sp<SkContourMeasure>>::size_type>(
+-          contour_index) < measures_.size()) {
+-    return measures_[contour_index]->length();
+-  }
+-  return -1;
++  float length = -1.0f;
++  SpiSceneApi()->path_measure_get_length(path_measure_, contour_index, &length);
++  return length;
+ }
+ 
+ tonic::Float32List CanvasPathMeasure::getPosTan(int contour_index,
+                                                 double distance) {
+-  tonic::Float32List posTan(Dart_NewTypedData(Dart_TypedData_kFloat32, 5));
+-  posTan[0] = 0;  // dart code will check for this for failure
+-  if (static_cast<std::vector<sk_sp<SkContourMeasure>>::size_type>(
+-          contour_index) >= measures_.size()) {
+-    return posTan;
+-  }
+-
+-  SkPoint pos;
+-  SkVector tan;
+-  float fdistance = SafeNarrow(distance);
+-  bool success = measures_[contour_index]->getPosTan(fdistance, &pos, &tan);
+-
++  tonic::Float32List pos_tan(Dart_NewTypedData(Dart_TypedData_kFloat32, 5));
++  pos_tan[0] = 0;
++
++  FlutterSpiPoint position = {};
++  FlutterSpiPoint tangent = {};
++  bool success = false;
++  SpiSceneApi()->path_measure_get_pos_tan(
++      path_measure_, contour_index, SafeNarrow(distance), &position, &tangent,
++      &success);
+   if (success) {
+-    posTan[0] = 1;  // dart code will check for this for success
+-    posTan[1] = pos.x();
+-    posTan[2] = pos.y();
+-    posTan[3] = tan.x();
+-    posTan[4] = tan.y();
++    pos_tan[0] = 1;
++    pos_tan[1] = position.x;
++    pos_tan[2] = position.y;
++    pos_tan[3] = tangent.x;
++    pos_tan[4] = tangent.y;
+   }
+-
+-  return posTan;
++  return pos_tan;
+ }
+ 
+ void CanvasPathMeasure::getSegment(Dart_Handle path_handle,
+@@ -83,35 +82,29 @@ void CanvasPathMeasure::getSegment(Dart_Handle path_handle,
+                                    double start_d,
+                                    double stop_d,
+                                    bool start_with_move_to) {
+-  if (static_cast<std::vector<sk_sp<SkContourMeasure>>::size_type>(
+-          contour_index) >= measures_.size()) {
+-    CanvasPath::Create(path_handle);
+-  }
+-  SkPathBuilder dst;
+-  bool success = measures_[contour_index]->getSegment(
+-      SafeNarrow(start_d), SafeNarrow(stop_d), &dst, start_with_move_to);
+-  if (!success) {
++  FlutterSpiPath* segment = nullptr;
++  SpiSceneApi()->path_measure_get_segment(
++      path_measure_, contour_index, SafeNarrow(start_d), SafeNarrow(stop_d),
++      start_with_move_to, &segment);
++  if (segment == nullptr) {
+     CanvasPath::Create(path_handle);
+-  } else {
+-    CanvasPath::CreateFrom(path_handle, dst.detach());
++    return;
+   }
++
++  CanvasPath::CreateFrom(path_handle, SpiPathDlPath(segment).GetSkPath());
++  SpiSceneApi()->path_release(segment);
+ }
+ 
+ bool CanvasPathMeasure::isClosed(int contour_index) {
+-  if (static_cast<std::vector<sk_sp<SkContourMeasure>>::size_type>(
+-          contour_index) < measures_.size()) {
+-    return measures_[contour_index]->isClosed();
+-  }
+-  return false;
++  bool closed = false;
++  SpiSceneApi()->path_measure_is_closed(path_measure_, contour_index, &closed);
++  return closed;
+ }
+ 
+ bool CanvasPathMeasure::nextContour() {
+-  auto measure = path_measure_->next();
+-  if (measure) {
+-    measures_.push_back(std::move(measure));
+-    return true;
+-  }
+-  return false;
++  bool has_next_contour = false;
++  SpiSceneApi()->path_measure_next_contour(path_measure_, &has_next_contour);
++  return has_next_contour;
+ }
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/path_measure.h b/engine/src/flutter/lib/ui/painting/path_measure.h
+index f52b3943f30..8ba9183c4d7 100644
+--- a/engine/src/flutter/lib/ui/painting/path_measure.h
++++ b/engine/src/flutter/lib/ui/painting/path_measure.h
+@@ -5,12 +5,8 @@
+ #ifndef FLUTTER_LIB_UI_PAINTING_PATH_MEASURE_H_
+ #define FLUTTER_LIB_UI_PAINTING_PATH_MEASURE_H_
+ 
+-#include <vector>
+-
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "flutter/lib/ui/painting/path.h"
+-#include "third_party/skia/include/core/SkContourMeasure.h"
+-#include "third_party/skia/include/core/SkPath.h"
+ #include "third_party/tonic/typed_data/typed_list.h"
+ 
+ // Be sure that the client doesn't modify a path on us before Skia finishes
+@@ -39,13 +35,10 @@ class CanvasPathMeasure : public RefCountedDartWrappable<CanvasPathMeasure> {
+   bool isClosed(int contour_index);
+   bool nextContour();
+ 
+-  const SkContourMeasureIter& pathMeasure() const { return *path_measure_; }
+-
+  private:
+   CanvasPathMeasure();
+ 
+-  std::unique_ptr<SkContourMeasureIter> path_measure_;
+-  std::vector<sk_sp<SkContourMeasure>> measures_;
++  FlutterSpiPathMeasure* path_measure_ = nullptr;
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
+index 653f70e7102..34ec15a0d2e 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
+@@ -48,10 +48,6 @@ FlutterSpiImageFilter* SpiImageFilterFromDl(
+   return handle;
+ }
+ 
+-FlutterSpiPath* SpiPathFromDlPath(const DlPath& path) {
+-  return SpiPathWrap(path);
+-}
+-
+ FlutterSpiImage* SpiImageFromDlImage(sk_sp<DlImage> image) {
+   FlutterSpiImage* handle = nullptr;
+   if (SpiImageWrap(std::move(image), &handle) != kFlutterSpiOk) {
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+index 2dcd5e97040..bb1708a7d11 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+@@ -35,9 +35,6 @@ FlutterSpiColorFilter* SpiColorFilterFromDl(
+ // Temporary bridge until S4g moves image-filter creation behind dart:ui SPI.
+ FlutterSpiImageFilter* SpiImageFilterFromDl(std::shared_ptr<DlImageFilter>);
+ 
+-// Temporary bridge until S4d-2 moves path creation behind dart:ui SPI.
+-FlutterSpiPath* SpiPathFromDlPath(const DlPath&);
+-
+ // Temporary bridge until S4g moves image creation behind dart:ui SPI.
+ FlutterSpiImage* SpiImageFromDlImage(sk_sp<DlImage>);
+ 
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges_unittests.cc b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges_unittests.cc
+index ab16e49cac0..960db4b7b8c 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges_unittests.cc
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges_unittests.cc
+@@ -127,7 +127,7 @@ TEST_F(SpiInternalBridgesTest, ImageFilterHandleMatchesDirectImageFilter) {
+ TEST_F(SpiInternalBridgesTest, PathHandleMatchesDirectPath) {
+   const DlPath path = DlPath::MakeRoundRect(
+       DlRoundRect::MakeRectXY(DlRect::MakeLTRB(1, 2, 30, 40), 4.0f, 5.0f));
+-  FlutterSpiPath* path_handle = SpiPathFromDlPath(path);
++  FlutterSpiPath* path_handle = SpiPathWrap(path);
+   ASSERT_NE(path_handle, nullptr);
+ 
+   FlutterSpiPictureRecorder* recorder = CreateRecorder();
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+index 8b9accbe25f..0018d8841ee 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+@@ -1526,6 +1526,19 @@ FlutterSpiPath* SpiPathWrap(const DlPath& path) {
+   return MakeHandle<FlutterSpiPath>(handle);
+ }
+ 
++FlutterSpiPath* SpiPathWrap(const SkPath& path) {
++  const uintptr_t handle = Paths().Insert(std::make_shared<SpiPath>(path));
++  return MakeHandle<FlutterSpiPath>(handle);
++}
++
++const DlPath& SpiPathDlPath(FlutterSpiPath* path) {
++  return FindPath(path)->path();
++}
++
++void SpiPathSetVolatile(FlutterSpiPath* path, bool is_volatile) {
++  FindPath(path)->SetVolatile(is_volatile);
++}
++
+ FlutterSpiResult CanvasDrawParagraph(FlutterSpiPictureRecorder* recorder,
+                                      FlutterSpiParagraph* paragraph,
+                                      float x,
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas.h b/engine/src/flutter/runtime_spi/scene/spi_canvas.h
+index fb890c5fd7c..4f025a059a4 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas.h
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas.h
+@@ -6,6 +6,7 @@
+ #define FLUTTER_RUNTIME_SPI_SCENE_SPI_CANVAS_H_
+ 
+ #include "flutter/runtime_spi/include/flutter_scene.h"
++#include "third_party/skia/include/core/SkPath.h"
+ 
+ struct FlutterSpiParagraph;
+ 
+@@ -25,6 +26,12 @@ DisplayListBuilder* SpiPictureRecorderBuilder(
+     FlutterSpiPictureRecorder* recorder);
+ const DlPath* SpiPathForTesting(FlutterSpiPath* path);
+ FlutterSpiPath* SpiPathWrap(const DlPath& path);
++FlutterSpiPath* SpiPathWrap(const SkPath& path);
++
++// Temporary bridge until S4e moves compositing path ownership behind SPI.
++const DlPath& SpiPathDlPath(FlutterSpiPath* path);
++
++void SpiPathSetVolatile(FlutterSpiPath* path, bool is_volatile);
+ 
+ }  // namespace flutter
+ 
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_path.cc b/engine/src/flutter/runtime_spi/scene/spi_path.cc
+index a87c6ed6fff..b862170cfb9 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_path.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_path.cc
+@@ -7,7 +7,6 @@
+ #include <algorithm>
+ #include <cmath>
+ #include <limits>
+-#include <utility>
+ 
+ #include "flutter/display_list/geometry/dl_geometry_conversions.h"
+ #include "flutter/display_list/geometry/dl_path_builder.h"
+@@ -50,117 +49,101 @@ SkPath::AddPathMode ToAddPathMode(int32_t mode) {
+ }  // namespace
+ 
+ void SpiPath::SetFillType(DlPathFillType fill_type) {
+-  SkPathBuilder path_builder = MutablePath();
+-  path_builder.setFillType(fill_type == DlPathFillType::kOdd
+-                               ? SkPathFillType::kEvenOdd
+-                               : SkPathFillType::kWinding);
+-  Commit(std::move(path_builder));
++  builder_.setFillType(fill_type == DlPathFillType::kOdd
++                           ? SkPathFillType::kEvenOdd
++                           : SkPathFillType::kWinding);
++  InvalidateCache();
+ }
+ 
+ void SpiPath::MoveTo(DlPoint point) {
+-  SkPathBuilder path_builder = MutablePath();
+-  path_builder.moveTo(point.x, point.y);
+-  Commit(std::move(path_builder));
++  builder_.moveTo(point.x, point.y);
++  InvalidateCache();
+ }
+ 
+ void SpiPath::RelativeMoveTo(DlPoint offset) {
+-  SkPathBuilder path_builder = MutablePath();
+-  path_builder.rMoveTo(offset.x, offset.y);
+-  Commit(std::move(path_builder));
++  builder_.rMoveTo(offset.x, offset.y);
++  InvalidateCache();
+ }
+ 
+ void SpiPath::LineTo(DlPoint point) {
+-  SkPathBuilder path_builder = MutablePath();
+-  path_builder.lineTo(point.x, point.y);
+-  Commit(std::move(path_builder));
++  builder_.lineTo(point.x, point.y);
++  InvalidateCache();
+ }
+ 
+ void SpiPath::RelativeLineTo(DlPoint offset) {
+-  SkPathBuilder path_builder = MutablePath();
+-  path_builder.rLineTo(offset.x, offset.y);
+-  Commit(std::move(path_builder));
++  builder_.rLineTo(offset.x, offset.y);
++  InvalidateCache();
+ }
+ 
+ void SpiPath::QuadraticCurveTo(DlPoint control_point, DlPoint point) {
+-  SkPathBuilder path_builder = MutablePath();
+-  path_builder.quadTo(control_point.x, control_point.y, point.x, point.y);
+-  Commit(std::move(path_builder));
++  builder_.quadTo(control_point.x, control_point.y, point.x, point.y);
++  InvalidateCache();
+ }
+ 
+ void SpiPath::RelativeQuadraticCurveTo(DlPoint control_point,
+                                        DlPoint point) {
+-  SkPathBuilder path_builder = MutablePath();
+-  path_builder.rQuadTo(control_point.x, control_point.y, point.x, point.y);
+-  Commit(std::move(path_builder));
++  builder_.rQuadTo(control_point.x, control_point.y, point.x, point.y);
++  InvalidateCache();
+ }
+ 
+ void SpiPath::ConicCurveTo(DlPoint control_point,
+                            DlPoint point,
+                            DlScalar weight) {
+-  SkPathBuilder path_builder = MutablePath();
+-  path_builder.conicTo(control_point.x, control_point.y, point.x, point.y,
+-                       weight);
+-  Commit(std::move(path_builder));
++  builder_.conicTo(control_point.x, control_point.y, point.x, point.y, weight);
++  InvalidateCache();
+ }
+ 
+ void SpiPath::RelativeConicCurveTo(DlPoint control_point,
+                                    DlPoint point,
+                                    DlScalar weight) {
+-  SkPathBuilder path_builder = MutablePath();
+-  path_builder.rConicTo(control_point.x, control_point.y, point.x, point.y,
+-                        weight);
+-  Commit(std::move(path_builder));
++  builder_.rConicTo(control_point.x, control_point.y, point.x, point.y,
++                    weight);
++  InvalidateCache();
+ }
+ 
+ void SpiPath::CubicCurveTo(DlPoint control_point_1,
+                            DlPoint control_point_2,
+                            DlPoint point) {
+-  SkPathBuilder path_builder = MutablePath();
+-  path_builder.cubicTo(control_point_1.x, control_point_1.y, control_point_2.x,
+-                       control_point_2.y, point.x, point.y);
+-  Commit(std::move(path_builder));
++  builder_.cubicTo(control_point_1.x, control_point_1.y, control_point_2.x,
++                   control_point_2.y, point.x, point.y);
++  InvalidateCache();
+ }
+ 
+ void SpiPath::RelativeCubicCurveTo(DlPoint control_point_1,
+                                    DlPoint control_point_2,
+                                    DlPoint point) {
+-  SkPathBuilder path_builder = MutablePath();
+-  path_builder.rCubicTo(control_point_1.x, control_point_1.y, control_point_2.x,
+-                        control_point_2.y, point.x, point.y);
+-  Commit(std::move(path_builder));
++  builder_.rCubicTo(control_point_1.x, control_point_1.y, control_point_2.x,
++                    control_point_2.y, point.x, point.y);
++  InvalidateCache();
+ }
+ 
+ void SpiPath::AddRect(const DlRect& rect) {
+-  SkPathBuilder path_builder = MutablePath();
+-  path_builder.addRect(SkRect::MakeLTRB(rect.GetLeft(), rect.GetTop(),
+-                                        rect.GetRight(), rect.GetBottom()));
+-  Commit(std::move(path_builder));
++  builder_.addRect(SkRect::MakeLTRB(rect.GetLeft(), rect.GetTop(),
++                                    rect.GetRight(), rect.GetBottom()));
++  InvalidateCache();
+ }
+ 
+ void SpiPath::AddOval(const DlRect& bounds) {
+-  SkPathBuilder path_builder = MutablePath();
+-  path_builder.addOval(SkRect::MakeLTRB(bounds.GetLeft(), bounds.GetTop(),
+-                                        bounds.GetRight(), bounds.GetBottom()));
+-  Commit(std::move(path_builder));
++  builder_.addOval(SkRect::MakeLTRB(bounds.GetLeft(), bounds.GetTop(),
++                                    bounds.GetRight(), bounds.GetBottom()));
++  InvalidateCache();
+ }
+ 
+ void SpiPath::AddRoundRect(const DlRoundRect& round_rect) {
+-  SkPathBuilder path_builder = MutablePath();
+-  path_builder.addRRect(ToSkRRect(round_rect));
+-  Commit(std::move(path_builder));
++  builder_.addRRect(ToSkRRect(round_rect));
++  InvalidateCache();
+ }
+ 
+ void SpiPath::ArcTo(const DlRect& oval,
+                     DlScalar start_angle,
+                     DlScalar sweep_angle,
+                     bool force_move_to) {
+-  SkPathBuilder path_builder = MutablePath();
+-  path_builder.arcTo(
++  builder_.arcTo(
+       SkRect::MakeLTRB(oval.GetLeft(), oval.GetTop(), oval.GetRight(),
+                        oval.GetBottom()),
+       start_angle * kRadiansToDegrees, sweep_angle * kRadiansToDegrees,
+       force_move_to);
+-  Commit(std::move(path_builder));
++  InvalidateCache();
+ }
+ 
+ void SpiPath::ArcToPoint(DlPoint point,
+@@ -168,11 +151,9 @@ void SpiPath::ArcToPoint(DlPoint point,
+                          DlScalar rotation,
+                          bool large_arc,
+                          bool clockwise) {
+-  SkPathBuilder path_builder = MutablePath();
+-  path_builder.arcTo(SkPoint{radii.x, radii.y}, rotation,
+-                     ToArcSize(large_arc), ToSkPathDirection(clockwise),
+-                     SkPoint{point.x, point.y});
+-  Commit(std::move(path_builder));
++  builder_.arcTo(SkPoint{radii.x, radii.y}, rotation, ToArcSize(large_arc),
++                 ToSkPathDirection(clockwise), SkPoint{point.x, point.y});
++  InvalidateCache();
+ }
+ 
+ void SpiPath::RelativeArcToPoint(DlPoint offset,
+@@ -180,38 +161,33 @@ void SpiPath::RelativeArcToPoint(DlPoint offset,
+                                  DlScalar rotation,
+                                  bool large_arc,
+                                  bool clockwise) {
+-  SkPathBuilder path_builder = MutablePath();
+-  path_builder.rArcTo(SkPoint{radii.x, radii.y}, rotation,
+-                      ToArcSize(large_arc), ToSkPathDirection(clockwise),
+-                      SkVector{offset.x, offset.y});
+-  Commit(std::move(path_builder));
++  builder_.rArcTo(SkPoint{radii.x, radii.y}, rotation, ToArcSize(large_arc),
++                  ToSkPathDirection(clockwise), SkVector{offset.x, offset.y});
++  InvalidateCache();
+ }
+ 
+ void SpiPath::AddArc(const DlRect& oval,
+                      DlScalar start_angle,
+                      DlScalar sweep_angle) {
+-  SkPathBuilder path_builder = MutablePath();
+-  path_builder.addArc(
++  builder_.addArc(
+       SkRect::MakeLTRB(oval.GetLeft(), oval.GetTop(), oval.GetRight(),
+                        oval.GetBottom()),
+       start_angle * kRadiansToDegrees, sweep_angle * kRadiansToDegrees);
+-  Commit(std::move(path_builder));
++  InvalidateCache();
+ }
+ 
+ void SpiPath::AddPolygon(SkSpan<const SkPoint> points, bool close) {
+-  SkPathBuilder path_builder = MutablePath();
+-  path_builder.addPolygon(points, close);
+-  Commit(std::move(path_builder));
++  builder_.addPolygon(points, close);
++  InvalidateCache();
+ }
+ 
+ void SpiPath::AddRSuperellipse(const DlRoundSuperellipse& superellipse) {
+   DlPathBuilder builder;
+   builder.AddRoundSuperellipse(superellipse);
+ 
+-  SkPathBuilder path_builder = MutablePath();
+-  path_builder.addPath(builder.TakePath().GetSkPath(),
+-                       SkPath::kAppend_AddPathMode);
+-  Commit(std::move(path_builder));
++  builder_.addPath(builder.TakePath().GetSkPath(),
++                   SkPath::kAppend_AddPathMode);
++  InvalidateCache();
+ }
+ 
+ void SpiPath::AddPath(const SpiPath& source,
+@@ -219,86 +195,78 @@ void SpiPath::AddPath(const SpiPath& source,
+                       DlScalar dy,
+                       const double* matrix4,
+                       int32_t mode) {
+-  SkPathBuilder path_builder = MutablePath();
+   const SkPath::AddPathMode add_path_mode = ToAddPathMode(mode);
+   if (matrix4 == nullptr) {
+-    path_builder.addPath(source.sk_path_, dx, dy, add_path_mode);
++    builder_.addPath(source.sk_path(), dx, dy, add_path_mode);
+   } else {
+     SkMatrix matrix = ToSkMatrix(matrix4);
+     matrix.setTranslateX(matrix.getTranslateX() + dx);
+     matrix.setTranslateY(matrix.getTranslateY() + dy);
+-    path_builder.addPath(source.sk_path_, matrix, add_path_mode);
++    builder_.addPath(source.sk_path(), matrix, add_path_mode);
+   }
+-  Commit(std::move(path_builder));
++  InvalidateCache();
+ }
+ 
+ void SpiPath::Close() {
+-  SkPathBuilder path_builder = MutablePath();
+-  path_builder.close();
+-  Commit(std::move(path_builder));
++  builder_.close();
++  InvalidateCache();
+ }
+ 
+ void SpiPath::Reset() {
+-  sk_path_.reset();
++  builder_.reset();
+   InvalidateCache();
+ }
+ 
+ DlPathFillType SpiPath::GetFillType() const {
+-  return sk_path_.getFillType() == SkPathFillType::kEvenOdd
++  return sk_path().getFillType() == SkPathFillType::kEvenOdd
+              ? DlPathFillType::kOdd
+              : DlPathFillType::kNonZero;
+ }
+ 
+ bool SpiPath::Contains(DlPoint point) const {
+-  return sk_path_.contains(point.x, point.y);
++  return sk_path().contains(point.x, point.y);
+ }
+ 
+ DlRect SpiPath::GetBounds() const {
+-  return DlRect::MakeLTRB(sk_path_.getBounds().left(),
+-                          sk_path_.getBounds().top(),
+-                          sk_path_.getBounds().right(),
+-                          sk_path_.getBounds().bottom());
++  const SkRect bounds = sk_path().getBounds();
++  return DlRect::MakeLTRB(bounds.left(), bounds.top(), bounds.right(),
++                          bounds.bottom());
+ }
+ 
+ SpiPath SpiPath::Copy() const {
+   SpiPath copy;
+-  copy.sk_path_ = sk_path_;
++  copy.builder_ = builder_;
+   return copy;
+ }
+ 
+ SpiPath SpiPath::Shift(DlScalar dx, DlScalar dy) const {
+-  SpiPath shifted;
+-  shifted.sk_path_ = sk_path_.makeOffset(dx, dy);
+-  return shifted;
++  return SpiPath(sk_path().makeOffset(dx, dy));
+ }
+ 
+ SpiPath SpiPath::Transform(const double matrix4[16]) const {
+-  SpiPath transformed;
+-  transformed.sk_path_ = sk_path_.makeTransform(ToSkMatrix(matrix4));
+-  return transformed;
++  return SpiPath(sk_path().makeTransform(ToSkMatrix(matrix4)));
+ }
+ 
+ std::optional<SkPath> SpiPath::Op(const SpiPath& other,
+                                   int32_t operation) const {
+-  return ::Op(sk_path_, other.sk_path_, static_cast<SkPathOp>(operation));
+-}
+-
+-SkPathBuilder SpiPath::MutablePath() const {
+-  return SkPathBuilder(sk_path_);
++  return ::Op(sk_path(), other.sk_path(), static_cast<SkPathOp>(operation));
+ }
+ 
+-void SpiPath::Commit(SkPathBuilder path_builder) {
+-  sk_path_ = path_builder.detach();
+-  InvalidateCache();
++const SkPath& SpiPath::sk_path() const {
++  if (!sk_path_.has_value()) {
++    sk_path_.emplace(builder_.snapshot());
++  }
++  return sk_path_.value();
+ }
+ 
+ void SpiPath::InvalidateCache() {
++  sk_path_.reset();
+   dl_path_.reset();
+ }
+ 
+ const DlPath& SpiPath::path() const {
+   if (!dl_path_.has_value()) {
+-    dl_path_.emplace(sk_path_);
++    dl_path_.emplace(sk_path());
+   }
+   return dl_path_.value();
+ }
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_path.h b/engine/src/flutter/runtime_spi/scene/spi_path.h
+index 171be6667e1..2721f4c714b 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_path.h
++++ b/engine/src/flutter/runtime_spi/scene/spi_path.h
+@@ -17,7 +17,8 @@ namespace flutter {
+ class SpiPath final {
+  public:
+   SpiPath() = default;
+-  explicit SpiPath(const DlPath& path) : sk_path_(path.GetSkPath()) {}
++  explicit SpiPath(const SkPath& path) : builder_(path) {}
++  explicit SpiPath(const DlPath& path) : builder_(path.GetSkPath()) {}
+ 
+   void SetFillType(DlPathFillType fill_type);
+   void MoveTo(DlPoint point);
+@@ -74,15 +75,18 @@ class SpiPath final {
+   SpiPath Transform(const double matrix4[16]) const;
+   std::optional<SkPath> Op(const SpiPath& other, int32_t operation) const;
+ 
+-  const SkPath& sk_path() const { return sk_path_; }
++  const SkPath& sk_path() const;
++  void SetVolatile(bool is_volatile) {
++    builder_.setIsVolatile(is_volatile);
++    InvalidateCache();
++  }
+   const DlPath& path() const;
+ 
+  private:
+-  SkPathBuilder MutablePath() const;
+-  void Commit(SkPathBuilder path_builder);
+   void InvalidateCache();
+ 
+-  SkPath sk_path_;
++  SkPathBuilder builder_;
++  mutable std::optional<SkPath> sk_path_;
+   mutable std::optional<DlPath> dl_path_;
+ };
+ 

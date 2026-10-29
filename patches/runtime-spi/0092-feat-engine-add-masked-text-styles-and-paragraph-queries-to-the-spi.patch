@@ -1,0 +1,1339 @@
+# Why: move dart:ui text inheritance and paragraph queries into the versioned
+# runtime SPI.
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 60cdcaeca9b..2c84e1ca905 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -569,7 +569,9 @@ SPI_EXPECT_OFFSET(FlutterSpiTextStyle, variations,
+                   sizeof(void*) == 8 ? 168 : 124);
+ SPI_EXPECT_OFFSET(FlutterSpiTextStyle, variation_count,
+                   sizeof(void*) == 8 ? 176 : 128);
+-SPI_EXPECT_SIZE(FlutterSpiTextStyle, sizeof(void*) == 8 ? 184 : 132);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, set_fields,
++                  sizeof(void*) == 8 ? 184 : 132);
++SPI_EXPECT_SIZE(FlutterSpiTextStyle, sizeof(void*) == 8 ? 192 : 136);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, text_align,
+@@ -608,7 +610,19 @@ SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, ellipsis,
+                   sizeof(void*) == 8 ? 88 : 68);
+ SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, locale,
+                   sizeof(void*) == 8 ? 96 : 72);
+-SPI_EXPECT_SIZE(FlutterSpiParagraphStyle, sizeof(void*) == 8 ? 104 : 76);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, set_fields,
++                  sizeof(void*) == 8 ? 104 : 76);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, render_soft_hyphens,
++                  sizeof(void*) == 8 ? 108 : 80);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, strut_set_fields,
++                  sizeof(void*) == 8 ? 112 : 84);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, strut_font_weight,
++                  sizeof(void*) == 8 ? 116 : 88);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, strut_font_style,
++                  sizeof(void*) == 8 ? 120 : 92);
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, strut_half_leading,
++                  sizeof(void*) == 8 ? 124 : 96);
++SPI_EXPECT_SIZE(FlutterSpiParagraphStyle, sizeof(void*) == 8 ? 128 : 100);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiParagraphMetrics, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiParagraphMetrics, width, 8);
+@@ -627,6 +641,15 @@ SPI_EXPECT_OFFSET(FlutterSpiTextBox, rect, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiTextBox, direction, 16);
+ SPI_EXPECT_SIZE(FlutterSpiTextBox, 20);
+ 
++SPI_EXPECT_OFFSET(FlutterSpiGlyphInfo, grapheme_bounds, 0);
++SPI_EXPECT_OFFSET(FlutterSpiGlyphInfo, range_start,
++                  sizeof(void*) == 8 ? 16 : 16);
++SPI_EXPECT_OFFSET(FlutterSpiGlyphInfo, range_end,
++                  sizeof(void*) == 8 ? 24 : 20);
++SPI_EXPECT_OFFSET(FlutterSpiGlyphInfo, is_ltr,
++                  sizeof(void*) == 8 ? 32 : 24);
++SPI_EXPECT_SIZE(FlutterSpiGlyphInfo, sizeof(void*) == 8 ? 40 : 28);
++
+ SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, start_index, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, end_index,
+                   sizeof(void*) == 8 ? 8 : 4);
+@@ -654,6 +677,57 @@ SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, line_number,
+                   sizeof(void*) == 8 ? 96 : 80);
+ SPI_EXPECT_SIZE(FlutterSpiLineMetrics, sizeof(void*) == 8 ? 104 : 88);
+ 
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, font_load,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_builder_create,
++                  sizeof(void*) == 8 ? 16 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_builder_push_style,
++                  sizeof(void*) == 8 ? 24 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_builder_pop,
++                  sizeof(void*) == 8 ? 32 : 16);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_builder_add_text,
++                  sizeof(void*) == 8 ? 40 : 20);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_builder_add_placeholder,
++                  sizeof(void*) == 8 ? 48 : 24);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_builder_build,
++                  sizeof(void*) == 8 ? 56 : 28);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_builder_release,
++                  sizeof(void*) == 8 ? 64 : 32);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_layout,
++                  sizeof(void*) == 8 ? 72 : 36);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_metrics,
++                  sizeof(void*) == 8 ? 80 : 40);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_rects_for_range,
++                  sizeof(void*) == 8 ? 88 : 44);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_rects_for_placeholders,
++                  sizeof(void*) == 8 ? 96 : 48);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_glyph_position_at,
++                  sizeof(void*) == 8 ? 104 : 52);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_word_boundary,
++                  sizeof(void*) == 8 ? 112 : 56);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_line_metrics,
++                  sizeof(void*) == 8 ? 120 : 60);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_glyph_info_at,
++                  sizeof(void*) == 8 ? 128 : 64);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_closest_glyph_info,
++                  sizeof(void*) == 8 ? 136 : 68);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_line_boundary,
++                  sizeof(void*) == 8 ? 144 : 72);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_line_metrics_at,
++                  sizeof(void*) == 8 ? 152 : 76);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_line_count,
++                  sizeof(void*) == 8 ? 160 : 80);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_line_number_at,
++                  sizeof(void*) == 8 ? 168 : 84);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_retain,
++                  sizeof(void*) == 8 ? 176 : 88);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_release,
++                  sizeof(void*) == 8 ? 184 : 92);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, canvas_draw_paragraph,
++                  sizeof(void*) == 8 ? 192 : 96);
++SPI_EXPECT_SIZE(FlutterSpiTextApi, sizeof(void*) == 8 ? 200 : 100);
++
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, text,
+                   sizeof(void*) == 8 ? 120 : 72);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, image,
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index 77a82d86af4..c17afdba115 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 17
++#define FLUTTER_SPI_VERSION_MINOR 18
+ 
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_text.h b/engine/src/flutter/runtime_spi/include/flutter_text.h
+index 9f4fb218e8f..0f5203a6986 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_text.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_text.h
+@@ -61,6 +61,63 @@ typedef enum {
+   kFlutterSpiTextHeightBehaviorDisableAll = 3,
+ } FlutterSpiTextHeightBehavior;
+ 
++// The mask fields are active only when this bit is set. Without it, all
++// fields retain the ABI 0.17 behavior.
++static const uint32_t kFlutterSpiStyleFieldsMasked = UINT32_C(1) << 31;
++
++enum {
++  // These masks use the same bit positions as the dart:ui encoding.
++  kFlutterSpiTextStyleFieldLeadingDistribution = 1u << 0,
++  kFlutterSpiTextStyleFieldColor = 1u << 1,
++  kFlutterSpiTextStyleFieldDecoration = 1u << 2,
++  kFlutterSpiTextStyleFieldDecorationColor = 1u << 3,
++  kFlutterSpiTextStyleFieldDecorationStyle = 1u << 4,
++  kFlutterSpiTextStyleFieldFontWeight = 1u << 5,
++  kFlutterSpiTextStyleFieldFontStyle = 1u << 6,
++  kFlutterSpiTextStyleFieldTextBaseline = 1u << 7,
++  kFlutterSpiTextStyleFieldDecorationThickness = 1u << 8,
++  kFlutterSpiTextStyleFieldFontFamily = 1u << 9,
++  kFlutterSpiTextStyleFieldFontSize = 1u << 10,
++  kFlutterSpiTextStyleFieldLetterSpacing = 1u << 11,
++  kFlutterSpiTextStyleFieldWordSpacing = 1u << 12,
++  kFlutterSpiTextStyleFieldHeight = 1u << 13,
++  kFlutterSpiTextStyleFieldLocale = 1u << 14,
++  kFlutterSpiTextStyleFieldBackground = 1u << 15,
++  kFlutterSpiTextStyleFieldForeground = 1u << 16,
++  kFlutterSpiTextStyleFieldShadows = 1u << 17,
++  kFlutterSpiTextStyleFieldFontFeatures = 1u << 18,
++  kFlutterSpiTextStyleFieldFontVariations = 1u << 19,
++};
++
++enum {
++  // These masks use the same bit positions as the dart:ui encoding.
++  kFlutterSpiParagraphStyleFieldTextAlign = 1u << 1,
++  kFlutterSpiParagraphStyleFieldTextDirection = 1u << 2,
++  kFlutterSpiParagraphStyleFieldFontWeight = 1u << 3,
++  kFlutterSpiParagraphStyleFieldFontStyle = 1u << 4,
++  kFlutterSpiParagraphStyleFieldMaxLines = 1u << 5,
++  kFlutterSpiParagraphStyleFieldTextHeightBehavior = 1u << 6,
++  kFlutterSpiParagraphStyleFieldFontFamily = 1u << 7,
++  kFlutterSpiParagraphStyleFieldFontSize = 1u << 8,
++  kFlutterSpiParagraphStyleFieldHeight = 1u << 9,
++  kFlutterSpiParagraphStyleFieldStrutStyle = 1u << 10,
++  kFlutterSpiParagraphStyleFieldEllipsis = 1u << 11,
++  kFlutterSpiParagraphStyleFieldLocale = 1u << 12,
++  kFlutterSpiParagraphStyleFieldRenderSoftHyphens = 1u << 13,
++};
++
++enum {
++  // These masks use the same bit positions as the dart:ui encoding.
++  kFlutterSpiStrutStyleFieldFontWeight = 1u << 0,
++  kFlutterSpiStrutStyleFieldFontStyle = 1u << 1,
++  kFlutterSpiStrutStyleFieldFontFamily = 1u << 2,
++  kFlutterSpiStrutStyleFieldLeadingDistribution = 1u << 3,
++  kFlutterSpiStrutStyleFieldFontSize = 1u << 4,
++  kFlutterSpiStrutStyleFieldHeight = 1u << 5,
++  kFlutterSpiStrutStyleFieldLeading = 1u << 6,
++  kFlutterSpiStrutStyleFieldForceStrutHeight = 1u << 7,
++};
++
+ typedef struct {
+   FlutterSpiColor color;
+   FlutterSpiPoint offset;
+@@ -103,6 +160,7 @@ typedef struct {
+   size_t feature_count;
+   const FlutterSpiFontVariation* variations;
+   size_t variation_count;
++  uint32_t set_fields;
+ } FlutterSpiTextStyle;
+ 
+ typedef struct {
+@@ -125,6 +183,12 @@ typedef struct {
+   bool strut_force_height;
+   const char* ellipsis;
+   const char* locale;
++  uint32_t set_fields;
++  bool render_soft_hyphens;
++  uint32_t strut_set_fields;
++  int32_t strut_font_weight;
++  int32_t strut_font_style;
++  bool strut_half_leading;
+ } FlutterSpiParagraphStyle;
+ 
+ typedef struct {
+@@ -145,6 +209,13 @@ typedef struct {
+   int32_t direction;
+ } FlutterSpiTextBox;
+ 
++typedef struct {
++  FlutterSpiRect grapheme_bounds;
++  size_t range_start;
++  size_t range_end;
++  bool is_ltr;
++} FlutterSpiGlyphInfo;
++
+ typedef struct {
+   size_t start_index;
+   size_t end_index;
+@@ -226,6 +297,32 @@ struct FlutterSpiTextApi {
+                                                  FlutterSpiLineMetrics* out,
+                                                  size_t capacity,
+                                                  size_t* count);
++  FlutterSpiResult (*paragraph_get_glyph_info_at)(
++      FlutterSpiParagraph* paragraph,
++      size_t utf16_offset,
++      FlutterSpiGlyphInfo* out,
++      bool* found);
++  FlutterSpiResult (*paragraph_get_closest_glyph_info)(
++      FlutterSpiParagraph* paragraph,
++      double dx,
++      double dy,
++      FlutterSpiGlyphInfo* out,
++      bool* found);
++  FlutterSpiResult (*paragraph_get_line_boundary)(FlutterSpiParagraph* paragraph,
++                                                  size_t utf16_offset,
++                                                  int64_t* start,
++                                                  int64_t* end);
++  FlutterSpiResult (*paragraph_get_line_metrics_at)(
++      FlutterSpiParagraph* paragraph,
++      int32_t line_number,
++      FlutterSpiLineMetrics* out,
++      bool* found);
++  FlutterSpiResult (*paragraph_get_line_count)(FlutterSpiParagraph* paragraph,
++                                               size_t* out);
++  FlutterSpiResult (*paragraph_get_line_number_at)(
++      FlutterSpiParagraph* paragraph,
++      size_t utf16_offset,
++      int32_t* out);
+   FlutterSpiResult (*paragraph_retain)(FlutterSpiParagraph* paragraph);
+   FlutterSpiResult (*paragraph_release)(FlutterSpiParagraph* paragraph);
+   FlutterSpiResult (*canvas_draw_paragraph)(FlutterSpiPictureRecorder* recorder,
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index f48343f4575..af80db727ff 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -93,7 +93,7 @@ TEST(SpiAbi, ImageEnumValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawUnmodified, 2);
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawExtendedRGBA128, 3);
+   EXPECT_EQ(kFlutterSpiImageByteFormatPNG, 4);
+-  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 17);
++  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 18);
+ }
+ 
+ TEST(SpiAbi, SemanticsLayoutIsFrozen) {
+@@ -800,7 +800,8 @@ TEST(SpiAbi, TextLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiTextStyle, feature_count, 160, 120);
+   EXPECT_SPI_OFFSET(FlutterSpiTextStyle, variations, 168, 124);
+   EXPECT_SPI_OFFSET(FlutterSpiTextStyle, variation_count, 176, 128);
+-  EXPECT_EQ(sizeof(FlutterSpiTextStyle), sizeof(void*) == 8 ? 184u : 132u);
++  EXPECT_SPI_OFFSET(FlutterSpiTextStyle, set_fields, 184, 132);
++  EXPECT_EQ(sizeof(FlutterSpiTextStyle), sizeof(void*) == 8 ? 192u : 136u);
+ 
+   EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, struct_size, 0, 0);
+   EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, text_align, 8, 4);
+@@ -821,8 +822,14 @@ TEST(SpiAbi, TextLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, strut_force_height, 84, 64);
+   EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, ellipsis, 88, 68);
+   EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, locale, 96, 72);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, set_fields, 104, 76);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, render_soft_hyphens, 108, 80);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, strut_set_fields, 112, 84);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, strut_font_weight, 116, 88);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, strut_font_style, 120, 92);
++  EXPECT_SPI_OFFSET(FlutterSpiParagraphStyle, strut_half_leading, 124, 96);
+   EXPECT_EQ(sizeof(FlutterSpiParagraphStyle),
+-            sizeof(void*) == 8 ? 104u : 76u);
++            sizeof(void*) == 8 ? 128u : 100u);
+ 
+   EXPECT_SPI_OFFSET(FlutterSpiParagraphMetrics, struct_size, 0, 0);
+   EXPECT_SPI_OFFSET(FlutterSpiParagraphMetrics, width, 8, 8);
+@@ -841,6 +848,12 @@ TEST(SpiAbi, TextLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiTextBox, direction, 16, 16);
+   EXPECT_EQ(sizeof(FlutterSpiTextBox), 20u);
+ 
++  EXPECT_SPI_OFFSET(FlutterSpiGlyphInfo, grapheme_bounds, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiGlyphInfo, range_start, 16, 16);
++  EXPECT_SPI_OFFSET(FlutterSpiGlyphInfo, range_end, 24, 20);
++  EXPECT_SPI_OFFSET(FlutterSpiGlyphInfo, is_ltr, 32, 24);
++  EXPECT_EQ(sizeof(FlutterSpiGlyphInfo), sizeof(void*) == 8 ? 40u : 28u);
++
+   EXPECT_SPI_OFFSET(FlutterSpiLineMetrics, start_index, 0, 0);
+   EXPECT_SPI_OFFSET(FlutterSpiLineMetrics, end_index, 8, 4);
+   EXPECT_SPI_OFFSET(FlutterSpiLineMetrics, end_excluding_whitespace, 16, 8);
+@@ -855,6 +868,41 @@ TEST(SpiAbi, TextLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiLineMetrics, baseline, 88, 72);
+   EXPECT_SPI_OFFSET(FlutterSpiLineMetrics, line_number, 96, 80);
+   EXPECT_EQ(sizeof(FlutterSpiLineMetrics), sizeof(void*) == 8 ? 104u : 88u);
++
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, font_load, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, paragraph_builder_create, 16, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, paragraph_builder_push_style, 24, 12);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, paragraph_builder_pop, 32, 16);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, paragraph_builder_add_text, 40, 20);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, paragraph_builder_add_placeholder, 48,
++                    24);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, paragraph_builder_build, 56, 28);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, paragraph_builder_release, 64, 32);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, paragraph_layout, 72, 36);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, paragraph_get_metrics, 80, 40);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, paragraph_get_rects_for_range, 88, 44);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi,
++                    paragraph_get_rects_for_placeholders,
++                    96,
++                    48);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, paragraph_get_glyph_position_at, 104,
++                    52);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, paragraph_get_word_boundary, 112, 56);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, paragraph_get_line_metrics, 120, 60);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, paragraph_get_glyph_info_at, 128, 64);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi,
++                    paragraph_get_closest_glyph_info,
++                    136,
++                    68);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, paragraph_get_line_boundary, 144, 72);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, paragraph_get_line_metrics_at, 152, 76);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, paragraph_get_line_count, 160, 80);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, paragraph_get_line_number_at, 168, 84);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, paragraph_retain, 176, 88);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, paragraph_release, 184, 92);
++  EXPECT_SPI_OFFSET(FlutterSpiTextApi, canvas_draw_paragraph, 192, 96);
++  EXPECT_EQ(sizeof(FlutterSpiTextApi), sizeof(void*) == 8 ? 200u : 100u);
+ }
+ 
+ TEST(SpiAbi, HeaderIsPureC) {
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index 4d609c9b1cf..c5cabf070aa 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -86,6 +86,12 @@ const FlutterSpiTextApi kTextApi = {
+     .paragraph_get_glyph_position_at = SpiParagraphGetGlyphPositionAt,
+     .paragraph_get_word_boundary = SpiParagraphGetWordBoundary,
+     .paragraph_get_line_metrics = SpiParagraphGetLineMetrics,
++    .paragraph_get_glyph_info_at = SpiParagraphGetGlyphInfoAt,
++    .paragraph_get_closest_glyph_info = SpiParagraphGetClosestGlyphInfo,
++    .paragraph_get_line_boundary = SpiParagraphGetLineBoundary,
++    .paragraph_get_line_metrics_at = SpiParagraphGetLineMetricsAt,
++    .paragraph_get_line_count = SpiParagraphGetLineCount,
++    .paragraph_get_line_number_at = SpiParagraphGetLineNumberAt,
+     .paragraph_retain = SpiParagraphRetain,
+     .paragraph_release = SpiParagraphRelease,
+     .canvas_draw_paragraph = CanvasDrawParagraph,
+diff --git a/engine/src/flutter/runtime_spi/text/spi_paragraph.cc b/engine/src/flutter/runtime_spi/text/spi_paragraph.cc
+index d76c648f36a..c37344cd052 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_paragraph.cc
++++ b/engine/src/flutter/runtime_spi/text/spi_paragraph.cc
+@@ -40,7 +40,7 @@ class SpiParagraphBuilder final {
+             ToTxtParagraphStyle(&style), fonts, impeller_enabled)) {}
+ 
+   FlutterSpiResult PushStyle(const FlutterSpiTextStyle& style) {
+-    builder_->PushStyle(ToTxtTextStyle(&style));
++    builder_->PushStyle(ToTxtTextStyle(&style, builder_->PeekStyle()));
+     return kFlutterSpiOk;
+   }
+ 
+@@ -416,6 +416,158 @@ FlutterSpiResult SpiParagraphGetLineMetrics(FlutterSpiParagraph* paragraph,
+                          capacity, count);
+ }
+ 
++FlutterSpiResult SpiParagraphGetGlyphInfoAt(FlutterSpiParagraph* paragraph,
++                                            size_t utf16_offset,
++                                            FlutterSpiGlyphInfo* out,
++                                            bool* found) {
++  const auto paragraph_value = FindParagraph(paragraph);
++  if (paragraph_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!paragraph_value->laid_out() || out == nullptr || found == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++
++  skia::textlayout::Paragraph::GlyphInfo glyph_info;
++  *found = paragraph_value->paragraph().GetGlyphInfoAt(utf16_offset,
++                                                        &glyph_info);
++  if (!*found) {
++    return kFlutterSpiOk;
++  }
++  *out = {
++      .grapheme_bounds = {.left = glyph_info.fGraphemeLayoutBounds.fLeft,
++                          .top = glyph_info.fGraphemeLayoutBounds.fTop,
++                          .right = glyph_info.fGraphemeLayoutBounds.fRight,
++                          .bottom = glyph_info.fGraphemeLayoutBounds.fBottom},
++      .range_start = glyph_info.fGraphemeClusterTextRange.start,
++      .range_end = glyph_info.fGraphemeClusterTextRange.end,
++      .is_ltr = glyph_info.fDirection ==
++                skia::textlayout::TextDirection::kLtr,
++  };
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiParagraphGetClosestGlyphInfo(FlutterSpiParagraph* paragraph,
++                                                 double dx,
++                                                 double dy,
++                                                 FlutterSpiGlyphInfo* out,
++                                                 bool* found) {
++  const auto paragraph_value = FindParagraph(paragraph);
++  if (paragraph_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!paragraph_value->laid_out() || !std::isfinite(dx) ||
++      !std::isfinite(dy) || out == nullptr || found == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++
++  skia::textlayout::Paragraph::GlyphInfo glyph_info;
++  *found = paragraph_value->paragraph().GetClosestGlyphInfoAtCoordinate(
++      dx, dy, &glyph_info);
++  if (!*found) {
++    return kFlutterSpiOk;
++  }
++  *out = {
++      .grapheme_bounds = {.left = glyph_info.fGraphemeLayoutBounds.fLeft,
++                          .top = glyph_info.fGraphemeLayoutBounds.fTop,
++                          .right = glyph_info.fGraphemeLayoutBounds.fRight,
++                          .bottom = glyph_info.fGraphemeLayoutBounds.fBottom},
++      .range_start = glyph_info.fGraphemeClusterTextRange.start,
++      .range_end = glyph_info.fGraphemeClusterTextRange.end,
++      .is_ltr = glyph_info.fDirection ==
++                skia::textlayout::TextDirection::kLtr,
++  };
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiParagraphGetLineBoundary(FlutterSpiParagraph* paragraph,
++                                             size_t utf16_offset,
++                                             int64_t* start,
++                                             int64_t* end) {
++  const auto paragraph_value = FindParagraph(paragraph);
++  if (paragraph_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!paragraph_value->laid_out() || start == nullptr || end == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++
++  *start = -1;
++  *end = -1;
++  for (const txt::LineMetrics& line :
++       paragraph_value->paragraph().GetLineMetrics()) {
++    if (utf16_offset >= line.start_index && utf16_offset <= line.end_index) {
++      *start = static_cast<int64_t>(line.start_index);
++      *end = static_cast<int64_t>(line.end_index);
++      break;
++    }
++  }
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiParagraphGetLineMetricsAt(FlutterSpiParagraph* paragraph,
++                                               int32_t line_number,
++                                               FlutterSpiLineMetrics* out,
++                                               bool* found) {
++  const auto paragraph_value = FindParagraph(paragraph);
++  if (paragraph_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!paragraph_value->laid_out() || line_number < 0 || out == nullptr ||
++      found == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++
++  skia::textlayout::LineMetrics line;
++  *found = paragraph_value->paragraph().GetLineMetricsAt(line_number, &line);
++  if (!*found) {
++    return kFlutterSpiOk;
++  }
++  *out = {
++      .start_index = line.fStartIndex,
++      .end_index = line.fEndIndex,
++      .end_excluding_whitespace = line.fEndExcludingWhitespaces,
++      .end_including_newline = line.fEndIncludingNewline,
++      .hard_break = line.fHardBreak,
++      .ascent = line.fAscent,
++      .descent = line.fDescent,
++      .unscaled_ascent = line.fUnscaledAscent,
++      .height = line.fHeight,
++      .width = line.fWidth,
++      .left = line.fLeft,
++      .baseline = line.fBaseline,
++      .line_number = line.fLineNumber,
++  };
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiParagraphGetLineCount(FlutterSpiParagraph* paragraph,
++                                          size_t* out) {
++  const auto paragraph_value = FindParagraph(paragraph);
++  if (paragraph_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!paragraph_value->laid_out() || out == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out = paragraph_value->paragraph().GetNumberOfLines();
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiParagraphGetLineNumberAt(FlutterSpiParagraph* paragraph,
++                                             size_t utf16_offset,
++                                             int32_t* out) {
++  const auto paragraph_value = FindParagraph(paragraph);
++  if (paragraph_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!paragraph_value->laid_out() || out == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out = paragraph_value->paragraph().GetLineNumberAt(utf16_offset);
++  return kFlutterSpiOk;
++}
++
+ FlutterSpiResult SpiParagraphRetain(FlutterSpiParagraph* paragraph) {
+   return Paragraphs().Retain(HandleValue(paragraph)) ? kFlutterSpiOk
+                                                       : kFlutterSpiInvalidHandle;
+diff --git a/engine/src/flutter/runtime_spi/text/spi_paragraph.h b/engine/src/flutter/runtime_spi/text/spi_paragraph.h
+index 8f59e9d976b..91becc7456b 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_paragraph.h
++++ b/engine/src/flutter/runtime_spi/text/spi_paragraph.h
+@@ -70,6 +70,28 @@ FlutterSpiResult SpiParagraphGetLineMetrics(FlutterSpiParagraph* paragraph,
+                                             FlutterSpiLineMetrics* out,
+                                             size_t capacity,
+                                             size_t* count);
++FlutterSpiResult SpiParagraphGetGlyphInfoAt(FlutterSpiParagraph* paragraph,
++                                            size_t utf16_offset,
++                                            FlutterSpiGlyphInfo* out,
++                                            bool* found);
++FlutterSpiResult SpiParagraphGetClosestGlyphInfo(FlutterSpiParagraph* paragraph,
++                                                 double dx,
++                                                 double dy,
++                                                 FlutterSpiGlyphInfo* out,
++                                                 bool* found);
++FlutterSpiResult SpiParagraphGetLineBoundary(FlutterSpiParagraph* paragraph,
++                                             size_t utf16_offset,
++                                             int64_t* start,
++                                             int64_t* end);
++FlutterSpiResult SpiParagraphGetLineMetricsAt(FlutterSpiParagraph* paragraph,
++                                               int32_t line_number,
++                                               FlutterSpiLineMetrics* out,
++                                               bool* found);
++FlutterSpiResult SpiParagraphGetLineCount(FlutterSpiParagraph* paragraph,
++                                          size_t* out);
++FlutterSpiResult SpiParagraphGetLineNumberAt(FlutterSpiParagraph* paragraph,
++                                             size_t utf16_offset,
++                                             int32_t* out);
+ FlutterSpiResult SpiParagraphRetain(FlutterSpiParagraph* paragraph);
+ FlutterSpiResult SpiParagraphRelease(FlutterSpiParagraph* paragraph);
+ FlutterSpiResult SpiParagraphPaint(FlutterSpiParagraph* paragraph,
+diff --git a/engine/src/flutter/runtime_spi/text/spi_paragraph_parity_unittests.cc b/engine/src/flutter/runtime_spi/text/spi_paragraph_parity_unittests.cc
+index 6e3329495c8..2120837d95d 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_paragraph_parity_unittests.cc
++++ b/engine/src/flutter/runtime_spi/text/spi_paragraph_parity_unittests.cc
+@@ -104,6 +104,22 @@ bool HasRenderedText(txt::Paragraph& paragraph) {
+          paragraph.GetNumberOfLines() > 0;
+ }
+ 
++void ExpectGlyphInfoEqual(const FlutterSpiGlyphInfo& actual,
++                          const skia::textlayout::Paragraph::GlyphInfo& expected) {
++  EXPECT_FLOAT_EQ(actual.grapheme_bounds.left,
++                  expected.fGraphemeLayoutBounds.fLeft);
++  EXPECT_FLOAT_EQ(actual.grapheme_bounds.top,
++                  expected.fGraphemeLayoutBounds.fTop);
++  EXPECT_FLOAT_EQ(actual.grapheme_bounds.right,
++                  expected.fGraphemeLayoutBounds.fRight);
++  EXPECT_FLOAT_EQ(actual.grapheme_bounds.bottom,
++                  expected.fGraphemeLayoutBounds.fBottom);
++  EXPECT_EQ(actual.range_start, expected.fGraphemeClusterTextRange.start);
++  EXPECT_EQ(actual.range_end, expected.fGraphemeClusterTextRange.end);
++  EXPECT_EQ(actual.is_ltr,
++            expected.fDirection == skia::textlayout::TextDirection::kLtr);
++}
++
+ void ExpectMetricsEqual(const FlutterSpiParagraphMetrics& actual,
+                         txt::Paragraph& expected) {
+   EXPECT_DOUBLE_EQ(actual.width, expected.GetMaxWidth());
+@@ -429,5 +445,146 @@ TEST_F(SpiParagraphTest, BuildConsumesBuilder) {
+   EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
+ }
+ 
++TEST_F(SpiParagraphTest, GlyphInfoAt) {
++  const auto style = ParagraphStyle();
++  auto* paragraph = BuildSpiParagraph(style, "Hello, SPI world");
++  auto expected = BuildTxtParagraph(style, "Hello, SPI world");
++  skia::textlayout::Paragraph::GlyphInfo expected_info = {};
++  FlutterSpiGlyphInfo actual_info = {};
++  bool actual_found = false;
++
++  ASSERT_TRUE(HasRenderedText(*expected));
++  ASSERT_TRUE(expected->GetGlyphInfoAt(1, &expected_info));
++  ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
++  ASSERT_EQ(SpiParagraphGetGlyphInfoAt(paragraph, 1, &actual_info,
++                                       &actual_found),
++            kFlutterSpiOk);
++  ASSERT_TRUE(actual_found);
++  ExpectGlyphInfoEqual(actual_info, expected_info);
++  EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
++}
++
++TEST_F(SpiParagraphTest, ClosestGlyphInfo) {
++  const auto style = ParagraphStyle();
++  auto* paragraph = BuildSpiParagraph(style, "Hello, SPI world");
++  auto expected = BuildTxtParagraph(style, "Hello, SPI world");
++  skia::textlayout::Paragraph::GlyphInfo expected_info = {};
++  FlutterSpiGlyphInfo actual_info = {};
++  bool actual_found = false;
++
++  ASSERT_TRUE(HasRenderedText(*expected));
++  ASSERT_TRUE(expected->GetClosestGlyphInfoAtCoordinate(26, 8, &expected_info));
++  ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
++  ASSERT_EQ(SpiParagraphGetClosestGlyphInfo(paragraph, 26, 8, &actual_info,
++                                             &actual_found),
++            kFlutterSpiOk);
++  ASSERT_TRUE(actual_found);
++  ExpectGlyphInfoEqual(actual_info, expected_info);
++  EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
++}
++
++TEST_F(SpiParagraphTest, LineBoundary) {
++  const auto style = ParagraphStyle();
++  auto* paragraph = BuildSpiParagraph(style, "Hello, SPI world");
++  auto expected = BuildTxtParagraph(style, "Hello, SPI world");
++  const auto& metrics = expected->GetLineMetrics();
++  int64_t actual_start = -1;
++  int64_t actual_end = -1;
++
++  ASSERT_TRUE(HasRenderedText(*expected));
++  ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
++  ASSERT_EQ(SpiParagraphGetLineBoundary(paragraph, 1, &actual_start,
++                                        &actual_end),
++            kFlutterSpiOk);
++  EXPECT_EQ(actual_start, static_cast<int64_t>(metrics[0].start_index));
++  EXPECT_EQ(actual_end, static_cast<int64_t>(metrics[0].end_index));
++  EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
++}
++
++TEST_F(SpiParagraphTest, LineBoundaryOutsideReturnsMinusOne) {
++  const auto style = ParagraphStyle();
++  auto* paragraph = BuildSpiParagraph(style, "Hello, SPI world");
++  int64_t actual_start = 0;
++  int64_t actual_end = 0;
++
++  ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
++  ASSERT_EQ(SpiParagraphGetLineBoundary(paragraph, 1000, &actual_start,
++                                        &actual_end),
++            kFlutterSpiOk);
++  EXPECT_EQ(actual_start, -1);
++  EXPECT_EQ(actual_end, -1);
++  EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
++}
++
++TEST_F(SpiParagraphTest, LineMetricsAt) {
++  const auto style = ParagraphStyle();
++  auto* paragraph = BuildSpiParagraph(style, "Hello, SPI world");
++  auto expected = BuildTxtParagraph(style, "Hello, SPI world");
++  skia::textlayout::LineMetrics expected_line = {};
++  FlutterSpiLineMetrics actual_line = {};
++  bool actual_found = false;
++
++  ASSERT_TRUE(HasRenderedText(*expected));
++  ASSERT_TRUE(expected->GetLineMetricsAt(0, &expected_line));
++  ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
++  ASSERT_EQ(SpiParagraphGetLineMetricsAt(paragraph, 0, &actual_line,
++                                         &actual_found),
++            kFlutterSpiOk);
++  ASSERT_TRUE(actual_found);
++  EXPECT_EQ(actual_line.start_index, expected_line.fStartIndex);
++  EXPECT_EQ(actual_line.end_index, expected_line.fEndIndex);
++  EXPECT_EQ(actual_line.hard_break, expected_line.fHardBreak);
++  EXPECT_DOUBLE_EQ(actual_line.ascent, expected_line.fAscent);
++  EXPECT_DOUBLE_EQ(actual_line.descent, expected_line.fDescent);
++  EXPECT_DOUBLE_EQ(actual_line.unscaled_ascent, expected_line.fUnscaledAscent);
++  EXPECT_DOUBLE_EQ(actual_line.height, expected_line.fHeight);
++  EXPECT_DOUBLE_EQ(actual_line.width, expected_line.fWidth);
++  EXPECT_DOUBLE_EQ(actual_line.left, expected_line.fLeft);
++  EXPECT_DOUBLE_EQ(actual_line.baseline, expected_line.fBaseline);
++  EXPECT_EQ(actual_line.line_number, expected_line.fLineNumber);
++  EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
++}
++
++TEST_F(SpiParagraphTest, LineMetricsAtMissingLine) {
++  const auto style = ParagraphStyle();
++  auto* paragraph = BuildSpiParagraph(style, "Hello, SPI world");
++  FlutterSpiLineMetrics actual_line = {};
++  bool actual_found = true;
++
++  ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
++  ASSERT_EQ(SpiParagraphGetLineMetricsAt(paragraph, 100, &actual_line,
++                                         &actual_found),
++            kFlutterSpiOk);
++  EXPECT_FALSE(actual_found);
++  EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
++}
++
++TEST_F(SpiParagraphTest, LineCount) {
++  const auto style = ParagraphStyle();
++  auto* paragraph = BuildSpiParagraph(style, "Hello, SPI world");
++  auto expected = BuildTxtParagraph(style, "Hello, SPI world");
++  size_t actual_count = 0;
++
++  ASSERT_TRUE(HasRenderedText(*expected));
++  ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
++  ASSERT_EQ(SpiParagraphGetLineCount(paragraph, &actual_count), kFlutterSpiOk);
++  EXPECT_EQ(actual_count, expected->GetNumberOfLines());
++  EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
++}
++
++TEST_F(SpiParagraphTest, LineNumberAt) {
++  const auto style = ParagraphStyle();
++  auto* paragraph = BuildSpiParagraph(style, "Hello, SPI world");
++  auto expected = BuildTxtParagraph(style, "Hello, SPI world");
++  int32_t actual_line = -1;
++
++  ASSERT_TRUE(HasRenderedText(*expected));
++  ASSERT_EQ(SpiParagraphLayout(paragraph, kLayoutWidth), kFlutterSpiOk);
++  ASSERT_EQ(SpiParagraphGetLineNumberAt(paragraph, 1, &actual_line),
++            kFlutterSpiOk);
++  EXPECT_EQ(actual_line, expected->GetLineNumberAt(1));
++  EXPECT_EQ(SpiParagraphRelease(paragraph), kFlutterSpiOk);
++}
++
+ }  // namespace
+ }  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/text/spi_text_style.cc b/engine/src/flutter/runtime_spi/text/spi_text_style.cc
+index 9234bbb5b83..ab4b274615f 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_text_style.cc
++++ b/engine/src/flutter/runtime_spi/text/spi_text_style.cc
+@@ -15,6 +15,48 @@
+ namespace flutter {
+ namespace {
+ 
++constexpr uint32_t kAllTextStyleFields =
++    kFlutterSpiTextStyleFieldLeadingDistribution |
++    kFlutterSpiTextStyleFieldColor | kFlutterSpiTextStyleFieldDecoration |
++    kFlutterSpiTextStyleFieldDecorationColor |
++    kFlutterSpiTextStyleFieldDecorationStyle |
++    kFlutterSpiTextStyleFieldFontWeight |
++    kFlutterSpiTextStyleFieldFontStyle |
++    kFlutterSpiTextStyleFieldTextBaseline |
++    kFlutterSpiTextStyleFieldDecorationThickness |
++    kFlutterSpiTextStyleFieldFontFamily |
++    kFlutterSpiTextStyleFieldFontSize |
++    kFlutterSpiTextStyleFieldLetterSpacing |
++    kFlutterSpiTextStyleFieldWordSpacing | kFlutterSpiTextStyleFieldHeight |
++    kFlutterSpiTextStyleFieldLocale | kFlutterSpiTextStyleFieldBackground |
++    kFlutterSpiTextStyleFieldForeground | kFlutterSpiTextStyleFieldShadows |
++    kFlutterSpiTextStyleFieldFontFeatures |
++    kFlutterSpiTextStyleFieldFontVariations;
++
++constexpr uint32_t kAllParagraphStyleFields =
++    kFlutterSpiParagraphStyleFieldTextAlign |
++    kFlutterSpiParagraphStyleFieldTextDirection |
++    kFlutterSpiParagraphStyleFieldFontWeight |
++    kFlutterSpiParagraphStyleFieldFontStyle |
++    kFlutterSpiParagraphStyleFieldMaxLines |
++    kFlutterSpiParagraphStyleFieldTextHeightBehavior |
++    kFlutterSpiParagraphStyleFieldFontFamily |
++    kFlutterSpiParagraphStyleFieldFontSize |
++    kFlutterSpiParagraphStyleFieldHeight |
++    kFlutterSpiParagraphStyleFieldStrutStyle |
++    kFlutterSpiParagraphStyleFieldEllipsis |
++    kFlutterSpiParagraphStyleFieldLocale |
++    kFlutterSpiParagraphStyleFieldRenderSoftHyphens;
++
++constexpr uint32_t kAllStrutStyleFields =
++    kFlutterSpiStrutStyleFieldFontWeight |
++    kFlutterSpiStrutStyleFieldFontStyle |
++    kFlutterSpiStrutStyleFieldFontFamily |
++    kFlutterSpiStrutStyleFieldLeadingDistribution |
++    kFlutterSpiStrutStyleFieldFontSize | kFlutterSpiStrutStyleFieldHeight |
++    kFlutterSpiStrutStyleFieldLeading |
++    kFlutterSpiStrutStyleFieldForceStrutHeight;
++
+ bool ContainsField(size_t struct_size, size_t offset, size_t field_size) {
+   return struct_size >= offset && struct_size - offset >= field_size;
+ }
+@@ -41,9 +83,6 @@ void AppendFamilies(const char* const* families,
+ void ReplaceFamilies(const char* const* families,
+                      size_t count,
+                      std::vector<std::string>* destination) {
+-  if (families == nullptr || count == 0) {
+-    return;
+-  }
+   destination->clear();
+   AppendFamilies(families, count, destination);
+ }
+@@ -88,105 +127,207 @@ void AppendShadows(const FlutterSpiTextShadow* shadows,
+ }
+ 
+ void SetHeight(float height, double* destination, bool* has_override) {
+-  if (height == 0.0f) {
++  *destination = height;
++  *has_override = height != 0.0f;
++}
++
++bool HasSetFields(const FlutterSpiTextStyle& style) {
++  return HasField(style, offsetof(FlutterSpiTextStyle, set_fields),
++                  sizeof(style.set_fields)) &&
++         (style.set_fields & kFlutterSpiStyleFieldsMasked) != 0;
++}
++
++bool HasSetFields(const FlutterSpiParagraphStyle& style) {
++  return HasField(style, offsetof(FlutterSpiParagraphStyle, set_fields),
++                  sizeof(style.set_fields)) &&
++         (style.set_fields & kFlutterSpiStyleFieldsMasked) != 0;
++}
++
++bool HasField(uint32_t fields, uint32_t field) {
++  return (fields & field) != 0;
++}
++
++void ApplyStrutStyle(const FlutterSpiParagraphStyle& style,
++                     bool has_set_fields,
++                     uint32_t paragraph_fields,
++                     txt::ParagraphStyle* result) {
++  if (!has_set_fields) {
+     return;
+   }
+-  *destination = height;
+-  *has_override = true;
++  if (!HasField(paragraph_fields,
++                kFlutterSpiParagraphStyleFieldStrutStyle)) {
++    return;
++  }
++
++  result->strut_enabled = true;
++  const bool has_strut_set_fields =
++      HasField(style, offsetof(FlutterSpiParagraphStyle, strut_set_fields),
++               sizeof(style.strut_set_fields)) &&
++      (style.strut_set_fields & kFlutterSpiStyleFieldsMasked) != 0;
++  const uint32_t strut_fields =
++      has_strut_set_fields ? style.strut_set_fields : kAllStrutStyleFields;
++
++  if (HasField(style, offsetof(FlutterSpiParagraphStyle, strut_font_weight),
++               sizeof(style.strut_font_weight))) {
++    result->strut_font_weight = style.strut_font_weight;
++  }
++  if (HasField(style, offsetof(FlutterSpiParagraphStyle, strut_font_style),
++               sizeof(style.strut_font_style))) {
++    result->strut_font_style =
++        static_cast<txt::FontStyle>(style.strut_font_style);
++  }
++  if (HasField(style, offsetof(FlutterSpiParagraphStyle, strut_half_leading),
++               sizeof(style.strut_half_leading))) {
++    result->strut_half_leading = style.strut_half_leading;
++  }
++  if (HasField(strut_fields, kFlutterSpiStrutStyleFieldFontFamily)) {
++    ReplaceFamilies(style.strut_font_families,
++                    style.strut_font_family_count,
++                    &result->strut_font_families);
++  } else {
++    result->strut_font_families = {""};
++  }
++  if (HasField(strut_fields, kFlutterSpiStrutStyleFieldFontSize)) {
++    result->strut_font_size = style.strut_font_size;
++  }
++  if (HasField(strut_fields, kFlutterSpiStrutStyleFieldHeight)) {
++    result->strut_height = style.strut_height;
++    result->strut_has_height_override = true;
++  }
++  if (HasField(strut_fields, kFlutterSpiStrutStyleFieldLeading)) {
++    result->strut_leading = style.strut_leading;
++  }
++  if (HasField(strut_fields, kFlutterSpiStrutStyleFieldForceStrutHeight)) {
++    result->force_strut_height = style.strut_force_height;
++  }
+ }
+ 
+ }  // namespace
+ 
+ txt::TextStyle ToTxtTextStyle(const FlutterSpiTextStyle* style) {
+-  txt::TextStyle result;
++  return ToTxtTextStyle(style, txt::TextStyle());
++}
++
++txt::TextStyle ToTxtTextStyle(const FlutterSpiTextStyle* style,
++                              const txt::TextStyle& inherited_style) {
++  txt::TextStyle result = inherited_style;
+   if (style == nullptr) {
+     return result;
+   }
+ 
+-  if (HasField(*style, offsetof(FlutterSpiTextStyle, color),
++  const bool has_set_fields = HasSetFields(*style);
++  const uint32_t fields = has_set_fields ? style->set_fields
++                                         : kAllTextStyleFields;
++
++  if (HasField(fields, kFlutterSpiTextStyleFieldColor) &&
++      HasField(*style, offsetof(FlutterSpiTextStyle, color),
+                sizeof(style->color))) {
+     result.color = ToDlColor(style->color).argb();
+   }
+-  if (HasField(*style, offsetof(FlutterSpiTextStyle, decoration),
++  if (HasField(fields, kFlutterSpiTextStyleFieldDecoration) &&
++      HasField(*style, offsetof(FlutterSpiTextStyle, decoration),
+                sizeof(style->decoration))) {
+     result.decoration = style->decoration;
+   }
+-  if (HasField(*style, offsetof(FlutterSpiTextStyle, decoration_color),
++  if (HasField(fields, kFlutterSpiTextStyleFieldDecorationColor) &&
++      HasField(*style, offsetof(FlutterSpiTextStyle, decoration_color),
+                sizeof(style->decoration_color))) {
+     result.decoration_color = ToDlColor(style->decoration_color).argb();
+   }
+-  if (HasField(*style, offsetof(FlutterSpiTextStyle, decoration_style),
++  if (HasField(fields, kFlutterSpiTextStyleFieldDecorationStyle) &&
++      HasField(*style, offsetof(FlutterSpiTextStyle, decoration_style),
+                sizeof(style->decoration_style))) {
+     result.decoration_style = static_cast<txt::TextDecorationStyle>(
+         style->decoration_style);
+   }
+-  if (HasField(*style, offsetof(FlutterSpiTextStyle, decoration_thickness),
++  if (HasField(fields, kFlutterSpiTextStyleFieldDecorationThickness) &&
++      HasField(*style, offsetof(FlutterSpiTextStyle, decoration_thickness),
+                sizeof(style->decoration_thickness))) {
+     result.decoration_thickness_multiplier = style->decoration_thickness;
+   }
+-  if (HasField(*style, offsetof(FlutterSpiTextStyle, font_weight),
++  if (HasField(fields, kFlutterSpiTextStyleFieldFontWeight) &&
++      HasField(*style, offsetof(FlutterSpiTextStyle, font_weight),
+                sizeof(style->font_weight))) {
+     result.font_weight = style->font_weight;
+   }
+-  if (HasField(*style, offsetof(FlutterSpiTextStyle, font_style),
++  if (HasField(fields, kFlutterSpiTextStyleFieldFontStyle) &&
++      HasField(*style, offsetof(FlutterSpiTextStyle, font_style),
+                sizeof(style->font_style))) {
+     result.font_style = static_cast<txt::FontStyle>(style->font_style);
+   }
+-  if (HasField(*style, offsetof(FlutterSpiTextStyle, text_baseline),
++  if (HasField(fields, kFlutterSpiTextStyleFieldTextBaseline) &&
++      HasField(*style, offsetof(FlutterSpiTextStyle, text_baseline),
+                sizeof(style->text_baseline))) {
+     result.text_baseline = static_cast<txt::TextBaseline>(style->text_baseline);
+   }
+-  if (HasField(*style, offsetof(FlutterSpiTextStyle, half_leading),
+-               sizeof(style->half_leading))) {
++  if (has_set_fields) {
++    result.half_leading =
++        HasField(fields, kFlutterSpiTextStyleFieldLeadingDistribution);
++  } else if (HasField(*style, offsetof(FlutterSpiTextStyle, half_leading),
++                      sizeof(style->half_leading))) {
+     result.half_leading = style->half_leading;
+   }
+-  if (HasField(*style, offsetof(FlutterSpiTextStyle, font_families),
++  if (HasField(fields, kFlutterSpiTextStyleFieldFontFamily) &&
++      HasField(*style, offsetof(FlutterSpiTextStyle, font_families),
+                sizeof(style->font_families))) {
+     ReplaceFamilies(style->font_families, style->font_family_count,
+                     &result.font_families);
+   }
+-  if (HasField(*style, offsetof(FlutterSpiTextStyle, font_size),
++  if (HasField(fields, kFlutterSpiTextStyleFieldFontSize) &&
++      HasField(*style, offsetof(FlutterSpiTextStyle, font_size),
+                sizeof(style->font_size))) {
+     result.font_size = style->font_size;
+   }
+-  if (HasField(*style, offsetof(FlutterSpiTextStyle, letter_spacing),
++  if (HasField(fields, kFlutterSpiTextStyleFieldLetterSpacing) &&
++      HasField(*style, offsetof(FlutterSpiTextStyle, letter_spacing),
+                sizeof(style->letter_spacing))) {
+     result.letter_spacing = style->letter_spacing;
+   }
+-  if (HasField(*style, offsetof(FlutterSpiTextStyle, word_spacing),
++  if (HasField(fields, kFlutterSpiTextStyleFieldWordSpacing) &&
++      HasField(*style, offsetof(FlutterSpiTextStyle, word_spacing),
+                sizeof(style->word_spacing))) {
+     result.word_spacing = style->word_spacing;
+   }
+-  if (HasField(*style, offsetof(FlutterSpiTextStyle, height),
++  if (HasField(fields, kFlutterSpiTextStyleFieldHeight) &&
++      HasField(*style, offsetof(FlutterSpiTextStyle, height),
+                sizeof(style->height))) {
+     SetHeight(style->height, &result.height, &result.has_height_override);
+   }
+-  if (HasField(*style, offsetof(FlutterSpiTextStyle, locale),
++  if (HasField(fields, kFlutterSpiTextStyleFieldLocale) &&
++      HasField(*style, offsetof(FlutterSpiTextStyle, locale),
+                sizeof(style->locale)) &&
+       style->locale != nullptr) {
+     result.locale = style->locale;
+   }
+-  if (HasField(*style, offsetof(FlutterSpiTextStyle, foreground),
++  if (HasField(fields, kFlutterSpiTextStyleFieldForeground) &&
++      HasField(*style, offsetof(FlutterSpiTextStyle, foreground),
+                sizeof(style->foreground)) &&
+       style->foreground != nullptr) {
+     result.foreground = ToDlPaint(*style->foreground);
+   }
+-  if (HasField(*style, offsetof(FlutterSpiTextStyle, background),
++  if (HasField(fields, kFlutterSpiTextStyleFieldBackground) &&
++      HasField(*style, offsetof(FlutterSpiTextStyle, background),
+                sizeof(style->background)) &&
+       style->background != nullptr) {
+     result.background = ToDlPaint(*style->background);
+   }
+-  if (HasField(*style, offsetof(FlutterSpiTextStyle, shadows),
++  if (HasField(fields, kFlutterSpiTextStyleFieldShadows) &&
++      HasField(*style, offsetof(FlutterSpiTextStyle, shadows),
+                sizeof(style->shadows))) {
++    result.text_shadows.clear();
+     AppendShadows(style->shadows, style->shadow_count, &result.text_shadows);
+   }
+-  if (HasField(*style, offsetof(FlutterSpiTextStyle, features),
++  if (HasField(fields, kFlutterSpiTextStyleFieldFontFeatures) &&
++      HasField(*style, offsetof(FlutterSpiTextStyle, features),
+                sizeof(style->features))) {
++    result.font_features = txt::FontFeatures();
+     AppendFeatures(style->features, style->feature_count,
+                    &result.font_features);
+   }
+-  if (HasField(*style, offsetof(FlutterSpiTextStyle, variations),
++  if (HasField(fields, kFlutterSpiTextStyleFieldFontVariations) &&
++      HasField(*style, offsetof(FlutterSpiTextStyle, variations),
+                sizeof(style->variations))) {
++    result.font_variations = txt::FontVariations();
+     AppendVariations(style->variations, style->variation_count,
+                      &result.font_variations);
+   }
+@@ -200,83 +341,111 @@ txt::ParagraphStyle ToTxtParagraphStyle(
+     return result;
+   }
+ 
+-  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, text_align),
++  const bool has_set_fields = HasSetFields(*style);
++  const uint32_t fields = has_set_fields ? style->set_fields
++                                         : kAllParagraphStyleFields;
++
++  if (HasField(fields, kFlutterSpiParagraphStyleFieldTextAlign) &&
++      HasField(*style, offsetof(FlutterSpiParagraphStyle, text_align),
+                sizeof(style->text_align))) {
+     result.text_align = static_cast<txt::TextAlign>(style->text_align);
+   }
+-  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, text_direction),
++  if (HasField(fields, kFlutterSpiParagraphStyleFieldTextDirection) &&
++      HasField(*style, offsetof(FlutterSpiParagraphStyle, text_direction),
+                sizeof(style->text_direction))) {
+     result.text_direction =
+         static_cast<txt::TextDirection>(style->text_direction);
+   }
+-  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, max_lines),
++  if (HasField(fields, kFlutterSpiParagraphStyleFieldMaxLines) &&
++      HasField(*style, offsetof(FlutterSpiParagraphStyle, max_lines),
+                sizeof(style->max_lines)) &&
+-      style->max_lines != 0) {
++      (has_set_fields || style->max_lines != 0)) {
+     result.max_lines = style->max_lines;
+   }
+-  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, font_family),
++  if (HasField(fields, kFlutterSpiParagraphStyleFieldFontFamily) &&
++      HasField(*style, offsetof(FlutterSpiParagraphStyle, font_family),
+                sizeof(style->font_family)) &&
+       style->font_family != nullptr) {
+     result.font_family = style->font_family;
+   }
+-  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, font_size),
++  if (HasField(fields, kFlutterSpiParagraphStyleFieldFontSize) &&
++      HasField(*style, offsetof(FlutterSpiParagraphStyle, font_size),
+                sizeof(style->font_size))) {
+     result.font_size = style->font_size;
+   }
+-  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, height),
++  if (HasField(fields, kFlutterSpiParagraphStyleFieldHeight) &&
++      HasField(*style, offsetof(FlutterSpiParagraphStyle, height),
+                sizeof(style->height))) {
+     SetHeight(style->height, &result.height, &result.has_height_override);
+   }
+-  if (HasField(*style,
++  if (HasField(fields, kFlutterSpiParagraphStyleFieldTextHeightBehavior) &&
++      HasField(*style,
+                offsetof(FlutterSpiParagraphStyle, text_height_behavior),
+                sizeof(style->text_height_behavior))) {
+     result.text_height_behavior = style->text_height_behavior;
+   }
+-  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, font_weight),
++  if (HasField(fields, kFlutterSpiParagraphStyleFieldFontWeight) &&
++      HasField(*style, offsetof(FlutterSpiParagraphStyle, font_weight),
+                sizeof(style->font_weight))) {
+     result.font_weight = style->font_weight;
+   }
+-  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, font_style),
++  if (HasField(fields, kFlutterSpiParagraphStyleFieldFontStyle) &&
++      HasField(*style, offsetof(FlutterSpiParagraphStyle, font_style),
+                sizeof(style->font_style))) {
+     result.font_style = static_cast<txt::FontStyle>(style->font_style);
+   }
+-  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, strut_enabled),
++  if (!has_set_fields &&
++      HasField(*style, offsetof(FlutterSpiParagraphStyle, strut_enabled),
+                sizeof(style->strut_enabled))) {
+     result.strut_enabled = style->strut_enabled;
+   }
+-  if (HasField(*style,
++  if (!has_set_fields &&
++      HasField(*style,
+                offsetof(FlutterSpiParagraphStyle, strut_font_families),
+                sizeof(style->strut_font_families))) {
+     ReplaceFamilies(style->strut_font_families,
+                     style->strut_font_family_count,
+                     &result.strut_font_families);
+   }
+-  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, strut_font_size),
++  if (!has_set_fields &&
++      HasField(*style, offsetof(FlutterSpiParagraphStyle, strut_font_size),
+                sizeof(style->strut_font_size))) {
+     result.strut_font_size = style->strut_font_size;
+   }
+-  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, strut_height),
++  if (!has_set_fields &&
++      HasField(*style, offsetof(FlutterSpiParagraphStyle, strut_height),
+                sizeof(style->strut_height))) {
+     result.strut_height = style->strut_height;
+   }
+-  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, strut_leading),
++  if (!has_set_fields &&
++      HasField(*style, offsetof(FlutterSpiParagraphStyle, strut_leading),
+                sizeof(style->strut_leading))) {
+     result.strut_leading = style->strut_leading;
+   }
+-  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, strut_force_height),
++  if (!has_set_fields &&
++      HasField(*style, offsetof(FlutterSpiParagraphStyle, strut_force_height),
+                sizeof(style->strut_force_height))) {
+     result.force_strut_height = style->strut_force_height;
+   }
+-  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, ellipsis),
++  if (HasField(fields, kFlutterSpiParagraphStyleFieldEllipsis) &&
++      HasField(*style, offsetof(FlutterSpiParagraphStyle, ellipsis),
+                sizeof(style->ellipsis)) &&
+       style->ellipsis != nullptr) {
+     result.ellipsis = fml::Utf8ToUtf16(style->ellipsis);
+   }
+-  if (HasField(*style, offsetof(FlutterSpiParagraphStyle, locale),
++  if (HasField(fields, kFlutterSpiParagraphStyleFieldLocale) &&
++      HasField(*style, offsetof(FlutterSpiParagraphStyle, locale),
+                sizeof(style->locale)) &&
+       style->locale != nullptr) {
+     result.locale = style->locale;
+   }
++  if (has_set_fields &&
++      HasField(fields, kFlutterSpiParagraphStyleFieldRenderSoftHyphens) &&
++      HasField(*style, offsetof(FlutterSpiParagraphStyle, render_soft_hyphens),
++               sizeof(style->render_soft_hyphens))) {
++    result.render_soft_hyphens = style->render_soft_hyphens;
++  }
++  ApplyStrutStyle(*style, has_set_fields, fields, &result);
+   return result;
+ }
+ 
+diff --git a/engine/src/flutter/runtime_spi/text/spi_text_style.h b/engine/src/flutter/runtime_spi/text/spi_text_style.h
+index 3136c69325f..30c9c1ef4c0 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_text_style.h
++++ b/engine/src/flutter/runtime_spi/text/spi_text_style.h
+@@ -12,6 +12,8 @@
+ namespace flutter {
+ 
+ txt::TextStyle ToTxtTextStyle(const FlutterSpiTextStyle* style);
++txt::TextStyle ToTxtTextStyle(const FlutterSpiTextStyle* style,
++                              const txt::TextStyle& inherited_style);
+ txt::ParagraphStyle ToTxtParagraphStyle(
+     const FlutterSpiParagraphStyle* style);
+ 
+diff --git a/engine/src/flutter/runtime_spi/text/spi_text_style_unittests.cc b/engine/src/flutter/runtime_spi/text/spi_text_style_unittests.cc
+index 96e533a2fdd..9442d588438 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_text_style_unittests.cc
++++ b/engine/src/flutter/runtime_spi/text/spi_text_style_unittests.cc
+@@ -200,5 +200,144 @@ TEST(SpiTextStyle, OlderParagraphStructUsesTxtDefaults) {
+   EXPECT_EQ(result.ellipsis, defaults.ellipsis);
+ }
+ 
++TEST(SpiTextStyle, LeadingDistributionComesFromChildMask) {
++  const FlutterSpiTextStyle input = {
++      .struct_size = sizeof(FlutterSpiTextStyle),
++      .half_leading = true,
++      .set_fields = kFlutterSpiStyleFieldsMasked |
++                    kFlutterSpiTextStyleFieldLeadingDistribution,
++  };
++
++  const txt::TextStyle result = ToTxtTextStyle(&input);
++
++  EXPECT_TRUE(result.half_leading);
++}
++
++TEST(SpiTextStyle, HeightNoneClearsOverride) {
++  const FlutterSpiTextStyle input = {
++      .struct_size = sizeof(FlutterSpiTextStyle),
++      .height = 0.0f,
++      .set_fields = kFlutterSpiStyleFieldsMasked |
++                    kFlutterSpiTextStyleFieldHeight,
++  };
++
++  const txt::TextStyle result = ToTxtTextStyle(&input);
++
++  EXPECT_FALSE(result.has_height_override);
++}
++
++TEST(SpiTextStyle, ParagraphSetFieldsMatchDartDecoding) {
++  const FlutterSpiParagraphStyle input = {
++      .struct_size = sizeof(FlutterSpiParagraphStyle),
++      .text_align = kFlutterSpiTextAlignJustify,
++      .text_direction = kFlutterSpiTextDirectionLtr,
++      .max_lines = 3,
++      .font_family = "Roboto",
++      .font_size = 20.0f,
++      .height = 1.5f,
++      .text_height_behavior = kFlutterSpiTextHeightBehaviorDisableLastDescent,
++      .font_weight = 600,
++      .font_style = kFlutterSpiFontStyleItalic,
++      .strut_enabled = true,
++      .strut_font_size = 18.0f,
++      .strut_height = 1.25f,
++      .strut_leading = 0.5f,
++      .strut_force_height = true,
++      .ellipsis = "...",
++      .locale = "en-US",
++      .set_fields = kFlutterSpiStyleFieldsMasked |
++                    kFlutterSpiParagraphStyleFieldTextAlign |
++                    kFlutterSpiParagraphStyleFieldTextDirection |
++                    kFlutterSpiParagraphStyleFieldFontWeight |
++                    kFlutterSpiParagraphStyleFieldFontStyle |
++                    kFlutterSpiParagraphStyleFieldMaxLines |
++                    kFlutterSpiParagraphStyleFieldTextHeightBehavior |
++                    kFlutterSpiParagraphStyleFieldFontFamily |
++                    kFlutterSpiParagraphStyleFieldFontSize |
++                    kFlutterSpiParagraphStyleFieldHeight |
++                    kFlutterSpiParagraphStyleFieldStrutStyle |
++                    kFlutterSpiParagraphStyleFieldEllipsis |
++                    kFlutterSpiParagraphStyleFieldLocale,
++      .render_soft_hyphens = true,
++      .strut_set_fields = kFlutterSpiStyleFieldsMasked |
++                          kFlutterSpiStrutStyleFieldFontSize |
++                          kFlutterSpiStrutStyleFieldHeight |
++                          kFlutterSpiStrutStyleFieldLeading |
++                          kFlutterSpiStrutStyleFieldForceStrutHeight,
++      .strut_font_weight = 500,
++      .strut_font_style = kFlutterSpiFontStyleNormal,
++      .strut_half_leading = true,
++  };
++
++  const txt::ParagraphStyle result = ToTxtParagraphStyle(&input);
++
++  EXPECT_EQ(result.text_align, txt::TextAlign::justify);
++  EXPECT_EQ(result.text_direction, txt::TextDirection::ltr);
++  EXPECT_EQ(result.max_lines, 3u);
++  EXPECT_EQ(result.font_family, "Roboto");
++  EXPECT_DOUBLE_EQ(result.font_size, 20.0);
++  EXPECT_DOUBLE_EQ(result.height, 1.5);
++  EXPECT_TRUE(result.has_height_override);
++  EXPECT_EQ(result.text_height_behavior,
++            txt::TextHeightBehavior::kDisableLastDescent);
++  EXPECT_EQ(result.font_weight, 600);
++  EXPECT_EQ(result.font_style, txt::FontStyle::italic);
++  EXPECT_TRUE(result.strut_enabled);
++  EXPECT_EQ(result.strut_font_size, 18.0);
++  EXPECT_DOUBLE_EQ(result.strut_height, 1.25);
++  EXPECT_DOUBLE_EQ(result.strut_leading, 0.5);
++  EXPECT_TRUE(result.force_strut_height);
++  EXPECT_EQ(result.ellipsis, u"...");
++  EXPECT_EQ(result.locale, "en-US");
++  EXPECT_TRUE(result.render_soft_hyphens);
++  EXPECT_EQ(result.strut_font_weight, 500);
++  EXPECT_EQ(result.strut_font_style, txt::FontStyle::normal);
++  EXPECT_TRUE(result.strut_half_leading);
++}
++
++TEST(SpiTextStyle, StrutSetFieldsMatchDecodeStrut) {
++  const FlutterSpiParagraphStyle input = {
++      .struct_size = sizeof(FlutterSpiParagraphStyle),
++      .strut_enabled = true,
++      .strut_font_size = 18.0f,
++      .strut_height = 1.25f,
++      .strut_leading = 0.5f,
++      .strut_force_height = true,
++      .set_fields = kFlutterSpiStyleFieldsMasked |
++                    kFlutterSpiParagraphStyleFieldStrutStyle,
++      .strut_set_fields = kFlutterSpiStyleFieldsMasked |
++                          kFlutterSpiStrutStyleFieldFontSize |
++                          kFlutterSpiStrutStyleFieldHeight |
++                          kFlutterSpiStrutStyleFieldLeading |
++                          kFlutterSpiStrutStyleFieldForceStrutHeight,
++  };
++
++  const txt::ParagraphStyle result = ToTxtParagraphStyle(&input);
++
++  EXPECT_TRUE(result.strut_enabled);
++  EXPECT_DOUBLE_EQ(result.strut_font_size, 18.0);
++  EXPECT_DOUBLE_EQ(result.strut_height, 1.25);
++  EXPECT_DOUBLE_EQ(result.strut_leading, 0.5);
++  EXPECT_TRUE(result.force_strut_height);
++}
++
++TEST(SpiTextStyle, StructWithoutSetFieldsKeepsAllFields) {
++  const char* families[] = {"Roboto"};
++  const FlutterSpiTextStyle input = {
++      .struct_size = sizeof(FlutterSpiTextStyle),
++      .font_families = families,
++      .font_family_count = 1,
++      .font_size = 22.0f,
++      .height = 1.75f,
++  };
++
++  const txt::TextStyle result = ToTxtTextStyle(&input);
++
++  EXPECT_EQ(result.font_families, (std::vector<std::string>{"Roboto"}));
++  EXPECT_DOUBLE_EQ(result.font_size, 22.0);
++  EXPECT_DOUBLE_EQ(result.height, 1.75);
++  EXPECT_TRUE(result.has_height_override);
++}
++
+ }  // namespace
+ }  // namespace flutter::testing

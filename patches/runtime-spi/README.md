@@ -6,6 +6,13 @@ runtime. Cada patch exportado registra uma mudança isolada do branch
 
 A série `runtime-spi` só modifica o repositório do Flutter.
 
+Na S5.5 (2026-10-29) a série foi reorganizada: as correções, os testes
+vermelhos, os ajustes de estilo e as otimizações foram juntados ao commit de
+origem, mantendo a ordem das fases (270 → 153 patches). A árvore final é
+idêntica à anterior. A série antiga está no worktree do engine no branch
+`backup/runtime-spi-pre-rewrite` e na tag
+`backup-runtime-spi-pre-rewrite-2026-10-29`.
+
 | Patch | Por quê | Plataformas |
 |---|---|---|
 | `0001-build-engine-add-the-no-dart-dependency-checker.patch` | Adicionar o alvo GN e o checker antes de mover as fontes de `lib/ui`. | |
@@ -13,270 +20,154 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0003-feat-engine-route-fml-tracing-through-a-pluggable-timeline-backend.patch` | Encaminhar o tracing de FML por um backend de timeline substituível. | |
 | `0004-feat-engine-drive-the-runtime-through-a-runtimebackend-interface.patch` | Conduzir o runtime por uma interface `RuntimeBackend`. | |
 | `0005-feat-engine-create-the-shell-runtime-through-a-backend-factory.patch` | Criar o runtime do shell por uma fábrica de backends. | |
-| `0006-fix-engine-make-the-runtime-spi-seams-compile.patch` | Restaurar includes e declarações removidos pela divisão do seam. | |
-| `0007-refactor-engine-keep-dart-types-out-of-the-runtime-backend-seam.patch` | Consolidar as correções da revisão S1 para manter o seam sem tipos Dart. | |
-| `0008-feat-engine-add-the-versioned-runtime-spi-c-header.patch` | Adicionar o header C11 versionado do Runtime SPI. | |
-| `0009-test-engine-add-a-pure-c-runtime-for-spi-conformance.patch` | Adicionar um runtime de teste em C puro para a conformidade da ABI. | |
-| `0010-feat-engine-run-spi-runtimes-behind-the-runtimebackend-seam.patch` | Executar runtimes SPI atrás do seam `RuntimeBackend`. | |
-| `0011-test-engine-add-the-runtime-spi-conformance-suite.patch` | Adicionar a suíte de conformidade do Runtime SPI. | |
-| `0012-fix-engine-build-the-runtime-spi-tests-only-with-unit-tests-enabled.patch` | Fazer os testes do Runtime SPI dependerem da configuração de testes. | |
-| `0013-fix-engine-freeze-the-32-bit-runtime-spi-layout.patch` | Congelar o layout da ABI para ponteiros de 32 bits e campos de 64 bits. | |
-| `0014-feat-engine-add-the-runtime-spi-scene-header.patch` | Adicionar os tipos C11 e a tabela de funções da API de cena, sem habilitá-la no engine S2. | |
-| `0015-feat-engine-add-the-spi-handle-table.patch` | Implementar handles opacos por engine com retenção, liberação e ids que não são reutilizados. | |
-| `0016-feat-engine-add-spi-paths-and-paints.patch` | Expor paths, geometria e paints básicos pela ABI de cena. | |
-| `0017-feat-engine-add-the-spi-picture-recorder-and-canvas.patch` | Expor recorder, canvas, pictures e operações de desenho do `DisplayListBuilder`. | |
-| `0018-feat-flow-expose-layer-properties-for-scene-tracing.patch` | Expor ao traço as propriedades necessárias das camadas de composição. | |
-| `0019-feat-engine-add-the-spi-scene-builder-and-scene-trace.patch` | Montar cenas com transformações, clips, offsets, opacity e pictures, e gerar o traço canônico. | |
-| `0020-test-engine-exercise-the-spi-scene-api-end-to-end.patch` | Validar a API de cena ponta a ponta e comparar o custo da ABI com o builder direto. | |
-| `0021-feat-engine-add-the-runtime-spi-text-header.patch` | Adicionar a ABI C11 para estilos de texto, fontes, parágrafos, métricas e desenho. | |
-| `0022-feat-engine-add-spi-text-styles-and-font-loading.patch` | Converter estilos para `txt` e carregar fontes dinâmicas pela API do Runtime SPI. | |
-| `0023-feat-engine-add-spi-paragraphs.patch` | Montar, fazer layout e consultar parágrafos com paridade ao `txt` direto. | |
-| `0024-feat-engine-draw-spi-paragraphs-and-exercise-text-end-to-end.patch` | Desenhar parágrafos pela cena e validar texto ponta a ponta pela suíte de conformidade. | |
-| `0025-refactor-engine-separate-image-descriptor-data-from-its-dart-wrapper.patch` | Separar os dados de `ImageDescriptor` do wrapper Dart para permitir a decodificação sem Dart. | |
-| `0026-feat-engine-add-the-runtime-spi-image-header.patch` | Adicionar a ABI C11 0.4 para imagens, pixels, opções de decodificação e transformações. | |
-| `0027-feat-engine-draw-images-through-the-runtime-spi.patch` | Expor handles de imagem e operações de desenho de imagens pela API de cena. | |
-| `0028-feat-engine-decode-images-through-the-runtime-spi.patch` | Decodificar imagens codificadas e pixels crus com callbacks assíncronos no UI runner. | |
-| `0029-feat-engine-decode-spi-images-on-core-workers-and-test-them-end-to-end.patch` | Fornecer workers concorrentes ao core e validar a decodificação de imagens ponta a ponta. | |
-| `0030-refactor-engine-separate-picture-snapshots-from-their-dart-wrappers.patch` | Separar a rasterização de pictures e cenas dos wrappers Dart. | |
-| `0031-refactor-engine-separate-image-readback-from-its-dart-wrapper.patch` | Separar a conversão para raster e a codificação de imagens do wrapper Dart. | |
-| `0032-refactor-engine-separate-animated-image-frames-from-their-dart-codec.patch` | Separar a decodificação e o avanço de quadros animados do codec Dart. | |
-| `0033-feat-engine-turn-spi-pictures-and-scenes-into-images.patch` | Expor snapshots assíncronos e síncronos de pictures e cenas pela ABI 0.5. | |
-| `0034-feat-engine-read-spi-image-pixels.patch` | Expor leitura de pixels e codificação PNG pela ABI do Runtime SPI. | |
-| `0035-test-engine-cover-spi-image-codecs.patch` | Cobrir codecs estáticos e animados pela suíte do Runtime SPI. | |
-| `0036-fix-engine-include-spi-factory-in-codec-tests.patch` | Corrigir o include da fábrica usado pelos testes de codec. | |
-| `0037-fix-engine-guard-unwired-codec-test-callbacks.patch` | Evitar callbacks de teste de codec quando a costura ainda não está ligada. | |
-| `0038-feat-engine-decode-spi-image-codecs-frame-by-frame.patch` | Expor criação, informações e leitura de quadros de codecs pela ABI. | |
-| `0039-fix-engine-preserve-infinite-spi-codec-repetition.patch` | Preservar a repetição infinita dos codecs animados no Runtime SPI. | |
-| `0040-test-engine-cover-spi-image-output-conformance.patch` | Cobrir a saída de imagens na suíte de conformidade do Runtime SPI. | |
-| `0041-test-engine-exercise-spi-image-output-end-to-end.patch` | Exercitar snapshots, leitura de pixels e desenho de imagens ponta a ponta. | |
-| `0042-feat-engine-add-the-runtime-spi-paint-effects-header.patch` | Adicionar a ABI 0.6 para shaders, filtros, máscara de blur e vertices. | |
-| `0043-feat-engine-build-spi-shaders-and-filters.patch` | Construir shaders, filtros de cor e filtros de imagem Dart-free com handles imutáveis. | |
-| `0044-feat-engine-paint-with-spi-shaders-filters-and-mask-blur.patch` | Aplicar efeitos da ABI ao paint e preservar a paridade com `dart:ui`. | |
-| `0045-feat-engine-draw-spi-vertices.patch` | Expor a criação e o desenho de vertices pela API de cena. | |
-| `0046-test-engine-exercise-spi-paint-effects-end-to-end.patch` | Exercitar efeitos de pintura e vertices pela suíte de conformidade ponta a ponta. | |
-| `0047-fix-engine-freeze-the-32-bit-size-of-the-spi-engine-api-at-abi-0-6.patch` | Congelar o tamanho correto da tabela ABI em 32 bits depois da inclusão de `paint_effects`. | |
-| `0048-feat-engine-add-the-runtime-spi-scene-layers-to-the-abi.patch` | Adicionar a ABI 0.7 para as camadas restantes do scene builder. | |
-| `0049-feat-engine-resolve-dynamic-spi-blur-tile-modes-like-dart-ui.patch` | Resolver tile modes dinâmicos de blur como o `dart:ui`, incluindo bounds. | |
-| `0050-feat-engine-push-spi-filter-mask-and-superellipse-layers.patch` | Expor camadas de filtro, máscara e clip de superelipse pela API de cena. | |
-| `0051-feat-engine-add-spi-texture-platform-view-and-overlay-layers.patch` | Expor camadas de textura, platform view e performance overlay pela API de cena. | |
-| `0052-feat-engine-retain-spi-engine-layers-across-frames.patch` | Reter camadas do engine entre quadros e reutilizá-las no scene builder. | |
-| `0053-test-engine-exercise-spi-scene-layers-end-to-end.patch` | Exercitar as camadas do scene builder pela suíte de conformidade ponta a ponta. | |
-| `0054-refactor-engine-separate-runtime-effect-loading-from-the-dart-fragment-program.patch` | Separar o carregamento de runtime effects do programa de fragmento Dart para permitir a reutilização sem Dart. | |
-| `0055-feat-engine-add-the-runtime-spi-fragment-program-header.patch` | Adicionar a ABI C11 0.8 para fragment programs, uniforms e samplers. | |
-| `0056-feat-engine-load-spi-fragment-programs-and-shaders.patch` | Carregar runtime stages de assets ou bytes e construir shaders e image filters com paridade ao `dart:ui`. | |
-| `0057-test-engine-exercise-spi-fragment-programs-end-to-end.patch` | Exercitar fragment programs, uniforms, samplers, shaders e image filters pela suíte de conformidade ponta a ponta. | |
-| `0058-feat-engine-add-the-runtime-spi-semantics-header.patch` | Adicionar a ABI C11 0.9 para nós de semântica, flags, textos, transformações, filhos e ações customizadas. | |
-| `0059-feat-engine-build-spi-semantics-updates.patch` | Converter nós e ações customizadas pela ABI com paridade ao `SemanticsUpdateBuilder` do `dart:ui`. | |
-| `0060-feat-engine-publish-spi-semantics-updates.patch` | Publicar atualizações de semântica no engine pela tabela do Runtime SPI e pela capacidade da ABI. | |
-| `0061-feat-engine-add-the-runtime-spi-extensions-header.patch` | Adicionar a ABI C11 0.10 para as extensões opcionais do runtime. | |
-| `0062-refactor-engine-call-dart-only-engine-features-through-the-spi-extensions-table.patch` | Chamar pelo SPI as funções do engine que só existem com Dart, preservando o core sem Dart. | |
-| `0063-test-engine-exercise-the-spi-runtime-extensions-end-to-end.patch` | Exercitar as extensões do runtime pela suíte de conformidade ponta a ponta. | |
-| `0064-feat-engine-add-service-handlers-to-the-runtime-spi-extensions.patch` | Adicionar handlers do service protocol à ABI C11 0.11 das extensões do runtime. | |
-| `0065-refactor-engine-expose-the-shell-service-protocol-handlers-as-a-c-handler.patch` | Expor os handlers do service protocol do Shell no core, sem depender da VM do Dart. | |
-| `0066-feat-engine-serve-the-core-service-handlers-through-the-dart-vm-service.patch` | Servir os handlers do core pelo transporte do VM service do Dart. | |
-| `0067-refactor-engine-move-the-remaining-dart-code-out-of-the-shell.patch` | Mover os pontos restantes de Dart para fora do Shell comum. | |
-| `0068-feat-engine-complete-the-runtime-spi-contract-in-both-directions.patch` | Completar a ABI C11 0.12 com o contrato entre engine e runtime nos dois sentidos. | |
-| `0069-feat-engine-serve-the-full-runtime-contract-from-the-spi-backend.patch` | Servir o contrato completo pelo backend do Runtime SPI e pelo `RuntimeDelegate`. | |
-| `0070-test-engine-exercise-the-full-runtime-contract-end-to-end.patch` | Exercitar o contrato completo do Runtime SPI ponta a ponta. | |
-| `0071-feat-engine-add-warm-up-frames-opaque-launch-and-internal-bridges-to-the-spi.patch` | Adicionar warm-up frames, lançamento opaco do isolate e pontes internas à ABI 0.13. | |
-| `0072-feat-engine-run-the-dart-runtime-behind-the-spi-table.patch` | Executar o runtime Dart atrás da tabela do Runtime SPI. | |
-| `0073-refactor-engine-drive-dart-apps-through-the-spi-runtime-backend.patch` | Conduzir os apps Dart pelo backend de runtime do SPI. | |
-| `0074-feat-engine-report-view-results-and-running-state-through-the-spi-table.patch` | Reportar resultados de view e o estado de execução do runtime pela tabela do SPI. | |
-| `0075-fix-engine-give-the-dart-runtime-the-shell-s-platform-message-handler.patch` | Fornecer ao runtime Dart o `PlatformMessageHandler` do Shell. | |
-| `0076-fix-engine-carry-the-full-view-metrics-and-consume-submitted-scenes-through-the-spi.patch` | Transportar as métricas completas de view e consumir cenas submetidas pelo SPI. | |
-| `0077-test-engine-add-a-realistic-dart-ui-frame-benchmark.patch` | Adicionar o benchmark de quadro realista do `dart:ui` para o portão da S4d-1. | |
-| `0078-feat-engine-add-rsuperellipse-and-canvas-queries-to-the-spi-scene-api.patch` | Adicionar superelipses e consultas de transformação e clips à API de cena. | |
-| `0079-feat-engine-bridge-the-remaining-dart-ui-painting-objects-to-spi-handles.patch` | Criar pontes temporárias e handles SPI para os objetos restantes de pintura do `dart:ui`. | |
-| `0080-refactor-engine-record-dart-ui-canvas-calls-through-the-spi-scene-api.patch` | Gravar as chamadas de `Canvas`, `PictureRecorder` e `Picture` pela API de cena. | |
-| `0081-test-engine-cover-every-dart-ui-canvas-op-through-the-spi-recorder.patch` | Cobrir as operações de `Canvas` pela gravação do SPI. | |
-| `0082-test-engine-cover-generation-aware-spi-handles.patch` | Cobrir handles SPI com slot e geração. | |
-| `0083-perf-engine-look-up-spi-handles-by-slot-and-generation.patch` | Remover hash e cópia de `shared_ptr` do lookup quente de handles. | |
-| `0084-test-engine-cover-converted-paint-cache-invalidation.patch` | Cobrir a invalidação do cache de paint convertido. | |
-| `0085-perf-engine-reuse-the-last-converted-paint-per-recorder.patch` | Reutilizar o último paint convertido por recorder quando os bytes e handles forem válidos. | |
-| `0086-test-engine-observe-converted-paint-changes-on-cache-misses.patch` | Verificar alterações observáveis do paint nos misses do cache. | |
-| `0087-perf-engine-pass-dart-ui-paint-data-as-scalar-ffi-arguments.patch` | Passar os dados do paint como argumentos escalares FFI, sem natives leaf. | |
-| `0088-test-engine-add-dart-ui-path-construction-benchmark.patch` | Estabelecer o benchmark de construção de paths do `dart:ui` para o portão da S4d-2. | |
-| `0089-test-engine-add-s4d-2-path-spi-parity-red-tests.patch` | Fixar os testes RED de paridade da superfície de `Path` da ABI 0.16. | |
-| `0090-feat-engine-implement-s4d-2-path-spi-operations.patch` | Implementar a superfície de paths da ABI 0.16 sobre `SkPath`. | |
-| `0091-fix-engine-preserve-existing-spi-path-builders.patch` | Preservar os métodos existentes de construção de paths no SPI. | |
-| `0092-fix-engine-match-vendored-path-apis.patch` | Usar os símbolos exatos de Skia e DisplayList do checkout fixado. | |
-| `0093-test-engine-add-s4d-2-path-measure-spi-parity-red-tests.patch` | Fixar os testes RED de paridade de `PathMeasure` da ABI 0.16. | |
-| `0094-feat-engine-implement-s4d-2-path-measure-spi.patch` | Expor a iteração de contornos e as operações derivadas de `PathMeasure` pela API de cena. | |
-| `0095-fix-engine-include-the-path-type-in-measure-tests.patch` | Incluir a definição completa de `DlPath` no helper de paridade de medidas. | |
-| `0096-feat-engine-move-dart-ui-paths-to-runtime-spi.patch` | Fazer `CanvasPath` e `CanvasPathMeasure` possuírem handles da API de cena. | |
-| `0097-perf-engine-mutate-spi-paths-through-a-path-builder.patch` | Evitar reconstruir um `SkPathBuilder` completo a cada mutação de path. | |
-| `0098-test-engine-add-dart-ui-scene-build-benchmark.patch` | Estabelecer o benchmark de construção de cenas retidas do `dart:ui` para o portão da S4e. | |
-| `0099-test-engine-add-retained-scene-root-parity-tests.patch` | Fixar os testes RED de raiz retida reutilizável, ciclo de vida do builder e argumentos inválidos. | |
-| `0100-feat-engine-build-retained-scene-roots-through-the-spi.patch` | Acrescentar a ABI 0.17 para construir raízes retidas e criar cenas dimensionadas reutilizáveis. | |
-| `0101-fix-engine-avoid-rtti-in-retained-scene-root-creation.patch` | Manter a criação de raízes retidas compatível com as flags de build e nomear a ponte do SPI. | |
-| `0102-test-engine-expect-the-retained-root-nested-in-the-new-scene.patch` | Ajustar o teste ao container novo que envolve a raiz retida. | |
-| `0103-feat-engine-render-dart-ui-scenes-through-runtime-spi.patch` | Renderizar cenas do `dart:ui` por handles retidos do Runtime SPI. | |
-| `0104-fix-engine-finish-the-frame-when-a-view-renders-an-empty-scene.patch` | Preservar a conclusão do quadro sem submeter cenas SPI de tamanho zero. | |
-| `0105-test-engine-skip-empty-frames-before-creating-spi-scenes.patch` | Alinhar o helper de teste do Shell ao descarte de quadros vazios do Engine. | |
-| `0106-fix-engine-accept-null-filters-in-spi-filter-layers.patch` | Preservar camadas de passagem quando `dart:ui` fornece um filtro nulo. | |
-| `0107-refactor-engine-share-the-retained-layer-step-in-the-scene-builder.patch` | Manter cada push do `SceneBuilder` balanceado por um caminho único de retenção com erro explícito. | |
-| `0108-fix-engine-preserve-the-scene-builder-test-bridge.patch` | Manter os testes C++ do compositor compilando enquanto o SPI possui as camadas. | |
-| `0109-perf-engine-track-only-retained-layers-in-spi-scene-builders.patch` | Evitar hash e alocação para cada layer empurrado quando só os retidos exigem detecção de duplicata. | |
-| `0110-perf-engine-store-engine-layers-directly-in-the-handle-table.patch` | Evitar a alocação de um wrapper para cada handle de layer retido. | |
-| `0111-perf-engine-look-up-spi-scene-builders-without-refcounting.patch` | Evitar copiar o `shared_ptr` do builder em cada chamada da API de cena. | |
-| `0112-perf-engine-retain-the-last-spi-scene-layer-in-one-call.patch` | Combinar lookup e atribuição do layer antigo em uma operação SPI. | |
-| `0113-perf-engine-retain-pushed-dart-ui-layers-in-one-spi-call.patch` | Evitar chamadas separadas de handles ao reter cada layer empurrado pelo `dart:ui`. | |
-| `0114-perf-engine-convert-scene-transforms-once.patch` | Preencher a transformação do SPI diretamente dos valores da matriz Dart. | |
-| `0115-test-engine-add-the-runtime-spi-s4f-text-benchmark.patch` | Estabelecer o benchmark de construção de parágrafos do `dart:ui` para o portão da S4f. | |
-| `0116-fix-engine-remove-unsupported-const-text-fixture-constructors.patch` | Ajustar os fixtures de texto aos construtores não-const do checkout fixado. | |
-| `0117-test-engine-add-masked-text-style-and-paragraph-query-tests.patch` | Fixar os testes RED das máscaras de estilo e das consultas de parágrafo da ABI 0.18. | |
-| `0118-feat-engine-add-masked-text-styles-and-paragraph-queries-to-the-spi.patch` | Acrescentar máscaras de estilo, herança, `decodeStrut` e consultas de parágrafo ao SPI. | |
-| `0119-fix-engine-gate-text-style-masks-behind-an-explicit-flag.patch` | Fazer a máscara de estilo valer somente quando o bit de ativação estiver presente. | |
-| `0120-fix-engine-use-a-typed-text-style-mask-flag.patch` | Nomear e tipar o bit que ativa as máscaras de estilo da ABI. | |
-| `0121-fix-engine-carry-decoded-strut-fields-through-the-spi.patch` | Transportar os campos decodificados de `strut` até a construção do estilo do SPI. | |
-| `0122-feat-engine-expose-the-spi-engine-to-dart-ui.patch` | Expor o engine do SPI às interfaces de runtime e ao `lib/ui`. | |
-| `0123-fix-engine-route-dart-ui-font-loading-through-spi-table.patch` | Fazer o carregamento de fontes do `dart:ui` passar pela tabela do SPI. | |
-| `0124-fix-engine-update-spi-runtime-test-delegates.patch` | Atualizar os delegates de teste para a interface de engine do SPI. | |
-| `0125-fix-engine-keep-the-legacy-font-bridge-in-the-shell.patch` | Preservar a ponte de fontes legada somente no Shell durante a migração. | |
-| `0126-feat-engine-move-dart-ui-text-to-runtime-spi.patch` | Mover builders, parágrafos e desenho de texto do `dart:ui` para os handles do SPI. | |
-| `0127-fix-engine-make-spi-text-narrowing-explicit.patch` | Tornar explícitas as conversões estreitas dos valores de texto no SPI. | |
-| `0128-test-engine-run-the-paragraph-benchmark-inside-a-shell.patch` | Executar o benchmark de parágrafos dentro de um Shell real. | |
-| `0129-fix-engine-reuse-the-text-benchmark-icu-helper.patch` | Reutilizar o helper de ICU no fixture do benchmark de texto. | |
-| `0130-fix-engine-run-the-paragraph-benchmark-through-a-concrete-shell-test.patch` | Encaminhar o benchmark de parágrafos pelo teste concreto de Shell. | |
-| `0131-fix-engine-link-shell-test-fixtures-without-the-gtest-main.patch` | Ligar os fixtures do teste de Shell sem adicionar outro `gtest_main`. | |
-| `0132-fix-engine-name-test-threads-outside-of-a-running-gtest.patch` | Nomear threads de teste também fora de um gtest em execução. | |
-| `0133-perf-engine-query-paragraph-lists-in-one-spi-call.patch` | Evitar a segunda consulta ao recalcular listas de caixas e métricas. | |
-| `0134-test-engine-cover-impeller-paragraph-text-frames.patch` | Cobrir a escolha de text frames e blobs dos parágrafos com Impeller. | |
-| `0135-fix-engine-construct-parity-test-engine-explicitly.patch` | Construir explicitamente o engine usado pelo teste de paridade. | |
-| `0136-fix-engine-include-runtime-controller-for-parity-test.patch` | Incluir o controlador de runtime necessário ao teste de paridade. | |
-| `0137-fix-engine-type-runtime-backend-test-defaults.patch` | Corrigir os tipos dos defaults do backend de runtime nos testes. | |
-| `0138-fix-engine-build-spi-paragraphs-with-the-engine-impeller-setting.patch` | Construir parágrafos do SPI com a configuração Impeller do engine. | |
-| `0139-test-engine-add-utf-16-text-parity-coverage.patch` | Cobrir a paridade de texto UTF-16 entre o SPI e o `dart:ui`. | |
-| `0140-perf-engine-add-utf-16-text-to-spi-paragraphs.patch` | Acrescentar texto UTF-16 à ABI de parágrafos do SPI. | |
-| `0141-perf-engine-pass-dart-ui-text-to-the-spi-as-utf-16.patch` | Passar o texto do `dart:ui` diretamente como UTF-16 ao SPI. | |
-| `0142-perf-engine-resolve-the-spi-text-table-once.patch` | Resolver uma vez a tabela de texto do SPI no caminho do `lib/ui`. | |
-| `0143-test-engine-cover-utf-16-paragraph-ellipsis.patch` | Cobrir a paridade da reticência UTF-16 nos estilos de parágrafo. | |
-| `0144-perf-engine-accept-utf-16-ellipsis-in-spi-paragraph-styles.patch` | Aceitar reticência UTF-16 nos estilos de parágrafo da ABI 0.18. | |
-| `0145-test-engine-cover-the-txt-paragraph-input-domain.patch` | Fixar a paridade do domínio de entrada do `txt` em layout, consultas, métricas, glifos e placeholders. | |
-| `0146-fix-engine-accept-the-txt-input-domain-in-spi-paragraphs.patch` | Fazer os parágrafos do SPI aceitarem o mesmo domínio de entrada que o `txt`, inclusive antes do layout e com largura infinita. | |
-| `0147-fix-engine-keep-spi-handle-tables-alive-until-process-exit.patch` | Manter as tabelas de handles vivas até o fim do processo para liberar wrappers durante a destruição estática. | |
-| `0148-test-engine-add-a-composite-frame-benchmark.patch` | Medir um quadro composto de cena, pintura, paths, canvas e texto para o portão integrado da S4f. | |
-| `0149-test-engine-stress-spi-handle-tables-across-threads.patch` | Fixar a corrida entre inserção, busca, liberação e destruição reentrante nas tabelas de handles do SPI. | |
-| `0150-fix-engine-lock-spi-handle-tables.patch` | Serializar o acesso às tabelas de handles entre engines e finalizadores, destruindo valores liberados fora da trava. | |
-| `0151-test-engine-add-the-runtime-spi-s4g1-effects-benchmark.patch` | Adicionar o benchmark de efeitos do `dart:ui` para o portão da S4g-1. | |
-| `0152-test-engine-add-s4g1-effects-parity-red-tests.patch` | Fixar os testes RED de paridade dos efeitos de pintura da S4g-1. | |
-| `0153-feat-engine-add-image-filter-equality-to-the-spi.patch` | Acrescentar igualdade de filtros de imagem à ABI 0.19 do Runtime SPI. | |
-| `0154-test-engine-cover-invalid-image-filter-equality-handles.patch` | Cobrir handles inválidos na igualdade de filtros de imagem. | |
-| `0155-fix-engine-reject-invalid-image-filter-equality-handles.patch` | Rejeitar handles inválidos na operação de igualdade de filtros de imagem. | |
-| `0156-feat-engine-create-dart-ui-effects-through-the-spi.patch` | Criar gradientes, filtros e vertices do `dart:ui` diretamente pela API de efeitos do SPI. | |
-| `0157-fix-engine-expose-paint-effects-api-to-dart-ui.patch` | Expor a API de efeitos de pintura ao `lib/ui` por uma ponte interna permitida. | |
-| `0158-fix-engine-update-effects-bridge-consumers.patch` | Atualizar os consumidores das pontes de efeitos removidas para manter os testes compilando. | |
-| `0159-test-engine-add-runtime-spi-s4g2-image-benchmark.patch` | Adicionar o benchmark de imagens do `dart:ui` para o portão da S4g-2. | |
-| `0160-test-engine-add-runtime-spi-image-parity-red-tests.patch` | Fixar os testes RED de paridade das imagens e snapshots da S4g-2. | |
-| `0161-feat-engine-add-sync-pixel-images-color-space-and-snapshot-formats-to-the-spi.patch` | Acrescentar à ABI 0.20 a criação síncrona de pixels, o espaço de cor e o formato de snapshots. | |
-| `0162-fix-engine-encode-gpu-and-deferred-spi-images-like-dart-ui.patch` | Codificar imagens de GPU e diferidas pela mesma rasterização e readback do `dart:ui`. | |
-| `0163-test-engine-check-sync-pixel-images-by-size-and-drawing.patch` | Conferir imagens síncronas por tamanho e desenho no backend Skia e comparar bytes somente com Impeller. | |
-| `0164-feat-engine-move-dart-ui-images-to-runtime-spi.patch` | Mover imagens, snapshots, readback e `ImageShader` do `dart:ui` para handles do Runtime SPI. | |
-| `0165-fix-engine-route-ui-image-tests-through-spi-bridge.patch` | Atualizar os consumidores de teste da ponte de imagens do SPI. | |
-| `0166-fix-engine-adapt-gpu-image-consumers-to-spi-handles.patch` | Adaptar consumidores de imagens de GPU aos handles do SPI. | |
-| `0167-fix-engine-keep-gpu-image-bridge-within-ui-target.patch` | Manter a ponte de imagens de GPU no alvo de UI que a utiliza. | |
-| `0168-fix-engine-update-embedder-image-test-consumer.patch` | Atualizar o consumidor de imagens do teste do embedder. | |
-| `0169-fix-engine-fix-image-migration-compile-errors.patch` | Corrigir erros mecânicos de compilação restantes da migração de imagens. | |
-| `0170-fix-engine-fix-remaining-image-migration-compile-errors.patch` | Corrigir os diagnósticos mecânicos finais da migração de imagens. | |
-| `0171-test-engine-build-the-image-benchmark-images-with-toimagesync.patch` | Produzir as imagens do benchmark com `Picture.toImageSync`, compatível com o Shell Skia. | |
-| `0172-test-engine-add-runtime-spi-s4g3-codec-benchmark.patch` | exercise the dart:ui codec path with eight PNG frames while keeping the shell benchmark on Skia. | |
-| `0173-fix-engine-fix-codec-benchmark-lambda-capture.patch` | remove the unused frame latch capture rejected by the engine's warnings-as-errors build. | |
-| `0174-test-engine-add-runtime-spi-s4g3-abi-red-coverage.patch` | compile the ABI extensions and make the missing descriptor, asset, and shader validation entry points fail explicitly before implementation. | |
-| `0175-fix-engine-use-the-runtime-fixture-member-in-spi-asset-red-tests.patch` | correct the existing fixture member name so the RED coverage compiles without changing its assertions or behavior. | |
-| `0176-fix-engine-update-all-s4g3-abi-size-checks.patch` | keep the duplicated C ABI size assertions aligned with the appended 0.21 table fields. | |
-| `0177-feat-engine-add-image-descriptors-asset-reads-and-shader-validation-to-the-spi.patch` | expose the S4g3 descriptor, asset, and fragment validation primitives that the Dart UI migration will consume. | |
-| `0178-fix-engine-suppress-deprecated-message-loop-access-in-spi-asset-tests.patch` | keep the test-only task drain compatible with the engine warning-as-error build without changing its behavior. | |
-| `0179-fix-engine-preserve-the-32-bit-engine-api-size.patch` | account for the existing tail padding when freezing the appended asset_read field on arm-hard. | |
-| `0180-feat-engine-move-dart-ui-codecs-buffers-and-fragment-shaders-to-runtime-spi.patch` | move the dart:ui codec, asset, fragment shader, and picture paths onto the runtime SPI while removing obsolete internal bridges. | |
-| `0181-fix-engine-expose-runtime-spi-access-through-the-internal-bridge.patch` | keep lib/ui within GN visibility while using the public SPI tables. | |
-| `0182-fix-engine-complete-runtime-spi-native-includes.patch` | resolve the missing declarations and local name collision reported by the S4g-3 build. | |
-| `0183-fix-engine-correct-runtime-spi-shader-compile-diagnostics.patch` | Apply mechanical compiler fixes for RefPtr null checks, sampler bounds, and result variable names without changing the runtime SPI behavior or public APIs. | |
-| `0184-fix-engine-define-runtime-spi-asset-getter-out-of-line.patch` | Keep the existing runtime asset manager behavior while avoiding a call through the forward-declared RuntimeDelegate in the public header. | |
-| `0185-fix-engine-keep-the-asset-manager-bridge-for-flutter-gpu-and-isolate-config.patch` | Keep the C++ AssetManager bridge for flutter_gpu and Dart isolate configuration while dart:ui reads assets through the SPI. | |
-| `0186-test-engine-restore-the-image-frame-benchmark.patch` | Restore the S4g-2 image benchmark and its historical fixture entrypoint while keeping the new codec benchmark separate. | |
-| `0187-fix-engine-grant-the-asset-manager-bridge-backend-access.patch` | Allow the restored SpiEngineAssetManager bridge to access the backend delegate without changing its public API or behavior. | |
-| `0188-test-engine-expect-released-codecs-to-deliver-pending-frames.patch` | Lock the codec contract that already-requested static and animated frames are delivered exactly once after release. | |
-| `0189-fix-engine-deliver-pending-codec-frames-after-release.patch` | Keep already-requested codec callbacks alive through release while rejecting only new frame requests. | |
-| `0190-test-engine-expect-spi-codecs-to-use-registered-image-decoders.patch` | Lock descriptor codec creation to the image generators registered by the engine. | |
-| `0191-fix-engine-build-spi-codecs-from-the-descriptor-generator.patch` | Reuse the generator and registry selected by the engine descriptor, including registered image decoders. | |
-| `0192-style-engine-format-the-registered-decoder-codec-test.patch` | keep the registered decoder codec test formatted according to the engine style. | |
-| `0193-test-engine-expect-spi-asset-reads-on-the-concurrent-worker.patch` | lock in the worker-thread contract for SPI asset reads before implementation. | |
-| `0194-fix-engine-read-spi-assets-on-the-concurrent-worker.patch` | Keep asset lookup and byte copying off the UI thread while preserving UI-thread callbacks and the existing fallback when no concurrent worker is available. | |
-| `0195-fix-engine-pass-spi-backend-constructor-arguments-explicitly.patch` | Preserve the existing optional backend arguments when appending the concurrent worker runner to the SPI backend constructor. | |
-| `0196-test-engine-expect-synchronous-invalid-encoded-image-errors.patch` | Reproduce the synchronous ImageDescriptor.encoded error contract before the SPI fix. | |
-| `0197-fix-engine-create-encoded-spi-descriptors-synchronously.patch` | Preserve ImageDescriptor.encoded's synchronous invalid-data error contract and avoid posting Dart exceptions from a callback. | |
-| `0198-test-engine-read-the-encoded-image-error-latch-timeout-correctly.patch` | AutoResetWaitableEvent::WaitWithTimeout returns true when the timeout expires, so the test must assert that the wait did not time out before checking the received exception. | |
-| `0199-test-engine-expect-spi-codecs-to-honor-the-target-pixel-format.patch` | Capture the target pixel format contract, including compatibility with older decode option structs, before wiring the SPI value into ImageDecoder. | |
-| `0200-feat-engine-carry-the-target-pixel-format-through-spi-decode-options.patch` | Preserve Dart UI target-format requests across the SPI descriptor and codec path until ImageDecoder receives its target format. | |
-| `0201-test-engine-expect-short-raw-buffers-to-fail-at-decode.patch` | Preserve the existing image descriptor contract that accepts a short raw buffer and reports the failure during codec decoding. | |
-| `0202-fix-engine-accept-short-raw-buffers-like-the-image-descriptor-did.patch` | Defer short raw-buffer failures to codec decoding, matching the existing image descriptor behavior while keeping descriptor construction memory-safe. | |
-| `0203-perf-engine-drop-redundant-ui-hops-in-spi-image-decoding.patch` | Keep decoder and codec callbacks on the UI thread without reposting work that is already there, while preserving asynchronous delivery for cached frames. | |
-| `0204-fix-engine-keep-spi-image-callbacks-asynchronous-inside-api-calls.patch` | A decoder or codec callback can run reentrantly on the UI thread while its public API call is still active. Track UI API-call depth so delivery is posted until that call returns. | |
-| `0205-test-engine-add-a-semantics-frame-benchmark.patch` | establish the S4h-1 semantics benchmark baseline before routing dart:ui semantics through the runtime SPI. | |
-| `0206-test-engine-pin-spi-semantics-builder-lifetime.patch` | lock the required builder lifetime and post-submit semantics before routing dart:ui through the SPI. | |
-| `0207-feat-engine-submit-dart-ui-semantics-through-the-spi.patch` | Preserve the runtime SPI ownership contract while forwarding dart:ui semantics into the engine boundary. | |
-| `0208-test-engine-pin-spi-utf-8-validation-against-icu.patch` | Establish the UTF-8 validator contract against ICU before implementing the fast path. | |
-| `0209-feat-engine-add-a-fast-utf-8-validator-to-the-spi.patch` | Validate SPI strings with the Unicode well-formedness table and an ASCII fast path while preserving ICU's accepted domain. | |
-| `0210-perf-engine-validate-spi-strings-without-icu.patch` | Reuse the SPI UTF-8 validator and measure each semantics string only once. | |
-| `0211-test-engine-require-movable-semantics-nodes.patch` | pin the nothrow move operations required by the semantics fast path. | |
-| `0212-perf-engine-move-semantics-nodes-instead-of-copying-them.patch` | let the semantics update path transfer node-owned storage into the core map. | |
-| `0213-test-engine-cover-platform-messages-from-background-isolates.patch` | keep the end-to-end background-isolate platform message coverage as the SPI migration starts. | |
-| `0214-test-engine-pin-the-spi-platform-message-sender.patch` | freeze the ABI and RED coverage before wiring the sender implementation. | |
-| `0215-feat-engine-add-a-thread-safe-platform-message-sender-to-the-spi.patch` | let background-isolate platform messages reach the platform handler through a thread-safe SPI sender. | |
-| `0216-feat-engine-send-background-isolate-platform-messages-through-the-spi.patch` | route background-isolate platform messages through the thread-safe SPI sender and retain sender ownership with the isolate group. | |
-| `0217-test-engine-pin-failed-background-platform-message-sends.patch` | Preserve the legacy behavior that failed background-isolate platform messages raise an error without completing the reply port. | |
-| `0218-fix-engine-keep-failed-background-sends-unanswered.patch` | preserve the legacy failed-send contract by releasing the reply context without calling back into the Dart VM while the native send is still active. | |
-| `0219-fix-engine-release-platform-message-payloads-before-dispatch.patch` | release the Dart typed-data acquisition before dispatching a platform message so error handling can call back into the Dart VM safely. | |
-| `0220-fix-engine-initialize-platform-payload-mapping-before-dispatch.patch` | construct the non-copyable payload mapping from the scoped Dart byte data without changing the dispatch lifetime. | |
-| `0221-fix-engine-check-the-backend-before-creating-a-platform-message-sender.patch` | reject invalid engine handles before dereferencing the backend during sender creation. | |
-| `0223-test-engine-pin-the-dart-ui-spi-api-accessor.patch` | pin the single accessor contract before wiring the runtime installation. | |
-| `0224-feat-engine-give-dart-ui-one-spi-api-accessor.patch` | install one stable copy of the runtime SPI before Dart isolates start. | |
-| `0225-test-engine-make-the-spi-api-accessor-tests-order-independent.patch` | keep the accessor tests valid when the process has already installed the global SPI copy. | |
-| `0226-refactor-engine-read-the-spi-through-one-accessor-in-dart-ui.patch` | make dart:ui use the runtime-installed SPI table instead of recreating engine API accessors. | |
-| `0227-test-engine-pin-path-volatility-through-the-spi.patch` | Pin the new public path volatility entry point before wiring its implementation. | |
-| `0228-feat-engine-add-path-set-volatile-to-the-spi.patch` | Expose path volatility through the public SPI scene API while preserving invalid-handle semantics. | |
-| `0229-refactor-engine-drop-dead-dart-ui-paths-left-after-the-spi-migration.patch` | Remove obsolete Dart UI bridges and exercise codec lifetime scenarios through the public SPI ABI. | |
-| `0230-refactor-engine-use-the-public-spi-abi-in-the-remaining-dart-ui-natives.patch` | keep dart:ui on the public runtime SPI ABI while isolating the temporary flutter_gpu bridge. | |
-| `0231-fix-engine-include-the-spi-scene-builder-bridge-in-animator-tests.patch` | expose the bridge helper used after removing SceneBuilder::layer_stack(). | |
-| `0232-fix-engine-route-remaining-painting-calls-through-the-spi.patch` | complete the mechanical migration of the remaining canvas and shader releases to the public SPI tables. | |
-| `0233-test-engine-pin-rsuperellipse-containment-through-the-spi.patch` | Pin the new ABI entry point and frozen layout before implementing its runtime behavior. | |
-| `0234-feat-engine-add-rsuperellipse-contains-to-the-spi.patch` | Implement the frozen scene ABI entry point with the same positive-bounds and raw-radii containment semantics as RSuperellipse. | |
-| `0235-refactor-engine-move-core-code-out-of-the-dart-ui-target.patch` | keep the extracted core targets buildable and route the GPU bridge through the CanvasImage factory. | |
-| `0236-refactor-engine-keep-core-types-out-of-dart-ui-signatures.patch` | expose only SPI-compatible scalar and geometry types from dart:ui while preserving the existing scene values. | |
-| `0237-refactor-engine-keep-core-objects-out-of-the-dart-ui-isolate-context.patch` | keep core-owned rendering objects out of UIDartState::Context while preserving the live GPU and runtime-stage paths. | |
-| `0238-refactor-engine-build-spi-colors-and-rects-without-display-list-in-dart-ui.patch` | Keep dart:ui painting conversions on the public SPI structs so the target can drop display_list implementation types without changing behavior. | |
-| `0239-build-engine-cut-core-implementation-deps-from-the-dart-ui-target.patch` | Keep dart:ui on the SPI ABI while declaring direct dependencies for core-only decoder and encoder tests. | |
-| `0240-test-engine-cover-raw-image-pixel-format-mapping.patch` | Prove that dart:ui raw RGBA and BGRA descriptors preserve a red pixel through the SPI image decoder before fixing the enum mismatch. | |
-| `0241-fix-engine-pass-raw-image-pixel-formats-to-the-spi-by-its-own-enum.patch` | Keep dart:ui PixelFormat values aligned with the SPI enum so raw RGBA and BGRA descriptors reach the decoder without channel swaps or invalid formats. | |
-| `0242-build-engine-assert-that-dart-ui-only-sees-the-spi-abi.patch` | Keep the dart:ui target free of implementation dependencies that are owned by ui_text_core, which already carries the test-font dependency for font_collection.cc. | |
-| `0243-test-engine-pin-raw-image-pixel-formats-in-shell-unittests.patch` | prove in a gtest that the check runs that raw RGBA and BGRA pixels keep their channels through the SPI. | |
-| `0244-fix-engine-normalize-raw-pixel-test-assertion-types.patch` | keep the raw pixel gtest warning-free while preserving the packed channel assertions. | |
-| `0245-refactor-engine-keep-the-shell-service-protocol-off-the-dart-service-registry.patch` | keep the shell service protocol's parameter map owned by the shell core without including the Dart service registry. | |
-| `0246-refactor-engine-make-the-run-configuration-launch-payload-opaque-to-the-core.patch` | Keep Dart-specific isolate launch configuration details behind the shell common Dart boundary while preserving the existing RunConfiguration callers and launch behavior. | |
-| `0247-test-engine-wait-for-the-spi-asset-callback-instead-of-racing-the-worker.patch` | Wait for the worker-posted asset callback before asserting its result so the test does not race the UI task queue. | |
-| `0248-refactor-engine-build-dart-engines-outside-the-core-engine-class.patch` | keep worker-runner access behind RuntimeBackendFactory and retain the Dart VM include at the embedder boundary while moving Dart engine construction out of the core. | |
-| `0249-refactor-engine-let-the-runtime-factory-build-kernel-launch-payloads.patch` | keep Dart-specific kernel launch construction out of the shell core. | |
-| `0250-refactor-engine-spawn-runtime-backends-from-the-parent-backend.patch` | keep runtime controller access inside the Dart runtime boundary while allowing the shell core to spawn through the parent runtime backend. | |
-| `0251-refactor-engine-drop-dart-timeline-calls-from-the-shell-core.patch` | keep the shell core independent from Dart timeline APIs and runtime controller headers; the monotonic FML clock provides the same deadline domain. | |
-| `0252-build-engine-keep-dart-out-of-the-shell-core-target.patch` | isolate Dart shell sources and dependencies in a dedicated target while proving the common shell core cannot depend on Dart. | |
-| `0253-feat-engine-add-the-core-host-api-header.patch` | Keep the reproducible runtime-spi patch series aligned with the verified engine worktree. | |
-| `0254-feat-engine-carry-the-pre-restart-callback-in-the-core-host-args.patch` | Record the verified core host API split fixes and build the host Settings before Dart run configuration inference. | |
-| `0255-refactor-engine-split-the-embedder-into-a-core-host-api-and-a-dart-translation.patch` | Record the verified core host API split fixes and build the host Settings before Dart run configuration inference. | |
-| `0256-fix-engine-consume-embedder-template-variables-in-both-targets.patch` | Record the verified core host API split fixes and build the host Settings before Dart run configuration inference. | |
-| `0257-fix-engine-publish-the-core-target-through-the-embedder.patch` | Record the verified core host API split fixes and build the host Settings before Dart run configuration inference. | |
-| `0258-fix-engine-share-the-embedder-helpers-between-the-core-and-the-dart-translation.patch` | Record the verified core host API split fixes and build the host Settings before Dart run configuration inference. | |
-| `0259-fix-engine-build-the-host-settings-before-inferring-the-dart-run-configuration.patch` | Record the verified core host API split fixes and build the host Settings before Dart run configuration inference. | |
-| `0260-build-engine-keep-dart-out-of-the-embedder-core.patch` | Record the verified GN dependency boundary that keeps Dart out of the embedder core target. | |
-| `0261-test-engine-run-an-spi-runtime-through-the-core-host-api.patch` | Record the verified end-to-end SPI runtime test through the core host API. | |
-| `0262-build-engine-add-the-core-only-engine-library.patch` | provide the alternative core-only shared library for the Runtime SPI. | |
-| `0263-refactor-engine-give-the-core-its-own-definitions-for-focus-requests-and-shell-initialization.patch` | The core-only engine library must not resolve neutral definitions from Dart-owned targets. Move view focus value definitions and shell initialization into core targets while keeping tonic's Dart logging handler in shell_dart.cc. | |
-| `0264-fix-engine-keep-core-shell-initialization-in-its-namespace.patch` | The initialization definition must remain in the flutter namespace after moving it out of shell_dart.cc, so the core shell implementation compiles without changing its behavior. | |
-| `0265-build-engine-add-the-titan-flutter-runtime-dart-gn-arg.patch` | allow the Flutter embedder graph to omit Dart-backed targets while retaining the core runtime. | |
-| `0266-test-engine-smoke-test-the-core-library-from-c.patch` | exercise the core runtime through a C executable and keep the smoke test linked only to the core library and its C test runtime. | |
-| `0267-perf-engine-look-up-runtime-spi-handles-without-a-lock.patch` | remove mutex contention from raw handle lookup while preserving generation validation and the handle lifetime contract. | |
-| `0268-perf-engine-convert-cache-misses-in-place.patch` | avoid the temporary paint and vector allocation on cache misses while invalidating failed conversions safely. | |
-| `0269-perf-engine-convert-semantics-nodes-in-place.patch` | avoid constructing a temporary semantics node for new IDs while preserving the previous node when an update is rejected. | |
-| `0270-perf-engine-reuse-the-semantics-attribute-buffers.patch` | retain the five per-node SPI attribute vector capacities across synchronous updateNode calls. | |
+| `0006-refactor-engine-keep-dart-types-out-of-the-runtime-backend-seam.patch` | Consolidar as correções da revisão S1 para manter o seam sem tipos Dart. | |
+| `0007-feat-engine-add-the-versioned-runtime-spi-c-header.patch` | Adicionar o header C11 versionado do Runtime SPI. | |
+| `0008-test-engine-add-a-pure-c-runtime-for-spi-conformance.patch` | Adicionar um runtime de teste em C puro para a conformidade da ABI. | |
+| `0009-feat-engine-run-spi-runtimes-behind-the-runtimebackend-seam.patch` | Executar runtimes SPI atrás do seam `RuntimeBackend`. | |
+| `0010-test-engine-add-the-runtime-spi-conformance-suite.patch` | Adicionar a suíte de conformidade do Runtime SPI. | |
+| `0011-feat-engine-add-the-runtime-spi-scene-header.patch` | Adicionar os tipos C11 e a tabela de funções da API de cena, sem habilitá-la no engine S2. | |
+| `0012-feat-engine-add-the-spi-handle-table.patch` | Implementar handles opacos por engine com retenção, liberação e ids que não são reutilizados. | |
+| `0013-feat-engine-add-spi-paths-and-paints.patch` | Expor paths, geometria e paints básicos pela ABI de cena. | |
+| `0014-feat-engine-add-the-spi-picture-recorder-and-canvas.patch` | Expor recorder, canvas, pictures e operações de desenho do `DisplayListBuilder`. | |
+| `0015-feat-flow-expose-layer-properties-for-scene-tracing.patch` | Expor ao traço as propriedades necessárias das camadas de composição. | |
+| `0016-feat-engine-add-the-spi-scene-builder-and-scene-trace.patch` | Montar cenas com transformações, clips, offsets, opacity e pictures, e gerar o traço canônico. | |
+| `0017-test-engine-exercise-the-spi-scene-api-end-to-end.patch` | Validar a API de cena ponta a ponta e comparar o custo da ABI com o builder direto. | |
+| `0018-feat-engine-add-the-runtime-spi-text-header.patch` | Adicionar a ABI C11 para estilos de texto, fontes, parágrafos, métricas e desenho. | |
+| `0019-feat-engine-add-spi-text-styles-and-font-loading.patch` | Converter estilos para `txt` e carregar fontes dinâmicas pela API do Runtime SPI. | |
+| `0020-feat-engine-add-spi-paragraphs.patch` | Montar, fazer layout e consultar parágrafos com paridade ao `txt` direto. | |
+| `0021-feat-engine-draw-spi-paragraphs-and-exercise-text-end-to-end.patch` | Desenhar parágrafos pela cena e validar texto ponta a ponta pela suíte de conformidade. | |
+| `0022-refactor-engine-separate-image-descriptor-data-from-its-dart-wrapper.patch` | Separar os dados de `ImageDescriptor` do wrapper Dart para permitir a decodificação sem Dart. | |
+| `0023-feat-engine-add-the-runtime-spi-image-header.patch` | Adicionar a ABI C11 0.4 para imagens, pixels, opções de decodificação e transformações. | |
+| `0024-feat-engine-draw-images-through-the-runtime-spi.patch` | Expor handles de imagem e operações de desenho de imagens pela API de cena. | |
+| `0025-feat-engine-decode-images-through-the-runtime-spi.patch` | Decodificar imagens codificadas e pixels crus com callbacks assíncronos no UI runner. | |
+| `0026-feat-engine-decode-spi-images-on-core-workers-and-test-them-end-to-end.patch` | Fornecer workers concorrentes ao core e validar a decodificação de imagens ponta a ponta. | |
+| `0027-refactor-engine-separate-picture-snapshots-from-their-dart-wrappers.patch` | Separar a rasterização de pictures e cenas dos wrappers Dart. | |
+| `0028-refactor-engine-separate-image-readback-from-its-dart-wrapper.patch` | Separar a conversão para raster e a codificação de imagens do wrapper Dart. | |
+| `0029-refactor-engine-separate-animated-image-frames-from-their-dart-codec.patch` | Separar a decodificação e o avanço de quadros animados do codec Dart. | |
+| `0030-feat-engine-turn-spi-pictures-and-scenes-into-images.patch` | Expor snapshots assíncronos e síncronos de pictures e cenas pela ABI 0.5. | |
+| `0031-feat-engine-read-spi-image-pixels.patch` | Expor leitura de pixels e codificação PNG pela ABI do Runtime SPI. | |
+| `0032-test-engine-cover-spi-image-codecs.patch` | Cobrir codecs estáticos e animados pela suíte do Runtime SPI. | |
+| `0033-feat-engine-decode-spi-image-codecs-frame-by-frame.patch` | Expor criação, informações e leitura de quadros de codecs pela ABI. | |
+| `0034-test-engine-cover-spi-image-output-conformance.patch` | Cobrir a saída de imagens na suíte de conformidade do Runtime SPI. | |
+| `0035-test-engine-exercise-spi-image-output-end-to-end.patch` | Exercitar snapshots, leitura de pixels e desenho de imagens ponta a ponta. | |
+| `0036-feat-engine-add-the-runtime-spi-paint-effects-header.patch` | Adicionar a ABI 0.6 para shaders, filtros, máscara de blur e vertices. | |
+| `0037-feat-engine-build-spi-shaders-and-filters.patch` | Construir shaders, filtros de cor e filtros de imagem Dart-free com handles imutáveis. | |
+| `0038-feat-engine-paint-with-spi-shaders-filters-and-mask-blur.patch` | Aplicar efeitos da ABI ao paint e preservar a paridade com `dart:ui`. | |
+| `0039-feat-engine-draw-spi-vertices.patch` | Expor a criação e o desenho de vertices pela API de cena. | |
+| `0040-test-engine-exercise-spi-paint-effects-end-to-end.patch` | Exercitar efeitos de pintura e vertices pela suíte de conformidade ponta a ponta. | |
+| `0041-fix-engine-freeze-the-32-bit-size-of-the-spi-engine-api-at-abi-0-6.patch` | Congelar o tamanho correto da tabela ABI em 32 bits depois da inclusão de `paint_effects`. | |
+| `0042-feat-engine-add-the-runtime-spi-scene-layers-to-the-abi.patch` | Adicionar a ABI 0.7 para as camadas restantes do scene builder. | |
+| `0043-feat-engine-resolve-dynamic-spi-blur-tile-modes-like-dart-ui.patch` | Resolver tile modes dinâmicos de blur como o `dart:ui`, incluindo bounds. | |
+| `0044-feat-engine-push-spi-filter-mask-and-superellipse-layers.patch` | Expor camadas de filtro, máscara e clip de superelipse pela API de cena. | |
+| `0045-feat-engine-add-spi-texture-platform-view-and-overlay-layers.patch` | Expor camadas de textura, platform view e performance overlay pela API de cena. | |
+| `0046-feat-engine-retain-spi-engine-layers-across-frames.patch` | Reter camadas do engine entre quadros e reutilizá-las no scene builder. | |
+| `0047-test-engine-exercise-spi-scene-layers-end-to-end.patch` | Exercitar as camadas do scene builder pela suíte de conformidade ponta a ponta. | |
+| `0048-refactor-engine-separate-runtime-effect-loading-from-the-dart-fragment-program.patch` | Separar o carregamento de runtime effects do programa de fragmento Dart para permitir a reutilização sem Dart. | |
+| `0049-feat-engine-add-the-runtime-spi-fragment-program-header.patch` | Adicionar a ABI C11 0.8 para fragment programs, uniforms e samplers. | |
+| `0050-feat-engine-load-spi-fragment-programs-and-shaders.patch` | Carregar runtime stages de assets ou bytes e construir shaders e image filters com paridade ao `dart:ui`. | |
+| `0051-test-engine-exercise-spi-fragment-programs-end-to-end.patch` | Exercitar fragment programs, uniforms, samplers, shaders e image filters pela suíte de conformidade ponta a ponta. | |
+| `0052-feat-engine-add-the-runtime-spi-semantics-header.patch` | Adicionar a ABI C11 0.9 para nós de semântica, flags, textos, transformações, filhos e ações customizadas. | |
+| `0053-feat-engine-build-spi-semantics-updates.patch` | Converter nós e ações customizadas pela ABI com paridade ao `SemanticsUpdateBuilder` do `dart:ui`. | |
+| `0054-feat-engine-publish-spi-semantics-updates.patch` | Publicar atualizações de semântica no engine pela tabela do Runtime SPI e pela capacidade da ABI. | |
+| `0055-feat-engine-add-the-runtime-spi-extensions-header.patch` | Adicionar a ABI C11 0.10 para as extensões opcionais do runtime. | |
+| `0056-refactor-engine-call-dart-only-engine-features-through-the-spi-extensions-table.patch` | Chamar pelo SPI as funções do engine que só existem com Dart, preservando o core sem Dart. | |
+| `0057-test-engine-exercise-the-spi-runtime-extensions-end-to-end.patch` | Exercitar as extensões do runtime pela suíte de conformidade ponta a ponta. | |
+| `0058-feat-engine-add-service-handlers-to-the-runtime-spi-extensions.patch` | Adicionar handlers do service protocol à ABI C11 0.11 das extensões do runtime. | |
+| `0059-refactor-engine-expose-the-shell-service-protocol-handlers-as-a-c-handler.patch` | Expor os handlers do service protocol do Shell no core, sem depender da VM do Dart. | |
+| `0060-feat-engine-serve-the-core-service-handlers-through-the-dart-vm-service.patch` | Servir os handlers do core pelo transporte do VM service do Dart. | |
+| `0061-refactor-engine-move-the-remaining-dart-code-out-of-the-shell.patch` | Mover os pontos restantes de Dart para fora do Shell comum. | |
+| `0062-feat-engine-complete-the-runtime-spi-contract-in-both-directions.patch` | Completar a ABI C11 0.12 com o contrato entre engine e runtime nos dois sentidos. | |
+| `0063-feat-engine-serve-the-full-runtime-contract-from-the-spi-backend.patch` | Servir o contrato completo pelo backend do Runtime SPI e pelo `RuntimeDelegate`. | |
+| `0064-test-engine-exercise-the-full-runtime-contract-end-to-end.patch` | Exercitar o contrato completo do Runtime SPI ponta a ponta. | |
+| `0065-feat-engine-add-warm-up-frames-opaque-launch-and-internal-bridges-to-the-spi.patch` | Adicionar warm-up frames, lançamento opaco do isolate e pontes internas à ABI 0.13. | |
+| `0066-feat-engine-run-the-dart-runtime-behind-the-spi-table.patch` | Executar o runtime Dart atrás da tabela do Runtime SPI. | |
+| `0067-refactor-engine-drive-dart-apps-through-the-spi-runtime-backend.patch` | Conduzir os apps Dart pelo backend de runtime do SPI. | |
+| `0068-feat-engine-report-view-results-and-running-state-through-the-spi-table.patch` | Reportar resultados de view e o estado de execução do runtime pela tabela do SPI. | |
+| `0069-test-engine-add-a-realistic-dart-ui-frame-benchmark.patch` | Adicionar o benchmark de quadro realista do `dart:ui` para o portão da S4d-1. | |
+| `0070-feat-engine-add-rsuperellipse-and-canvas-queries-to-the-spi-scene-api.patch` | Adicionar superelipses e consultas de transformação e clips à API de cena. | |
+| `0071-feat-engine-bridge-the-remaining-dart-ui-painting-objects-to-spi-handles.patch` | Criar pontes temporárias e handles SPI para os objetos restantes de pintura do `dart:ui`. | |
+| `0072-refactor-engine-record-dart-ui-canvas-calls-through-the-spi-scene-api.patch` | Gravar as chamadas de `Canvas`, `PictureRecorder` e `Picture` pela API de cena. | |
+| `0073-test-engine-cover-every-dart-ui-canvas-op-through-the-spi-recorder.patch` | Cobrir as operações de `Canvas` pela gravação do SPI. | |
+| `0074-perf-engine-look-up-spi-handles-by-slot-and-generation.patch` | Remover hash e cópia de `shared_ptr` do lookup quente de handles. | |
+| `0075-perf-engine-reuse-the-last-converted-paint-per-recorder.patch` | Reutilizar o último paint convertido por recorder quando os bytes e handles forem válidos. | |
+| `0076-perf-engine-pass-dart-ui-paint-data-as-scalar-ffi-arguments.patch` | Passar os dados do paint como argumentos escalares FFI, sem natives leaf. | |
+| `0077-test-engine-add-dart-ui-path-construction-benchmark.patch` | Estabelecer o benchmark de construção de paths do `dart:ui` para o portão da S4d-2. | |
+| `0078-feat-engine-implement-s4d-2-path-spi-operations.patch` | Implementar a superfície de paths da ABI 0.16 sobre `SkPath`. | |
+| `0079-feat-engine-implement-s4d-2-path-measure-spi.patch` | Expor a iteração de contornos e as operações derivadas de `PathMeasure` pela API de cena. | |
+| `0080-feat-engine-move-dart-ui-paths-to-runtime-spi.patch` | Fazer `CanvasPath` e `CanvasPathMeasure` possuírem handles da API de cena. | |
+| `0081-test-engine-add-dart-ui-scene-build-benchmark.patch` | Estabelecer o benchmark de construção de cenas retidas do `dart:ui` para o portão da S4e. | |
+| `0082-feat-engine-build-retained-scene-roots-through-the-spi.patch` | Acrescentar a ABI 0.17 para construir raízes retidas e criar cenas dimensionadas reutilizáveis. | |
+| `0083-feat-engine-render-dart-ui-scenes-through-runtime-spi.patch` | Renderizar cenas do `dart:ui` por handles retidos do Runtime SPI. | |
+| `0084-refactor-engine-share-the-retained-layer-step-in-the-scene-builder.patch` | Manter cada push do `SceneBuilder` balanceado por um caminho único de retenção com erro explícito. | |
+| `0085-perf-engine-track-only-retained-layers-in-spi-scene-builders.patch` | Evitar hash e alocação para cada layer empurrado quando só os retidos exigem detecção de duplicata. | |
+| `0086-perf-engine-store-engine-layers-directly-in-the-handle-table.patch` | Evitar a alocação de um wrapper para cada handle de layer retido. | |
+| `0087-perf-engine-look-up-spi-scene-builders-without-refcounting.patch` | Evitar copiar o `shared_ptr` do builder em cada chamada da API de cena. | |
+| `0088-perf-engine-retain-the-last-spi-scene-layer-in-one-call.patch` | Combinar lookup e atribuição do layer antigo em uma operação SPI. | |
+| `0089-perf-engine-retain-pushed-dart-ui-layers-in-one-spi-call.patch` | Evitar chamadas separadas de handles ao reter cada layer empurrado pelo `dart:ui`. | |
+| `0090-perf-engine-convert-scene-transforms-once.patch` | Preencher a transformação do SPI diretamente dos valores da matriz Dart. | |
+| `0091-test-engine-add-the-runtime-spi-s4f-text-benchmark.patch` | Estabelecer o benchmark de construção de parágrafos do `dart:ui` para o portão da S4f. | |
+| `0092-feat-engine-add-masked-text-styles-and-paragraph-queries-to-the-spi.patch` | Acrescentar máscaras de estilo, herança, `decodeStrut` e consultas de parágrafo ao SPI. | |
+| `0093-feat-engine-expose-the-spi-engine-to-dart-ui.patch` | Expor o engine do SPI às interfaces de runtime e ao `lib/ui`. | |
+| `0094-feat-engine-move-dart-ui-text-to-runtime-spi.patch` | Mover builders, parágrafos e desenho de texto do `dart:ui` para os handles do SPI. | |
+| `0095-test-engine-run-the-paragraph-benchmark-inside-a-shell.patch` | Executar o benchmark de parágrafos dentro de um Shell real. | |
+| `0096-perf-engine-query-paragraph-lists-in-one-spi-call.patch` | Evitar a segunda consulta ao recalcular listas de caixas e métricas. | |
+| `0097-test-engine-cover-impeller-paragraph-text-frames.patch` | Cobrir a escolha de text frames e blobs dos parágrafos com Impeller. | |
+| `0098-fix-engine-build-spi-paragraphs-with-the-engine-impeller-setting.patch` | Construir parágrafos do SPI com a configuração Impeller do engine. | |
+| `0099-perf-engine-add-utf-16-text-to-spi-paragraphs.patch` | Acrescentar texto UTF-16 à ABI de parágrafos do SPI. | |
+| `0100-perf-engine-pass-dart-ui-text-to-the-spi-as-utf-16.patch` | Passar o texto do `dart:ui` diretamente como UTF-16 ao SPI. | |
+| `0101-perf-engine-resolve-the-spi-text-table-once.patch` | Resolver uma vez a tabela de texto do SPI no caminho do `lib/ui`. | |
+| `0102-perf-engine-accept-utf-16-ellipsis-in-spi-paragraph-styles.patch` | Aceitar reticência UTF-16 nos estilos de parágrafo da ABI 0.18. | |
+| `0103-fix-engine-accept-the-txt-input-domain-in-spi-paragraphs.patch` | Fazer os parágrafos do SPI aceitarem o mesmo domínio de entrada que o `txt`, inclusive antes do layout e com largura infinita. | |
+| `0104-fix-engine-keep-spi-handle-tables-alive-until-process-exit.patch` | Manter as tabelas de handles vivas até o fim do processo para liberar wrappers durante a destruição estática. | |
+| `0105-test-engine-add-a-composite-frame-benchmark.patch` | Medir um quadro composto de cena, pintura, paths, canvas e texto para o portão integrado da S4f. | |
+| `0106-fix-engine-lock-spi-handle-tables.patch` | Serializar o acesso às tabelas de handles entre engines e finalizadores, destruindo valores liberados fora da trava. | |
+| `0107-test-engine-add-the-runtime-spi-s4g1-effects-benchmark.patch` | Adicionar o benchmark de efeitos do `dart:ui` para o portão da S4g-1. | |
+| `0108-feat-engine-add-image-filter-equality-to-the-spi.patch` | Acrescentar igualdade de filtros de imagem à ABI 0.19 do Runtime SPI. | |
+| `0109-feat-engine-create-dart-ui-effects-through-the-spi.patch` | Criar gradientes, filtros e vertices do `dart:ui` diretamente pela API de efeitos do SPI. | |
+| `0110-test-engine-add-runtime-spi-s4g2-image-benchmark.patch` | Adicionar o benchmark de imagens do `dart:ui` para o portão da S4g-2. | |
+| `0111-feat-engine-add-sync-pixel-images-color-space-and-snapshot-formats-to-the-spi.patch` | Acrescentar à ABI 0.20 a criação síncrona de pixels, o espaço de cor e o formato de snapshots. | |
+| `0112-feat-engine-move-dart-ui-images-to-runtime-spi.patch` | Mover imagens, snapshots, readback e `ImageShader` do `dart:ui` para handles do Runtime SPI. | |
+| `0113-test-engine-add-runtime-spi-s4g3-codec-benchmark.patch` | exercise the dart:ui codec path with eight PNG frames while keeping the shell benchmark on Skia. | |
+| `0114-feat-engine-add-image-descriptors-asset-reads-and-shader-validation-to-the-spi.patch` | expose the S4g3 descriptor, asset, and fragment validation primitives that the Dart UI migration will consume. | |
+| `0115-feat-engine-move-dart-ui-codecs-buffers-and-fragment-shaders-to-runtime-spi.patch` | move the dart:ui codec, asset, fragment shader, and picture paths onto the runtime SPI while removing obsolete internal bridges. | |
+| `0116-fix-engine-build-spi-codecs-from-the-descriptor-generator.patch` | Reuse the generator and registry selected by the engine descriptor, including registered image decoders. | |
+| `0117-fix-engine-create-encoded-spi-descriptors-synchronously.patch` | Preserve ImageDescriptor.encoded's synchronous invalid-data error contract and avoid posting Dart exceptions from a callback. | |
+| `0118-feat-engine-carry-the-target-pixel-format-through-spi-decode-options.patch` | Preserve Dart UI target-format requests across the SPI descriptor and codec path until ImageDecoder receives its target format. | |
+| `0119-perf-engine-drop-redundant-ui-hops-in-spi-image-decoding.patch` | Keep decoder and codec callbacks on the UI thread without reposting work that is already there, while preserving asynchronous delivery for cached frames. | |
+| `0120-test-engine-add-a-semantics-frame-benchmark.patch` | establish the S4h-1 semantics benchmark baseline before routing dart:ui semantics through the runtime SPI. | |
+| `0121-feat-engine-submit-dart-ui-semantics-through-the-spi.patch` | Preserve the runtime SPI ownership contract while forwarding dart:ui semantics into the engine boundary. | |
+| `0122-feat-engine-add-a-fast-utf-8-validator-to-the-spi.patch` | Validate SPI strings with the Unicode well-formedness table and an ASCII fast path while preserving ICU's accepted domain. | |
+| `0123-perf-engine-validate-spi-strings-without-icu.patch` | Reuse the SPI UTF-8 validator and measure each semantics string only once. | |
+| `0124-perf-engine-move-semantics-nodes-instead-of-copying-them.patch` | let the semantics update path transfer node-owned storage into the core map. | |
+| `0125-feat-engine-add-a-thread-safe-platform-message-sender-to-the-spi.patch` | let background-isolate platform messages reach the platform handler through a thread-safe SPI sender. | |
+| `0126-feat-engine-send-background-isolate-platform-messages-through-the-spi.patch` | route background-isolate platform messages through the thread-safe SPI sender and retain sender ownership with the isolate group. | |
+| `0127-feat-engine-give-dart-ui-one-spi-api-accessor.patch` | install one stable copy of the runtime SPI before Dart isolates start. | |
+| `0128-refactor-engine-read-the-spi-through-one-accessor-in-dart-ui.patch` | make dart:ui use the runtime-installed SPI table instead of recreating engine API accessors. | |
+| `0129-feat-engine-add-path-set-volatile-to-the-spi.patch` | Expose path volatility through the public SPI scene API while preserving invalid-handle semantics. | |
+| `0130-refactor-engine-drop-dead-dart-ui-paths-left-after-the-spi-migration.patch` | Remove obsolete Dart UI bridges and exercise codec lifetime scenarios through the public SPI ABI. | |
+| `0131-refactor-engine-use-the-public-spi-abi-in-the-remaining-dart-ui-natives.patch` | keep dart:ui on the public runtime SPI ABI while isolating the temporary flutter_gpu bridge. | |
+| `0132-feat-engine-add-rsuperellipse-contains-to-the-spi.patch` | Implement the frozen scene ABI entry point with the same positive-bounds and raw-radii containment semantics as RSuperellipse. | |
+| `0133-refactor-engine-move-core-code-out-of-the-dart-ui-target.patch` | keep the extracted core targets buildable and route the GPU bridge through the CanvasImage factory. | |
+| `0134-refactor-engine-keep-core-types-out-of-dart-ui-signatures.patch` | expose only SPI-compatible scalar and geometry types from dart:ui while preserving the existing scene values. | |
+| `0135-refactor-engine-keep-core-objects-out-of-the-dart-ui-isolate-context.patch` | keep core-owned rendering objects out of UIDartState::Context while preserving the live GPU and runtime-stage paths. | |
+| `0136-refactor-engine-build-spi-colors-and-rects-without-display-list-in-dart-ui.patch` | Keep dart:ui painting conversions on the public SPI structs so the target can drop display_list implementation types without changing behavior. | |
+| `0137-build-engine-cut-core-implementation-deps-from-the-dart-ui-target.patch` | Keep dart:ui on the SPI ABI while declaring direct dependencies for core-only decoder and encoder tests. | |
+| `0138-fix-engine-pass-raw-image-pixel-formats-to-the-spi-by-its-own-enum.patch` | Keep dart:ui PixelFormat values aligned with the SPI enum so raw RGBA and BGRA descriptors reach the decoder without channel swaps or invalid formats. | |
+| `0139-build-engine-assert-that-dart-ui-only-sees-the-spi-abi.patch` | Keep the dart:ui target free of implementation dependencies that are owned by ui_text_core, which already carries the test-font dependency for font_collection.cc. | |
+| `0140-refactor-engine-keep-the-shell-service-protocol-off-the-dart-service-registry.patch` | keep the shell service protocol's parameter map owned by the shell core without including the Dart service registry. | |
+| `0141-refactor-engine-make-the-run-configuration-launch-payload-opaque-to-the-core.patch` | Keep Dart-specific isolate launch configuration details behind the shell common Dart boundary while preserving the existing RunConfiguration callers and launch behavior. | |
+| `0142-refactor-engine-build-dart-engines-outside-the-core-engine-class.patch` | keep worker-runner access behind RuntimeBackendFactory and retain the Dart VM include at the embedder boundary while moving Dart engine construction out of the core. | |
+| `0143-refactor-engine-let-the-runtime-factory-build-kernel-launch-payloads.patch` | keep Dart-specific kernel launch construction out of the shell core. | |
+| `0144-refactor-engine-spawn-runtime-backends-from-the-parent-backend.patch` | keep runtime controller access inside the Dart runtime boundary while allowing the shell core to spawn through the parent runtime backend. | |
+| `0145-refactor-engine-drop-dart-timeline-calls-from-the-shell-core.patch` | keep the shell core independent from Dart timeline APIs and runtime controller headers; the monotonic FML clock provides the same deadline domain. | |
+| `0146-build-engine-keep-dart-out-of-the-shell-core-target.patch` | isolate Dart shell sources and dependencies in a dedicated target while proving the common shell core cannot depend on Dart. | |
+| `0147-feat-engine-add-the-core-host-api-header.patch` | Keep the reproducible runtime-spi patch series aligned with the verified engine worktree. | |
+| `0148-refactor-engine-split-the-embedder-into-a-core-host-api-and-a-dart-translation.patch` | Record the verified core host API split fixes and build the host Settings before Dart run configuration inference. | |
+| `0149-build-engine-keep-dart-out-of-the-embedder-core.patch` | Record the verified GN dependency boundary that keeps Dart out of the embedder core target. | |
+| `0150-test-engine-run-an-spi-runtime-through-the-core-host-api.patch` | Record the verified end-to-end SPI runtime test through the core host API. | |
+| `0151-build-engine-add-the-core-only-engine-library.patch` | provide the alternative core-only shared library for the Runtime SPI. | |
+| `0152-build-engine-add-the-titan-flutter-runtime-dart-gn-arg.patch` | allow the Flutter embedder graph to omit Dart-backed targets while retaining the core runtime. | |
+| `0153-test-engine-smoke-test-the-core-library-from-c.patch` | exercise the core runtime through a C executable and keep the smoke test linked only to the core library and its C test runtime. | |
 
 O fluxo é:
 

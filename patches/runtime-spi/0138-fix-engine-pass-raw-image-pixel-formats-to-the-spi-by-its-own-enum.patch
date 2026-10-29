@@ -1,0 +1,191 @@
+# Why: Keep dart:ui PixelFormat values aligned with the SPI enum so raw RGBA
+# and BGRA descriptors reach the decoder without channel swaps or invalid
+# formats.
+diff --git a/engine/src/flutter/lib/ui/painting/image_descriptor.cc b/engine/src/flutter/lib/ui/painting/image_descriptor.cc
+index 45c7af5ea09..cdb74de5c82 100644
+--- a/engine/src/flutter/lib/ui/painting/image_descriptor.cc
++++ b/engine/src/flutter/lib/ui/painting/image_descriptor.cc
+@@ -54,19 +54,19 @@ Dart_Handle ImageDescriptor::initEncoded(Dart_Handle descriptor_handle,
+ 
+ namespace {
+ // Must be kept in sync with painting.dart.
+-ImageDescriptor::PixelFormat toImageDescriptorPixelFormat(int val) {
+-  switch (val) {
++FlutterSpiPixelFormat ToSpiPixelFormat(int dart_pixel_format) {
++  switch (dart_pixel_format) {
+     case 0:
+-      return ImageDescriptor::PixelFormat::kRGBA8888;
++      return kFlutterSpiPixelFormatRGBA8888;
+     case 1:
+-      return ImageDescriptor::PixelFormat::kBGRA8888;
++      return kFlutterSpiPixelFormatBGRA8888;
+     case 2:
+-      return ImageDescriptor::PixelFormat::kRGBAFloat32;
++      return kFlutterSpiPixelFormatRGBAFloat32;
+     case 3:
+-      return ImageDescriptor::PixelFormat::kR32Float;
++      return kFlutterSpiPixelFormatRFloat32;
+     default:
+       FML_DCHECK(false) << "unrecognized format";
+-      return ImageDescriptor::PixelFormat::kRGBA8888;
++      return kFlutterSpiPixelFormatRGBA8888;
+   }
+ }
+ }  // namespace
+@@ -77,8 +77,6 @@ void ImageDescriptor::initRaw(Dart_Handle descriptor_handle,
+                               int height,
+                               int row_bytes,
+                               int pixel_format) {
+-  ImageDescriptor::PixelFormat image_descriptor_pixel_format =
+-      toImageDescriptorPixelFormat(pixel_format);
+   FlutterSpiPixels pixels = {
+       .struct_size = sizeof(FlutterSpiPixels),
+       .pixels = static_cast<const uint8_t*>(data->data()->bytes()),
+@@ -86,7 +84,7 @@ void ImageDescriptor::initRaw(Dart_Handle descriptor_handle,
+       .width = width,
+       .height = height,
+       .row_bytes = row_bytes == -1 ? 0 : row_bytes,
+-      .pixel_format = static_cast<int32_t>(image_descriptor_pixel_format),
++      .pixel_format = static_cast<int32_t>(ToSpiPixelFormat(pixel_format)),
+   };
+   FlutterSpiImageDescriptor* spi_descriptor = nullptr;
+   if (SpiApi().image->image_descriptor_create_raw(
+diff --git a/engine/src/flutter/shell/common/fixtures/shell_test.dart b/engine/src/flutter/shell/common/fixtures/shell_test.dart
+index 5557ea4e268..f7faf5444f8 100644
+--- a/engine/src/flutter/shell/common/fixtures/shell_test.dart
++++ b/engine/src/flutter/shell/common/fixtures/shell_test.dart
+@@ -723,6 +723,33 @@ void canCreateImageFromDecompressedData() {
+   });
+ }
+ 
++@Native<Void Function(Int, Int)>(symbol: 'NotifyRawPixels')
++external void notifyRawPixels(int rgba, int bgra);
++
++Future<Image> _decodeRawImage(Uint8List pixels, PixelFormat format) {
++  final Completer<Image> completer = Completer<Image>();
++  decodeImageFromPixels(pixels, 1, 1, format, completer.complete);
++  return completer.future;
++}
++
++@pragma('vm:entry-point')
++Future<void> rawImagePixelFormatsKeepChannels() async {
++  final Image rgbaImage = await _decodeRawImage(
++    Uint8List.fromList(<int>[255, 0, 0, 255]),
++    PixelFormat.rgba8888,
++  );
++  final Image bgraImage = await _decodeRawImage(
++    Uint8List.fromList(<int>[0, 0, 255, 255]),
++    PixelFormat.bgra8888,
++  );
++  final ByteData rgbaData = (await rgbaImage.toByteData(format: ImageByteFormat.rawRgba))!;
++  final ByteData bgraData = (await bgraImage.toByteData(format: ImageByteFormat.rawRgba))!;
++
++  notifyRawPixels(rgbaData.getUint32(0), bgraData.getUint32(0));
++  rgbaImage.dispose();
++  bgraImage.dispose();
++}
++
+ @pragma('vm:entry-point')
+ void canAccessIsolateLaunchData() {
+   notifyMessage(
+diff --git a/engine/src/flutter/shell/common/shell_unittests.cc b/engine/src/flutter/shell/common/shell_unittests.cc
+index 675f1a1347f..f5a3d2b7b85 100644
+--- a/engine/src/flutter/shell/common/shell_unittests.cc
++++ b/engine/src/flutter/shell/common/shell_unittests.cc
+@@ -2279,6 +2279,37 @@ TEST_F(ShellTest, CanCreateImagefromDecompressedBytes) {
+   DestroyShell(std::move(shell), task_runners);
+ }
+ 
++TEST_F(ShellTest, RawImagePixelFormatsKeepChannels) {
++  Settings settings = CreateSettingsForFixture();
++  auto task_runner = CreateNewThread();
++  TaskRunners task_runners("test", task_runner, task_runner, task_runner,
++                           task_runner);
++  std::unique_ptr<Shell> shell = CreateShell(settings, task_runners);
++
++  auto configuration = RunConfiguration::InferFromSettings(settings);
++  configuration.SetEntrypoint("rawImagePixelFormatsKeepChannels");
++
++  unsigned int rgba_pixel = 0;
++  unsigned int bgra_pixel = 0;
++  fml::AutoResetWaitableEvent latch;
++  AddFfiNativeCallback(
++      "NotifyRawPixels",
++      CREATE_FFI_LAMBDA([&](int rgba, int bgra) {
++        rgba_pixel = rgba;
++        bgra_pixel = bgra;
++        latch.Signal();
++      }));
++
++  RunEngine(shell.get(), std::move(configuration));
++
++  const bool timed_out =
++      latch.WaitWithTimeout(fml::TimeDelta::FromSeconds(10));
++  ASSERT_FALSE(timed_out);
++  EXPECT_EQ(rgba_pixel, 0xFF0000FF);
++  EXPECT_EQ(bgra_pixel, 0xFF0000FF);
++  DestroyShell(std::move(shell), task_runners);
++}
++
+ class MockTexture : public Texture {
+  public:
+   MockTexture(int64_t textureId,
+diff --git a/engine/src/flutter/testing/dart/image_descriptor_test.dart b/engine/src/flutter/testing/dart/image_descriptor_test.dart
+index 85cdeecfbc3..af47e2cd2a9 100644
+--- a/engine/src/flutter/testing/dart/image_descriptor_test.dart
++++ b/engine/src/flutter/testing/dart/image_descriptor_test.dart
+@@ -74,6 +74,54 @@ void main() {
+     codec.dispose();
+   });
+ 
++  test('raw rgba8888 preserves red pixels', () async {
++    final ImmutableBuffer buffer = await ImmutableBuffer.fromUint8List(
++      Uint8List.fromList(<int>[255, 0, 0, 255]),
++    );
++    final ImageDescriptor descriptor = ImageDescriptor.raw(
++      buffer,
++      width: 1,
++      height: 1,
++      pixelFormat: PixelFormat.rgba8888,
++    );
++
++    final Codec codec = await descriptor.instantiateCodec();
++    final Image image = (await codec.getNextFrame()).image;
++    final ByteData? data = await image.toByteData(
++      format: ImageByteFormat.rawRgba,
++    );
++
++    expect(data, isNotNull);
++    expect(data!.buffer.asUint8List(), <int>[255, 0, 0, 255]);
++
++    image.dispose();
++    codec.dispose();
++  });
++
++  test('raw bgra8888 converts red pixels to rgba', () async {
++    final ImmutableBuffer buffer = await ImmutableBuffer.fromUint8List(
++      Uint8List.fromList(<int>[0, 0, 255, 255]),
++    );
++    final ImageDescriptor descriptor = ImageDescriptor.raw(
++      buffer,
++      width: 1,
++      height: 1,
++      pixelFormat: PixelFormat.bgra8888,
++    );
++
++    final Codec codec = await descriptor.instantiateCodec();
++    final Image image = (await codec.getNextFrame()).image;
++    final ByteData? data = await image.toByteData(
++      format: ImageByteFormat.rawRgba,
++    );
++
++    expect(data, isNotNull);
++    expect(data!.buffer.asUint8List(), <int>[255, 0, 0, 255]);
++
++    image.dispose();
++    codec.dispose();
++  });
++
+   test('HEIC image', () async {
+     final Uint8List bytes = await readFile('grill_chicken.heic');
+     final ImmutableBuffer buffer = await ImmutableBuffer.fromUint8List(bytes);

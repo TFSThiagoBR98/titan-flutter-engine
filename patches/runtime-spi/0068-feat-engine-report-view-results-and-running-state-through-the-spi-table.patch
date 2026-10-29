@@ -1,0 +1,1374 @@
+# Why: The versioned SPI table must preserve deferred view admission results
+# and expose the runtime execution state without changing its existing ABI
+# prefix.
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 4e2a81b3b08..92e72751fd2 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -48,7 +48,47 @@ SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_view_inset_bottom,
+                   sizeof(void*) == 8 ? 88 : 88);
+ SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_view_inset_left,
+                   sizeof(void*) == 8 ? 96 : 96);
+-SPI_EXPECT_SIZE(FlutterSpiViewMetrics, sizeof(void*) == 8 ? 104 : 104);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_min_width_constraint,
++                  sizeof(void*) == 8 ? 104 : 104);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_max_width_constraint,
++                  sizeof(void*) == 8 ? 112 : 112);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_min_height_constraint,
++                  sizeof(void*) == 8 ? 120 : 120);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_max_height_constraint,
++                  sizeof(void*) == 8 ? 128 : 128);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_system_gesture_inset_top,
++                  sizeof(void*) == 8 ? 136 : 136);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_system_gesture_inset_right,
++                  sizeof(void*) == 8 ? 144 : 144);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_system_gesture_inset_bottom,
++                  sizeof(void*) == 8 ? 152 : 152);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_system_gesture_inset_left,
++                  sizeof(void*) == 8 ? 160 : 160);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_touch_slop,
++                  sizeof(void*) == 8 ? 168 : 168);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, display_id,
++                  sizeof(void*) == 8 ? 176 : 176);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  physical_display_corner_radius_top_left,
++                  sizeof(void*) == 8 ? 184 : 184);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  physical_display_corner_radius_top_right,
++                  sizeof(void*) == 8 ? 192 : 192);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  physical_display_corner_radius_bottom_right,
++                  sizeof(void*) == 8 ? 200 : 200);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  physical_display_corner_radius_bottom_left,
++                  sizeof(void*) == 8 ? 208 : 208);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, display_features_bounds,
++                  sizeof(void*) == 8 ? 216 : 216);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, display_features_type,
++                  sizeof(void*) == 8 ? 224 : 220);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, display_features_state,
++                  sizeof(void*) == 8 ? 232 : 224);
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, display_features_count,
++                  sizeof(void*) == 8 ? 240 : 228);
++SPI_EXPECT_SIZE(FlutterSpiViewMetrics, sizeof(void*) == 8 ? 248 : 232);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiFrameInfo, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiFrameInfo, frame_token, sizeof(void*) == 8 ? 8 : 8);
+@@ -327,7 +367,13 @@ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, report_timings,
+                   sizeof(void*) == 8 ? 192 : 108);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, hit_test,
+                   sizeof(void*) == 8 ? 200 : 112);
+-SPI_EXPECT_SIZE(FlutterSpiRuntimeTable, sizeof(void*) == 8 ? 208 : 120);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, add_view_with_result,
++                  sizeof(void*) == 8 ? 208 : 116);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, remove_view_with_result,
++                  sizeof(void*) == 8 ? 216 : 120);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, is_running,
++                  sizeof(void*) == 8 ? 224 : 124);
++SPI_EXPECT_SIZE(FlutterSpiRuntimeTable, sizeof(void*) == 8 ? 232 : 128);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiColor, red, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiColor, green, 4);
+@@ -457,7 +503,9 @@ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, reset_internal_state,
+                   sizeof(void*) == 8 ? 264 : 144);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, asset_get,
+                   sizeof(void*) == 8 ? 272 : 148);
+-SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 280 : 152);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, complete_add_view,
++                  sizeof(void*) == 8 ? 280 : 152);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 288 : 160);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, color, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, offset, 20);
+@@ -616,7 +664,7 @@ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, fragment,
+                   sizeof(void*) == 8 ? 144 : 84);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, semantics,
+                   sizeof(void*) == 8 ? 152 : 88);
+-SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 280 : 152);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 288 : 160);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, name,
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index cac388c1a00..20a751f9005 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 13
++#define FLUTTER_SPI_VERSION_MINOR 14
+ 
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+@@ -59,6 +59,24 @@ typedef struct {
+   double physical_view_inset_right;
+   double physical_view_inset_bottom;
+   double physical_view_inset_left;
++  double physical_min_width_constraint;
++  double physical_max_width_constraint;
++  double physical_min_height_constraint;
++  double physical_max_height_constraint;
++  double physical_system_gesture_inset_top;
++  double physical_system_gesture_inset_right;
++  double physical_system_gesture_inset_bottom;
++  double physical_system_gesture_inset_left;
++  double physical_touch_slop;
++  uint64_t display_id;
++  double physical_display_corner_radius_top_left;
++  double physical_display_corner_radius_top_right;
++  double physical_display_corner_radius_bottom_right;
++  double physical_display_corner_radius_bottom_left;
++  const double* display_features_bounds;
++  const int32_t* display_features_type;
++  const int32_t* display_features_state;
++  size_t display_features_count;
+ } FlutterSpiViewMetrics;
+ 
+ typedef struct {
+@@ -143,6 +161,8 @@ typedef struct {
+ typedef struct {
+   size_t struct_size;
+   const char* channel;
++  // A null data pointer means that the platform message has no payload.
++  // A non-null pointer with data_size equal to zero means an empty payload.
+   const uint8_t* data;
+   size_t data_size;
+   FlutterSpiResponseHandle* response;
+@@ -199,6 +219,15 @@ typedef struct {
+                    int64_t view_id,
+                    double x,
+                    double y);
++  // UI runner only; the runtime calls exactly once, now or later, with the
++  // result delivered through FlutterSpiEngineApi.complete_add_view.
++  void (*add_view_with_result)(void* user_data,
++                               const FlutterSpiViewMetrics* metrics,
++                               uint64_t request_id);
++  // UI runner only; returns whether the runtime accepted the view removal.
++  bool (*remove_view_with_result)(void* user_data, int64_t view_id);
++  // UI runner only; reports whether the runtime is executing app code.
++  bool (*is_running)(void* user_data);
+ } FlutterSpiRuntimeTable;
+ 
+ struct FlutterSpiEngineApi {
+@@ -223,6 +252,8 @@ struct FlutterSpiEngineApi {
+   FlutterSpiResult (*send_platform_message)(
+       FlutterSpiEngine* engine,
+       const char* channel,
++      // A null data pointer means that the platform message has no payload.
++      // A non-null pointer with data_size equal to zero means an empty payload.
+       const uint8_t* data,
+       size_t data_size,
+       void (*on_reply)(void* user_data, const uint8_t* data, size_t size),
+@@ -284,6 +315,10 @@ struct FlutterSpiEngineApi {
+   bool (*asset_get)(FlutterSpiEngine* engine,
+                     const char* name,
+                     FlutterSpiMapping* out_mapping);
++  // UI runner only; completes exactly one pending add_view_with_result call.
++  void (*complete_add_view)(FlutterSpiEngine* engine,
++                            uint64_t request_id,
++                            bool added);
+ };
+ 
+ /*
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
+index 1a10d68ff52..4018f546c0d 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.cc
+@@ -50,4 +50,9 @@ std::shared_ptr<AssetManager> SpiEngineAssetManager(FlutterSpiEngine* engine) {
+   return engine->backend->runtime_delegate_.GetAssetManager();
+ }
+ 
++std::weak_ptr<PlatformMessageHandler> SpiEnginePlatformMessageHandler(
++    FlutterSpiEngine* engine) {
++  return engine->backend->runtime_delegate_.GetPlatformMessageHandler();
++}
++
+ }  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+index be5461a2df9..3c845fd6450 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+@@ -16,6 +16,7 @@ namespace flutter {
+ class AssetManager;
+ class FontCollection;
+ class LayerTree;
++class PlatformMessageHandler;
+ 
+ // Temporary bridge until S4d moves LayerTree conversion behind dart:ui SPI.
+ FlutterSpiResult SpiSceneFromLayerTree(std::unique_ptr<LayerTree> layer_tree,
+@@ -34,6 +35,10 @@ FontCollection& SpiEngineFontCollection(FlutterSpiEngine* engine);
+ // Temporary bridge until S4g moves asset access behind dart:ui SPI.
+ std::shared_ptr<AssetManager> SpiEngineAssetManager(FlutterSpiEngine* engine);
+ 
++// Temporary bridge: background isolates post platform messages straight to the shell's handler, a Dart-only path with no C equivalent yet.
++std::weak_ptr<PlatformMessageHandler> SpiEnginePlatformMessageHandler(
++    FlutterSpiEngine* engine);
++
+ }  // namespace flutter
+ 
+ #endif  // FLUTTER_RUNTIME_SPI_INTERNAL_SPI_INTERNAL_BRIDGES_H_
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index 73f04bad123..67223c33740 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -93,7 +93,7 @@ TEST(SpiAbi, ImageEnumValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawUnmodified, 2);
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawExtendedRGBA128, 3);
+   EXPECT_EQ(kFlutterSpiImageByteFormatPNG, 4);
+-  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 13);
++  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 14);
+ }
+ 
+ TEST(SpiAbi, SemanticsLayoutIsFrozen) {
+@@ -335,7 +335,37 @@ TEST(SpiAbi, ViewMetricsLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_view_inset_right, 80, 80);
+   EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_view_inset_bottom, 88, 88);
+   EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_view_inset_left, 96, 96);
+-  EXPECT_EQ(sizeof(FlutterSpiViewMetrics), sizeof(void*) == 8 ? 104u : 104u);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_min_width_constraint, 104,
++                    104);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_max_width_constraint, 112,
++                    112);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_min_height_constraint, 120,
++                    120);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_max_height_constraint, 128,
++                    128);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_system_gesture_inset_top,
++                    136, 136);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_system_gesture_inset_right,
++                    144, 144);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics,
++                    physical_system_gesture_inset_bottom, 152, 152);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_system_gesture_inset_left,
++                    160, 160);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, physical_touch_slop, 168, 168);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, display_id, 176, 176);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics,
++                    physical_display_corner_radius_top_left, 184, 184);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics,
++                    physical_display_corner_radius_top_right, 192, 192);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics,
++                    physical_display_corner_radius_bottom_right, 200, 200);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics,
++                    physical_display_corner_radius_bottom_left, 208, 208);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, display_features_bounds, 216, 216);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, display_features_type, 224, 220);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, display_features_state, 232, 224);
++  EXPECT_SPI_OFFSET(FlutterSpiViewMetrics, display_features_count, 240, 228);
++  EXPECT_EQ(sizeof(FlutterSpiViewMetrics), sizeof(void*) == 8 ? 248u : 232u);
+ }
+ 
+ TEST(SpiAbi, FrameInfoLayoutIsFrozen) {
+@@ -423,8 +453,11 @@ TEST(SpiAbi, RuntimeTableLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, set_displays, 184, 104);
+   EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, report_timings, 192, 108);
+   EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, hit_test, 200, 112);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, add_view_with_result, 208, 116);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, remove_view_with_result, 216, 120);
++  EXPECT_SPI_OFFSET(FlutterSpiRuntimeTable, is_running, 224, 124);
+   EXPECT_EQ(sizeof(FlutterSpiRuntimeTable),
+-            sizeof(void*) == 8 ? 208u : 120u);
++            sizeof(void*) == 8 ? 232u : 128u);
+ }
+ 
+ TEST(SpiAbi, RuntimeExtensionsEnumAndLayoutsAreFrozen) {
+@@ -565,7 +598,8 @@ TEST(SpiAbi, EngineApiLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, request_view_focus_change, 256, 140);
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, reset_internal_state, 264, 144);
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, asset_get, 272, 148);
+-  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 280u : 152u);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, complete_add_view, 280, 152);
++  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 288u : 160u);
+ }
+ 
+ TEST(SpiAbi, FragmentUniformInfoLayoutIsFrozen) {
+diff --git a/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+index 5ae0d717766..64a92d6c970 100644
+--- a/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+@@ -744,6 +744,7 @@ TEST_F(SpiConformance, PointerDispatchHonorsRuntimeCode) {
+   runtime_->runtime_code_running = true;
+   StartShell();
+ 
++  size_t count_after_dispatch = 0;
+   auto dispatch_pointer_packet = [&](size_t expected_event_count) {
+     fml::AutoResetWaitableEvent latch;
+     bool dispatched_synchronously = false;
+@@ -756,6 +757,7 @@ TEST_F(SpiConformance, PointerDispatchHonorsRuntimeCode) {
+       shell_->GetPlatformView()->DispatchPointerDataPacket(std::move(packet));
+       dispatched_synchronously =
+           runtime_->pointer_events_count == expected_event_count;
++      count_after_dispatch = runtime_->pointer_events_count;
+       latch.Signal();
+     });
+     latch.Wait();
+@@ -763,7 +765,7 @@ TEST_F(SpiConformance, PointerDispatchHonorsRuntimeCode) {
+   };
+ 
+   EXPECT_FALSE(dispatch_pointer_packet(1u));
+-  EXPECT_EQ(runtime_->pointer_events_count, 0u);
++  EXPECT_EQ(count_after_dispatch, 0u);
+   FlushUi();
+   ASSERT_EQ(runtime_->pointer_events_count, 1u);
+ 
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index 5237decdb49..4d609c9b1cf 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -208,9 +208,19 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+       .request_view_focus_change = RequestViewFocusChange,
+       .reset_internal_state = ResetInternalState,
+       .asset_get = AssetGet,
++      .complete_add_view = CompleteAddView,
+   };
+ }
+ 
++void SpiEngineApi::CompleteAddView(FlutterSpiEngine* engine,
++                                   uint64_t request_id,
++                                   bool added) {
++  if (engine == nullptr || engine->backend == nullptr) {
++    return;
++  }
++  engine->backend->CompleteAddView(request_id, added);
++}
++
+ char* SpiEngineApi::DefaultRouteName(FlutterSpiEngine* engine) {
+   if (engine == nullptr || engine->backend == nullptr ||
+       !engine->backend->HasUiThread()) {
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.h b/engine/src/flutter/runtime_spi/spi_engine_api.h
+index 9fad2b113a9..92dcb844a97 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.h
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.h
+@@ -146,6 +146,9 @@ class SpiEngineApi final {
+   static bool AssetGet(FlutterSpiEngine* engine,
+                        const char* name,
+                        FlutterSpiMapping* out_mapping);
++  static void CompleteAddView(FlutterSpiEngine* engine,
++                              uint64_t request_id,
++                              bool added);
+ };
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+index 1c3404bf6c8..ba2eaf485e7 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+@@ -46,6 +46,34 @@ FlutterSpiViewMetrics ConvertMetrics(int64_t view_id,
+       .physical_view_inset_right = metrics.physical_view_inset_right,
+       .physical_view_inset_bottom = metrics.physical_view_inset_bottom,
+       .physical_view_inset_left = metrics.physical_view_inset_left,
++      .physical_min_width_constraint = metrics.physical_min_width_constraint,
++      .physical_max_width_constraint = metrics.physical_max_width_constraint,
++      .physical_min_height_constraint = metrics.physical_min_height_constraint,
++      .physical_max_height_constraint = metrics.physical_max_height_constraint,
++      .physical_system_gesture_inset_top =
++          metrics.physical_system_gesture_inset_top,
++      .physical_system_gesture_inset_right =
++          metrics.physical_system_gesture_inset_right,
++      .physical_system_gesture_inset_bottom =
++          metrics.physical_system_gesture_inset_bottom,
++      .physical_system_gesture_inset_left =
++          metrics.physical_system_gesture_inset_left,
++      .physical_touch_slop = metrics.physical_touch_slop,
++      .display_id = static_cast<uint64_t>(metrics.display_id),
++      .physical_display_corner_radius_top_left =
++          metrics.physical_display_corner_radius_top_left,
++      .physical_display_corner_radius_top_right =
++          metrics.physical_display_corner_radius_top_right,
++      .physical_display_corner_radius_bottom_right =
++          metrics.physical_display_corner_radius_bottom_right,
++      .physical_display_corner_radius_bottom_left =
++          metrics.physical_display_corner_radius_bottom_left,
++      .display_features_bounds = metrics.physical_display_features_bounds.data(),
++      .display_features_type = reinterpret_cast<const int32_t*>(
++          metrics.physical_display_features_type.data()),
++      .display_features_state = reinterpret_cast<const int32_t*>(
++          metrics.physical_display_features_state.data()),
++      .display_features_count = metrics.physical_display_features_type.size(),
+   };
+ }
+ 
+@@ -199,6 +227,19 @@ void SpiRuntimeBackend::AddView(int64_t view_id,
+     return;
+   }
+   FlutterSpiViewMetrics metrics = ConvertMetrics(view_id, view_metrics);
++  if (IsCallbackAvailable(
++          offsetof(FlutterSpiRuntimeTable, add_view_with_result),
++          sizeof(table_.add_view_with_result)) &&
++      table_.add_view_with_result != nullptr) {
++    const uint64_t request_id = next_add_view_request_++;
++    const auto pending_iterator =
++        pending_add_views_
++            .emplace(request_id, std::make_pair(metrics, std::move(callback)))
++            .first;
++    table_.add_view_with_result(table_.user_data,
++                                &pending_iterator->second.first, request_id);
++    return;
++  }
+   views_[view_id] = metrics;
+   if (table_.add_view != nullptr) {
+     table_.add_view(table_.user_data, &metrics);
+@@ -212,6 +253,17 @@ bool SpiRuntimeBackend::RemoveView(int64_t view_id) {
+   if (stop_requested_) {
+     return true;
+   }
++  if (IsCallbackAvailable(
++          offsetof(FlutterSpiRuntimeTable, remove_view_with_result),
++          sizeof(table_.remove_view_with_result)) &&
++      table_.remove_view_with_result != nullptr) {
++    const bool removed =
++        table_.remove_view_with_result(table_.user_data, view_id);
++    if (removed) {
++      views_.erase(view_id);
++    }
++    return removed;
++  }
+   views_.erase(view_id);
+   if (table_.remove_view != nullptr) {
+     table_.remove_view(table_.user_data, view_id);
+@@ -408,6 +460,11 @@ HitTestResponse SpiRuntimeBackend::HitTest(int64_t view_id, PointData offset) {
+ }
+ 
+ bool SpiRuntimeBackend::IsRunning() const {
++  if (IsCallbackAvailable(offsetof(FlutterSpiRuntimeTable, is_running),
++                          sizeof(table_.is_running)) &&
++      table_.is_running != nullptr) {
++    return table_.is_running(table_.user_data);
++  }
+   return running_;
+ }
+ 
+@@ -482,11 +539,31 @@ void SpiRuntimeBackend::CompletePendingResponses() {
+   response_handles_.clear();
+ }
+ 
++void SpiRuntimeBackend::CompleteAddView(uint64_t request_id, bool added) {
++  if (!HasUiThread()) {
++    return;
++  }
++  const auto pending_iterator = pending_add_views_.find(request_id);
++  if (pending_iterator == pending_add_views_.end()) {
++    return;
++  }
++  const FlutterSpiViewMetrics metrics = pending_iterator->second.first;
++  AddViewCallback callback = std::move(pending_iterator->second.second);
++  pending_add_views_.erase(pending_iterator);
++  if (added) {
++    views_[metrics.view_id] = metrics;
++  }
++  if (callback != nullptr) {
++    callback(added);
++  }
++}
++
+ void SpiRuntimeBackend::StopRuntime() {
+   if (!started_ || stop_called_) {
+     return;
+   }
+   CompletePendingResponses();
++  pending_add_views_.clear();
+   image_decoding_.reset();
+   image_snapshot_.reset();
+   if (table_.stop != nullptr) {
+@@ -551,10 +628,16 @@ bool SpiRuntimeBackend::DispatchRegularPlatformMessage(
+     };
+     response_handles_.insert(handle);
+   }
++  static const uint8_t kEmptyPayload = 0;
++  const uint8_t* data = nullptr;
++  if (message->hasData()) {
++    data = message->data().GetSize() == 0 ? &kEmptyPayload
++                                          : message->data().GetMapping();
++  }
+   FlutterSpiPlatformMessage spi_message = {
+       .struct_size = sizeof(FlutterSpiPlatformMessage),
+       .channel = message->channel().c_str(),
+-      .data = message->data().GetMapping(),
++      .data = data,
+       .data_size = message->data().GetSize(),
+       .response = handle,
+   };
+@@ -593,6 +676,7 @@ FlutterSpiResult SpiRuntimeBackend::SubmitFrame(int64_t view_id,
+     return kFlutterSpiInternalError;
+   }
+   if (!HasUiThread()) {
++    SpiSceneRelease(scene);
+     return kFlutterSpiWrongThread;
+   }
+   const bool is_warm_up_frame = frame_token == 0 && !frame_in_progress_;
+@@ -664,8 +748,13 @@ FlutterSpiResult SpiRuntimeBackend::SendPlatformMessage(
+     response = fml::AdoptRef(new SpiEngineResponse(
+         task_runners_.GetUITaskRunner(), on_reply, reply_user_data));
+   }
+-  auto message = std::make_unique<PlatformMessage>(
+-      channel, fml::MallocMapping::Copy(data, data_size), response);
++  std::unique_ptr<PlatformMessage> message;
++  if (data == nullptr) {
++    message = std::make_unique<PlatformMessage>(channel, response);
++  } else {
++    message = std::make_unique<PlatformMessage>(
++        channel, fml::MallocMapping::Copy(data, data_size), response);
++  }
+   runtime_delegate_.HandlePlatformMessage(std::move(message));
+   return kFlutterSpiOk;
+ }
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.h b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+index ccf0056b42b..4eb5e0abcdc 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.h
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+@@ -26,6 +26,7 @@ namespace flutter {
+ 
+ class AssetManager;
+ class FontCollection;
++class PlatformMessageHandler;
+ class RuntimeDelegate;
+ class SpiRuntimeBackend;
+ class SpiFragment;
+@@ -163,11 +164,14 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+   friend FontCollection& SpiEngineFontCollection(FlutterSpiEngine* engine);
+   friend std::shared_ptr<AssetManager> SpiEngineAssetManager(
+       FlutterSpiEngine* engine);
++  friend std::weak_ptr<PlatformMessageHandler> SpiEnginePlatformMessageHandler(
++      FlutterSpiEngine* engine);
+ 
+   bool HasUiThread() const;
+   bool HasCapability(FlutterSpiCapabilities capability) const;
+   bool IsTableCompatible() const;
+   bool IsCallbackAvailable(size_t offset, size_t size) const;
++  void CompleteAddView(uint64_t request_id, bool added);
+   void RegisterSemanticsBuilder(FlutterSpiSemanticsUpdateBuilder* builder);
+   void UnregisterSemanticsBuilder(FlutterSpiSemanticsUpdateBuilder* builder);
+   static SpiRuntimeBackend* FindSemanticsBackend(
+@@ -187,6 +191,10 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+   FlutterSpiEngineApi engine_api_ = {};
+   FlutterSpiEngine* engine_handle_ = nullptr;
+   std::unordered_map<int64_t, FlutterSpiViewMetrics> views_;
++  uint64_t next_add_view_request_ = 1;
++  std::unordered_map<uint64_t,
++                     std::pair<FlutterSpiViewMetrics, AddViewCallback>>
++      pending_add_views_;
+   std::unordered_set<FlutterSpiResponseHandle*> response_handles_;
+   uint64_t current_frame_token_ = 0;
+   int64_t current_frame_deadline_ns_ = 0;
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
+index db77a159c16..6757fc0b9e4 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
+@@ -222,6 +222,115 @@ FlutterSpiRuntimeTable MakeRuntimeCallbackTable(
+   return table;
+ }
+ 
++struct ViewResultCapture {
++  const FlutterSpiEngineApi* engine_api = nullptr;
++  FlutterSpiEngine* engine = nullptr;
++  size_t add_view_count = 0;
++  uint64_t add_view_request_id = 0;
++  bool remove_view_result = true;
++  bool is_running_result = false;
++};
++
++struct ViewportMetricsCapture {
++  const FlutterSpiEngineApi* engine_api = nullptr;
++  FlutterSpiEngine* engine = nullptr;
++  FlutterSpiViewMetrics metrics = {};
++  std::vector<double> display_features_bounds;
++  std::vector<int32_t> display_features_type;
++  std::vector<int32_t> display_features_state;
++};
++
++FlutterSpiResult CaptureViewportMetricsRuntimeStart(
++    void* user_data,
++    const FlutterSpiEngineApi* api,
++    FlutterSpiEngine* engine) {
++  auto* capture = static_cast<ViewportMetricsCapture*>(user_data);
++  capture->engine_api = api;
++  capture->engine = engine;
++  return kFlutterSpiOk;
++}
++
++void CaptureViewportMetrics(void* user_data,
++                            const FlutterSpiViewMetrics* metrics) {
++  auto* capture = static_cast<ViewportMetricsCapture*>(user_data);
++  capture->metrics = *metrics;
++  capture->display_features_bounds.assign(
++      metrics->display_features_bounds,
++      metrics->display_features_bounds + 4 * metrics->display_features_count);
++  capture->display_features_type.assign(
++      metrics->display_features_type,
++      metrics->display_features_type + metrics->display_features_count);
++  capture->display_features_state.assign(
++      metrics->display_features_state,
++      metrics->display_features_state + metrics->display_features_count);
++}
++
++void IgnoreViewportMetricsRuntimeCallback(void*) {}
++
++FlutterSpiRuntimeTable MakeViewportMetricsTable(
++    ViewportMetricsCapture* capture) {
++  FlutterSpiRuntimeTable table = {};
++  table.struct_size = sizeof(table);
++  table.version_major = FLUTTER_SPI_VERSION_MAJOR;
++  table.version_minor = FLUTTER_SPI_VERSION_MINOR;
++  table.user_data = capture;
++  table.start = CaptureViewportMetricsRuntimeStart;
++  table.stop = IgnoreViewportMetricsRuntimeCallback;
++  table.destroy = IgnoreViewportMetricsRuntimeCallback;
++  table.set_view_metrics = CaptureViewportMetrics;
++  return table;
++}
++
++FlutterSpiResult CaptureRuntimeStart(void* user_data,
++                                     const FlutterSpiEngineApi* api,
++                                     FlutterSpiEngine* engine) {
++  auto* capture = static_cast<ViewResultCapture*>(user_data);
++  capture->engine_api = api;
++  capture->engine = engine;
++  return kFlutterSpiOk;
++}
++
++void CaptureRuntimeStop(void* user_data) {
++  (void)user_data;
++}
++
++void CaptureRuntimeDestroy(void* user_data) {
++  (void)user_data;
++}
++
++void CaptureAddViewWithResult(void* user_data,
++                              const FlutterSpiViewMetrics* metrics,
++                              uint64_t request_id) {
++  (void)metrics;
++  auto* capture = static_cast<ViewResultCapture*>(user_data);
++  capture->add_view_count++;
++  capture->add_view_request_id = request_id;
++}
++
++bool CaptureRemoveViewWithResult(void* user_data, int64_t view_id) {
++  (void)view_id;
++  return static_cast<ViewResultCapture*>(user_data)->remove_view_result;
++}
++
++bool CaptureIsRunning(void* user_data) {
++  return static_cast<ViewResultCapture*>(user_data)->is_running_result;
++}
++
++FlutterSpiRuntimeTable MakeViewResultTable(ViewResultCapture* capture) {
++  FlutterSpiRuntimeTable table = {};
++  table.struct_size = sizeof(table);
++  table.version_major = FLUTTER_SPI_VERSION_MAJOR;
++  table.version_minor = FLUTTER_SPI_VERSION_MINOR;
++  table.user_data = capture;
++  table.start = CaptureRuntimeStart;
++  table.stop = CaptureRuntimeStop;
++  table.destroy = CaptureRuntimeDestroy;
++  table.add_view_with_result = CaptureAddViewWithResult;
++  table.remove_view_with_result = CaptureRemoveViewWithResult;
++  table.is_running = CaptureIsRunning;
++  return table;
++}
++
+ class TestPlatformMessageResponse final : public PlatformMessageResponse {
+  public:
+   void Complete(std::unique_ptr<fml::Mapping> data) override {
+@@ -234,6 +343,45 @@ class TestPlatformMessageResponse final : public PlatformMessageResponse {
+   size_t complete_empty_count = 0;
+ };
+ 
++struct PlatformMessageCapture {
++  const FlutterSpiEngineApi* engine_api = nullptr;
++  FlutterSpiEngine* engine = nullptr;
++  size_t count = 0;
++  const uint8_t* data[2] = {};
++  size_t data_size[2] = {};
++};
++
++FlutterSpiResult CapturePlatformMessageRuntimeStart(
++    void* user_data,
++    const FlutterSpiEngineApi* engine_api,
++    FlutterSpiEngine* engine) {
++  auto* capture = static_cast<PlatformMessageCapture*>(user_data);
++  capture->engine_api = engine_api;
++  capture->engine = engine;
++  return kFlutterSpiOk;
++}
++
++void CapturePlatformMessage(void* user_data,
++                            const FlutterSpiPlatformMessage* message) {
++  auto* capture = static_cast<PlatformMessageCapture*>(user_data);
++  if (message == nullptr || capture->count >= 2) {
++    return;
++  }
++  capture->data[capture->count] = message->data;
++  capture->data_size[capture->count] = message->data_size;
++  capture->count++;
++}
++
++FlutterSpiRuntimeTable MakePlatformMessageCaptureTable(
++    CTestRuntime* runtime,
++    PlatformMessageCapture* capture) {
++  FlutterSpiRuntimeTable table = c_test_runtime_table(runtime);
++  table.user_data = capture;
++  table.start = CapturePlatformMessageRuntimeStart;
++  table.platform_message = CapturePlatformMessage;
++  return table;
++}
++
+ class SpiRuntimeBackendTest : public ::testing::Test {
+  protected:
+   void SetUp() override {
+@@ -455,6 +603,167 @@ TEST_F(SpiRuntimeBackendTest, LaunchUsesTheRuntimeExtension) {
+   EXPECT_NE(capture.run_configuration, nullptr);
+ }
+ 
++TEST_F(SpiRuntimeBackendTest, AddViewWaitsForRuntimeResult) {
++  ViewResultCapture capture;
++  auto backend = CreateBackend(MakeViewResultTable(&capture));
++  LaunchBackend(backend.get());
++
++  bool callback_called = false;
++  bool callback_result = true;
++  backend->AddView(1, ViewportMetrics(), [&](bool added) {
++    callback_called = true;
++    callback_result = added;
++  });
++
++  ASSERT_NE(capture.engine_api, nullptr);
++  ASSERT_NE(capture.engine_api->complete_add_view, nullptr);
++  EXPECT_EQ(capture.add_view_count, 1u);
++  EXPECT_FALSE(callback_called);
++
++  capture.engine_api->complete_add_view(capture.engine,
++                                        capture.add_view_request_id, false);
++
++  EXPECT_TRUE(callback_called);
++  EXPECT_FALSE(callback_result);
++}
++
++TEST_F(SpiRuntimeBackendTest, RejectedViewIsNotRendered) {
++  ViewResultCapture capture;
++  auto backend = CreateBackend(MakeViewResultTable(&capture));
++  LaunchBackend(backend.get());
++
++  backend->AddView(1, ViewportMetrics(), {});
++  ASSERT_NE(capture.engine_api, nullptr);
++  ASSERT_NE(capture.engine_api->complete_add_view, nullptr);
++  capture.engine_api->complete_add_view(capture.engine,
++                                        capture.add_view_request_id, false);
++
++  ASSERT_NE(capture.engine_api->scene_create_empty, nullptr);
++  ASSERT_NE(capture.engine_api->submit_frame, nullptr);
++  FlutterSpiScene* scene = nullptr;
++  ASSERT_EQ(capture.engine_api->scene_create_empty(capture.engine, 10, 10,
++                                                   &scene),
++            kFlutterSpiOk);
++
++  EXPECT_EQ(capture.engine_api->submit_frame(capture.engine, 1, 0, scene, 1.0),
++            kFlutterSpiStaleFrame);
++}
++
++TEST_F(SpiRuntimeBackendTest, RemoveViewReturnsRuntimeResult) {
++  ViewResultCapture capture;
++  capture.remove_view_result = false;
++  auto backend = CreateBackend(MakeViewResultTable(&capture));
++
++  EXPECT_FALSE(backend->RemoveView(1));
++}
++
++TEST_F(SpiRuntimeBackendTest, IsRunningAsksTheRuntime) {
++  ViewResultCapture capture;
++  capture.is_running_result = true;
++  auto backend = CreateBackend(MakeViewResultTable(&capture));
++
++  EXPECT_TRUE(backend->IsRunning());
++  capture.is_running_result = false;
++  LaunchBackend(backend.get());
++
++  EXPECT_FALSE(backend->IsRunning());
++}
++
++TEST_F(SpiRuntimeBackendTest, OlderTableKeepsImmediateViewResults) {
++  ViewResultCapture capture;
++  auto table = MakeViewResultTable(&capture);
++  table.struct_size = offsetof(FlutterSpiRuntimeTable, add_view_with_result);
++  auto backend = CreateBackend(table);
++  LaunchBackend(backend.get());
++
++  bool callback_result = false;
++  backend->AddView(1, ViewportMetrics(),
++                   [&](bool added) { callback_result = added; });
++
++  EXPECT_TRUE(callback_result);
++  EXPECT_TRUE(backend->RemoveView(1));
++  EXPECT_TRUE(backend->IsRunning());
++}
++
++TEST_F(SpiRuntimeBackendTest, ViewMetricsCarryEveryViewportField) {
++  ViewportMetricsCapture capture;
++  auto backend = CreateBackend(MakeViewportMetricsTable(&capture));
++  const std::vector<double> display_features_bounds =
++      {1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0};
++  const std::vector<int> display_features_type = {9, 10};
++  const std::vector<int> display_features_state = {11, 12};
++  const ViewportMetrics metrics(
++      2.0, 640.0, 480.0, 100.0, 200.0, 300.0, 400.0, 1.0, 2.0, 3.0,
++      4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 7.0,
++      display_features_bounds, display_features_type, display_features_state,
++      3, 13.0, 14.0, 15.0, 16.0);
++
++  ASSERT_TRUE(backend->SetViewportMetrics(42, metrics));
++
++  EXPECT_EQ(capture.metrics.view_id, 42);
++  EXPECT_EQ(capture.metrics.device_pixel_ratio, 2.0);
++  EXPECT_EQ(capture.metrics.physical_width, 640.0);
++  EXPECT_EQ(capture.metrics.physical_height, 480.0);
++  EXPECT_EQ(capture.metrics.physical_min_width_constraint, 100.0);
++  EXPECT_EQ(capture.metrics.physical_max_width_constraint, 200.0);
++  EXPECT_EQ(capture.metrics.physical_min_height_constraint, 300.0);
++  EXPECT_EQ(capture.metrics.physical_max_height_constraint, 400.0);
++  EXPECT_EQ(capture.metrics.physical_padding_top, 1.0);
++  EXPECT_EQ(capture.metrics.physical_padding_right, 2.0);
++  EXPECT_EQ(capture.metrics.physical_padding_bottom, 3.0);
++  EXPECT_EQ(capture.metrics.physical_padding_left, 4.0);
++  EXPECT_EQ(capture.metrics.physical_view_inset_top, 5.0);
++  EXPECT_EQ(capture.metrics.physical_view_inset_right, 6.0);
++  EXPECT_EQ(capture.metrics.physical_view_inset_bottom, 7.0);
++  EXPECT_EQ(capture.metrics.physical_view_inset_left, 8.0);
++  EXPECT_EQ(capture.metrics.physical_system_gesture_inset_top, 9.0);
++  EXPECT_EQ(capture.metrics.physical_system_gesture_inset_right, 10.0);
++  EXPECT_EQ(capture.metrics.physical_system_gesture_inset_bottom, 11.0);
++  EXPECT_EQ(capture.metrics.physical_system_gesture_inset_left, 12.0);
++  EXPECT_EQ(capture.metrics.physical_touch_slop, 7.0);
++  EXPECT_EQ(capture.metrics.display_id, 3u);
++  EXPECT_EQ(capture.metrics.physical_display_corner_radius_top_left, 13.0);
++  EXPECT_EQ(capture.metrics.physical_display_corner_radius_top_right, 14.0);
++  EXPECT_EQ(capture.metrics.physical_display_corner_radius_bottom_right, 15.0);
++  EXPECT_EQ(capture.metrics.physical_display_corner_radius_bottom_left, 16.0);
++  EXPECT_EQ(capture.metrics.display_features_count, 2u);
++  EXPECT_EQ(capture.display_features_bounds, display_features_bounds);
++  EXPECT_EQ(capture.display_features_type, display_features_type);
++  EXPECT_EQ(capture.display_features_state, display_features_state);
++}
++
++TEST_F(SpiRuntimeBackendTest, UnknownAddViewRequestIsIgnored) {
++  ViewResultCapture capture;
++  auto backend = CreateBackend(MakeViewResultTable(&capture));
++  LaunchBackend(backend.get());
++
++  ASSERT_NE(capture.engine_api, nullptr);
++  ASSERT_NE(capture.engine_api->complete_add_view, nullptr);
++  capture.engine_api->complete_add_view(capture.engine, 999, true);
++
++  EXPECT_EQ(capture.add_view_count, 0u);
++}
++
++TEST_F(SpiRuntimeBackendTest, SubmitFrameConsumesSceneOffTheUiThread) {
++  auto backend = CreateBackend(c_test_runtime_table(runtime));
++  LaunchBackend(backend.get());
++
++  size_t release_count = 0;
++  auto* scene = new FlutterSpiScene();
++  scene->root_layer = std::shared_ptr<ContainerLayer>(
++      nullptr, [&release_count](ContainerLayer*) { release_count++; });
++
++  std::atomic<FlutterSpiResult> result{kFlutterSpiInternalError};
++  std::thread worker([&] {
++    result = runtime->engine_api->submit_frame(runtime->engine, 1, 0, scene,
++                                               1.0);
++  });
++  worker.join();
++
++  EXPECT_EQ(result.load(), kFlutterSpiWrongThread);
++  EXPECT_EQ(release_count, 1u);
++}
++
+ TEST_F(SpiRuntimeBackendTest, InternalBridgeConvertsLayerTreeToScene) {
+   auto layer_tree = std::make_unique<LayerTree>(
+       std::make_shared<ContainerLayer>(), DlISize(12, 8));
+@@ -824,6 +1133,41 @@ TEST_F(SpiRuntimeBackendTest, RespondTwiceIsInvalidHandle) {
+             kFlutterSpiInvalidHandle);
+ }
+ 
++TEST_F(SpiRuntimeBackendTest, NullAndEmptyPlatformMessagesStayDistinct) {
++  PlatformMessageCapture capture;
++  auto backend = CreateBackend(
++      MakePlatformMessageCaptureTable(runtime, &capture));
++  LaunchBackend(backend.get());
++
++  ASSERT_TRUE(backend->DispatchPlatformMessage(
++      std::make_unique<PlatformMessage>("null", nullptr)));
++  static const uint8_t kEmptyPayload = 0;
++  ASSERT_TRUE(backend->DispatchPlatformMessage(std::make_unique<PlatformMessage>(
++      "empty", fml::MallocMapping::Copy(&kEmptyPayload, 0), nullptr)));
++
++  ASSERT_EQ(capture.count, 2u);
++  EXPECT_EQ(capture.data[0], nullptr);
++  EXPECT_EQ(capture.data_size[0], 0u);
++  EXPECT_NE(capture.data[1], nullptr);
++  EXPECT_EQ(capture.data_size[1], 0u);
++
++  ASSERT_NE(capture.engine_api, nullptr);
++  ASSERT_NE(capture.engine_api->send_platform_message, nullptr);
++  ASSERT_EQ(capture.engine_api->send_platform_message(
++                capture.engine, "runtime-null", nullptr, 0, nullptr, nullptr),
++            kFlutterSpiOk);
++  ASSERT_NE(delegate.last_platform_message, nullptr);
++  EXPECT_FALSE(delegate.last_platform_message->hasData());
++  delegate.last_platform_message.reset();
++
++  ASSERT_EQ(capture.engine_api->send_platform_message(
++                capture.engine, "runtime-empty", &kEmptyPayload, 0, nullptr,
++                nullptr),
++            kFlutterSpiOk);
++  ASSERT_NE(delegate.last_platform_message, nullptr);
++  EXPECT_TRUE(delegate.last_platform_message->hasData());
++}
++
+ TEST(SpiRuntimeBackendFactory, ProvidesConcurrentWorkers) {
+   auto* runtime = c_test_runtime_create();
+   auto factory = std::make_unique<SpiRuntimeBackendFactory>(
+diff --git a/engine/src/flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.cc b/engine/src/flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.cc
+index ee36ca5c724..cd86e7b492a 100644
+--- a/engine/src/flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.cc
++++ b/engine/src/flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.cc
+@@ -5,6 +5,7 @@
+ #include "flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.h"
+ 
+ #include <atomic>
++#include <cstddef>
+ #include <utility>
+ 
+ #include "flutter/assets/asset_manager.h"
+@@ -45,6 +46,18 @@ void DartRuntimeDelegateBridge::SetEngineApi(
+   engine_ = engine;
+ }
+ 
++void DartRuntimeDelegateBridge::CompleteAddView(uint64_t request_id,
++                                                bool added) {
++  if (!HasEngineApi() ||
++      engine_api_->struct_size <
++          offsetof(FlutterSpiEngineApi, complete_add_view) +
++              sizeof(engine_api_->complete_add_view) ||
++      engine_api_->complete_add_view == nullptr) {
++    return;
++  }
++  engine_api_->complete_add_view(engine_, request_id, added);
++}
++
+ void DartRuntimeDelegateBridge::SetFrameToken(uint64_t frame_token) {
+   frame_token_ = frame_token;
+ }
+@@ -94,9 +107,7 @@ void DartRuntimeDelegateBridge::Render(
+   }
+   const FlutterSpiResult result = engine_api_->submit_frame(
+       engine_, view_id, frame_token_, scene, device_pixel_ratio);
+-  if (result != kFlutterSpiOk && engine_api_->scene_release != nullptr) {
+-    engine_api_->scene_release(scene);
+-  }
++  (void)result;
+ }
+ 
+ void DartRuntimeDelegateBridge::UpdateSemantics(
+@@ -130,10 +141,15 @@ void DartRuntimeDelegateBridge::HandlePlatformMessage(
+   auto* context = !message->response()
+                       ? nullptr
+                       : new EngineReplyContext{message->response()};
++  static const uint8_t kEmptyPayload = 0;
++  const uint8_t* data = nullptr;
++  if (message->hasData()) {
++    data = message->data().GetSize() == 0 ? &kEmptyPayload
++                                          : message->data().GetMapping();
++  }
+   const FlutterSpiResult result = engine_api_->send_platform_message(
+-      engine_, message->channel().c_str(), message->data().GetMapping(),
+-      message->data().GetSize(), context == nullptr ? nullptr
+-                                                    : CompleteEngineReply,
++      engine_, message->channel().c_str(), data, message->data().GetSize(),
++      context == nullptr ? nullptr : CompleteEngineReply,
+       context);
+   if (result != kFlutterSpiOk && context != nullptr) {
+     CompleteEngineReply(context, nullptr, 0);
+@@ -209,7 +225,10 @@ void DartRuntimeDelegateBridge::RequestDartDeferredLibrary(
+ 
+ std::weak_ptr<PlatformMessageHandler>
+ DartRuntimeDelegateBridge::GetPlatformMessageHandler() const {
+-  return {};
++  if (!HasEngineApi()) {
++    return {};
++  }
++  return SpiEnginePlatformMessageHandler(engine_);
+ }
+ 
+ void DartRuntimeDelegateBridge::SendChannelUpdate(std::string name,
+diff --git a/engine/src/flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.h b/engine/src/flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.h
+index 9578c79a21b..c4d1bebfdb2 100644
+--- a/engine/src/flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.h
++++ b/engine/src/flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.h
+@@ -22,6 +22,7 @@ class DartRuntimeDelegateBridge final : public RuntimeDelegate {
+ 
+   void SetEngineApi(const FlutterSpiEngineApi* engine_api,
+                     FlutterSpiEngine* engine);
++  void CompleteAddView(uint64_t request_id, bool added);
+   void SetFrameToken(uint64_t frame_token);
+   const FlutterSpiEngineApi* engine_api() const { return engine_api_; }
+   FlutterSpiEngine* engine() const { return engine_; }
+diff --git a/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc b/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc
+index 9754382ce42..5ae511957ab 100644
+--- a/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc
++++ b/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "flutter/shell/common/dart_runtime/flutter_dart_runtime.h"
+ 
++#include <cstddef>
+ #include <cstdlib>
+ #include <cstring>
+ #include <string_view>
+@@ -56,6 +57,11 @@ std::unique_ptr<const fml::Mapping> MakeMapping(FlutterSpiMapping mapping) {
+       });
+ }
+ 
++bool StructContains(size_t struct_size, size_t field_offset, size_t field_size) {
++  return struct_size >= field_offset &&
++         struct_size - field_offset >= field_size;
++}
++
+ ViewportMetrics ConvertMetrics(const FlutterSpiViewMetrics& metrics) {
+   ViewportMetrics result;
+   result.device_pixel_ratio = metrics.device_pixel_ratio;
+@@ -69,6 +75,142 @@ ViewportMetrics ConvertMetrics(const FlutterSpiViewMetrics& metrics) {
+   result.physical_view_inset_right = metrics.physical_view_inset_right;
+   result.physical_view_inset_bottom = metrics.physical_view_inset_bottom;
+   result.physical_view_inset_left = metrics.physical_view_inset_left;
++  if (StructContains(metrics.struct_size,
++                     offsetof(FlutterSpiViewMetrics,
++                              physical_min_width_constraint),
++                     sizeof(metrics.physical_min_width_constraint))) {
++    result.physical_min_width_constraint =
++        metrics.physical_min_width_constraint;
++  } else {
++    result.physical_min_width_constraint = result.physical_width;
++  }
++  if (StructContains(metrics.struct_size,
++                     offsetof(FlutterSpiViewMetrics,
++                              physical_max_width_constraint),
++                     sizeof(metrics.physical_max_width_constraint))) {
++    result.physical_max_width_constraint =
++        metrics.physical_max_width_constraint;
++  } else {
++    result.physical_max_width_constraint = result.physical_width;
++  }
++  if (StructContains(metrics.struct_size,
++                     offsetof(FlutterSpiViewMetrics,
++                              physical_min_height_constraint),
++                     sizeof(metrics.physical_min_height_constraint))) {
++    result.physical_min_height_constraint =
++        metrics.physical_min_height_constraint;
++  } else {
++    result.physical_min_height_constraint = result.physical_height;
++  }
++  if (StructContains(metrics.struct_size,
++                     offsetof(FlutterSpiViewMetrics,
++                              physical_max_height_constraint),
++                     sizeof(metrics.physical_max_height_constraint))) {
++    result.physical_max_height_constraint =
++        metrics.physical_max_height_constraint;
++  } else {
++    result.physical_max_height_constraint = result.physical_height;
++  }
++  if (StructContains(metrics.struct_size,
++                     offsetof(FlutterSpiViewMetrics,
++                              physical_system_gesture_inset_top),
++                     sizeof(metrics.physical_system_gesture_inset_top))) {
++    result.physical_system_gesture_inset_top =
++        metrics.physical_system_gesture_inset_top;
++  }
++  if (StructContains(metrics.struct_size,
++                     offsetof(FlutterSpiViewMetrics,
++                              physical_system_gesture_inset_right),
++                     sizeof(metrics.physical_system_gesture_inset_right))) {
++    result.physical_system_gesture_inset_right =
++        metrics.physical_system_gesture_inset_right;
++  }
++  if (StructContains(metrics.struct_size,
++                     offsetof(FlutterSpiViewMetrics,
++                              physical_system_gesture_inset_bottom),
++                     sizeof(metrics.physical_system_gesture_inset_bottom))) {
++    result.physical_system_gesture_inset_bottom =
++        metrics.physical_system_gesture_inset_bottom;
++  }
++  if (StructContains(metrics.struct_size,
++                     offsetof(FlutterSpiViewMetrics,
++                              physical_system_gesture_inset_left),
++                     sizeof(metrics.physical_system_gesture_inset_left))) {
++    result.physical_system_gesture_inset_left =
++        metrics.physical_system_gesture_inset_left;
++  }
++  if (StructContains(metrics.struct_size,
++                     offsetof(FlutterSpiViewMetrics, physical_touch_slop),
++                     sizeof(metrics.physical_touch_slop))) {
++    result.physical_touch_slop = metrics.physical_touch_slop;
++  }
++  if (StructContains(metrics.struct_size,
++                     offsetof(FlutterSpiViewMetrics, display_id),
++                     sizeof(metrics.display_id))) {
++    result.display_id = metrics.display_id;
++  }
++  if (StructContains(
++          metrics.struct_size,
++          offsetof(FlutterSpiViewMetrics,
++                   physical_display_corner_radius_top_left),
++          sizeof(metrics.physical_display_corner_radius_top_left))) {
++    result.physical_display_corner_radius_top_left =
++        metrics.physical_display_corner_radius_top_left;
++  }
++  if (StructContains(
++          metrics.struct_size,
++          offsetof(FlutterSpiViewMetrics,
++                   physical_display_corner_radius_top_right),
++          sizeof(metrics.physical_display_corner_radius_top_right))) {
++    result.physical_display_corner_radius_top_right =
++        metrics.physical_display_corner_radius_top_right;
++  }
++  if (StructContains(
++          metrics.struct_size,
++          offsetof(FlutterSpiViewMetrics,
++                   physical_display_corner_radius_bottom_right),
++          sizeof(metrics.physical_display_corner_radius_bottom_right))) {
++    result.physical_display_corner_radius_bottom_right =
++        metrics.physical_display_corner_radius_bottom_right;
++  }
++  if (StructContains(
++          metrics.struct_size,
++          offsetof(FlutterSpiViewMetrics,
++                   physical_display_corner_radius_bottom_left),
++          sizeof(metrics.physical_display_corner_radius_bottom_left))) {
++    result.physical_display_corner_radius_bottom_left =
++        metrics.physical_display_corner_radius_bottom_left;
++  }
++  if (StructContains(metrics.struct_size,
++                     offsetof(FlutterSpiViewMetrics, display_features_count),
++                     sizeof(metrics.display_features_count))) {
++    const size_t count = metrics.display_features_count;
++    const bool has_bounds = StructContains(
++        metrics.struct_size, offsetof(FlutterSpiViewMetrics,
++                                      display_features_bounds),
++        sizeof(metrics.display_features_bounds));
++    const bool has_types = StructContains(
++        metrics.struct_size, offsetof(FlutterSpiViewMetrics,
++                                      display_features_type),
++        sizeof(metrics.display_features_type));
++    const bool has_states = StructContains(
++        metrics.struct_size, offsetof(FlutterSpiViewMetrics,
++                                      display_features_state),
++        sizeof(metrics.display_features_state));
++    if (count != 0 && has_bounds && metrics.display_features_bounds != nullptr) {
++      result.physical_display_features_bounds.assign(
++          metrics.display_features_bounds,
++          metrics.display_features_bounds + count * 4);
++    }
++    if (count != 0 && has_types && metrics.display_features_type != nullptr) {
++      result.physical_display_features_type.assign(
++          metrics.display_features_type, metrics.display_features_type + count);
++    }
++    if (count != 0 && has_states && metrics.display_features_state != nullptr) {
++      result.physical_display_features_state.assign(
++          metrics.display_features_state, metrics.display_features_state + count);
++    }
++  }
+   return result;
+ }
+ 
+@@ -244,10 +386,31 @@ void FlutterDartRuntime::AddViewThunk(
+   }
+ }
+ 
++void FlutterDartRuntime::AddViewWithResultThunk(
++    void* user_data,
++    const FlutterSpiViewMetrics* metrics,
++    uint64_t request_id) {
++  if (metrics == nullptr) {
++    return;
++  }
++  auto* runtime = FromUserData(user_data);
++  DartRuntimeDelegateBridge* bridge = runtime->delegate_bridge_.get();
++  runtime->controller_->AddView(
++      metrics->view_id, ConvertMetrics(*metrics),
++      [bridge, request_id](bool added) {
++        bridge->CompleteAddView(request_id, added);
++      });
++}
++
+ void FlutterDartRuntime::RemoveViewThunk(void* user_data, int64_t view_id) {
+   FromUserData(user_data)->controller_->RemoveView(view_id);
+ }
+ 
++bool FlutterDartRuntime::RemoveViewWithResultThunk(void* user_data,
++                                                   int64_t view_id) {
++  return FromUserData(user_data)->controller_->RemoveView(view_id);
++}
++
+ void FlutterDartRuntime::SetViewMetricsThunk(
+     void* user_data,
+     const FlutterSpiViewMetrics* metrics) {
+@@ -344,6 +507,11 @@ void FlutterDartRuntime::PlatformMessageThunk(
+         runtime->delegate_bridge_->engine_api(),
+         runtime->delegate_bridge_->engine(), message->response));
+   }
++  if (message->data == nullptr) {
++    runtime->controller_->DispatchPlatformMessage(
++        std::make_unique<PlatformMessage>(message->channel, response));
++    return;
++  }
+   runtime->controller_->DispatchPlatformMessage(std::make_unique<PlatformMessage>(
+       message->channel,
+       fml::MallocMapping::Copy(message->data, message->data_size), response));
+@@ -518,6 +686,9 @@ FlutterSpiRuntimeTable FlutterDartRuntime::MakeTable(
+       .set_displays = SetDisplaysThunk,
+       .report_timings = ReportTimingsThunk,
+       .hit_test = HitTestThunk,
++      .add_view_with_result = AddViewWithResultThunk,
++      .remove_view_with_result = RemoveViewWithResultThunk,
++      .is_running = IsRunningThunk,
+   };
+ }
+ 
+@@ -728,6 +899,10 @@ bool FlutterDartRuntime::IsRunningRuntimeCodeThunk(void* user_data) {
+   return FromUserData(user_data)->IsRunningRuntimeCode();
+ }
+ 
++bool FlutterDartRuntime::IsRunningThunk(void* user_data) {
++  return FromUserData(user_data)->controller_->IsRootIsolateRunning();
++}
++
+ void FlutterDartRuntime::RegisterServiceHandler(
+     const FlutterSpiServiceHandler* handler) {
+   if (handler == nullptr || service_protocol_handlers_.contains(handler)) {
+diff --git a/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.h b/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.h
+index 1a0431941d3..9502f2d4d54 100644
+--- a/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.h
++++ b/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.h
+@@ -86,7 +86,11 @@ class FlutterDartRuntime final {
+   static void DestroyThunk(void* user_data);
+   static void AddViewThunk(void* user_data,
+                            const FlutterSpiViewMetrics* metrics);
++  static void AddViewWithResultThunk(void* user_data,
++                                     const FlutterSpiViewMetrics* metrics,
++                                     uint64_t request_id);
+   static void RemoveViewThunk(void* user_data, int64_t view_id);
++  static bool RemoveViewWithResultThunk(void* user_data, int64_t view_id);
+   static void SetViewMetricsThunk(void* user_data,
+                                   const FlutterSpiViewMetrics* metrics);
+   static void BeginFrameThunk(void* user_data,
+@@ -157,6 +161,7 @@ class FlutterDartRuntime final {
+       void* user_data, const FlutterSpiServiceHandler* handler);
+   static void NotifyLowMemoryThunk(void* user_data);
+   static bool IsRunningRuntimeCodeThunk(void* user_data);
++  static bool IsRunningThunk(void* user_data);
+ 
+   static FlutterSpiRuntimeExtensions MakeExtensions(
+       FlutterDartRuntime* runtime);
+diff --git a/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime_unittests.cc b/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime_unittests.cc
+index ef87353a97d..f8258aaa66d 100644
+--- a/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime_unittests.cc
++++ b/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime_unittests.cc
+@@ -222,6 +222,98 @@ TEST(FlutterDartRuntimeTest, WarmUpRenderUsesTokenZero) {
+   g_api_capture = nullptr;
+ }
+ 
++TEST(FlutterDartRuntimeTest, ConvertMetricsKeepsEveryViewportField) {
++  bool destroyed = false;
++  auto runtime = CreateRuntime(&destroyed);
++  const std::vector<double> display_features_bounds =
++      {1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0};
++  const std::vector<int32_t> display_features_type = {9, 10};
++  const std::vector<int32_t> display_features_state = {11, 12};
++  FlutterSpiViewMetrics metrics = {
++      .struct_size = sizeof(FlutterSpiViewMetrics),
++      .view_id = 42,
++      .device_pixel_ratio = 2.0,
++      .physical_width = 640.0,
++      .physical_height = 480.0,
++      .physical_padding_top = 1.0,
++      .physical_padding_right = 2.0,
++      .physical_padding_bottom = 3.0,
++      .physical_padding_left = 4.0,
++      .physical_view_inset_top = 5.0,
++      .physical_view_inset_right = 6.0,
++      .physical_view_inset_bottom = 7.0,
++      .physical_view_inset_left = 8.0,
++      .physical_min_width_constraint = 100.0,
++      .physical_max_width_constraint = 200.0,
++      .physical_min_height_constraint = 300.0,
++      .physical_max_height_constraint = 400.0,
++      .physical_system_gesture_inset_top = 9.0,
++      .physical_system_gesture_inset_right = 10.0,
++      .physical_system_gesture_inset_bottom = 11.0,
++      .physical_system_gesture_inset_left = 12.0,
++      .physical_touch_slop = 7.0,
++      .display_id = 3,
++      .physical_display_corner_radius_top_left = 13.0,
++      .physical_display_corner_radius_top_right = 14.0,
++      .physical_display_corner_radius_bottom_right = 15.0,
++      .physical_display_corner_radius_bottom_left = 16.0,
++      .display_features_bounds = display_features_bounds.data(),
++      .display_features_type = display_features_type.data(),
++      .display_features_state = display_features_state.data(),
++      .display_features_count = 2,
++  };
++
++  runtime->table().set_view_metrics(runtime->table().user_data, &metrics);
++
++  const auto& stored_metrics =
++      runtime->controller().GetPlatformData().viewport_metrics_for_views.at(42);
++  EXPECT_EQ(stored_metrics,
++            ViewportMetrics(
++                2.0, 640.0, 480.0, 100.0, 200.0, 300.0, 400.0, 1.0, 2.0,
++                3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
++                7.0, display_features_bounds,
++                {9, 10}, {11, 12}, 3, 13.0, 14.0, 15.0, 16.0));
++}
++
++TEST(FlutterDartRuntimeTest, ConvertMetricsFromOlderStructUsesViewportDefaults) {
++  bool destroyed = false;
++  auto runtime = CreateRuntime(&destroyed);
++  FlutterSpiViewMetrics metrics = {
++      .struct_size = offsetof(FlutterSpiViewMetrics,
++                              physical_min_width_constraint),
++      .view_id = 42,
++      .device_pixel_ratio = 2.0,
++      .physical_width = 640.0,
++      .physical_height = 480.0,
++      .physical_padding_top = 1.0,
++      .physical_padding_right = 2.0,
++      .physical_padding_bottom = 3.0,
++      .physical_padding_left = 4.0,
++      .physical_view_inset_top = 5.0,
++      .physical_view_inset_right = 6.0,
++      .physical_view_inset_bottom = 7.0,
++      .physical_view_inset_left = 8.0,
++  };
++
++  runtime->table().set_view_metrics(runtime->table().user_data, &metrics);
++
++  const ViewportMetrics& stored_metrics =
++      runtime->controller().GetPlatformData().viewport_metrics_for_views.at(42);
++  EXPECT_EQ(stored_metrics.physical_min_width_constraint, 640.0);
++  EXPECT_EQ(stored_metrics.physical_max_width_constraint, 640.0);
++  EXPECT_EQ(stored_metrics.physical_min_height_constraint, 480.0);
++  EXPECT_EQ(stored_metrics.physical_max_height_constraint, 480.0);
++  EXPECT_EQ(stored_metrics.physical_touch_slop, -1.0);
++  EXPECT_EQ(stored_metrics.display_id, 0u);
++  EXPECT_TRUE(stored_metrics.physical_display_features_bounds.empty());
++  EXPECT_TRUE(stored_metrics.physical_display_features_type.empty());
++  EXPECT_TRUE(stored_metrics.physical_display_features_state.empty());
++  EXPECT_EQ(stored_metrics.physical_display_corner_radius_top_left, -1.0);
++  EXPECT_EQ(stored_metrics.physical_display_corner_radius_top_right, -1.0);
++  EXPECT_EQ(stored_metrics.physical_display_corner_radius_bottom_right, -1.0);
++  EXPECT_EQ(stored_metrics.physical_display_corner_radius_bottom_left, -1.0);
++}
++
+ TEST(FlutterDartRuntimeTest, PlatformMessageRepliesReachTheEngine) {
+   bool destroyed = false;
+   auto runtime = CreateRuntime(&destroyed);

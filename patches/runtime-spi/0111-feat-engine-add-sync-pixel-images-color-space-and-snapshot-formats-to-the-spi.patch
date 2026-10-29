@@ -1,0 +1,1161 @@
+# Why: expose the synchronous image operations required by the S4g-2 runtime
+# SPI.
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 79a46a1b0c1..becfbea633a 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -998,4 +998,10 @@ SPI_EXPECT_OFFSET(FlutterSpiImageApi, codec_get_next_frame,
+                   sizeof(void*) == 8 ? 136 : 68);
+ SPI_EXPECT_OFFSET(FlutterSpiImageApi, codec_release,
+                   sizeof(void*) == 8 ? 144 : 72);
+-SPI_EXPECT_SIZE(FlutterSpiImageApi, sizeof(void*) == 8 ? 152 : 76);
++SPI_EXPECT_OFFSET(FlutterSpiImageApi, image_create_from_pixels_sync,
++                  sizeof(void*) == 8 ? 152 : 76);
++SPI_EXPECT_OFFSET(FlutterSpiImageApi, image_get_color_space,
++                  sizeof(void*) == 8 ? 160 : 80);
++SPI_EXPECT_OFFSET(FlutterSpiImageApi, picture_to_image_sync_with_format,
++                  sizeof(void*) == 8 ? 168 : 84);
++SPI_EXPECT_SIZE(FlutterSpiImageApi, sizeof(void*) == 8 ? 176 : 88);
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_fragment_unittests.cc b/engine/src/flutter/runtime_spi/effects/spi_fragment_unittests.cc
+index 2c59d6b26a3..d0d74ac483a 100644
+--- a/engine/src/flutter/runtime_spi/effects/spi_fragment_unittests.cc
++++ b/engine/src/flutter/runtime_spi/effects/spi_fragment_unittests.cc
+@@ -203,6 +203,7 @@ class SpiFragmentTest : public ::testing::Test {
+     backend_promise.set_value(backend);
+     return std::make_unique<SpiRuntimeBackend>(
+         delegate_, *task_runners_, c_test_runtime_table(runtime_),
++        fml::WeakPtr<IOManager>{},
+         fml::TaskRunnerAffineWeakPtr<ImageDecoder>{},
+         fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>{},
+         fml::TaskRunnerAffineWeakPtr<SnapshotDelegate>{}, nullptr, true,
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image.cc b/engine/src/flutter/runtime_spi/image/spi_image.cc
+index b88ce41b9a3..fec1a68172f 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image.cc
+@@ -73,6 +73,19 @@ FlutterSpiResult SpiImageGetSize(FlutterSpiImage* image,
+   return kFlutterSpiOk;
+ }
+ 
++FlutterSpiResult SpiImageGetColorSpace(FlutterSpiImage* image,
++                                       int32_t* out_color_space) {
++  const auto image_value = FindImage(image);
++  if (image_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (out_color_space == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out_color_space = static_cast<int32_t>(image_value->image()->GetColorSpace());
++  return kFlutterSpiOk;
++}
++
+ FlutterSpiResult SpiImageRetain(FlutterSpiImage* image) {
+   return Images().Retain(HandleValue(image)) ? kFlutterSpiOk
+                                               : kFlutterSpiInvalidHandle;
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image.h b/engine/src/flutter/runtime_spi/image/spi_image.h
+index 8275d70874f..9a688fae518 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image.h
++++ b/engine/src/flutter/runtime_spi/image/spi_image.h
+@@ -16,6 +16,8 @@ sk_sp<DlImage> SpiImageGet(FlutterSpiImage* image);
+ FlutterSpiResult SpiImageGetSize(FlutterSpiImage* image,
+                                  int32_t* out_width,
+                                  int32_t* out_height);
++FlutterSpiResult SpiImageGetColorSpace(FlutterSpiImage* image,
++                                       int32_t* out_color_space);
+ FlutterSpiResult SpiImageRetain(FlutterSpiImage* image);
+ FlutterSpiResult SpiImageRelease(FlutterSpiImage* image);
+ 
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_decoding.cc b/engine/src/flutter/runtime_spi/image/spi_image_decoding.cc
+index d7efc90c07a..fa57675ddfd 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_decoding.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_decoding.cc
+@@ -11,7 +11,12 @@
+ #include "flutter/lib/ui/painting/image_decoder.h"
+ #include "flutter/lib/ui/painting/image_descriptor_data.h"
+ #include "flutter/lib/ui/painting/image_generator_registry.h"
++#include "flutter/lib/ui/painting/pixel_deferred_image_gpu_impeller.h"
++#include "flutter/lib/ui/snapshot_delegate.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
++#include "flutter/shell/common/snapshot_pixel_format.h"
++#include "third_party/skia/include/core/SkColorSpace.h"
++#include "third_party/skia/include/core/SkImage.h"
+ 
+ namespace flutter {
+ namespace {
+@@ -19,21 +24,27 @@ namespace {
+ struct PixelFormatInfo {
+   ImageDescriptorData::PixelFormat format;
+   size_t bytes_per_pixel;
++  SkColorType color_type;
++  SkAlphaType alpha_type;
+ };
+ 
+ bool GetPixelFormatInfo(int32_t value, PixelFormatInfo* info) {
+   switch (value) {
+     case kFlutterSpiPixelFormatRGBA8888:
+-      *info = {ImageDescriptorData::PixelFormat::kRGBA8888, 4};
++      *info = {ImageDescriptorData::PixelFormat::kRGBA8888, 4,
++               kRGBA_8888_SkColorType, kPremul_SkAlphaType};
+       return true;
+     case kFlutterSpiPixelFormatBGRA8888:
+-      *info = {ImageDescriptorData::PixelFormat::kBGRA8888, 4};
++      *info = {ImageDescriptorData::PixelFormat::kBGRA8888, 4,
++               kBGRA_8888_SkColorType, kPremul_SkAlphaType};
+       return true;
+     case kFlutterSpiPixelFormatRGBAFloat32:
+-      *info = {ImageDescriptorData::PixelFormat::kRGBAFloat32, 16};
++      *info = {ImageDescriptorData::PixelFormat::kRGBAFloat32, 16,
++               kRGBA_F32_SkColorType, kUnpremul_SkAlphaType};
+       return true;
+     case kFlutterSpiPixelFormatRFloat32:
+-      *info = {ImageDescriptorData::PixelFormat::kR32Float, 4};
++      *info = {ImageDescriptorData::PixelFormat::kR32Float, 4,
++               kUnknown_SkColorType, kUnpremul_SkAlphaType};
+       return true;
+     default:
+       return false;
+@@ -87,10 +98,14 @@ ImageDecoder::Options DecodeOptions(
+ SpiImageDecoding::SpiImageDecoding(
+     fml::TaskRunnerAffineWeakPtr<ImageDecoder> decoder,
+     fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry> registry,
+-    fml::RefPtr<fml::TaskRunner> ui_task_runner)
++    fml::RefPtr<fml::TaskRunner> ui_task_runner,
++    fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
++    fml::RefPtr<fml::TaskRunner> raster_task_runner)
+     : decoder_(std::move(decoder)),
+       registry_(std::move(registry)),
+       ui_task_runner_(std::move(ui_task_runner)),
++      snapshot_delegate_(std::move(snapshot_delegate)),
++      raster_task_runner_(std::move(raster_task_runner)),
+       weak_factory_(this) {}
+ 
+ SpiImageDecoding::~SpiImageDecoding() = default;
+@@ -210,4 +225,59 @@ FlutterSpiResult SpiImageDecoding::DecodePixels(
+   return kFlutterSpiOk;
+ }
+ 
++FlutterSpiResult SpiImageDecoding::CreateFromPixelsSync(
++    const FlutterSpiPixels* pixels,
++    const FlutterSpiImageDecodeOptions* options,
++    FlutterSpiImage** out_image) {
++  if (pixels == nullptr || pixels->pixels == nullptr || out_image == nullptr ||
++      pixels->width <= 0 || pixels->height <= 0) {
++    return kFlutterSpiInvalidArgument;
++  }
++  PixelFormatInfo format_info;
++  if (!GetPixelFormatInfo(pixels->pixel_format, &format_info) ||
++      format_info.color_type == kUnknown_SkColorType) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (options != nullptr &&
++      (options->target_width > 0 || options->target_height > 0)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const size_t minimum_row_bytes =
++      static_cast<size_t>(pixels->width) * format_info.bytes_per_pixel;
++  if (pixels->row_bytes < 0) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const size_t row_bytes = pixels->row_bytes == 0
++                               ? minimum_row_bytes
++                               : static_cast<size_t>(pixels->row_bytes);
++  if (row_bytes < minimum_row_bytes ||
++      row_bytes > std::numeric_limits<size_t>::max() /
++                       static_cast<size_t>(pixels->height) ||
++      pixels->pixels_size < row_bytes * static_cast<size_t>(pixels->height)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (!snapshot_delegate_) {
++    return kFlutterSpiInternalError;
++  }
++
++  const auto image_info = SkImageInfo::Make(
++      pixels->width, pixels->height, format_info.color_type,
++      format_info.alpha_type, SkColorSpace::MakeSRGB());
++  const auto image = SkImages::RasterFromData(
++      image_info, SkData::MakeWithCopy(pixels->pixels, pixels->pixels_size),
++      row_bytes);
++  if (!image) {
++    return kFlutterSpiInternalError;
++  }
++#if IMPELLER_SUPPORTS_RENDERING
++  auto deferred_image = PixelDeferredImageGPUImpeller::Make(
++      image, snapshot_delegate_, raster_task_runner_);
++  return SpiImageWrap(std::move(deferred_image), out_image) == kFlutterSpiOk
++             ? kFlutterSpiOk
++             : kFlutterSpiInternalError;
++#else
++  return kFlutterSpiInternalError;
++#endif
++}
++
+ }  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_decoding.h b/engine/src/flutter/runtime_spi/image/spi_image_decoding.h
+index 83bedf977d0..1b693678317 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_decoding.h
++++ b/engine/src/flutter/runtime_spi/image/spi_image_decoding.h
+@@ -18,6 +18,7 @@ namespace flutter {
+ 
+ class ImageDecoder;
+ class ImageGeneratorRegistry;
++class SnapshotDelegate;
+ 
+ SkISize ResolveTargetSize(int32_t source_width,
+                           int32_t source_height,
+@@ -28,7 +29,9 @@ class SpiImageDecoding final {
+   SpiImageDecoding(
+       fml::TaskRunnerAffineWeakPtr<ImageDecoder> decoder,
+       fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry> registry,
+-      fml::RefPtr<fml::TaskRunner> ui_task_runner);
++      fml::RefPtr<fml::TaskRunner> ui_task_runner,
++      fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
++      fml::RefPtr<fml::TaskRunner> raster_task_runner);
+   ~SpiImageDecoding();
+ 
+   FlutterSpiResult DecodeEncoded(const uint8_t* data,
+@@ -40,6 +43,10 @@ class SpiImageDecoding final {
+                                 const FlutterSpiImageDecodeOptions* options,
+                                 FlutterSpiImageCallback callback,
+                                 void* user_data);
++  FlutterSpiResult CreateFromPixelsSync(
++      const FlutterSpiPixels* pixels,
++      const FlutterSpiImageDecodeOptions* options,
++      FlutterSpiImage** out_image);
+ 
+  private:
+   FlutterSpiResult ValidateCallback(FlutterSpiImageCallback callback) const;
+@@ -51,6 +58,8 @@ class SpiImageDecoding final {
+   fml::TaskRunnerAffineWeakPtr<ImageDecoder> decoder_;
+   fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry> registry_;
+   fml::RefPtr<fml::TaskRunner> ui_task_runner_;
++  fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate_;
++  fml::RefPtr<fml::TaskRunner> raster_task_runner_;
+   fml::TaskRunnerAffineWeakPtrFactory<SpiImageDecoding> weak_factory_;
+ };
+ 
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_decoding_unittests.cc b/engine/src/flutter/runtime_spi/image/spi_image_decoding_unittests.cc
+index 6f30bae7f11..2cf5f0f0b1c 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_decoding_unittests.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_decoding_unittests.cc
+@@ -118,7 +118,8 @@ class SpiImageDecodingTest : public ThreadTest {
+       decoder_ = std::make_unique<FakeImageDecoder>(*runners_);
+       registry_ = std::make_unique<ImageGeneratorRegistry>();
+       decoding_ = std::make_unique<SpiImageDecoding>(
+-          decoder_->GetWeakPtr(), registry_->GetWeakPtr(), ui_task_runner_);
++          decoder_->GetWeakPtr(), registry_->GetWeakPtr(), ui_task_runner_,
++          fml::TaskRunnerAffineWeakPtr<SnapshotDelegate>(), ui_task_runner_);
+     });
+   }
+ 
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_readback.cc b/engine/src/flutter/runtime_spi/image/spi_image_readback.cc
+index feb2d81e849..675883ce3be 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_readback.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_readback.cc
+@@ -4,10 +4,10 @@
+ 
+ #include "flutter/runtime_spi/image/spi_image_readback.h"
+ 
+-#include "flutter/display_list/image/dl_image_skia.h"
+-#include "flutter/lib/ui/painting/image_readback.h"
++#include <utility>
++
++#include "flutter/lib/ui/io_manager.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
+-#include "third_party/skia/include/core/SkPixmap.h"
+ 
+ namespace flutter {
+ namespace {
+@@ -17,9 +17,36 @@ bool IsSupportedFormat(int32_t format) {
+          format <= static_cast<int32_t>(ImageByteFormat::kPNG);
+ }
+ 
++void CompleteBytes(FlutterSpiBytesCallback callback,
++                   void* user_data,
++                   fml::StatusOr<sk_sp<SkData>> encoded) {
++  if (!encoded.ok()) {
++    callback(user_data, kFlutterSpiInternalError, nullptr, 0);
++    return;
++  }
++
++  callback(user_data, kFlutterSpiOk,
++           static_cast<const uint8_t*>(encoded.value()->data()),
++           encoded.value()->size());
++}
++
++void PostInternalError(const ImageReadbackContext& context,
++                       FlutterSpiBytesCallback callback,
++                       void* user_data) {
++  auto report_error = [callback, user_data]() {
++    callback(user_data, kFlutterSpiInternalError, nullptr, 0);
++  };
++  if (!context.ui_task_runner) {
++    report_error();
++    return;
++  }
++  context.ui_task_runner->PostTask(std::move(report_error));
++}
++
+ }  // namespace
+ 
+-FlutterSpiResult SpiImageToBytes(FlutterSpiImage* image,
++FlutterSpiResult SpiImageToBytes(const ImageReadbackContext& context,
++                                 FlutterSpiImage* image,
+                                  int32_t format,
+                                  FlutterSpiBytesCallback callback,
+                                  void* user_data) {
+@@ -27,38 +54,43 @@ FlutterSpiResult SpiImageToBytes(FlutterSpiImage* image,
+     return kFlutterSpiInvalidArgument;
+   }
+ 
+-  const sk_sp<DlImage> dl_image = SpiImageGet(image);
++  sk_sp<DlImage> dl_image = SpiImageGet(image);
+   if (dl_image == nullptr) {
+     return kFlutterSpiInvalidHandle;
+   }
+ 
+-  const DlImageSkia* skia_image = dl_image->asSkiaImage();
+-  sk_sp<SkImage> raster_image =
+-      skia_image == nullptr ? nullptr : skia_image->skia_image();
+-  if (raster_image == nullptr) {
+-    callback(user_data, kFlutterSpiInternalError, nullptr, 0);
++  if (!context.io_task_runner) {
++    PostInternalError(context, callback, user_data);
+     return kFlutterSpiOk;
+   }
+ 
+-  SkPixmap pixmap;
+-  if (!raster_image->peekPixels(&pixmap)) {
+-    raster_image = raster_image->makeRasterImage(nullptr);
+-  }
+-  if (raster_image == nullptr) {
+-    callback(user_data, kFlutterSpiInternalError, nullptr, 0);
+-    return kFlutterSpiOk;
+-  }
++  context.io_task_runner->PostTask([context, dl_image = std::move(dl_image),
++                                    format, callback, user_data]() mutable {
++    if (!context.io_manager) {
++      PostInternalError(context, callback, user_data);
++      return;
++    }
+ 
+-  const auto encoded =
+-      EncodeRasterImage(raster_image, static_cast<ImageByteFormat>(format));
+-  if (!encoded.ok()) {
+-    callback(user_data, kFlutterSpiInternalError, nullptr, 0);
+-    return kFlutterSpiOk;
+-  }
++    ImageReadbackContext readback_context = context;
++    readback_context.gpu_disabled_switch =
++        context.io_manager->GetIsGpuDisabledSyncSwitch();
++    readback_context.impeller_context =
++        context.io_manager->GetImpellerContext();
++    ConvertToRasterImageAsync(
++        readback_context, std::move(dl_image),
++        [format, callback,
++         user_data](fml::StatusOr<sk_sp<SkImage>> raster_image) mutable {
++          if (!raster_image.ok()) {
++            callback(user_data, kFlutterSpiInternalError, nullptr, 0);
++            return;
++          }
+ 
+-  callback(user_data, kFlutterSpiOk,
+-           static_cast<const uint8_t*>(encoded.value()->data()),
+-           encoded.value()->size());
++          CompleteBytes(
++              callback, user_data,
++              EncodeRasterImage(raster_image.value(),
++                                static_cast<ImageByteFormat>(format)));
++        });
++  });
+   return kFlutterSpiOk;
+ }
+ 
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_readback.h b/engine/src/flutter/runtime_spi/image/spi_image_readback.h
+index 1b2f5ea1316..df7ddbb52f1 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_readback.h
++++ b/engine/src/flutter/runtime_spi/image/spi_image_readback.h
+@@ -5,11 +5,15 @@
+ #ifndef FLUTTER_RUNTIME_SPI_IMAGE_SPI_IMAGE_READBACK_H_
+ #define FLUTTER_RUNTIME_SPI_IMAGE_SPI_IMAGE_READBACK_H_
+ 
++#include "flutter/lib/ui/painting/image_readback.h"
+ #include "flutter/runtime_spi/include/flutter_image.h"
+ 
+ namespace flutter {
+ 
+-FlutterSpiResult SpiImageToBytes(FlutterSpiImage* image,
++// The callback is invoked on the UI task runner, like dart:ui's
++// Image.toByteData callback.
++FlutterSpiResult SpiImageToBytes(const ImageReadbackContext& context,
++                                 FlutterSpiImage* image,
+                                  int32_t format,
+                                  FlutterSpiBytesCallback callback,
+                                  void* user_data);
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_readback_unittests.cc b/engine/src/flutter/runtime_spi/image/spi_image_readback_unittests.cc
+index d2a84732b76..965dc983db3 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_readback_unittests.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_readback_unittests.cc
+@@ -6,8 +6,10 @@
+ #include <memory>
+ #include <vector>
+ 
++#include "flutter/display_list/utils/dl_receiver_utils.h"
+ #include "flutter/fml/synchronization/waitable_event.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
++#include "flutter/runtime_spi/scene/spi_canvas.h"
+ #include "flutter/runtime_spi/spi_runtime_backend_factory.h"
+ #include "flutter/runtime_spi/testing/c_test_runtime.h"
+ #include "flutter/runtime_spi/testing/test_icu.h"
+@@ -70,6 +72,21 @@ void PostSync(const fml::RefPtr<fml::TaskRunner>& task_runner,
+   completed.Wait();
+ }
+ 
++class ImageOpProbe final : public IgnoreAttributeDispatchHelper,
++                           public IgnoreClipDispatchHelper,
++                           public IgnoreTransformDispatchHelper,
++                           public IgnoreDrawDispatchHelper {
++ public:
++  void drawImage(const sk_sp<DlImage>,
++                 const DlPoint&,
++                 DlImageSampling,
++                 bool) override {
++    image_count++;
++  }
++
++  int image_count = 0;
++};
++
+ class SpiImageReadbackTest : public ShellTest {
+  protected:
+   void SetUp() override {
+@@ -252,6 +269,102 @@ TEST_F(SpiImageReadbackTest, PngRoundTrips) {
+   EXPECT_EQ(height, kImageHeight);
+ }
+ 
++TEST_F(SpiImageReadbackTest, CreateFromPixelsSyncMatchesAsync) {
++  StartShell();
++  constexpr uint8_t kPixels[] = {
++      0x10, 0x20, 0x30, 0xff,
++      0x40, 0x50, 0x60, 0xff,
++      0x70, 0x80, 0x90, 0xff,
++      0xa0, 0xb0, 0xc0, 0xff,
++  };
++  const FlutterSpiPixels input = {
++      .struct_size = sizeof(FlutterSpiPixels),
++      .pixels = kPixels,
++      .pixels_size = sizeof(kPixels),
++      .width = 2,
++      .height = 2,
++      .row_bytes = 0,
++      .pixel_format = kFlutterSpiPixelFormatRGBA8888,
++  };
++  FlutterSpiImage* synchronous_image = nullptr;
++  ImageCallbackState asynchronous_callback;
++
++  PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++    ASSERT_EQ(runtime_->engine_api->image->image_create_from_pixels_sync(
++                  runtime_->engine, &input, nullptr, &synchronous_image),
++              kFlutterSpiOk);
++    ASSERT_EQ(runtime_->engine_api->image->image_create_from_pixels(
++                  runtime_->engine, &input, nullptr, CaptureDecodedImage,
++                  &asynchronous_callback),
++              kFlutterSpiOk);
++  });
++  asynchronous_callback.completed.Wait();
++  ASSERT_EQ(asynchronous_callback.result, kFlutterSpiOk);
++
++  int32_t synchronous_width = 0;
++  int32_t synchronous_height = 0;
++  int32_t asynchronous_width = 0;
++  int32_t asynchronous_height = 0;
++  FlutterSpiPicture* draw_picture = nullptr;
++  PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++    ASSERT_EQ(runtime_->engine_api->image->image_get_size(
++                  synchronous_image, &synchronous_width, &synchronous_height),
++              kFlutterSpiOk);
++    ASSERT_EQ(runtime_->engine_api->image->image_get_size(
++                  asynchronous_callback.image, &asynchronous_width,
++                  &asynchronous_height),
++              kFlutterSpiOk);
++    EXPECT_EQ(synchronous_width, asynchronous_width);
++    EXPECT_EQ(synchronous_height, asynchronous_height);
++
++    FlutterSpiPictureRecorder* recorder = nullptr;
++    ASSERT_EQ(runtime_->engine_api->scene->recorder_create(
++                  runtime_->engine, nullptr, &recorder),
++              kFlutterSpiOk);
++    ASSERT_EQ(runtime_->engine_api->image->canvas_draw_image(
++                  recorder, synchronous_image, {.x = 0.0f, .y = 0.0f},
++                  kFlutterSpiFilterQualityNone, nullptr),
++              kFlutterSpiOk);
++    ASSERT_EQ(runtime_->engine_api->scene->recorder_finish(recorder,
++                                                            &draw_picture),
++              kFlutterSpiOk);
++
++    const DisplayList* display_list =
++        SpiPictureDisplayListForTesting(draw_picture);
++    ASSERT_NE(display_list, nullptr);
++    ImageOpProbe probe;
++    display_list->Dispatch(probe);
++    EXPECT_EQ(probe.image_count, 1);
++
++    runtime_->engine_api->scene->picture_release(draw_picture);
++  });
++
++  const auto release_images = [&] {
++    PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++      runtime_->engine_api->image->image_release(synchronous_image);
++      runtime_->engine_api->image->image_release(asynchronous_callback.image);
++    });
++  };
++
++  if (!shell_->GetSettings().enable_impeller) {
++    release_images();
++    GTEST_SKIP() << "Byte comparison requires the Impeller image backend.";
++  }
++
++  BytesCallbackState synchronous_bytes;
++  BytesCallbackState asynchronous_bytes;
++  EXPECT_EQ(RequestBytes(synchronous_image, kFlutterSpiImageByteFormatRawRGBA,
++                         &synchronous_bytes),
++            kFlutterSpiOk);
++  EXPECT_EQ(RequestBytes(asynchronous_callback.image,
++                         kFlutterSpiImageByteFormatRawRGBA,
++                         &asynchronous_bytes),
++            kFlutterSpiOk);
++  EXPECT_EQ(synchronous_bytes.bytes, asynchronous_bytes.bytes);
++
++  release_images();
++}
++
+ TEST_F(SpiImageReadbackTest, UnknownFormatIsRejected) {
+   StartShell();
+   FlutterSpiPicture* picture = nullptr;
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_snapshot.cc b/engine/src/flutter/runtime_spi/image/spi_image_snapshot.cc
+index 0b687930973..756d2077881 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_snapshot.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_snapshot.cc
+@@ -13,6 +13,25 @@
+ #include "flutter/runtime_spi/spi_scene.h"
+ 
+ namespace flutter {
++namespace {
++
++bool GetSnapshotPixelFormat(int32_t value, SnapshotPixelFormat* format) {
++  switch (value) {
++    case kFlutterSpiPixelFormatRGBA8888:
++      *format = SnapshotPixelFormat::kDontCare;
++      return true;
++    case kFlutterSpiPixelFormatRGBAFloat32:
++      *format = SnapshotPixelFormat::kRGBA32Float;
++      return true;
++    case kFlutterSpiPixelFormatRFloat32:
++      *format = SnapshotPixelFormat::kR32Float;
++      return true;
++    default:
++      return false;
++  }
++}
++
++}  // namespace
+ 
+ SpiImageSnapshot::SpiImageSnapshot(ImageSnapshotContext context)
+     : context_(std::move(context)), weak_factory_(this) {}
+@@ -99,6 +118,17 @@ FlutterSpiResult SpiImageSnapshot::PictureToImageSync(
+     int32_t width,
+     int32_t height,
+     FlutterSpiImage** out_image) {
++  return PictureToImageSyncWithFormat(picture, width, height,
++                                      kFlutterSpiPixelFormatRGBA8888,
++                                      out_image);
++}
++
++FlutterSpiResult SpiImageSnapshot::PictureToImageSyncWithFormat(
++    FlutterSpiPicture* picture,
++    int32_t width,
++    int32_t height,
++    int32_t pixel_format,
++    FlutterSpiImage** out_image) {
+   if (ValidateSyncRequest(width, height, out_image) != kFlutterSpiOk) {
+     return kFlutterSpiInvalidArgument;
+   }
+@@ -106,9 +136,12 @@ FlutterSpiResult SpiImageSnapshot::PictureToImageSync(
+   if (display_list == nullptr) {
+     return kFlutterSpiInvalidHandle;
+   }
++  SnapshotPixelFormat snapshot_pixel_format;
++  if (!GetSnapshotPixelFormat(pixel_format, &snapshot_pixel_format)) {
++    return kFlutterSpiInvalidArgument;
++  }
+   return WrapImage(CreateDeferredImage(context_, sk_ref_sp(display_list), width,
+-                                       height,
+-                                       SnapshotPixelFormat::kDontCare),
++                                       height, snapshot_pixel_format),
+                    out_image);
+ }
+ 
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_snapshot.h b/engine/src/flutter/runtime_spi/image/spi_image_snapshot.h
+index 6b14ff31552..58484a71540 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_snapshot.h
++++ b/engine/src/flutter/runtime_spi/image/spi_image_snapshot.h
+@@ -28,6 +28,12 @@ class SpiImageSnapshot final {
+                                       int32_t width,
+                                       int32_t height,
+                                       FlutterSpiImage** out_image);
++  FlutterSpiResult PictureToImageSyncWithFormat(
++      FlutterSpiPicture* picture,
++      int32_t width,
++      int32_t height,
++      int32_t pixel_format,
++      FlutterSpiImage** out_image);
+   FlutterSpiResult SceneToImage(FlutterSpiScene* scene,
+                                 int32_t width,
+                                 int32_t height,
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_snapshot_unittests.cc b/engine/src/flutter/runtime_spi/image/spi_image_snapshot_unittests.cc
+index 030e107d269..1405ab00adf 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_snapshot_unittests.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_snapshot_unittests.cc
+@@ -7,6 +7,7 @@
+ #include <chrono>
+ #include <memory>
+ #include <thread>
++#include <vector>
+ 
+ #include "flutter/fml/synchronization/waitable_event.h"
+ #include "flutter/fml/time/time_delta.h"
+@@ -40,6 +41,24 @@ void CaptureImage(void* user_data,
+   state->completed.Signal();
+ }
+ 
++struct BytesCallbackState {
++  fml::AutoResetWaitableEvent completed;
++  FlutterSpiResult result = kFlutterSpiInternalError;
++  std::vector<uint8_t> bytes;
++};
++
++void CaptureBytes(void* user_data,
++                  FlutterSpiResult result,
++                  const uint8_t* bytes,
++                  size_t size) {
++  auto* state = static_cast<BytesCallbackState*>(user_data);
++  state->result = result;
++  if (bytes != nullptr) {
++    state->bytes.assign(bytes, bytes + size);
++  }
++  state->completed.Signal();
++}
++
+ void PostSync(const fml::RefPtr<fml::TaskRunner>& task_runner,
+               const fml::closure& task) {
+   fml::AutoResetWaitableEvent completed;
+@@ -194,6 +213,36 @@ TEST_F(SpiImageSnapshotTest, PictureToImageSyncIsDeferredAndDrawable) {
+   });
+ }
+ 
++TEST_F(SpiImageSnapshotTest, ToImageSyncHonorsPixelFormat) {
++  StartShell();
++  FlutterSpiPicture* picture = nullptr;
++  FlutterSpiImage* image = nullptr;
++  PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++    picture = CreatePicture();
++    ASSERT_EQ(runtime_->engine_api->image->picture_to_image_sync_with_format(
++                  runtime_->engine, picture, 1, 1,
++                  kFlutterSpiPixelFormatRFloat32, &image),
++              kFlutterSpiOk);
++  });
++
++  BytesCallbackState bytes;
++  PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++    ASSERT_EQ(runtime_->engine_api->image->image_to_bytes(
++                  runtime_->engine, image,
++                  kFlutterSpiImageByteFormatRawUnmodified, CaptureBytes,
++                  &bytes),
++              kFlutterSpiOk);
++  });
++  bytes.completed.Wait();
++  ASSERT_EQ(bytes.result, kFlutterSpiOk);
++  EXPECT_EQ(bytes.bytes.size(), sizeof(float));
++
++  PostSync(shell_->GetTaskRunners().GetUITaskRunner(), [&] {
++    runtime_->engine_api->image->image_release(image);
++    runtime_->engine_api->scene->picture_release(picture);
++  });
++}
++
+ TEST_F(SpiImageSnapshotTest, SceneToImageHasFrameSize) {
+   StartShell();
+   FlutterSpiPicture* picture = nullptr;
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_unittests.cc b/engine/src/flutter/runtime_spi/image/spi_image_unittests.cc
+index af2bb334706..85a6aae4754 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_unittests.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_unittests.cc
+@@ -38,5 +38,16 @@ TEST(SpiImage, WrapGetSizeAndRetainRelease) {
+   EXPECT_EQ(SpiImageGetSize(image, &width, &height), kFlutterSpiInvalidHandle);
+ }
+ 
++TEST(SpiImage, ColorSpaceMatchesSource) {
++  const auto source_image = MakeTestImage();
++  FlutterSpiImage* image = nullptr;
++  ASSERT_EQ(SpiImageWrap(source_image, &image), kFlutterSpiOk);
++
++  int32_t color_space = -1;
++  EXPECT_EQ(SpiImageGetColorSpace(image, &color_space), kFlutterSpiOk);
++  EXPECT_EQ(color_space, static_cast<int32_t>(source_image->GetColorSpace()));
++  EXPECT_EQ(SpiImageRelease(image), kFlutterSpiOk);
++}
++
+ }  // namespace
+ }  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_image.h b/engine/src/flutter/runtime_spi/include/flutter_image.h
+index 3134ac59a2a..43a84024610 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_image.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_image.h
+@@ -164,6 +164,20 @@ typedef struct FlutterSpiImageApi {
+   // Invalidates the handle for new calls but delivers every frame already
+   // requested by codec_get_next_frame exactly once.
+   FlutterSpiResult (*codec_release)(FlutterSpiCodec* codec);
++  FlutterSpiResult (*image_create_from_pixels_sync)(
++      FlutterSpiEngine* engine,
++      const FlutterSpiPixels* pixels,
++      const FlutterSpiImageDecodeOptions* options,
++      FlutterSpiImage** out_image);
++  FlutterSpiResult (*image_get_color_space)(FlutterSpiImage* image,
++                                            int32_t* out_color_space);
++  FlutterSpiResult (*picture_to_image_sync_with_format)(
++      FlutterSpiEngine* engine,
++      FlutterSpiPicture* picture,
++      int32_t width,
++      int32_t height,
++      int32_t pixel_format,
++      FlutterSpiImage** out_image);
+ } FlutterSpiImageApi;
+ 
+ #ifdef __cplusplus
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index 5b1bc90884f..40fb8cfc34b 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 19
++#define FLUTTER_SPI_VERSION_MINOR 20
+ 
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index 2c228c962cb..118878eca63 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -93,7 +93,7 @@ TEST(SpiAbi, ImageEnumValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawUnmodified, 2);
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawExtendedRGBA128, 3);
+   EXPECT_EQ(kFlutterSpiImageByteFormatPNG, 4);
+-  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 19);
++  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 20);
+ }
+ 
+ TEST(SpiAbi, SemanticsLayoutIsFrozen) {
+@@ -759,7 +759,12 @@ TEST(SpiAbi, ImageLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiImageApi, codec_get_info, 128, 64);
+   EXPECT_SPI_OFFSET(FlutterSpiImageApi, codec_get_next_frame, 136, 68);
+   EXPECT_SPI_OFFSET(FlutterSpiImageApi, codec_release, 144, 72);
+-  EXPECT_EQ(sizeof(FlutterSpiImageApi), sizeof(void*) == 8 ? 152u : 76u);
++  EXPECT_SPI_OFFSET(FlutterSpiImageApi, image_create_from_pixels_sync, 152,
++                    76);
++  EXPECT_SPI_OFFSET(FlutterSpiImageApi, image_get_color_space, 160, 80);
++  EXPECT_SPI_OFFSET(FlutterSpiImageApi, picture_to_image_sync_with_format, 168,
++                    84);
++  EXPECT_EQ(sizeof(FlutterSpiImageApi), sizeof(void*) == 8 ? 176u : 88u);
+ }
+ 
+ TEST(SpiAbi, TextLayoutIsFrozen) {
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index ba81f55c75f..f9ea8452275 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -67,7 +67,7 @@ FlutterSpiResult ImageToBytes(FlutterSpiEngine* engine,
+   if (engine == nullptr || engine->backend == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+-  return SpiImageToBytes(image, format, callback, user_data);
++  return engine->backend->ImageToBytes(image, format, callback, user_data);
+ }
+ 
+ const FlutterSpiTextApi kTextApi = {
+@@ -171,6 +171,10 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+       .codec_get_info = SpiCodecGetInfo,
+       .codec_get_next_frame = SpiCodecGetNextFrame,
+       .codec_release = SpiCodecRelease,
++      .image_create_from_pixels_sync = SpiEngineApi::ImageCreateFromPixelsSync,
++      .image_get_color_space = SpiEngineApi::ImageGetColorSpace,
++      .picture_to_image_sync_with_format =
++          SpiEngineApi::PictureToImageSyncWithFormat,
+   };
+   return {
+       .struct_size = sizeof(FlutterSpiEngineApi),
+@@ -587,12 +591,28 @@ FlutterSpiResult SpiEngineApi::ImageCreateFromPixels(
+                                                 user_data);
+ }
+ 
++FlutterSpiResult SpiEngineApi::ImageCreateFromPixelsSync(
++    FlutterSpiEngine* engine,
++    const FlutterSpiPixels* pixels,
++    const FlutterSpiImageDecodeOptions* options,
++    FlutterSpiImage** out_image) {
++  if (engine == nullptr || engine->backend == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return engine->backend->CreateImageFromPixelsSync(pixels, options, out_image);
++}
++
+ FlutterSpiResult SpiEngineApi::ImageGetSize(FlutterSpiImage* image,
+                                             int32_t* out_width,
+                                             int32_t* out_height) {
+   return SpiImageGetSize(image, out_width, out_height);
+ }
+ 
++FlutterSpiResult SpiEngineApi::ImageGetColorSpace(FlutterSpiImage* image,
++                                                  int32_t* out_color_space) {
++  return SpiImageGetColorSpace(image, out_color_space);
++}
++
+ FlutterSpiResult SpiEngineApi::ImageRetain(FlutterSpiImage* image) {
+   return SpiImageRetain(image);
+ }
+@@ -625,6 +645,20 @@ FlutterSpiResult SpiEngineApi::PictureToImageSync(FlutterSpiEngine* engine,
+   return engine->backend->PictureToImageSync(picture, width, height, out_image);
+ }
+ 
++FlutterSpiResult SpiEngineApi::PictureToImageSyncWithFormat(
++    FlutterSpiEngine* engine,
++    FlutterSpiPicture* picture,
++    int32_t width,
++    int32_t height,
++    int32_t pixel_format,
++    FlutterSpiImage** out_image) {
++  if (engine == nullptr || engine->backend == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return engine->backend->PictureToImageSyncWithFormat(
++      picture, width, height, pixel_format, out_image);
++}
++
+ FlutterSpiResult SpiEngineApi::SceneToImage(FlutterSpiEngine* engine,
+                                             FlutterSpiScene* scene,
+                                             int32_t width,
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.h b/engine/src/flutter/runtime_spi/spi_engine_api.h
+index 92dcb844a97..da6064adca7 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.h
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.h
+@@ -67,9 +67,16 @@ class SpiEngineApi final {
+       const FlutterSpiImageDecodeOptions* options,
+       FlutterSpiImageCallback callback,
+       void* user_data);
++  static FlutterSpiResult ImageCreateFromPixelsSync(
++      FlutterSpiEngine* engine,
++      const FlutterSpiPixels* pixels,
++      const FlutterSpiImageDecodeOptions* options,
++      FlutterSpiImage** out_image);
+   static FlutterSpiResult ImageGetSize(FlutterSpiImage* image,
+                                        int32_t* out_width,
+                                        int32_t* out_height);
++  static FlutterSpiResult ImageGetColorSpace(FlutterSpiImage* image,
++                                             int32_t* out_color_space);
+   static FlutterSpiResult ImageRetain(FlutterSpiImage* image);
+   static FlutterSpiResult ImageRelease(FlutterSpiImage* image);
+   static FlutterSpiResult PictureToImage(
+@@ -84,6 +91,13 @@ class SpiEngineApi final {
+                                              int32_t width,
+                                              int32_t height,
+                                              FlutterSpiImage** out_image);
++  static FlutterSpiResult PictureToImageSyncWithFormat(
++      FlutterSpiEngine* engine,
++      FlutterSpiPicture* picture,
++      int32_t width,
++      int32_t height,
++      int32_t pixel_format,
++      FlutterSpiImage** out_image);
+   static FlutterSpiResult SceneToImage(FlutterSpiEngine* engine,
+                                        FlutterSpiScene* scene,
+                                        int32_t width,
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+index 2ff61d1d07c..2c27cca3554 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+@@ -13,9 +13,11 @@
+ 
+ #include "flutter/fml/logging.h"
+ #include "flutter/fml/make_copyable.h"
++#include "flutter/lib/ui/io_manager.h"
+ #include "flutter/lib/ui/window/key_data.h"
+ #include "flutter/lib/ui/window/platform_message_response.h"
+ #include "flutter/runtime/runtime_delegate.h"
++#include "flutter/runtime_spi/image/spi_image_readback.h"
+ #include "flutter/runtime_spi/spi_engine_api.h"
+ #include "flutter/runtime_spi/spi_scene.h"
+ #include "flutter/runtime_spi/semantics/spi_semantics.h"
+@@ -128,6 +130,7 @@ SpiRuntimeBackend::SpiRuntimeBackend(
+     RuntimeDelegate& runtime_delegate,
+     const TaskRunners& task_runners,
+     const FlutterSpiRuntimeTable& table,
++    fml::WeakPtr<IOManager> io_manager,
+     fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
+     fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
+         image_generator_registry,
+@@ -137,6 +140,7 @@ SpiRuntimeBackend::SpiRuntimeBackend(
+     std::shared_future<impeller::RuntimeStageBackend> runtime_stage_backend)
+     : runtime_delegate_(runtime_delegate),
+       task_runners_(task_runners),
++      io_manager_(std::move(io_manager)),
+       table_(table),
+       engine_api_(SpiEngineApi::Create()),
+       engine_handle_(new FlutterSpiEngine{this}),
+@@ -149,7 +153,8 @@ SpiRuntimeBackend::SpiRuntimeBackend(
+           impeller_enabled})),
+       image_decoding_(std::make_unique<SpiImageDecoding>(
+           std::move(image_decoder), std::move(image_generator_registry),
+-          task_runners.GetUITaskRunner())) {
++          task_runners.GetUITaskRunner(), snapshot_delegate_,
++          task_runners.GetRasterTaskRunner())) {
+   live_backends_.insert(this);
+ }
+ 
+@@ -173,6 +178,25 @@ SpiRuntimeBackend::~SpiRuntimeBackend() {
+   delete engine_handle_;
+ }
+ 
++FlutterSpiResult SpiRuntimeBackend::ImageToBytes(
++    FlutterSpiImage* image,
++    int32_t format,
++    FlutterSpiBytesCallback callback,
++    void* user_data) {
++  return SpiImageToBytes(
++      ImageReadbackContext{
++          .ui_task_runner = task_runners_.GetUITaskRunner(),
++          .raster_task_runner = task_runners_.GetRasterTaskRunner(),
++          .io_task_runner = task_runners_.GetIOTaskRunner(),
++          .snapshot_delegate = snapshot_delegate_,
++          .io_manager = io_manager_,
++          .gpu_disabled_switch = nullptr,
++          .impeller_enabled = impeller_enabled_,
++          .impeller_context = nullptr,
++      },
++      image, format, callback, user_data);
++}
++
+ std::unique_ptr<RuntimeBackend> SpiRuntimeBackend::Clone() const {
+   return nullptr;
+ }
+@@ -853,6 +877,19 @@ FlutterSpiResult SpiRuntimeBackend::CreateImageFromPixels(
+   return image_decoding_->DecodePixels(pixels, options, callback, user_data);
+ }
+ 
++FlutterSpiResult SpiRuntimeBackend::CreateImageFromPixelsSync(
++    const FlutterSpiPixels* pixels,
++    const FlutterSpiImageDecodeOptions* options,
++    FlutterSpiImage** out_image) {
++  if (stop_requested_) {
++    return kFlutterSpiInternalError;
++  }
++  if (!HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  return image_decoding_->CreateFromPixelsSync(pixels, options, out_image);
++}
++
+ FlutterSpiResult SpiRuntimeBackend::PictureToImage(
+     FlutterSpiPicture* picture,
+     int32_t width,
+@@ -883,6 +920,22 @@ FlutterSpiResult SpiRuntimeBackend::PictureToImageSync(
+   return image_snapshot_->PictureToImageSync(picture, width, height, out_image);
+ }
+ 
++FlutterSpiResult SpiRuntimeBackend::PictureToImageSyncWithFormat(
++    FlutterSpiPicture* picture,
++    int32_t width,
++    int32_t height,
++    int32_t pixel_format,
++    FlutterSpiImage** out_image) {
++  if (stop_requested_) {
++    return kFlutterSpiInternalError;
++  }
++  if (!HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++  return image_snapshot_->PictureToImageSyncWithFormat(
++      picture, width, height, pixel_format, out_image);
++}
++
+ FlutterSpiResult SpiRuntimeBackend::SceneToImage(FlutterSpiScene* scene,
+                                                 int32_t width,
+                                                 int32_t height,
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.h b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+index c5cb335cf1f..13e4e191f5b 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.h
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+@@ -26,6 +26,7 @@ namespace flutter {
+ 
+ class AssetManager;
+ class FontCollection;
++class IOManager;
+ class PlatformMessageHandler;
+ class RuntimeDelegate;
+ class SpiRuntimeBackend;
+@@ -51,6 +52,7 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+   SpiRuntimeBackend(RuntimeDelegate& runtime_delegate,
+                     const TaskRunners& task_runners,
+                     const FlutterSpiRuntimeTable& table,
++                    fml::WeakPtr<IOManager> io_manager,
+                     fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder =
+                         {},
+                     fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
+@@ -131,6 +133,10 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+       const FlutterSpiImageDecodeOptions* options,
+       FlutterSpiImageCallback callback,
+       void* user_data);
++  FlutterSpiResult CreateImageFromPixelsSync(
++      const FlutterSpiPixels* pixels,
++      const FlutterSpiImageDecodeOptions* options,
++      FlutterSpiImage** out_image);
+   FlutterSpiResult PictureToImage(FlutterSpiPicture* picture,
+                                   int32_t width,
+                                   int32_t height,
+@@ -140,6 +146,12 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+                                       int32_t width,
+                                       int32_t height,
+                                       FlutterSpiImage** out_image);
++  FlutterSpiResult PictureToImageSyncWithFormat(
++      FlutterSpiPicture* picture,
++      int32_t width,
++      int32_t height,
++      int32_t pixel_format,
++      FlutterSpiImage** out_image);
+   FlutterSpiResult SceneToImage(FlutterSpiScene* scene,
+                                 int32_t width,
+                                 int32_t height,
+@@ -149,6 +161,10 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+                                     int32_t width,
+                                     int32_t height,
+                                     FlutterSpiImage** out_image);
++  FlutterSpiResult ImageToBytes(FlutterSpiImage* image,
++                                int32_t format,
++                                FlutterSpiBytesCallback callback,
++                                void* user_data);
+ 
+   const FlutterSpiEngineApi& engine_api() const { return engine_api_; }
+   FlutterSpiEngine* engine_handle() { return engine_handle_; }
+@@ -188,6 +204,7 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+ 
+   RuntimeDelegate& runtime_delegate_;
+   TaskRunners task_runners_;
++  fml::WeakPtr<IOManager> io_manager_;
+   FlutterSpiRuntimeTable table_ = {};
+   FlutterSpiEngineApi engine_api_ = {};
+   FlutterSpiEngine* engine_handle_ = nullptr;
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc
+index 02cf1397e6a..432895c817d 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc
+@@ -51,7 +51,8 @@ std::unique_ptr<RuntimeBackend> SpiRuntimeBackendFactory::Create(
+     return nullptr;
+   }
+   return std::make_unique<SpiRuntimeBackend>(runtime_delegate, task_runners,
+-                                             table_, std::move(image_decoder),
++                                             table_, std::move(io_manager),
++                                             std::move(image_decoder),
+                                              std::move(image_generator_registry),
+                                              std::move(snapshot_delegate),
+                                              std::move(unref_queue),
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
+index 7d136ee6929..a8cdb8cde99 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend_unittests.cc
+@@ -398,7 +398,8 @@ class SpiRuntimeBackendTest : public ::testing::Test {
+ 
+   std::unique_ptr<SpiRuntimeBackend> CreateBackend(
+       FlutterSpiRuntimeTable table) {
+-    return std::make_unique<SpiRuntimeBackend>(delegate, *task_runners, table);
++    return std::make_unique<SpiRuntimeBackend>(delegate, *task_runners, table,
++                                               fml::WeakPtr<IOManager>());
+   }
+ 
+   void LaunchBackend(SpiRuntimeBackend* backend) {
+diff --git a/engine/src/flutter/runtime_spi/text/spi_paragraph_draw_parity_unittests.cc b/engine/src/flutter/runtime_spi/text/spi_paragraph_draw_parity_unittests.cc
+index ef1f68c119f..91e9da529d0 100644
+--- a/engine/src/flutter/runtime_spi/text/spi_paragraph_draw_parity_unittests.cc
++++ b/engine/src/flutter/runtime_spi/text/spi_paragraph_draw_parity_unittests.cc
+@@ -298,6 +298,7 @@ TEST_F(SpiParagraphDrawTest, ImpellerEngineRecordsTextFrames) {
+   FlutterSpiRuntimeTable runtime_table = {};
+   auto backend = std::make_unique<SpiRuntimeBackend>(
+       *engine, task_runners, runtime_table,
++      fml::WeakPtr<IOManager>(),
+       fml::TaskRunnerAffineWeakPtr<ImageDecoder>(),
+       fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>(),
+       fml::TaskRunnerAffineWeakPtr<SnapshotDelegate>(), nullptr, true);
+diff --git a/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc b/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
+index 7fa5325f083..1feb938d799 100644
+--- a/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
++++ b/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
+@@ -47,6 +47,7 @@ std::unique_ptr<RuntimeBackend> DartRuntimeBackendFactory::Create(
+   auto backend_image_generator_registry = image_generator_registry;
+   auto backend_snapshot_delegate = snapshot_delegate;
+   auto backend_unref_queue = unref_queue;
++  auto backend_io_manager = io_manager;
+   auto delegate_bridge = std::make_unique<DartRuntimeDelegateBridge>();
+   auto controller = std::make_unique<RuntimeController>(
+       *delegate_bridge,                     // runtime delegate
+@@ -77,6 +78,7 @@ std::unique_ptr<RuntimeBackend> DartRuntimeBackendFactory::Create(
+       root_isolate_create_callback);
+   auto backend = std::make_unique<SpiRuntimeBackend>(
+       runtime_delegate, task_runners, runtime->table(),
++      std::move(backend_io_manager),
+       std::move(backend_image_decoder),
+       std::move(backend_image_generator_registry),
+       std::move(backend_snapshot_delegate), std::move(backend_unref_queue),
+@@ -106,6 +108,7 @@ std::unique_ptr<RuntimeBackend> DartRuntimeBackendFactory::Spawn(
+   auto backend_image_decoder = image_decoder;
+   auto backend_image_generator_registry = image_generator_registry;
+   auto backend_snapshot_delegate = snapshot_delegate;
++  auto backend_io_manager = io_manager;
+   auto controller = runtime_controller.Spawn(
+       *delegate_bridge, advisory_script_uri, advisory_script_entrypoint,
+       idle_notification_callback, isolate_create_callback,
+@@ -117,6 +120,7 @@ std::unique_ptr<RuntimeBackend> DartRuntimeBackendFactory::Spawn(
+       root_isolate_create_callback);
+   auto backend = std::make_unique<SpiRuntimeBackend>(
+       runtime_delegate, task_runners, runtime->table(),
++      std::move(backend_io_manager),
+       std::move(backend_image_decoder),
+       std::move(backend_image_generator_registry),
+       std::move(backend_snapshot_delegate), nullptr, settings.enable_impeller);
+diff --git a/engine/src/flutter/shell/common/engine.cc b/engine/src/flutter/shell/common/engine.cc
+index c7b4ad4b1aa..b59664fb4de 100644
+--- a/engine/src/flutter/shell/common/engine.cc
++++ b/engine/src/flutter/shell/common/engine.cc
+@@ -63,6 +63,7 @@ std::unique_ptr<RuntimeBackend> MakeDartRuntimeBackend(
+     std::unique_ptr<RuntimeController> controller,
+     const Settings& settings,
+     const fml::closure& root_isolate_create_callback,
++    fml::WeakPtr<IOManager> io_manager,
+     fml::TaskRunnerAffineWeakPtr<ImageDecoder> image_decoder,
+     fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
+         image_generator_registry) {
+@@ -72,6 +73,7 @@ std::unique_ptr<RuntimeBackend> MakeDartRuntimeBackend(
+       root_isolate_create_callback);
+   auto backend = std::make_unique<SpiRuntimeBackend>(
+       runtime_delegate, task_runners, runtime->table(),
++      std::move(io_manager),
+       std::move(image_decoder), std::move(image_generator_registry));
+   runtime.release();
+   return backend;
+@@ -104,7 +106,7 @@ Engine::Engine(
+   runtime_backend_factory_ = std::make_shared<DartRuntimeBackendFactory>();
+   runtime_backend_ = MakeDartRuntimeBackend(
+       *this, task_runners, std::move(runtime_controller), settings,
+-      root_isolate_create_callback_, image_decoder_->GetWeakPtr(),
++      root_isolate_create_callback_, io_manager, image_decoder_->GetWeakPtr(),
+       image_generator_registry_.GetWeakPtr());
+ }
+ 
