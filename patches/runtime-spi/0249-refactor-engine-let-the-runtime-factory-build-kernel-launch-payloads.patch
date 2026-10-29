@@ -1,0 +1,97 @@
+# Why: keep Dart-specific kernel launch construction out of the shell core.
+diff --git a/engine/src/flutter/runtime_spi/runtime_backend_factory.h b/engine/src/flutter/runtime_spi/runtime_backend_factory.h
+index fcb21dde9f0..3678755d423 100644
+--- a/engine/src/flutter/runtime_spi/runtime_backend_factory.h
++++ b/engine/src/flutter/runtime_spi/runtime_backend_factory.h
+@@ -17,6 +17,7 @@
+ #include "flutter/flow/skia_gpu_object.h"
+ #include "flutter/runtime/platform_data.h"
+ #include "flutter/runtime_spi/runtime_backend.h"
++#include "flutter/shell/common/runtime_launch_configuration.h"
+ #include "impeller/runtime_stage/runtime_stage.h"
+ 
+ namespace fml {
+@@ -39,6 +40,11 @@ class RuntimeBackendFactory {
+  public:
+   virtual ~RuntimeBackendFactory() = default;
+ 
++  virtual std::unique_ptr<RuntimeLaunchConfiguration>
++  CreateLaunchConfigurationFromKernel(std::unique_ptr<fml::Mapping> kernel) {
++    return nullptr;
++  }
++
+   virtual std::unique_ptr<RuntimeBackend> Create(
+       RuntimeDelegate& runtime_delegate,
+       const TaskRunners& task_runners,
+diff --git a/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc b/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
+index 2ce59a33cac..498ff00342e 100644
+--- a/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
++++ b/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
+@@ -10,6 +10,7 @@
+ #include "flutter/lib/ui/painting/image_generator_registry.h"
+ #include "flutter/lib/ui/snapshot_delegate.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
++#include "flutter/runtime/isolate_configuration.h"
+ #include "flutter/runtime/runtime_controller.h"
+ #include "flutter/runtime/runtime_delegate.h"
+ #include "flutter/runtime_spi/spi_runtime_backend.h"
+@@ -26,6 +27,12 @@ DartRuntimeBackendFactory::DartRuntimeBackendFactory(
+ 
+ DartRuntimeBackendFactory::~DartRuntimeBackendFactory() = default;
+ 
++std::unique_ptr<RuntimeLaunchConfiguration>
++DartRuntimeBackendFactory::CreateLaunchConfigurationFromKernel(
++    std::unique_ptr<fml::Mapping> kernel) {
++  return IsolateConfiguration::CreateForKernel(std::move(kernel));
++}
++
+ std::unique_ptr<RuntimeBackend> DartRuntimeBackendFactory::Create(
+     RuntimeDelegate& runtime_delegate,
+     const TaskRunners& task_runners,
+diff --git a/engine/src/flutter/shell/common/dart_runtime_backend_factory.h b/engine/src/flutter/shell/common/dart_runtime_backend_factory.h
+index d25fc00dfdf..cf228168935 100644
+--- a/engine/src/flutter/shell/common/dart_runtime_backend_factory.h
++++ b/engine/src/flutter/shell/common/dart_runtime_backend_factory.h
+@@ -21,6 +21,10 @@ class DartRuntimeBackendFactory final : public RuntimeBackendFactory {
+                             fml::RefPtr<const DartSnapshot> isolate_snapshot);
+   ~DartRuntimeBackendFactory() override;
+ 
++  std::unique_ptr<RuntimeLaunchConfiguration>
++  CreateLaunchConfigurationFromKernel(
++      std::unique_ptr<fml::Mapping> kernel) override;
++
+   std::unique_ptr<RuntimeBackend> Create(
+       RuntimeDelegate& runtime_delegate,
+       const TaskRunners& task_runners,
+diff --git a/engine/src/flutter/shell/common/shell.cc b/engine/src/flutter/shell/common/shell.cc
+index 8fc9f113cc7..2f6f2e37f65 100644
+--- a/engine/src/flutter/shell/common/shell.cc
++++ b/engine/src/flutter/shell/common/shell.cc
+@@ -25,7 +25,6 @@
+ #include "flutter/fml/paths.h"
+ #include "flutter/fml/task_runner_util.h"
+ #include "flutter/fml/trace_event.h"
+-#include "flutter/runtime/isolate_configuration.h"
+ #include "flutter/shell/common/base64.h"
+ #include "flutter/shell/common/engine.h"
+ #include "flutter/shell/common/shell_service_protocol.h"
+@@ -1988,10 +1987,16 @@ bool Shell::OnServiceProtocolRunInView(const Shell::ServiceProtocolMap& params,
+       std::make_unique<fml::FileMapping>(fml::OpenFile(
+           main_script_path.c_str(), false, fml::FilePermission::kRead));
+ 
+-  auto isolate_configuration = IsolateConfiguration::CreateForKernel(
+-      std::move(main_script_file_mapping));
++  auto launch_configuration =
++      runtime_backend_factory_->CreateLaunchConfigurationFromKernel(
++          std::move(main_script_file_mapping));
++  if (launch_configuration == nullptr) {
++    ServiceProtocolFailureError(
++        response, "runInView is not supported by this runtime");
++    return false;
++  }
+ 
+-  RunConfiguration configuration(std::move(isolate_configuration));
++  RunConfiguration configuration(std::move(launch_configuration));
+ 
+   configuration.SetEntrypointAndLibrary(engine_->GetLastEntrypoint(),
+                                         engine_->GetLastEntrypointLibrary());
