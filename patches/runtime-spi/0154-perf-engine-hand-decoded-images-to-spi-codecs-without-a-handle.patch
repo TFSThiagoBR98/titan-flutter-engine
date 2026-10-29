@@ -1,0 +1,215 @@
+# Why: the static codec frame wrapped, read and released a FlutterSpiImage
+# handle between two core classes.
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_codec.cc b/engine/src/flutter/runtime_spi/image/spi_image_codec.cc
+index dd6a67c347e..5267f631036 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_codec.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_codec.cc
+@@ -94,20 +94,6 @@ class SpiImageCodec final : public std::enable_shared_from_this<SpiImageCodec> {
+     void* user_data;
+   };
+ 
+-  struct StaticCallbackContext {
+-    std::shared_ptr<SpiImageCodec> codec;
+-  };
+-
+-  static void CaptureStaticFrame(void* user_data,
+-                                 FlutterSpiResult result,
+-                                 FlutterSpiImage* image) {
+-    std::unique_ptr<StaticCallbackContext> context(
+-        static_cast<StaticCallbackContext*>(user_data));
+-    if (context->codec != nullptr) {
+-      context->codec->CompleteStaticFrame(result, image);
+-    }
+-  }
+-
+   FlutterSpiResult GetNextStaticFrame(FlutterSpiFrameCallback callback,
+                                       void* user_data) {
+     if (cached_image_ != nullptr) {
+@@ -122,11 +108,13 @@ class SpiImageCodec final : public std::enable_shared_from_this<SpiImageCodec> {
+     }
+     decoding_in_progress_ = true;
+ 
+-    auto* context = new StaticCallbackContext{shared_from_this()};
+-    const FlutterSpiResult result = image_decoding_->DecodeDescriptor(
+-        descriptor_, &decode_options_, CaptureStaticFrame, context);
++    const auto self = shared_from_this();
++    const FlutterSpiResult result = image_decoding_->DecodeDescriptorImage(
++        descriptor_, &decode_options_,
++        [self](FlutterSpiResult decode_result, sk_sp<DlImage> image) {
++          self->CompleteStaticFrame(decode_result, std::move(image));
++        });
+     if (result != kFlutterSpiOk) {
+-      delete context;
+       decoding_in_progress_ = false;
+       pending_callbacks_.clear();
+     }
+@@ -152,13 +140,8 @@ class SpiImageCodec final : public std::enable_shared_from_this<SpiImageCodec> {
+     return kFlutterSpiOk;
+   }
+ 
+-  void CompleteStaticFrame(FlutterSpiResult result, FlutterSpiImage* image) {
+-    sk_sp<DlImage> decoded_image;
+-    if (result == kFlutterSpiOk && image != nullptr) {
+-      decoded_image = SpiImageGet(image);
+-      SpiImageRelease(image);
+-    }
+-
++  void CompleteStaticFrame(FlutterSpiResult result,
++                           sk_sp<DlImage> decoded_image) {
+     decoding_in_progress_ = false;
+     if (decoded_image != nullptr) {
+       cached_image_ = decoded_image;
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_decoding.cc b/engine/src/flutter/runtime_spi/image/spi_image_decoding.cc
+index 3246af11375..726d998cbc8 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_decoding.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_decoding.cc
+@@ -145,25 +145,21 @@ FlutterSpiResult SpiImageDecoding::ValidateCallback(
+   return callback == nullptr ? kFlutterSpiInvalidArgument : kFlutterSpiOk;
+ }
+ 
+-void SpiImageDecoding::PostResult(FlutterSpiImageCallback callback,
+-                                  void* user_data,
++void SpiImageDecoding::PostResult(ImageResultCallback callback,
+                                   FlutterSpiResult result,
+                                   sk_sp<DlImage> image) {
+   const auto weak_this = weak_factory_.GetWeakPtr();
+-  auto deliver_result =
+-      [weak_this, callback, user_data, result,
+-       image = std::move(image)]() mutable {
+-        if (!weak_this) {
+-          return;
+-        }
+-        FlutterSpiImage* handle = nullptr;
+-        FlutterSpiResult callback_result = result;
+-        if (callback_result == kFlutterSpiOk &&
+-            SpiImageWrap(std::move(image), &handle) != kFlutterSpiOk) {
+-          callback_result = kFlutterSpiInternalError;
+-        }
+-        callback(user_data, callback_result, handle);
+-      };
++  auto deliver_result = [weak_this, callback = std::move(callback), result,
++                         image = std::move(image)]() mutable {
++    if (!weak_this) {
++      return;
++    }
++    FlutterSpiResult callback_result = result;
++    if (callback_result == kFlutterSpiOk && image == nullptr) {
++      callback_result = kFlutterSpiInternalError;
++    }
++    callback(callback_result, std::move(image));
++  };
+   if (ui_task_runner_->RunsTasksOnCurrentThread() && api_call_depth_ == 0) {
+     deliver_result();
+   } else {
+@@ -183,7 +179,11 @@ FlutterSpiResult SpiImageDecoding::DecodeEncoded(
+     return kFlutterSpiInvalidArgument;
+   }
+   if (!registry_) {
+-    PostResult(callback, user_data, kFlutterSpiInternalError, nullptr);
++    PostResult(
++        [callback, user_data](FlutterSpiResult result, sk_sp<DlImage>) {
++          callback(user_data, result, nullptr);
++        },
++        kFlutterSpiInternalError, nullptr);
+     return kFlutterSpiOk;
+   }
+   auto descriptor = ImageDescriptorData::MakeEncoded(
+@@ -233,12 +233,33 @@ FlutterSpiResult SpiImageDecoding::DecodeDescriptor(
+     const FlutterSpiImageDecodeOptions* options,
+     FlutterSpiImageCallback callback,
+     void* user_data) {
++  if (ValidateCallback(callback) != kFlutterSpiOk) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return DecodeDescriptorImage(
++      descriptor, options,
++      [callback, user_data](FlutterSpiResult result,
++                            sk_sp<DlImage> image) mutable {
++        FlutterSpiImage* handle = nullptr;
++        FlutterSpiResult callback_result = result;
++        if (callback_result == kFlutterSpiOk &&
++            SpiImageWrap(std::move(image), &handle) != kFlutterSpiOk) {
++          callback_result = kFlutterSpiInternalError;
++        }
++        callback(user_data, callback_result, handle);
++      });
++}
++
++FlutterSpiResult SpiImageDecoding::DecodeDescriptorImage(
++    const std::shared_ptr<ImageDescriptorData>& descriptor,
++    const FlutterSpiImageDecodeOptions* options,
++    ImageResultCallback callback) {
+   const ApiCallDepthGuard api_call_guard(&api_call_depth_);
+-  if (ValidateCallback(callback) != kFlutterSpiOk || descriptor == nullptr) {
++  if (!callback || descriptor == nullptr) {
+     return kFlutterSpiInvalidArgument;
+   }
+   if (!decoder_) {
+-    PostResult(callback, user_data, kFlutterSpiInternalError, nullptr);
++    PostResult(std::move(callback), kFlutterSpiInternalError, nullptr);
+     return kFlutterSpiOk;
+   }
+   const ImageDecoder::Options decode_options =
+@@ -246,13 +267,13 @@ FlutterSpiResult SpiImageDecoding::DecodeDescriptor(
+                                options);
+   decoder_->Decode(
+       descriptor, decode_options,
+-      [weak_this = weak_factory_.GetWeakPtr(), callback,
+-       user_data](sk_sp<DlImage> image, std::string) mutable {
++      [weak_this = weak_factory_.GetWeakPtr(), callback = std::move(callback)](
++          sk_sp<DlImage> image, std::string) mutable {
+         if (weak_this) {
+-          weak_this->PostResult(callback, user_data,
+-                                image == nullptr ? kFlutterSpiInternalError
+-                                                 : kFlutterSpiOk,
+-                                std::move(image));
++          weak_this->PostResult(
++              std::move(callback),
++              image == nullptr ? kFlutterSpiInternalError : kFlutterSpiOk,
++              std::move(image));
+         }
+       });
+   return kFlutterSpiOk;
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_decoding.h b/engine/src/flutter/runtime_spi/image/spi_image_decoding.h
+index 562e1e0a63d..d0da48ddbe9 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_decoding.h
++++ b/engine/src/flutter/runtime_spi/image/spi_image_decoding.h
+@@ -7,6 +7,7 @@
+ 
+ #include <cstddef>
+ #include <cstdint>
++#include <functional>
+ #include <memory>
+ 
+ #include "flutter/common/task_runners.h"
+@@ -34,6 +35,9 @@ ImageDecoder::Options SpiToImageDecoderOptions(
+ 
+ class SpiImageDecoding final {
+  public:
++  using ImageResultCallback =
++      std::function<void(FlutterSpiResult result, sk_sp<DlImage> image)>;
++
+   SpiImageDecoding(
+       fml::TaskRunnerAffineWeakPtr<ImageDecoder> decoder,
+       fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry> registry,
+@@ -56,6 +60,10 @@ class SpiImageDecoding final {
+       const FlutterSpiImageDecodeOptions* options,
+       FlutterSpiImageCallback callback,
+       void* user_data);
++  FlutterSpiResult DecodeDescriptorImage(
++      const std::shared_ptr<ImageDescriptorData>& descriptor,
++      const FlutterSpiImageDecodeOptions* options,
++      ImageResultCallback callback);
+   FlutterSpiResult CreateFromPixelsSync(
+       const FlutterSpiPixels* pixels,
+       const FlutterSpiImageDecodeOptions* options,
+@@ -73,8 +81,7 @@ class SpiImageDecoding final {
+ 
+  private:
+   FlutterSpiResult ValidateCallback(FlutterSpiImageCallback callback) const;
+-  void PostResult(FlutterSpiImageCallback callback,
+-                  void* user_data,
++  void PostResult(ImageResultCallback callback,
+                   FlutterSpiResult result,
+                   sk_sp<DlImage> image);
+ 
