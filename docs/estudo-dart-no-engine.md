@@ -922,6 +922,37 @@ ordem do código original.
 A S5b-1 ainda mantém um único `.so`. Os dois `.so` e os *version scripts*
 ficam para a S5b-2.
 
+## S5b-2: O core como artefato próprio
+
+Em 2026-10-29, a decisão foi revista: o engine passa a produzir dois
+artefatos alternativos, e cada processo carrega um ou outro. A separação é
+necessária porque `-fvisibility=hidden` restringe os símbolos públicos de cada
+biblioteca e porque `fml` e Skia ficam estaticamente ligados em cada alvo Dart;
+um artefato não pode depender do outro para completar esses símbolos.
+
+O alvo `flutter_engine_core_library` produz `libflutter_engine_core.so`. Seu
+*version script* `embedder_core_exports.lst` exporta somente as funções
+`FlutterCore*`, com o mesmo `assert_no_deps` do alvo `embedder_core`. O header
+`flutter_core_host.h` é disponibilizado pelo alvo `copy_core_headers`. O
+`build-engine.sh` e o `check-runtime-spi.sh` constroem a biblioteca do core por
+padrão; o empacotamento dos dois artefatos nos bundles fica para a S6.
+
+A verificação do artefato confirmou que suas únicas dependências dinâmicas são
+`libdl`, `libm`, `libpthread`, `libc` e o `ld-linux`. A biblioteca exporta 36
+funções `FlutterCore*`. Os únicos outros símbolos exportados são
+`__start___lcxx_override` e `__stop___lcxx_override`, delimitadores de seção
+criados pelo linker para o libc++; o `libflutter_engine.so` atual também os
+exporta.
+
+### O que o link isolado revelou
+
+O link isolado revelou que o core ainda usava, do lado Dart, a implementação
+de `ViewFocusChangeRequest` em `view_focus.cc`, que agora pertence ao alvo
+`ui_core_types`. Também usava `PerformInitializationTasks`, agora definido em
+`shell.cc`; essa definição não instala o handler de log do tonic, que
+`shell_dart.cc` instala depois. O monólito sempre satisfazia esses símbolos,
+por isso a dependência só apareceu quando o core foi ligado isoladamente.
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos

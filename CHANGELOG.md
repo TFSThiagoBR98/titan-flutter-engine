@@ -56,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime SPI S4i-3b: o alvo Dart do `dart:ui` só vê o core pela ABI C do SPI, com `assert_no_deps` no GN (exceções do `flutter_gpu` até a S7); corrigido o formato de pixel de `ImageDescriptor.raw`/`decodeImageFromPixels`, que trocava vermelho e azul em RGBA desde a migração dos codecs.
 - Runtime SPI S5a: o alvo do core `shell/common:common` deixa de conter e de depender de Dart, com `assert_no_deps` no GN; o código Dart do shell vai para `shell/common:dart`; corrigido um teste instável da leitura de assets no worker.
 - Runtime SPI S5b-1: host API do core (`flutter_core_host.h`, funções `FlutterCore*`) sem Dart, num alvo próprio com `assert_no_deps`; a Embedder API (`embedder.h`) continua igual e passa a traduzir para ela.
+- Runtime SPI S5b-2: o build gera também o `libflutter_engine_core.so`, só com o core e a host API (`FlutterCore*`), como artefato alternativo ao `libflutter_engine.so`.
 
 ### Fixed
 
