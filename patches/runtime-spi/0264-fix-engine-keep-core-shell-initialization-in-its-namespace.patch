@@ -1,0 +1,105 @@
+# Why: The initialization definition must remain in the flutter namespace
+# after moving it out of shell_dart.cc, so the core shell implementation
+# compiles without changing its behavior.
+diff --git a/engine/src/flutter/shell/common/shell.cc b/engine/src/flutter/shell/common/shell.cc
+index 1625bfeac59..dc1e36b7f00 100644
+--- a/engine/src/flutter/shell/common/shell.cc
++++ b/engine/src/flutter/shell/common/shell.cc
+@@ -70,49 +70,6 @@ void RegisterCodecsWithSkia() {
+   SkCodecs::Register(SkIcoDecoder::Decoder());
+ }
+ 
+-}  // namespace
+-
+-void PerformInitializationTasks(Settings& settings) {
+-  {
+-    fml::LogSettings log_settings;
+-    log_settings.min_log_level =
+-        settings.verbose_logging ? fml::kLogInfo : fml::kLogError;
+-    fml::SetLogSettings(log_settings);
+-  }
+-
+-  static std::once_flag gShellSettingsInitialization = {};
+-  std::call_once(gShellSettingsInitialization, [&settings] {
+-    if (settings.trace_skia) {
+-      InitSkiaEventTracer(settings.trace_skia, settings.trace_skia_allowlist);
+-    }
+-
+-    if (!settings.trace_allowlist.empty()) {
+-      fml::tracing::TraceSetAllowlist(settings.trace_allowlist);
+-    }
+-
+-    if (!settings.skia_deterministic_rendering_on_cpu) {
+-      SkGraphics::Init();
+-    } else {
+-      FML_DLOG(INFO) << "Skia deterministic rendering is enabled.";
+-    }
+-    RegisterCodecsWithSkia();
+-
+-    if (settings.icu_initialization_required) {
+-      if (!settings.icu_data_path.empty()) {
+-        fml::icu::InitializeICU(settings.icu_data_path);
+-      } else if (settings.icu_mapper) {
+-        fml::icu::InitializeICUFromMapping(settings.icu_mapper());
+-      } else {
+-        FML_DLOG(WARNING) << "Skipping ICU initialization in the shell.";
+-      }
+-    }
+-  });
+-
+-#if !SLIMPELLER
+-  PersistentCache::SetCacheSkSL(settings.cache_sksl);
+-#endif  // !SLIMPELLER
+-}
+-
+ std::unique_ptr<Engine> CreateEngine(
+     Engine::Delegate& delegate,
+     const std::shared_ptr<RuntimeBackendFactory>& runtime_backend_factory,
+@@ -184,6 +141,47 @@ bool ValidateViewportMetrics(const ViewportMetrics& metrics) {
+ 
+ }  // namespace
+ 
++void PerformInitializationTasks(Settings& settings) {
++  {
++    fml::LogSettings log_settings;
++    log_settings.min_log_level =
++        settings.verbose_logging ? fml::kLogInfo : fml::kLogError;
++    fml::SetLogSettings(log_settings);
++  }
++
++  static std::once_flag gShellSettingsInitialization = {};
++  std::call_once(gShellSettingsInitialization, [&settings] {
++    if (settings.trace_skia) {
++      InitSkiaEventTracer(settings.trace_skia, settings.trace_skia_allowlist);
++    }
++
++    if (!settings.trace_allowlist.empty()) {
++      fml::tracing::TraceSetAllowlist(settings.trace_allowlist);
++    }
++
++    if (!settings.skia_deterministic_rendering_on_cpu) {
++      SkGraphics::Init();
++    } else {
++      FML_DLOG(INFO) << "Skia deterministic rendering is enabled.";
++    }
++    RegisterCodecsWithSkia();
++
++    if (settings.icu_initialization_required) {
++      if (!settings.icu_data_path.empty()) {
++        fml::icu::InitializeICU(settings.icu_data_path);
++      } else if (settings.icu_mapper) {
++        fml::icu::InitializeICUFromMapping(settings.icu_mapper());
++      } else {
++        FML_DLOG(WARNING) << "Skipping ICU initialization in the shell.";
++      }
++    }
++  });
++
++#if !SLIMPELLER
++  PersistentCache::SetCacheSkSL(settings.cache_sksl);
++#endif  // !SLIMPELLER
++}
++
+ std::unique_ptr<Shell> Shell::Create(
+     const PlatformData& platform_data,
+     const TaskRunners& task_runners,

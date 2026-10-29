@@ -1,0 +1,76 @@
+# Why: provide the alternative core-only shared library for the Runtime SPI.
+diff --git a/engine/src/flutter/shell/platform/embedder/BUILD.gn b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+index 5f61470d1c7..3dfef7f4c6b 100644
+--- a/engine/src/flutter/shell/platform/embedder/BUILD.gn
++++ b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+@@ -523,12 +523,43 @@ shared_library("flutter_engine_library") {
+   public_configs = [ "//flutter:config" ]
+ }
+ 
++shared_library("flutter_engine_core_library") {
++  visibility = [ ":*" ]
++
++  output_name = "flutter_engine_core"
++
++  ldflags = []
++  if (is_linux) {
++    ldflags += [ "-Wl,--version-script=" +
++                 rebase_path("embedder_core_exports.lst", root_build_dir) ]
++  }
++
++  deps = [ ":embedder_core" ]
++
++  assert_no_deps = [
++    "//flutter/third_party/dart/*",
++    "//flutter/third_party/tonic/*",
++    "//flutter/lib/ui:ui",
++    "//flutter/runtime:runtime",
++    "//flutter/runtime:libdart",
++    "//flutter/shell/common:dart",
++  ]
++
++  public_configs = [ "//flutter:config" ]
++}
++
+ copy("copy_headers") {
+   visibility = [ ":*" ]
+   sources = [ "embedder.h" ]
+   outputs = [ "$root_out_dir/flutter_embedder.h" ]
+ }
+ 
++copy("copy_core_headers") {
++  visibility = [ ":*" ]
++  sources = [ "flutter_core_host.h" ]
++  outputs = [ "$root_out_dir/flutter_core_host.h" ]
++}
++
+ if (is_mac && !embedder_for_target) {
+   _flutter_embedder_framework_dir = "$root_out_dir/FlutterEmbedder.framework"
+ 
+@@ -629,6 +660,8 @@ group("flutter_engine") {
+     deps += [
+       ":copy_headers",
+       ":flutter_engine_library",
++      ":copy_core_headers",
++      ":flutter_engine_core_library",
+     ]
+ 
+     # For the Mac, the dylib is packaged in a framework with the appropriate headers.
+diff --git a/engine/src/flutter/shell/platform/embedder/embedder_core_exports.lst b/engine/src/flutter/shell/platform/embedder/embedder_core_exports.lst
+new file mode 100644
+index 00000000000..a04bc24f48b
+--- /dev/null
++++ b/engine/src/flutter/shell/platform/embedder/embedder_core_exports.lst
+@@ -0,0 +1,12 @@
++# Copyright 2013 The Flutter Authors. All rights reserved.
++# Use of this source code is governed by a BSD-style license that can be
++# found in the LICENSE file.
++
++# Linker script that exports the core symbols required by the embedder library
++
++{
++  global:
++    FlutterCore*;
++  local:
++    *;
++};
