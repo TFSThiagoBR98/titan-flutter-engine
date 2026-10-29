@@ -1,0 +1,32 @@
+# Why: keep the shell service protocol's parameter map owned by the shell core
+# without including the Dart service registry.
+diff --git a/engine/src/flutter/shell/common/shell_service_protocol.cc b/engine/src/flutter/shell/common/shell_service_protocol.cc
+index 147d37b48d5..8bc2a0f10b7 100644
+--- a/engine/src/flutter/shell/common/shell_service_protocol.cc
++++ b/engine/src/flutter/shell/common/shell_service_protocol.cc
+@@ -17,7 +17,6 @@
+ #include "flutter/fml/memory/weak_ptr.h"
+ #include "flutter/fml/posix_wrappers.h"
+ #include "flutter/fml/synchronization/waitable_event.h"
+-#include "flutter/runtime/service_protocol.h"
+ #include "flutter/shell/common/shell.h"
+ #include "rapidjson/document.h"
+ #include "rapidjson/stringbuffer.h"
+@@ -27,8 +26,6 @@ namespace flutter {
+ 
+ namespace {
+ 
+-using ServiceProtocolMap = ServiceProtocol::Handler::ServiceProtocolMap;
+-
+ const std::vector<const char*>& ServiceProtocolMethods() {
+   static const std::vector<const char*> methods = {
+       FLUTTER_SPI_SERVICE_METHOD_SCREENSHOT,
+@@ -104,7 +101,7 @@ bool ShellServiceProtocol::HandleMessage(const char* method,
+     return false;
+   }
+ 
+-  ServiceProtocolMap params;
++  Shell::ServiceProtocolMap params;
+   for (size_t index = 0; index < param_count; index++) {
+     if (keys[index] == nullptr || values[index] == nullptr) {
+       return false;
