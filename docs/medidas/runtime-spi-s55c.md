@@ -33,3 +33,6 @@ absolutas variam entre sessões; compare só dentro do mesmo A/B.
 O restante é `ToDart` de um `std::vector`, como no upstream. No texto, a
 camada SPI custa ≤ 1% do quadro; nos codecs, não sobrou salto de tarefa extra.
 Decisão: sem mudança de código.
+
+Atualização (2026-10-29): a hipótese do `impeller_enabled` foi descartada com
+binários com símbolos; ver [runtime-spi-s55e.md](runtime-spi-s55e.md).

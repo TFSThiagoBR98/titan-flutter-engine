@@ -1078,6 +1078,39 @@ o `tools/ci.sh engine`. A série anterior está no worktree do engine
 `backup-runtime-spi-pre-rewrite-2026-10-29`) e num bundle e num tarball em
 `.build_flutter/backups/`.
 
+## S5.5e: Diagnóstico com símbolos
+
+As bases `s4f-cbase` e `s4g3-base` foram refeitas com símbolos, a partir dos
+mesmos commits, para atribuir o que a S5.5c não conseguiu. Contra elas, o
+`develop` ficou em +5,8% no quadro de parágrafo, +5,2% no composto e +4,0% no
+codec, mas as instruções só subiram +1,3%, +1,9% e +3,4%. As trocas de contexto
+são iguais (nenhum salto de thread a mais); o tempo extra é de CPU.
+
+No texto, `layout` e `paint` executam as mesmas instruções nos dois lados, o
+que descarta a hipótese do `impeller_enabled` levantada na S5.5c. O cachegrind
+mostra a causa: misses de cache de instruções +13% com instruções +1%. A camada
+a mais (`lib/ui` → struct C → core) espalha o caminho quente por mais código, e
+a pressão aparece na VM do Dart, no Skia e no código AOT, sem um ponto único; o
+maior bloco próprio do SPI, `pushStyle` + `ToTxtTextStyle`, é uma tradução
+direta, sem nada para cortar.
+
+No codec, ≈ 2,5 dos 3,4 pontos estão na VM: as chamadas de
+`Type::Canonicalize` são as mesmas, mas cada busca na tabela de tipos canônicos
+custa ≈ 3,5× mais com o snapshot de `dart:ui` maior (os bindings FFI do SPI
+acrescentam tipos). O handle `FlutterSpiImage` criado, lido e liberado entre
+`SpiImageDecoding` e `SpiImageCodec` saiu: `SpiImageDecoding` ganhou um decode
+interno que entrega `sk_sp<DlImage>` (`DecodeDescriptorImage`), o caminho C
+virou um adaptador sobre ele e o codec deixou de alocar um contexto por decode.
+O ganho (≈ 1 µs por decode) fica abaixo do ruído do A/B; a mudança fica pela
+simplicidade.
+
+Ficam como estão, por custo maior que o ganho: `Insert`/`Release` das tabelas
+de handles sem trava (≈ 0,24% do composto), os dois vetores por chamada do
+`pushStyle` (≈ 0,1%) e a tabela de tipos canônicos da VM (pede estudo dentro da
+VM, sem ganho definido).
+
+O resultado está em [runtime-spi-s55e.md](medidas/runtime-spi-s55e.md).
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos
