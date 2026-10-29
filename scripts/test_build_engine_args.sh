@@ -339,6 +339,7 @@ assert_log_contains "$temporary_directory/build-engine-lock.out" \
 run_engine --gn-only
 assert_log_contains "$gn_log" '--target-dir host_debug'
 assert_log_contains "$gn_log" 'build_linux_gtk_shell=false titan_target_libc="glibc"'
+assert_log_not_contains "$gn_log" 'titan_flutter_runtime_dart=false'
 assert_log_not_contains "$gn_log" '--enable-fontconfig'
 assert_log_not_contains "$python_log" 'install-sysroot.py --arch=i386'
 
@@ -419,6 +420,15 @@ run_engine --mode debug --out "$temporary_directory/verified-bundle"
 }
 assert_log_contains "$ninja_log" 'flutter/shell/platform/embedder:flutter_engine_core_library'
 assert_log_contains "$ninja_log" 'flutter/shell/platform/embedder:copy_core_headers'
+
+: > "$gn_log"
+: > "$ninja_log"
+run_engine --runtime none --out-name host_debug_nodart
+assert_log_contains "$gn_log" 'titan_flutter_runtime_dart=false'
+assert_log_contains "$ninja_log" 'flutter/shell/platform/embedder:flutter_engine_core_library'
+assert_log_contains "$ninja_log" 'flutter/shell/platform/embedder:copy_core_headers'
+assert_log_not_contains "$ninja_log" 'flutter/shell/platform/embedder:flutter_engine_library'
+assert_log_not_contains "$ninja_log" 'flutter/shell/platform/embedder:copy_headers'
 
 : > "$ninja_log"
 run_engine --mode release --out-name sdk_custom \

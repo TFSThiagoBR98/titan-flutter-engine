@@ -18,6 +18,7 @@ Options:
   --cpu x64|arm64|arm|riscv32|riscv64 Linux target CPU (default: x64)
   --arm-float-abi hard|softfp|soft  ARM float ABI (only with --cpu arm)
   --libc glibc|musl                 Target libc (default: glibc)
+  --runtime dart|none               Build the Dart runtime (default: dart)
   --target-sysroot <dir>             Target sysroot for cross-compilation
   --gn-only                          Configure GN without running Ninja
   --unittests                        Enable engine unit tests and benchmarks
@@ -113,6 +114,7 @@ mode=debug
 cpu=x64
 arm_float_abi=
 libc=glibc
+runtime=dart
 target_sysroot=
 out_dir_arg=
 zip_output=0
@@ -162,6 +164,15 @@ while (($# > 0)); do
       ;;
     --libc=*)
       libc=${1#*=}
+      shift
+      ;;
+    --runtime)
+      (($# >= 2)) || die "--runtime requires a value"
+      runtime=$2
+      shift 2
+      ;;
+    --runtime=*)
+      runtime=${1#*=}
       shift
       ;;
     --target-sysroot)
@@ -268,6 +279,10 @@ esac
 case "$libc" in
   glibc|musl) ;;
   *) die "invalid libc: $libc (expected glibc or musl)" ;;
+esac
+case "$runtime" in
+  dart|none) ;;
+  *) die "invalid runtime: $runtime (expected dart or none)" ;;
 esac
 if [[ -n "$arm_float_abi" && "$cpu" != arm ]]; then
   die "--arm-float-abi is only valid with --cpu arm"
@@ -619,6 +634,9 @@ fi
 if [[ "$mode" != release ]]; then
   gn_args+=(--no-lto)
 fi
+if [[ "$runtime" == none ]]; then
+  gn_args+=(--gn-args 'titan_flutter_runtime_dart=false')
+fi
 
 out_dir="$engine_src/out/$out_name"
 if [[ "${TITAN_BUILD_LOCK_HELD:-}" != 1 ]]; then
@@ -638,6 +656,14 @@ if ((gn_only)); then
 fi
 
 printf 'building Flutter Engine in %s\n' "$out_dir"
+if [[ "$runtime" == none ]]; then
+  run_within_cpu_budget ninja -C "$out_dir" -j "$jobs" -l "$load" \
+    flutter/shell/platform/embedder:flutter_engine_core_library \
+    flutter/shell/platform/embedder:copy_core_headers
+  [[ -f "$out_dir/libflutter_engine_core.so" ]] || \
+    die "engine build did not produce $out_dir/libflutter_engine_core.so"
+  exit 0
+fi
 if ((${#ninja_targets[@]} > 0)); then
   run_within_cpu_budget ninja -C "$out_dir" -j "$jobs" -l "$load" "${ninja_targets[@]}"
   printf 'selected Ninja targets complete: %s\n' "$out_dir"

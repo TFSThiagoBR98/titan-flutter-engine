@@ -1,0 +1,238 @@
+# Why: allow the Flutter embedder graph to omit Dart-backed targets while
+# retaining the core runtime.
+diff --git a/engine/src/flutter/shell/config.gni b/engine/src/flutter/shell/config.gni
+index 3f498d2c044..5037d70b5bc 100644
+--- a/engine/src/flutter/shell/config.gni
++++ b/engine/src/flutter/shell/config.gni
+@@ -3,6 +3,9 @@
+ # found in the LICENSE file.
+ 
+ declare_args() {
++  # Whether to build the Dart-backed Flutter runtime.
++  titan_flutter_runtime_dart = true
++
+   shell_enable_gl = !is_fuchsia && !is_mac
+ 
+   # The logic for enabling Vulkan and Metal is in tools/gn.
+diff --git a/engine/src/flutter/shell/platform/embedder/BUILD.gn b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+index 3dfef7f4c6b..c45197d7eba 100644
+--- a/engine/src/flutter/shell/platform/embedder/BUILD.gn
++++ b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+@@ -207,37 +207,39 @@ template("embedder_source_set") {
+     ]
+   }
+ 
+-  source_set(target_name) {
+-    forward_variables_from(invoker, "*")
++  if (titan_flutter_runtime_dart) {
++    source_set(target_name) {
++      forward_variables_from(invoker, "*")
+ 
+-    sources = [ "embedder.cc" ]
++      sources = [ "embedder.cc" ]
+ 
+-    public_deps = [
+-      ":embedder_headers",
+-      ":${target_name}_core",
+-    ]
+-    deps = [
+-      ":embedder_gpu_configuration",
+-      "$dart_src/runtime/bin:common_embedder_dart_io",
+-      "$dart_src/runtime/bin:elf_loader",
+-      "//flutter/assets",
+-      "//flutter/common",
+-      "//flutter/fml",
+-      "//flutter/lib/ui",
+-      "//flutter/lib/ui:ui_core_types",
+-      "//flutter/runtime:libdart",
+-      "//flutter/runtime",
+-      "//flutter/shell/common",
+-      "//flutter/shell/common:dart",
+-      "//flutter/third_party/tonic",
+-    ]
++      public_deps = [
++        ":embedder_headers",
++        ":${target_name}_core",
++      ]
++      deps = [
++        ":embedder_gpu_configuration",
++        "$dart_src/runtime/bin:common_embedder_dart_io",
++        "$dart_src/runtime/bin:elf_loader",
++        "//flutter/assets",
++        "//flutter/common",
++        "//flutter/fml",
++        "//flutter/lib/ui",
++        "//flutter/lib/ui:ui_core_types",
++        "//flutter/runtime:libdart",
++        "//flutter/runtime",
++        "//flutter/shell/common",
++        "//flutter/shell/common:dart",
++        "//flutter/third_party/tonic",
++      ]
+ 
+-    public_configs += [
+-      ":embedder_gpu_configuration_config",
+-      ":embedder_header_config",
+-      "//flutter:config",
+-      "//flutter/impeller:impeller_public_config",
+-    ]
++      public_configs += [
++        ":embedder_gpu_configuration_config",
++        ":embedder_header_config",
++        "//flutter:config",
++        "//flutter/impeller:impeller_public_config",
++      ]
++    }
+   }
+ }
+ 
+@@ -249,6 +251,12 @@ embedder_source_set("embedder_as_internal_library") {
+   public_configs = [ ":embedder_internal_library_config" ]
+ }
+ 
++if (!titan_flutter_runtime_dart) {
++  group("embedder_as_internal_library") {
++    public_deps = [ ":embedder_as_internal_library_core" ]
++  }
++}
++
+ source_set("embedder_headers") {
+   public = [
+     "embedder.h",
+@@ -283,9 +291,10 @@ config("embedder_internal_library_config") {
+   ]
+ }
+ 
+-test_fixtures("fixtures") {
+-  dart_main = "fixtures/main.dart"
+-  fixtures = [
++if (titan_flutter_runtime_dart) {
++  test_fixtures("fixtures") {
++    dart_main = "fixtures/main.dart"
++    fixtures = [
+     "fixtures/arc_end_caps.png",
+     "fixtures/compositor.png",
+     "fixtures/compositor_root_surface_xformation.png",
+@@ -312,10 +321,11 @@ test_fixtures("fixtures") {
+     "fixtures/snapshot_large_scene.png",
+     "fixtures/verifyb143464703.png",
+     "fixtures/verifyb143464703_soft_noxform.png",
+-  ]
++    ]
++  }
+ }
+ 
+-if (enable_unittests) {
++if (enable_unittests && titan_flutter_runtime_dart) {
+   source_set("embedder_unittests_library") {
+     testonly = true
+ 
+@@ -504,23 +514,25 @@ if (enable_unittests) {
+   }
+ }
+ 
+-shared_library("flutter_engine_library") {
+-  visibility = [ ":*" ]
++if (titan_flutter_runtime_dart) {
++  shared_library("flutter_engine_library") {
++    visibility = [ ":*" ]
+ 
+-  output_name = "flutter_engine"
++    output_name = "flutter_engine"
+ 
+-  ldflags = []
+-  if (is_mac && !embedder_for_target) {
+-    ldflags += [ "-Wl,-install_name,@rpath/FlutterEmbedder.framework/$_framework_binary_subpath" ]
+-  }
+-  if (is_linux) {
+-    ldflags += [ "-Wl,--version-script=" +
+-                 rebase_path("embedder_exports.lst", root_build_dir) ]
+-  }
++    ldflags = []
++    if (is_mac && !embedder_for_target) {
++      ldflags += [ "-Wl,-install_name,@rpath/FlutterEmbedder.framework/$_framework_binary_subpath" ]
++    }
++    if (is_linux) {
++      ldflags += [ "-Wl,--version-script=" +
++                   rebase_path("embedder_exports.lst", root_build_dir) ]
++    }
+ 
+-  deps = [ ":embedder" ]
++    deps = [ ":embedder" ]
+ 
+-  public_configs = [ "//flutter:config" ]
++    public_configs = [ "//flutter:config" ]
++  }
+ }
+ 
+ shared_library("flutter_engine_core_library") {
+@@ -548,10 +560,12 @@ shared_library("flutter_engine_core_library") {
+   public_configs = [ "//flutter:config" ]
+ }
+ 
+-copy("copy_headers") {
+-  visibility = [ ":*" ]
+-  sources = [ "embedder.h" ]
+-  outputs = [ "$root_out_dir/flutter_embedder.h" ]
++if (titan_flutter_runtime_dart) {
++  copy("copy_headers") {
++    visibility = [ ":*" ]
++    sources = [ "embedder.h" ]
++    outputs = [ "$root_out_dir/flutter_embedder.h" ]
++  }
+ }
+ 
+ copy("copy_core_headers") {
+@@ -560,7 +574,7 @@ copy("copy_core_headers") {
+   outputs = [ "$root_out_dir/flutter_core_host.h" ]
+ }
+ 
+-if (is_mac && !embedder_for_target) {
++if (titan_flutter_runtime_dart && is_mac && !embedder_for_target) {
+   _flutter_embedder_framework_dir = "$root_out_dir/FlutterEmbedder.framework"
+ 
+   copy("copy_framework_headers") {
+@@ -656,14 +670,18 @@ group("flutter_engine") {
+       current_toolchain == host_toolchain || embedder_for_target
+ 
+   if (build_embedder_api) {
+-    # All platforms require the embedder dylib and headers.
+     deps += [
+-      ":copy_headers",
+-      ":flutter_engine_library",
+       ":copy_core_headers",
+       ":flutter_engine_core_library",
+     ]
+ 
++    if (titan_flutter_runtime_dart) {
++      deps += [
++        ":copy_headers",
++        ":flutter_engine_library",
++      ]
++    }
++
+     # For the Mac, the dylib is packaged in a framework with the appropriate headers.
+     if (is_mac && !embedder_for_target) {
+       deps += [ ":flutter_embedder_framework" ]
+@@ -696,7 +714,8 @@ if (is_mac) {
+   }
+ }
+ 
+-if (host_os == "linux" || host_os == "win" || is_android) {
++if (titan_flutter_runtime_dart &&
++    (host_os == "linux" || host_os == "win" || is_android)) {
+   zip_bundle("embedder-archive") {
+     output =
+         "$full_target_platform_name/$full_target_platform_name-embedder.zip"
+@@ -731,4 +750,11 @@ if (host_os == "linux" || host_os == "win" || is_android) {
+       ]
+     }
+   }
++} else {
++  group("embedder-archive") {
++    deps = [
++      ":copy_core_headers",
++      ":flutter_engine_core_library",
++    ]
++  }
+ }
