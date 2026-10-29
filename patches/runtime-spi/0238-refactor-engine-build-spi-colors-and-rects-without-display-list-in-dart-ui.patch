@@ -1,0 +1,258 @@
+# Why: # Why: Keep dart:ui painting conversions on the public SPI structs so
+# the target can drop display_list implementation types without changing
+# behavior.
+diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
+index 0c3cec28fa2..d6c73c7eca4 100644
+--- a/engine/src/flutter/lib/ui/BUILD.gn
++++ b/engine/src/flutter/lib/ui/BUILD.gn
+@@ -285,6 +285,7 @@ source_set("ui") {
+     "painting/rsuperellipse.h",
+     "painting/shader.cc",
+     "painting/shader.h",
++    "painting/spi_color.h",
+     "painting/vertices.cc",
+     "painting/vertices.h",
+     "plugins/callback_cache.cc",
+diff --git a/engine/src/flutter/lib/ui/painting/canvas.cc b/engine/src/flutter/lib/ui/painting/canvas.cc
+index ef5026f67a0..03ffd4fdaae 100644
+--- a/engine/src/flutter/lib/ui/painting/canvas.cc
++++ b/engine/src/flutter/lib/ui/painting/canvas.cc
+@@ -6,12 +6,11 @@
+ 
+ #include <cmath>
+ 
+-#include "flutter/display_list/dl_color.h"
+-#include "flutter/display_list/geometry/dl_geometry_types.h"
+ #include "flutter/lib/ui/floating_point.h"
+ #include "flutter/lib/ui/painting/image.h"
+ #include "flutter/lib/ui/painting/image_filter.h"
+ #include "flutter/lib/ui/painting/paint.h"
++#include "flutter/lib/ui/painting/spi_color.h"
+ #include "flutter/lib/ui/spi_api.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/lib/ui/window/platform_configuration.h"
+@@ -22,15 +21,6 @@ namespace flutter {
+ 
+ namespace {
+ 
+-FlutterSpiRect ToSpiRect(const DlRect& rect) {
+-  return {rect.GetLeft(), rect.GetTop(), rect.GetRight(), rect.GetBottom()};
+-}
+-
+-FlutterSpiColor ToSpiColor(const DlColor& color) {
+-  return {color.getRedF(), color.getGreenF(), color.getBlueF(), color.getAlphaF(),
+-          static_cast<int32_t>(color.getColorSpace())};
+-}
+-
+ FlutterSpiPaint ToSpiPaint(const Paint& paint) {
+   FlutterSpiPaint spi_paint = {};
+   spi_paint.struct_size = sizeof(FlutterSpiPaint);
+@@ -123,12 +113,11 @@ void Canvas::saveLayer(double left,
+   Paint paint(paint_objects, MakePaintWords(w0, w1, w2, w3, w4, w5, w6, w7, w8));
+ 
+   FML_DCHECK(paint.isNotNull());
+-  DlRect bounds = DlRect::MakeLTRB(SafeNarrow(left), SafeNarrow(top),
+-                                   SafeNarrow(right), SafeNarrow(bottom));
+   if (recorder_ != nullptr) {
+     FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+     TRACE_EVENT0("flutter", "ui.Canvas::saveLayer (Recorded)");
+-    FlutterSpiRect spi_bounds = ToSpiRect(bounds);
++    FlutterSpiRect spi_bounds = {SafeNarrow(left), SafeNarrow(top), SafeNarrow(right),
++                                 SafeNarrow(bottom)};
+     SpiApi().scene->canvas_save_layer(recorder_, &spi_bounds, &spi_paint);
+   }
+ }
+@@ -268,7 +257,7 @@ void Canvas::getLocalClipBounds(Dart_Handle rect_handle) {
+ 
+ void Canvas::drawColor(uint32_t color, int32_t blend_mode) {
+   if (recorder_ != nullptr) {
+-    FlutterSpiColor spi_color = ToSpiColor(DlColor(color));
++    FlutterSpiColor spi_color = ToSpiColorFromArgb(color);
+     SpiApi().scene->canvas_draw_color(recorder_, &spi_color,
+                                      static_cast<int32_t>(blend_mode));
+   }
+@@ -583,14 +572,12 @@ Dart_Handle Canvas::drawImageRect(const CanvasImage* image,
+     return Dart_Null();
+   }
+ 
+-  DlRect src = DlRect::MakeLTRB(SafeNarrow(src_left), SafeNarrow(src_top),
+-                                SafeNarrow(src_right), SafeNarrow(src_bottom));
+-  DlRect dst = DlRect::MakeLTRB(SafeNarrow(dst_left), SafeNarrow(dst_top),
+-                                SafeNarrow(dst_right), SafeNarrow(dst_bottom));
+   if (recorder_ != nullptr) {
+     FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+-    FlutterSpiRect spi_src = ToSpiRect(src);
+-    FlutterSpiRect spi_dst = ToSpiRect(dst);
++    FlutterSpiRect spi_src = {SafeNarrow(src_left), SafeNarrow(src_top),
++                              SafeNarrow(src_right), SafeNarrow(src_bottom)};
++    FlutterSpiRect spi_dst = {SafeNarrow(dst_left), SafeNarrow(dst_top),
++                              SafeNarrow(dst_right), SafeNarrow(dst_bottom)};
+     SpiApi().image->canvas_draw_image_rect(
+         recorder_, image->spi_handle(), &spi_src, &spi_dst, filterQualityIndex,
+         &spi_paint);
+@@ -628,15 +615,12 @@ Dart_Handle Canvas::drawImageNine(const CanvasImage* image,
+     return Dart_Null();
+   }
+ 
+-  DlRect center =
+-      DlRect::MakeLTRB(SafeNarrow(center_left), SafeNarrow(center_top),
+-                       SafeNarrow(center_right), SafeNarrow(center_bottom));
+-  DlRect dst = DlRect::MakeLTRB(SafeNarrow(dst_left), SafeNarrow(dst_top),
+-                                SafeNarrow(dst_right), SafeNarrow(dst_bottom));
+   if (recorder_ != nullptr) {
+     FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+-    FlutterSpiRect spi_center = ToSpiRect(center);
+-    FlutterSpiRect spi_dst = ToSpiRect(dst);
++    FlutterSpiRect spi_center = {SafeNarrow(center_left), SafeNarrow(center_top),
++                                 SafeNarrow(center_right), SafeNarrow(center_bottom)};
++    FlutterSpiRect spi_dst = {SafeNarrow(dst_left), SafeNarrow(dst_top),
++                              SafeNarrow(dst_right), SafeNarrow(dst_bottom)};
+     SpiApi().image->canvas_draw_image_nine(
+         recorder_, image->spi_handle(), &spi_center, &spi_dst,
+         bitmapSamplingIndex, &spi_paint);
+@@ -671,8 +655,8 @@ void Canvas::drawPoints(Dart_Handle paint_objects,
+                         const tonic::Float32List& points) {
+   Paint paint(paint_objects, MakePaintWords(w0, w1, w2, w3, w4, w5, w6, w7, w8));
+ 
+-  static_assert(sizeof(DlPoint) == sizeof(float) * 2,
+-                "DlPoint doesn't use floats.");
++  static_assert(sizeof(FlutterSpiPoint) == sizeof(float) * 2,
++                "FlutterSpiPoint must use two floats.");
+ 
+   FML_DCHECK(paint.isNotNull());
+   if (recorder_ != nullptr) {
+@@ -741,10 +725,10 @@ Dart_Handle Canvas::drawAtlas(Dart_Handle paint_objects,
+     return Dart_Null();
+   }
+ 
+-  static_assert(sizeof(DlRSTransform) == sizeof(float) * 4,
+-                "DlRSTransform doesn't use floats.");
+-  static_assert(sizeof(DlRect) == sizeof(float) * 4,
+-                "DlRect doesn't use floats.");
++  static_assert(sizeof(FlutterSpiRSTransform) == sizeof(float) * 4,
++                "FlutterSpiRSTransform must use four floats.");
++  static_assert(sizeof(FlutterSpiRect) == sizeof(float) * 4,
++                "FlutterSpiRect must use four floats.");
+ 
+   FML_DCHECK(paint.isNotNull());
+   if (recorder_ != nullptr) {
+@@ -756,7 +740,7 @@ Dart_Handle Canvas::drawAtlas(Dart_Handle paint_objects,
+     std::vector<FlutterSpiColor> spi_colors(colors.num_elements());
+     size_t count = colors.num_elements();
+     for (size_t i = 0; i < count; i++) {
+-      spi_colors[i] = ToSpiColor(DlColor(colors[i]));
++      spi_colors[i] = ToSpiColorFromArgb(static_cast<uint32_t>(colors[i]));
+     }
+ 
+     FlutterSpiPaint spi_paint = ToSpiPaint(paint);
+@@ -785,7 +769,7 @@ void Canvas::drawShadow(const CanvasPath* path,
+   // Not using SafeNarrow because DPR will always be a relatively small number.
+   const ViewportMetrics* metrics =
+       UIDartState::Current()->platform_configuration()->GetMetrics(0);
+-  DlScalar dpr;
++  float dpr;
+   // TODO(dkwingsmt): We should support rendering shadows on non-implicit views.
+   // However, currently this method has no way to get the target view ID.
+   if (metrics == nullptr) {
+@@ -794,7 +778,7 @@ void Canvas::drawShadow(const CanvasPath* path,
+     dpr = static_cast<float>(metrics->device_pixel_ratio);
+   }
+   if (recorder_ != nullptr) {
+-    FlutterSpiColor spi_color = ToSpiColor(DlColor(color));
++    FlutterSpiColor spi_color = ToSpiColorFromArgb(color);
+     SpiApi().scene->canvas_draw_shadow(recorder_, path->spi_handle(), &spi_color,
+                                       SafeNarrow(elevation),
+                                       transparentOccluder, dpr);
+diff --git a/engine/src/flutter/lib/ui/painting/color_filter.cc b/engine/src/flutter/lib/ui/painting/color_filter.cc
+index 984ca5dca3c..4ac5ef8694e 100644
+--- a/engine/src/flutter/lib/ui/painting/color_filter.cc
++++ b/engine/src/flutter/lib/ui/painting/color_filter.cc
+@@ -4,7 +4,7 @@
+ 
+ #include "flutter/lib/ui/painting/color_filter.h"
+ 
+-#include "flutter/display_list/dl_color.h"
++#include "flutter/lib/ui/painting/spi_color.h"
+ #include "flutter/lib/ui/spi_api.h"
+ 
+ #include "flutter/lib/ui/ui_dart_state.h"
+@@ -32,14 +32,8 @@ void ColorFilter::Create(Dart_Handle wrapper) {
+ }
+ 
+ void ColorFilter::initMode(int color, int blend_mode) {
+-  const DlColor dl_color(static_cast<uint32_t>(color));
+-  const FlutterSpiColor spi_color = {
+-      dl_color.getRedF(),
+-      dl_color.getGreenF(),
+-      dl_color.getBlueF(),
+-      dl_color.getAlphaF(),
+-      static_cast<int32_t>(dl_color.getColorSpace()),
+-  };
++  const FlutterSpiColor spi_color =
++      ToSpiColorFromArgb(static_cast<uint32_t>(color));
+   EffectsApi()->color_filter_mode(nullptr, spi_color, blend_mode, &spi_filter_);
+ }
+ 
+diff --git a/engine/src/flutter/lib/ui/painting/spi_color.h b/engine/src/flutter/lib/ui/painting/spi_color.h
+new file mode 100644
+index 00000000000..c10b5c815e4
+--- /dev/null
++++ b/engine/src/flutter/lib/ui/painting/spi_color.h
+@@ -0,0 +1,27 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_LIB_UI_PAINTING_SPI_COLOR_H_
++#define FLUTTER_LIB_UI_PAINTING_SPI_COLOR_H_
++
++#include <cstdint>
++
++#include "flutter/runtime_spi/include/flutter_scene.h"
++
++namespace flutter {
++
++inline FlutterSpiColor ToSpiColorFromArgb(uint32_t argb) {
++  return {
++      ((argb >> 16) & 0xff) * (1.0f / 255),
++      ((argb >> 8) & 0xff) * (1.0f / 255),
++      (argb & 0xff) * (1.0f / 255),
++      ((argb >> 24) & 0xff) * (1.0f / 255),
++      // DlColorSpace::kSRGB is represented by zero in the SPI.
++      0,
++  };
++}
++
++}  // namespace flutter
++
++#endif  // FLUTTER_LIB_UI_PAINTING_SPI_COLOR_H_
+diff --git a/engine/src/flutter/lib/ui/painting/vertices.cc b/engine/src/flutter/lib/ui/painting/vertices.cc
+index 600b611c53c..722e6d44ac4 100644
+--- a/engine/src/flutter/lib/ui/painting/vertices.cc
++++ b/engine/src/flutter/lib/ui/painting/vertices.cc
+@@ -6,7 +6,7 @@
+ 
+ #include <vector>
+ 
+-#include "flutter/display_list/dl_color.h"
++#include "flutter/lib/ui/painting/spi_color.h"
+ #include "flutter/lib/ui/spi_api.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "third_party/tonic/dart_binding_macros.h"
+@@ -25,14 +25,8 @@ const FlutterSpiPaintEffectsApi* EffectsApi() {
+ std::vector<FlutterSpiColor> ToSpiColors(const tonic::Int32List& colors) {
+   std::vector<FlutterSpiColor> spi_colors(colors.num_elements());
+   for (size_t index = 0; index < spi_colors.size(); index++) {
+-    const DlColor color(static_cast<uint32_t>(colors[index]));
+-    spi_colors[index] = {
+-        color.getRedF(),
+-        color.getGreenF(),
+-        color.getBlueF(),
+-        color.getAlphaF(),
+-        static_cast<int32_t>(color.getColorSpace()),
+-    };
++    spi_colors[index] =
++        ToSpiColorFromArgb(static_cast<uint32_t>(colors[index]));
+   }
+   return spi_colors;
+ }
