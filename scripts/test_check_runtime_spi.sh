@@ -67,6 +67,14 @@ set -euo pipefail
 printf '%s\n' "$@" >> "$BUILD_LOG"
 mkdir -p "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug"
  : > "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/libflutter_engine_core.so"
+mkdir -p "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/gen/flutter/shell/platform/embedder/assets"
+: > "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/icudtl.dat"
+cat > "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/flutter_engine_core_smoke" <<'SMOKE_EOF'
+#!/usr/bin/env bash
+printf 'smoke\n' >> "$ORDER_LOG"
+printf 'core smoke: ok\n'
+SMOKE_EOF
+chmod +x "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/flutter_engine_core_smoke"
 printf '%s\n' "$FAKE_ARGS_GN" > \
   "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/args.gn"
 printf 'build\n' >> "$ORDER_LOG"
@@ -112,6 +120,9 @@ cat > "$fake_bin/readelf" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${@: -1}" == *flutter_engine_core_smoke ]]; then
+  printf ' 0x0000000000000001 (NEEDED)             Shared library: [libflutter_engine_core.so]\n'
+fi
 printf ' 0x0000000000000001 (NEEDED)             Shared library: [libc.so]\n'
 EOF
 chmod +x "$fake_bin/readelf"
@@ -180,7 +191,7 @@ else
   fail 'the complete fake check should pass'
 fi
 
-[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner ' ]] || \
+[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner smoke ' ]] || \
   fail 'steps did not run in build, ninja, runner order'
 assert_contains "$build_log" '--unittests' 'build arguments'
 assert_contains "$build_log" '--gn-only' 'build arguments'
@@ -222,7 +233,7 @@ assert_contains "$output_log" 'unit tests are disabled in' 'disabled unit test d
 
 rm -f "$runner_log" "$order_log"
 FAKE_ARGS_GN='# default is enabled' run_check >"$output_log" 2>&1
-[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner ' ]] || \
+[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner smoke ' ]] || \
   fail 'steps did not continue when enable_unittests is absent'
 assert_contains "$output_log" 'tests: ok' 'missing unit test setting summary'
 

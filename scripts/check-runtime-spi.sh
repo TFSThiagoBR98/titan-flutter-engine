@@ -46,6 +46,9 @@ engine_source="$TITAN_WORK_DIR/flutter/engine/src"
 output_directory="$engine_source/out/host_debug"
 no_unittests_output_directory="$engine_source/out/host_debug_no_unittests"
 args_file="$output_directory/args.gn"
+core_smoke="$output_directory/flutter_engine_core_smoke"
+icu_data="$output_directory/icudtl.dat"
+assets_directory="$output_directory/gen/flutter/shell/platform/embedder/assets"
 
 mkdir -p "$output_directory" "$no_unittests_output_directory"
 exec {build_lock_fd}>"$output_directory/.titan-build.lock"
@@ -139,6 +142,36 @@ run_tests() {
   return "$status"
 }
 
+run_core_smoke() {
+  [[ -x "$core_smoke" ]] || die "core smoke executable is missing: $core_smoke"
+  [[ -f "$icu_data" ]] || die "ICU data is missing: $icu_data"
+  [[ -d "$assets_directory" ]] || die "core smoke assets are missing: $assets_directory"
+
+  "$core_smoke" "$icu_data" "$assets_directory"
+
+  local dynamic_output
+  dynamic_output=$(mktemp)
+  if ! readelf -d "$core_smoke" >"$dynamic_output"; then
+    rm -f "$dynamic_output"
+    die "readelf failed for $core_smoke"
+  fi
+
+  local found_core=0
+  local dependency
+  while IFS= read -r dependency; do
+    [[ -n "$dependency" ]] || continue
+    if [[ "$dependency" == libflutter_engine_core.so ]]; then
+      found_core=1
+    else
+      rm -f "$dynamic_output"
+      die "core smoke links an unexpected engine library: $dependency"
+    fi
+  done < <(sed -n 's/.*Shared library: \[\(libflutter_engine[^]]*\)\].*/\1/p' "$dynamic_output")
+  rm -f "$dynamic_output"
+
+  ((found_core == 1)) || die "core smoke does not link libflutter_engine_core.so"
+}
+
 ninja_pid=''
 
 stop_ninja() {
@@ -185,4 +218,5 @@ fi
 run_build_without_unittests
 run_ninja
 run_tests
+run_core_smoke
 "$check_core_artifact" "$output_directory/libflutter_engine_core.so"

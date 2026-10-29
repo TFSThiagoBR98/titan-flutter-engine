@@ -1,0 +1,155 @@
+# Why: exercise the core runtime through a C executable and keep the smoke
+# test linked only to the core library and its C test runtime.
+diff --git a/engine/src/flutter/shell/platform/embedder/BUILD.gn b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+index c45197d7eba..adf48d31010 100644
+--- a/engine/src/flutter/shell/platform/embedder/BUILD.gn
++++ b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+@@ -560,6 +560,18 @@ shared_library("flutter_engine_core_library") {
+   public_configs = [ "//flutter:config" ]
+ }
+ 
++if (enable_unittests) {
++  executable("flutter_engine_core_smoke") {
++    testonly = true
++    sources = [ "tests/core_library_smoke.c" ]
++    deps = [
++      ":embedder_headers",
++      ":flutter_engine_core_library",
++      "//flutter/runtime_spi:c_test_runtime",
++    ]
++  }
++}
++
+ if (titan_flutter_runtime_dart) {
+   copy("copy_headers") {
+     visibility = [ ":*" ]
+diff --git a/engine/src/flutter/shell/platform/embedder/tests/core_library_smoke.c b/engine/src/flutter/shell/platform/embedder/tests/core_library_smoke.c
+new file mode 100644
+index 00000000000..28c9498a501
+--- /dev/null
++++ b/engine/src/flutter/shell/platform/embedder/tests/core_library_smoke.c
+@@ -0,0 +1,124 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include <errno.h>
++#include <stdatomic.h>
++#include <stdbool.h>
++#include <stdio.h>
++#include <time.h>
++
++#include "flutter/runtime_spi/testing/c_test_runtime.h"
++#include "flutter/shell/platform/embedder/flutter_core_host.h"
++
++static const int kSurfaceWaitSeconds = 10;
++
++typedef struct {
++  atomic_bool surface_presented;
++} CoreSmokeState;
++
++static bool PresentSoftwareSurface(void* user_data,
++                                   const void* allocation,
++                                   size_t row_bytes,
++                                   size_t height) {
++  (void)allocation;
++  (void)row_bytes;
++  (void)height;
++  CoreSmokeState* state = (CoreSmokeState*)user_data;
++  atomic_store_explicit(&state->surface_presented, true, memory_order_release);
++  return true;
++}
++
++static bool IsAfter(const struct timespec* left, const struct timespec* right) {
++  return left->tv_sec > right->tv_sec ||
++         (left->tv_sec == right->tv_sec && left->tv_nsec >= right->tv_nsec);
++}
++
++static bool WaitForSurface(CoreSmokeState* state) {
++  struct timespec deadline;
++  if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) {
++    return false;
++  }
++  deadline.tv_sec += kSurfaceWaitSeconds;
++
++  while (!atomic_load_explicit(&state->surface_presented, memory_order_acquire)) {
++    struct timespec current_time;
++    if (clock_gettime(CLOCK_MONOTONIC, &current_time) != 0 ||
++        IsAfter(&current_time, &deadline)) {
++      return false;
++    }
++
++    const struct timespec sleep_duration = {.tv_sec = 0, .tv_nsec = 1000000};
++    if (nanosleep(&sleep_duration, NULL) != 0 && errno != EINTR) {
++      return false;
++    }
++  }
++  return true;
++}
++
++static int Fail(const char* message) {
++  fprintf(stderr, "core smoke: %s\n", message);
++  return 1;
++}
++
++int main(int argc, char** argv) {
++  if (argc != 3) {
++    fprintf(stderr, "usage: %s <icu-data-path> <assets-path>\n", argv[0]);
++    return 2;
++  }
++
++  CTestRuntime* runtime = c_test_runtime_create();
++  if (runtime == NULL) {
++    return Fail("could not create the test runtime");
++  }
++  runtime->draw_scene_on_begin_frame = true;
++
++  CoreSmokeState state;
++  atomic_init(&state.surface_presented, false);
++
++  FlutterRendererConfig renderer_config = {0};
++  renderer_config.type = kSoftware;
++  renderer_config.software.struct_size = sizeof(FlutterSoftwareRendererConfig);
++  renderer_config.software.surface_present_callback = PresentSoftwareSurface;
++
++  FlutterCoreHostArgs host_args = {0};
++  host_args.struct_size = sizeof(FlutterCoreHostArgs);
++  host_args.assets_path = argv[2];
++  host_args.icu_data_path = argv[1];
++
++  const FlutterSpiRuntimeTable runtime_table = c_test_runtime_table(runtime);
++  FlutterCoreEngine engine = NULL;
++  FlutterEngineResult result = FlutterCoreEngineRun(
++      FLUTTER_ENGINE_VERSION, &renderer_config, &host_args, &runtime_table,
++      &state, &engine);
++  if (result != kSuccess || engine == NULL) {
++    c_test_runtime_free(runtime);
++    return Fail("could not start the core engine");
++  }
++
++  FlutterWindowMetricsEvent metrics = {
++      .struct_size = sizeof(FlutterWindowMetricsEvent),
++      .width = 800,
++      .height = 600,
++      .pixel_ratio = 1.0,
++  };
++  if (FlutterCoreEngineSendWindowMetricsEvent(engine, &metrics) != kSuccess ||
++      FlutterCoreEngineScheduleFrame(engine) != kSuccess) {
++    FlutterCoreEngineShutdown(engine);
++    c_test_runtime_free(runtime);
++    return Fail("could not schedule the first frame");
++  }
++
++  const bool presented = WaitForSurface(&state);
++  const FlutterEngineResult shutdown_result = FlutterCoreEngineShutdown(engine);
++  c_test_runtime_free(runtime);
++  if (!presented) {
++    return Fail("the surface was not presented within 10 seconds");
++  }
++  if (shutdown_result != kSuccess) {
++    return Fail("could not shut down the core engine");
++  }
++
++  printf("core smoke: ok\n");
++  return 0;
++}

@@ -1,3 +1,4 @@
 flutter/runtime_spi:runtime_spi_benchmarks
 flutter/shell/common:shell_benchmarks
 flutter/lib/ui:ui_benchmarks
+flutter/shell/platform/embedder:flutter_engine_core_smoke
