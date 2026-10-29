@@ -1,0 +1,243 @@
+# Why: the core split leaves the Dart translation dependent on the shared
+# embedder error helper and command-line settings parser.
+diff --git a/engine/src/flutter/shell/platform/embedder/embedder.cc b/engine/src/flutter/shell/platform/embedder/embedder.cc
+index de4b756ffab..883c22d2899 100644
+--- a/engine/src/flutter/shell/platform/embedder/embedder.cc
++++ b/engine/src/flutter/shell/platform/embedder/embedder.cc
+@@ -39,6 +39,7 @@ extern const intptr_t kPlatformStrongDillSize;
+ #include "flutter/runtime/dart_vm.h"
+ #include "flutter/shell/common/dart_runtime_backend_factory.h"
+ #include "flutter/shell/common/shell_dart.h"
++#include "flutter/shell/common/switches.h"
+ #include "flutter/shell/platform/embedder/embedder.h"
+ #include "flutter/shell/platform/embedder/embedder_core_internal.h"
+ #include "flutter/shell/platform/embedder/embedder_engine.h"
+diff --git a/engine/src/flutter/shell/platform/embedder/embedder_core.cc b/engine/src/flutter/shell/platform/embedder/embedder_core.cc
+index 66b51868c52..78386ba82cc 100644
+--- a/engine/src/flutter/shell/platform/embedder/embedder_core.cc
++++ b/engine/src/flutter/shell/platform/embedder/embedder_core.cc
+@@ -132,30 +132,6 @@ static constexpr FlutterViewId kFlutterImplicitViewId = 0;
+ // 1 for handled, and 0 for not. Malformed value is considered false.
+ const char* kFlutterKeyDataChannel = "flutter/keydata";
+ 
+-static FlutterEngineResult LogEmbedderError(FlutterEngineResult code,
+-                                            const char* reason,
+-                                            const char* code_name,
+-                                            const char* function,
+-                                            const char* file,
+-                                            int line) {
+-#if FML_OS_WIN
+-  constexpr char kSeparator = '\\';
+-#else
+-  constexpr char kSeparator = '/';
+-#endif
+-  const auto file_base =
+-      (::strrchr(file, kSeparator) ? strrchr(file, kSeparator) + 1 : file);
+-  char error[256] = {};
+-  snprintf(error, (sizeof(error) / sizeof(char)),
+-           "%s (%d): '%s' returned '%s'. %s", file_base, line, function,
+-           code_name, reason);
+-  std::cerr << error << std::endl;
+-  return code;
+-}
+-
+-#define LOG_EMBEDDER_ERROR(code, reason) \
+-  LogEmbedderError(code, reason, #code, __FUNCTION__, __FILE__, __LINE__)
+-
+ static bool IsOpenGLRendererConfigValid(const FlutterRendererConfig* config) {
+   if (config->type != kOpenGL) {
+     return false;
+@@ -1765,6 +1741,120 @@ struct _FlutterPlatformMessageResponseHandle {
+   std::unique_ptr<flutter::PlatformMessage> message;
+ };
+ 
++// Create a callback to notify the embedder of semantic updates
++// using the legacy embedder callbacks 'update_semantics_node_callback' and
++// 'update_semantics_custom_action_callback'.
++flutter::PlatformViewEmbedder::UpdateSemanticsCallback
++CreateEmbedderSemanticsUpdateCallbackV1(
++    FlutterUpdateSemanticsNodeCallback update_semantics_node_callback,
++    FlutterUpdateSemanticsCustomActionCallback
++        update_semantics_custom_action_callback,
++    void* user_data) {
++  return [update_semantics_node_callback,
++          update_semantics_custom_action_callback, user_data](
++             int64_t view_id, const flutter::SemanticsNodeUpdates& nodes,
++             const flutter::CustomAccessibilityActionUpdates& actions) {
++    flutter::EmbedderSemanticsUpdate update{nodes, actions};
++    FlutterSemanticsUpdate* update_ptr = update.get();
++
++    if (update_semantics_node_callback != nullptr) {
++      for (size_t i = 0; i < update_ptr->nodes_count; i++) {
++        update_semantics_node_callback(&update_ptr->nodes[i], user_data);
++      }
++    }
++
++    if (update_semantics_custom_action_callback != nullptr) {
++      for (size_t i = 0; i < update_ptr->custom_actions_count; i++) {
++        update_semantics_custom_action_callback(&update_ptr->custom_actions[i],
++                                                user_data);
++      }
++    }
++
++    if (update_semantics_node_callback != nullptr) {
++      const FlutterSemanticsNode batch_end_sentinel = {
++          sizeof(FlutterSemanticsNode),
++          kFlutterSemanticsNodeIdBatchEnd,
++      };
++      update_semantics_node_callback(&batch_end_sentinel, user_data);
++    }
++
++    if (update_semantics_custom_action_callback != nullptr) {
++      const FlutterSemanticsCustomAction batch_end_sentinel = {
++          sizeof(FlutterSemanticsCustomAction),
++          kFlutterSemanticsCustomActionIdBatchEnd,
++      };
++      update_semantics_custom_action_callback(&batch_end_sentinel, user_data);
++    }
++  };
++}
++
++// Create a callback to notify the embedder of semantic updates
++// using the deprecated embedder callback 'update_semantics_callback'.
++flutter::PlatformViewEmbedder::UpdateSemanticsCallback
++CreateEmbedderSemanticsUpdateCallbackV2(
++    FlutterUpdateSemanticsCallback update_semantics_callback,
++    void* user_data) {
++  return [update_semantics_callback, user_data](
++             int64_t view_id, const flutter::SemanticsNodeUpdates& nodes,
++             const flutter::CustomAccessibilityActionUpdates& actions) {
++    flutter::EmbedderSemanticsUpdate update{nodes, actions};
++    update_semantics_callback(update.get(), user_data);
++  };
++}
++
++// Create a callback to notify the embedder of semantic updates
++// using the new embedder callback 'update_semantics_callback2'.
++flutter::PlatformViewEmbedder::UpdateSemanticsCallback
++CreateEmbedderSemanticsUpdateCallbackV3(
++    FlutterUpdateSemanticsCallback2 update_semantics_callback,
++    void* user_data) {
++  return [update_semantics_callback, user_data](
++             int64_t view_id, const flutter::SemanticsNodeUpdates& nodes,
++             const flutter::CustomAccessibilityActionUpdates& actions) {
++    flutter::EmbedderSemanticsUpdate2 update{view_id, nodes, actions};
++    update_semantics_callback(update.get(), user_data);
++  };
++}
++
++// Creates a callback that receives semantic updates from the engine
++// and notifies the embedder's callback(s). Returns null if the embedder
++// did not register any callbacks.
++flutter::PlatformViewEmbedder::UpdateSemanticsCallback
++CreateEmbedderSemanticsUpdateCallback(const FlutterCoreHostArgs* args,
++                                      void* user_data) {
++  if (SAFE_ACCESS(args, update_semantics_callback2, nullptr) != nullptr) {
++    return CreateEmbedderSemanticsUpdateCallbackV3(
++        args->update_semantics_callback2, user_data);
++  }
++
++  if (SAFE_ACCESS(args, update_semantics_callback, nullptr) != nullptr) {
++    return CreateEmbedderSemanticsUpdateCallbackV2(
++        args->update_semantics_callback, user_data);
++  }
++
++  FlutterUpdateSemanticsNodeCallback update_semantics_node_callback = nullptr;
++  if (SAFE_ACCESS(args, update_semantics_node_callback, nullptr) != nullptr) {
++    update_semantics_node_callback = args->update_semantics_node_callback;
++  }
++
++  FlutterUpdateSemanticsCustomActionCallback
++      update_semantics_custom_action_callback = nullptr;
++  if (SAFE_ACCESS(args, update_semantics_custom_action_callback, nullptr) !=
++      nullptr) {
++    update_semantics_custom_action_callback =
++        args->update_semantics_custom_action_callback;
++  }
++
++  if (update_semantics_node_callback != nullptr ||
++      update_semantics_custom_action_callback != nullptr) {
++    return CreateEmbedderSemanticsUpdateCallbackV1(
++        update_semantics_node_callback, update_semantics_custom_action_callback,
++        user_data);
++  }
++
++  return nullptr;
++}
++
+ namespace flutter {
+ 
+ FlutterEngineResult InitializeEmbedderEngine(
+@@ -3293,3 +3383,18 @@ FlutterEngineResult FlutterCoreEngineSetNextFrameCallback(
+   }
+ 
+   flutter::EmbedderEngine* embedder_engine =
++      reinterpret_cast<flutter::EmbedderEngine*>(engine);
++
++  fml::WeakPtr<flutter::PlatformView> weak_platform_view =
++      embedder_engine->GetShell().GetPlatformView();
++
++  if (!weak_platform_view) {
++    return LOG_EMBEDDER_ERROR(kInternalInconsistency,
++                              "Platform view unavailable.");
++  }
++
++  weak_platform_view->SetNextFrameCallback(
++      [callback, user_data]() { callback(user_data); });
++
++  return kSuccess;
++}
+diff --git a/engine/src/flutter/shell/platform/embedder/embedder_core_internal.h b/engine/src/flutter/shell/platform/embedder/embedder_core_internal.h
+index 19c19f8352c..2f68355486c 100644
+--- a/engine/src/flutter/shell/platform/embedder/embedder_core_internal.h
++++ b/engine/src/flutter/shell/platform/embedder/embedder_core_internal.h
+@@ -5,8 +5,12 @@
+ #ifndef FLUTTER_SHELL_PLATFORM_EMBEDDER_EMBEDDER_CORE_INTERNAL_H_
+ #define FLUTTER_SHELL_PLATFORM_EMBEDDER_EMBEDDER_CORE_INTERNAL_H_
+ 
++#include <cstdio>
++#include <cstring>
++#include <iostream>
+ #include <memory>
+ 
++#include "flutter/fml/build_config.h"
+ #include "flutter/common/settings.h"
+ #include "flutter/runtime_spi/runtime_backend_factory.h"
+ #include "flutter/shell/common/run_configuration.h"
+@@ -14,6 +18,27 @@
+ 
+ namespace flutter {
+ 
++static inline FlutterEngineResult LogEmbedderError(FlutterEngineResult code,
++                                                    const char* reason,
++                                                    const char* code_name,
++                                                    const char* function,
++                                                    const char* file,
++                                                    int line) {
++#if FML_OS_WIN
++  constexpr char kSeparator = '\\';
++#else
++  constexpr char kSeparator = '/';
++#endif
++  const auto file_base =
++      (::strrchr(file, kSeparator) ? strrchr(file, kSeparator) + 1 : file);
++  char error[256] = {};
++  snprintf(error, (sizeof(error) / sizeof(char)),
++           "%s (%d): '%s' returned '%s'. %s", file_base, line, function,
++           code_name, reason);
++  std::cerr << error << std::endl;
++  return code;
++}
++
+ FlutterEngineResult InitializeEmbedderEngine(
+     size_t version,
+     const FlutterRendererConfig* config,
+@@ -26,4 +51,8 @@ FlutterEngineResult InitializeEmbedderEngine(
+ 
+ }  // namespace flutter
+ 
++#define LOG_EMBEDDER_ERROR(code, reason) \
++  ::flutter::LogEmbedderError(code, reason, #code, __FUNCTION__, __FILE__, \
++                              __LINE__)
++
+ #endif  // FLUTTER_SHELL_PLATFORM_EMBEDDER_EMBEDDER_CORE_INTERNAL_H_

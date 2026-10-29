@@ -1,0 +1,15 @@
+# Why: Let each generated source set consume the invoker configuration after
+# splitting the embedder targets.
+diff --git a/engine/src/flutter/shell/platform/embedder/BUILD.gn b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+index dd4fe13610f..c901fbf1cc1 100644
+--- a/engine/src/flutter/shell/platform/embedder/BUILD.gn
++++ b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+@@ -53,8 +53,6 @@ config("embedder_jit_snapshot_setup") {
+ # Template for the embedder build. Used to allow building it multiple times with
+ # different flags.
+ template("embedder_source_set") {
+-  forward_variables_from(invoker, "*")
+-
+   source_set("${target_name}_core") {
+     forward_variables_from(invoker, "*")
+ 

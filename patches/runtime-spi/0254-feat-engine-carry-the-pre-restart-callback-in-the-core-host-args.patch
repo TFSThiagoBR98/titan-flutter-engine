@@ -1,0 +1,15 @@
+# Why: Keep the host callback available to the core platform view when the
+# engine restarts.
+diff --git a/engine/src/flutter/shell/platform/embedder/flutter_core_host.h b/engine/src/flutter/shell/platform/embedder/flutter_core_host.h
+index 410ff0e2924..369d2ce19d8 100644
+--- a/engine/src/flutter/shell/platform/embedder/flutter_core_host.h
++++ b/engine/src/flutter/shell/platform/embedder/flutter_core_host.h
+@@ -44,6 +44,8 @@ typedef struct {
+   // Igual a `FlutterProjectArgs.compute_platform_resolved_locale_callback`.
+   FlutterComputePlatformResolvedLocaleCallback
+       compute_platform_resolved_locale_callback;
++  // Igual a `FlutterProjectArgs.on_pre_engine_restart_callback`.
++  OnPreEngineRestartCallback on_pre_engine_restart_callback;
+   // Igual a `FlutterProjectArgs.update_semantics_callback`.
+   FlutterUpdateSemanticsCallback update_semantics_callback;
+   // Igual a `FlutterProjectArgs.update_semantics_callback2`.
