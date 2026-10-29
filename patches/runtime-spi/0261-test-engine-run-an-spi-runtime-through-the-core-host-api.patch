@@ -1,0 +1,114 @@
+# Why: Verify the public core host API can launch the C runtime SPI, submit a
+# scene, and present a software frame without Dart.
+diff --git a/engine/src/flutter/shell/platform/embedder/BUILD.gn b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+index ccdc269931b..5f61470d1c7 100644
+--- a/engine/src/flutter/shell/platform/embedder/BUILD.gn
++++ b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+@@ -430,12 +430,14 @@ if (enable_unittests) {
+     include_dirs = [ "." ]
+ 
+     sources = [
++      "tests/embedder_core_unittests.cc",
+       "tests/embedder_frozen_unittests.cc",
+       "tests/embedder_unittests.cc",
+     ]
+ 
+     deps = [
+       ":embedder_unittests_library",
++      "//flutter/runtime_spi:c_test_runtime",
+       "//flutter/lib/ui:ui_gpu_bridge",
+     ]
+ 
+diff --git a/engine/src/flutter/shell/platform/embedder/tests/embedder_core_unittests.cc b/engine/src/flutter/shell/platform/embedder/tests/embedder_core_unittests.cc
+new file mode 100644
+index 00000000000..082ea0e9a29
+--- /dev/null
++++ b/engine/src/flutter/shell/platform/embedder/tests/embedder_core_unittests.cc
+@@ -0,0 +1,87 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include <memory>
++#include <string>
++
++#include "flutter/fml/paths.h"
++#include "flutter/fml/synchronization/waitable_event.h"
++#include "flutter/fml/time/time_delta.h"
++#include "flutter/runtime_spi/testing/c_test_runtime.h"
++#include "flutter/shell/platform/embedder/flutter_core_host.h"
++#include "flutter/testing/testing.h"
++#include "gtest/gtest.h"
++
++namespace {
++
++struct CoreTestState {
++  fml::AutoResetWaitableEvent present_latch;
++};
++
++bool PresentSoftwareSurface(void* user_data,
++                            const void* allocation,
++                            size_t row_bytes,
++                            size_t height) {
++  (void)allocation;
++  (void)row_bytes;
++  (void)height;
++  reinterpret_cast<CoreTestState*>(user_data)->present_latch.Signal();
++  return true;
++}
++
++std::string IcuDataPathForTest() {
++  const auto executable_directory = fml::paths::GetExecutableDirectoryPath();
++  if (!executable_directory.first) {
++    return {};
++  }
++  return fml::paths::JoinPaths({executable_directory.second, "icudtl.dat"});
++}
++
++}  // namespace
++
++TEST(EmbedderCoreTest, RunsAnSpiRuntimeWithoutDart) {
++  auto runtime = std::unique_ptr<CTestRuntime, decltype(&c_test_runtime_free)>(
++      c_test_runtime_create(), c_test_runtime_free);
++  ASSERT_NE(runtime, nullptr);
++  runtime->draw_scene_on_begin_frame = true;
++
++  const std::string icu_data_path = IcuDataPathForTest();
++  ASSERT_FALSE(icu_data_path.empty());
++
++  CoreTestState test_state;
++  FlutterRendererConfig renderer_config = {};
++  renderer_config.type = kSoftware;
++  renderer_config.software = {
++      .struct_size = sizeof(FlutterSoftwareRendererConfig),
++      .surface_present_callback = PresentSoftwareSurface,
++  };
++
++  FlutterCoreHostArgs host_args = {};
++  host_args.struct_size = sizeof(FlutterCoreHostArgs);
++  host_args.assets_path = flutter::testing::GetFixturesPath();
++  host_args.icu_data_path = icu_data_path.c_str();
++
++  const FlutterSpiRuntimeTable runtime_table = c_test_runtime_table(runtime.get());
++  FlutterCoreEngine engine = nullptr;
++  ASSERT_EQ(FlutterCoreEngineRun(FLUTTER_ENGINE_VERSION, &renderer_config,
++                                 &host_args, &runtime_table, &test_state,
++                                 &engine),
++            kSuccess);
++  ASSERT_NE(engine, nullptr);
++
++  FlutterWindowMetricsEvent metrics = {
++      .struct_size = sizeof(FlutterWindowMetricsEvent),
++      .width = 800,
++      .height = 600,
++      .pixel_ratio = 1.0,
++  };
++  ASSERT_EQ(FlutterCoreEngineSendWindowMetricsEvent(engine, &metrics),
++            kSuccess);
++  ASSERT_EQ(FlutterCoreEngineScheduleFrame(engine), kSuccess);
++
++  const bool timed_out = test_state.present_latch.WaitWithTimeout(
++      fml::TimeDelta::FromSeconds(10));
++  ASSERT_FALSE(timed_out);
++  ASSERT_EQ(FlutterCoreEngineShutdown(engine), kSuccess);
++}
