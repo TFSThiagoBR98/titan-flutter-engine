@@ -243,6 +243,14 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0234-feat-engine-add-rsuperellipse-contains-to-the-spi.patch` | Implement the frozen scene ABI entry point with the same positive-bounds and raw-radii containment semantics as RSuperellipse. | |
 | `0235-refactor-engine-move-core-code-out-of-the-dart-ui-target.patch` | keep the extracted core targets buildable and route the GPU bridge through the CanvasImage factory. | |
 | `0236-refactor-engine-keep-core-types-out-of-dart-ui-signatures.patch` | expose only SPI-compatible scalar and geometry types from dart:ui while preserving the existing scene values. | |
+| `0237-refactor-engine-keep-core-objects-out-of-the-dart-ui-isolate-context.patch` | keep core-owned rendering objects out of UIDartState::Context while preserving the live GPU and runtime-stage paths. | |
+| `0238-refactor-engine-build-spi-colors-and-rects-without-display-list-in-dart-ui.patch` | Keep dart:ui painting conversions on the public SPI structs so the target can drop display_list implementation types without changing behavior. | |
+| `0239-build-engine-cut-core-implementation-deps-from-the-dart-ui-target.patch` | Keep dart:ui on the SPI ABI while declaring direct dependencies for core-only decoder and encoder tests. | |
+| `0240-test-engine-cover-raw-image-pixel-format-mapping.patch` | Prove that dart:ui raw RGBA and BGRA descriptors preserve a red pixel through the SPI image decoder before fixing the enum mismatch. | |
+| `0241-fix-engine-pass-raw-image-pixel-formats-to-the-spi-by-its-own-enum.patch` | Keep dart:ui PixelFormat values aligned with the SPI enum so raw RGBA and BGRA descriptors reach the decoder without channel swaps or invalid formats. | |
+| `0242-build-engine-assert-that-dart-ui-only-sees-the-spi-abi.patch` | Keep the dart:ui target free of implementation dependencies that are owned by ui_text_core, which already carries the test-font dependency for font_collection.cc. | |
+| `0243-test-engine-pin-raw-image-pixel-formats-in-shell-unittests.patch` | prove in a gtest that the check runs that raw RGBA and BGRA pixels keep their channels through the SPI. | |
+| `0244-fix-engine-normalize-raw-pixel-test-assertion-types.patch` | keep the raw pixel gtest warning-free while preserving the packed channel assertions. | |
 
 O fluxo é:
 

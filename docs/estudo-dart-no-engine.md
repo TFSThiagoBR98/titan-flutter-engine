@@ -802,6 +802,40 @@ os deps GN de `:ui` em `flow`, `txt`, `display_list`,
 `runtime_spi:{effects,image,scene,spi_backend}`, além dos objetos do core no
 `UIDartState::Context`.
 
+## S4i-3b: dart:ui só vê a ABI do SPI
+
+A S4i-3b conclui a fronteira do alvo `dart:ui`: o
+`UIDartState::Context` deixa de carregar `snapshot_delegate`, `unref_queue`,
+`image_decoder` e `image_generator_registry`. `io_manager` e
+`runtime_stage_backend` permanecem até a S7, por causa do `flutter_gpu`, e
+`IOManager` continua apenas declarado em `ui_dart_state.h`.
+
+As cores e os retângulos do SPI passam a ser montados sem `display_list`, em
+`lib/ui/painting/spi_color.h`, com a mesma conta usada por `DlColor`. O alvo
+`:ui` também deixa de depender de `flow`, `display_list`, `txt`, `skparagraph`,
+`common/graphics`,
+`shell/common:{platform_message_handler,snapshot_pixel_format}` e
+`runtime_spi:{effects,image,scene,spi_backend}`. Permanecem
+`:ui_core_types`, `shell/common:display` (`DisplayData`),
+`impeller/runtime_stage` (S7) e o ICU.
+
+O `ImageDescriptor` do `dart:ui` deixa de usar o modo antigo apoiado em
+`ImageDescriptorData`, e `ImageByteFormat` passa a ser local ao alvo. O GN
+ganha `assert_no_deps` para manter explícita a lista de alvos proibidos e
+provar que o `dart:ui` só vê o core pela ABI C do SPI.
+
+### Defeito corrigido
+
+`ImageDescriptor.raw` mandava o enum do core (`ImageDescriptorData::PixelFormat`,
+RGBA = 1) onde o core lê `FlutterSpiPixelFormat` (RGBA = 0). Desde a S4g-3,
+uma imagem RGBA crua chegava como BGRA, BGRA como `RGBAFloat32` (falha de
+decodificação) e `r32Float` como inválido. O
+`ShellTest.RawImagePixelFormatsKeepChannels` prova a correção; o RED foi
+provado emulando o mapeamento antigo.
+
+A S4 está concluída: os natives do `dart:ui` passam todos pela ABI C do SPI e
+o GN prova isso. O próximo passo é a S5 (dois `.so`).
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos
