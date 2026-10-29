@@ -1,0 +1,22 @@
+# Why: Enforce that the core embedder target cannot acquire Dart, tonic, or
+# Dart shell dependencies through GN transitive dependencies.
+diff --git a/engine/src/flutter/shell/platform/embedder/BUILD.gn b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+index 4acc8410b3b..ccdc269931b 100644
+--- a/engine/src/flutter/shell/platform/embedder/BUILD.gn
++++ b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+@@ -111,6 +111,15 @@ template("embedder_source_set") {
+       "//flutter/skia",
+     ]
+ 
++    assert_no_deps = [
++      "//flutter/third_party/dart/*",
++      "//flutter/third_party/tonic/*",
++      "//flutter/lib/ui:ui",
++      "//flutter/runtime:runtime",
++      "//flutter/runtime:libdart",
++      "//flutter/shell/common:dart",
++    ]
++
+     if (embedder_enable_gl) {
+       sources += [
+         "embedder_external_texture_gl.cc",
