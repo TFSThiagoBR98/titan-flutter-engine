@@ -768,6 +768,40 @@ Neste ponto, nenhum arquivo do alvo `lib/ui:ui` inclui headers C++ internos do
 `display_list`/`flow`/`impeller`/`shell`, o corte dos deps GN e o
 `assert_no_deps`.
 
+## S4i-3a: Tipos e alvos do dart:ui
+
+A S4i-3a conclui a retirada dos tipos e do código do core das assinaturas e
+dos alvos do `dart:ui`. A ABI 0.24 acrescenta `rsuperellipse_contains` no fim
+da `FlutterSpiSceneApi`, preservando a ordem da tabela. O `RSuperellipse` do
+Dart usava a geometria do Impeller para `contains`; agora essa operação cruza
+o SPI, enquanto o core mantém a semântica dos limites positivos e dos raios.
+
+O código sem Dart foi separado em alvos próprios: `ui_text_core` reúne
+`FontCollection` e `AssetManagerFontProvider`, e o native
+`LoadFontFromList` passou para `text/font_collection_dart.cc`; o caminho de
+imagem diferida de GPU do Impeller foi para
+`pixel_deferred_image_gpu_impeller` em `ui_image_output`. A ponte do
+`flutter_gpu` fica em `ui_gpu_bridge`, com funções livres em
+`image_gpu_bridge.h`, até a S7.
+
+As assinaturas dos natives deixam de expor tipos do core: `DlClipOp`,
+`DlBlendMode`, `DlPointMode`, `DlTileMode` e `DlVertexMode` passam a ser
+`int32_t`. `RRect` e `RSuperellipse` guardam as structs do SPI com o
+retângulo positivo; a normalização dos raios fica somente no core. A
+qualidade de filtro é convertida por `ClampFilterQuality`.
+
+Também saíram os caminhos mortos de `FragmentProgram::MakeDlColorSource`,
+`FragmentProgram::MakeDlImageFilter`, `runtime_effect_` e dos helpers de
+sampling. O `dart:ui` fica com tipos compatíveis com a fronteira C e com
+alvos GN que exprimem melhor a separação entre o core e o runtime.
+
+Para a S4i-3b ficam o include de `shell/common/display.h` (`DisplayData`) e
+os deps GN de `:ui` em `flow`, `txt`, `display_list`,
+`impeller/runtime_stage`,
+`shell/common:{display,platform_message_handler,snapshot_pixel_format}` e
+`runtime_spi:{effects,image,scene,spi_backend}`, além dos objetos do core no
+`UIDartState::Context`.
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos

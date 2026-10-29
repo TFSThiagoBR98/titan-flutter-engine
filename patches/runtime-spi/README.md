@@ -239,6 +239,10 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0230-refactor-engine-use-the-public-spi-abi-in-the-remaining-dart-ui-natives.patch` | keep dart:ui on the public runtime SPI ABI while isolating the temporary flutter_gpu bridge. | |
 | `0231-fix-engine-include-the-spi-scene-builder-bridge-in-animator-tests.patch` | expose the bridge helper used after removing SceneBuilder::layer_stack(). | |
 | `0232-fix-engine-route-remaining-painting-calls-through-the-spi.patch` | complete the mechanical migration of the remaining canvas and shader releases to the public SPI tables. | |
+| `0233-test-engine-pin-rsuperellipse-containment-through-the-spi.patch` | Pin the new ABI entry point and frozen layout before implementing its runtime behavior. | |
+| `0234-feat-engine-add-rsuperellipse-contains-to-the-spi.patch` | Implement the frozen scene ABI entry point with the same positive-bounds and raw-radii containment semantics as RSuperellipse. | |
+| `0235-refactor-engine-move-core-code-out-of-the-dart-ui-target.patch` | keep the extracted core targets buildable and route the GPU bridge through the CanvasImage factory. | |
+| `0236-refactor-engine-keep-core-types-out-of-dart-ui-signatures.patch` | expose only SPI-compatible scalar and geometry types from dart:ui while preserving the existing scene values. | |
 
 O fluxo é:
 
