@@ -259,6 +259,15 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0250-refactor-engine-spawn-runtime-backends-from-the-parent-backend.patch` | keep runtime controller access inside the Dart runtime boundary while allowing the shell core to spawn through the parent runtime backend. | |
 | `0251-refactor-engine-drop-dart-timeline-calls-from-the-shell-core.patch` | keep the shell core independent from Dart timeline APIs and runtime controller headers; the monotonic FML clock provides the same deadline domain. | |
 | `0252-build-engine-keep-dart-out-of-the-shell-core-target.patch` | isolate Dart shell sources and dependencies in a dedicated target while proving the common shell core cannot depend on Dart. | |
+| `0253-feat-engine-add-the-core-host-api-header.patch` | Keep the reproducible runtime-spi patch series aligned with the verified engine worktree. | |
+| `0254-feat-engine-carry-the-pre-restart-callback-in-the-core-host-args.patch` | Record the verified core host API split fixes and build the host Settings before Dart run configuration inference. | |
+| `0255-refactor-engine-split-the-embedder-into-a-core-host-api-and-a-dart-translation.patch` | Record the verified core host API split fixes and build the host Settings before Dart run configuration inference. | |
+| `0256-fix-engine-consume-embedder-template-variables-in-both-targets.patch` | Record the verified core host API split fixes and build the host Settings before Dart run configuration inference. | |
+| `0257-fix-engine-publish-the-core-target-through-the-embedder.patch` | Record the verified core host API split fixes and build the host Settings before Dart run configuration inference. | |
+| `0258-fix-engine-share-the-embedder-helpers-between-the-core-and-the-dart-translation.patch` | Record the verified core host API split fixes and build the host Settings before Dart run configuration inference. | |
+| `0259-fix-engine-build-the-host-settings-before-inferring-the-dart-run-configuration.patch` | Record the verified core host API split fixes and build the host Settings before Dart run configuration inference. | |
+| `0260-build-engine-keep-dart-out-of-the-embedder-core.patch` | Record the verified GN dependency boundary that keeps Dart out of the embedder core target. | |
+| `0261-test-engine-run-an-spi-runtime-through-the-core-host-api.patch` | Record the verified end-to-end SPI runtime test through the core host API. | |
 
 O fluxo é:
 

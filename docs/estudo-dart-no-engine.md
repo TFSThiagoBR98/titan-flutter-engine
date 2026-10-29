@@ -885,6 +885,40 @@ três grupos. São só Dart `FlutterEngineCreateAOTData`, `CollectAOTData`,
 `NotifyDisplayUpdate`. As demais são só host. Os campos só Dart de
 `FlutterProjectArgs` também ficam para a S5b.
 
+## S5b-1: A host API do core
+
+Na S5b-1, as decisões de 2026-10-29 foram manter os tipos de `embedder.h`
+reutilizados e acrescentar somente funções novas com o prefixo
+`FlutterCore*`. A camada C++ interna entre os dois `.so` também fica
+explícita, emenda do ADR-0027.
+
+O novo `flutter_core_host.h` define `FlutterCoreHostArgs` com os campos de
+host de `FlutterProjectArgs`, incluindo `on_pre_engine_restart_callback`,
+que o platform view do core chama. O handle `FlutterCoreEngine` aponta para o
+mesmo `EmbedderEngine` do `FlutterEngine`. Para cada função de host ou mista
+existe um gêmeo `FlutterCore*`; permanecem somente em `embedder.h` as quatro
+funções de AOT/`PostDartObject`, `GetProcAddresses` e
+`__FlutterEngineFlushPendingTasksNow`.
+
+O embedder é dividido em `embedder_core`, que contém a API de host e tem
+`assert_no_deps`, e `embedder`, que faz a tradução Dart. Os helpers
+`InitializeEmbedderEngine` e `MakeEmbedderHostSettings` são compartilhados
+pelos dois alvos. O `RuntimeBackendFactory::GetConcurrentMessageLoop`
+fornece o loop usado por `PostCallbackOnAllNativeThreads`.
+
+O teste `EmbedderCoreTest.RunsAnSpiRuntimeWithoutDart` executa a host API com
+um runtime C de teste e um quadro em software, sem Dart.
+
+### Ordem da montagem dos `Settings`
+
+A primeira divisão inferia o projeto Dart antes de aplicar os campos de host.
+Sem `assets_path`, o kernel não era encontrado e sete `EmbedderTest`
+falhavam. Agora os dois caminhos montam a parte de host primeiro, na mesma
+ordem do código original.
+
+A S5b-1 ainda mantém um único `.so`. Os dois `.so` e os *version scripts*
+ficam para a S5b-2.
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos
