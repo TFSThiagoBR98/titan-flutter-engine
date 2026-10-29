@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# binutils output and sort order must not depend on the user locale
+export LC_ALL=C
+
 repository_root=$(cd "$(dirname "$0")/.." && pwd -P)
 source "$repository_root/scripts/lib/paths.sh"
 

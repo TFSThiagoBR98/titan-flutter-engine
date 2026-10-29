@@ -54,6 +54,7 @@ ninja_environment="$temporary_directory/ninja-environment.log"
 runner_log="$temporary_directory/runner.log"
 order_log="$temporary_directory/order.log"
 output_log="$temporary_directory/output.log"
+locale_output_log="$temporary_directory/locale-output.log"
 mkdir -p "$fake_bin" "$work_directory/depot_tools"
 
 cat > "$fake_bin/build-engine" <<'EOF'
@@ -120,10 +121,18 @@ cat > "$fake_bin/readelf" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
+dynamic_label='Shared library'
+case "${LC_ALL:-${LANG:-}}" in
+  pt_BR*|pt_PT*)
+    dynamic_label='Biblioteca partilhada'
+    ;;
+esac
+
 if [[ "${@: -1}" == *flutter_engine_core_smoke ]]; then
-  printf ' 0x0000000000000001 (NEEDED)             Shared library: [libflutter_engine_core.so]\n'
+  printf ' 0x0000000000000001 (NEEDED)             %s: [libflutter_engine_core.so]\n' \
+    "$dynamic_label"
 fi
-printf ' 0x0000000000000001 (NEEDED)             Shared library: [libc.so]\n'
+printf ' 0x0000000000000001 (NEEDED)             %s: [libc.so]\n' "$dynamic_label"
 EOF
 chmod +x "$fake_bin/readelf"
 
@@ -209,6 +218,30 @@ assert_contains "$output_log" 'build: ok' 'stage summary'
 assert_contains "$output_log" 'ninja: ok' 'stage summary'
 assert_contains "$output_log" 'tests: ok' 'stage summary'
 assert_contains "$output_log" 'core artifact: ok' 'core artifact summary'
+
+non_c_locale=$(locale -a | awk '
+  tolower($0) == "pt_br.utf8" || tolower($0) == "pt_br.utf-8" { print; exit }
+')
+if [[ -z "$non_c_locale" ]]; then
+  non_c_locale=$(locale -a | awk '
+    $0 != "C" && $0 != "POSIX" && $0 !~ /^C\./ { print; exit }
+  ')
+fi
+if [[ -n "$non_c_locale" ]]; then
+  rm -f "$runner_log" "$order_log" "$ninja_log" "$ninja_pid_log"
+  if LC_ALL="$non_c_locale" LANG="$non_c_locale" run_check >"$locale_output_log" 2>&1; then
+    :
+  else
+    cat "$locale_output_log" >&2
+    fail "the complete fake check should pass under locale $non_c_locale"
+  fi
+  if ! cmp -s "$output_log" "$locale_output_log"; then
+    diff -u "$output_log" "$locale_output_log" >&2 || true
+    fail "the fake check result changed under locale $non_c_locale"
+  fi
+else
+  printf 'locale-independent check: skipped; no non-C locale available\n'
+fi
 
 rm -f "$runner_log" "$order_log" "$ninja_log"
 if FAKE_NO_UNIT_BUILD_STATUS=29 run_check >"$output_log" 2>&1; then

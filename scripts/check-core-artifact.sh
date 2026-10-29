@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# binutils output and sort order must not depend on the user locale
+export LC_ALL=C
+
 usage() {
   cat <<'EOF'
 Usage: scripts/check-core-artifact.sh <libflutter_engine_core.so>
