@@ -1,6 +1,18 @@
 # Why: Keep Dart-specific isolate launch configuration details behind the
 # shell common Dart boundary while preserving the existing RunConfiguration
 # callers and launch behavior.
+diff --git a/engine/src/flutter/runtime/BUILD.gn b/engine/src/flutter/runtime/BUILD.gn
+index 5c9df21f9ff..820d02f4e08 100644
+--- a/engine/src/flutter/runtime/BUILD.gn
++++ b/engine/src/flutter/runtime/BUILD.gn
+@@ -161,6 +161,7 @@ source_set("runtime") {
+     "//flutter/fml",
+     "//flutter/lib/io",
+     "//flutter/shell/common:display",
++    "//flutter/shell/common:runtime_launch_configuration",
+     "//flutter/skia",
+     "//flutter/third_party/tonic",
+     "//flutter/txt",
 diff --git a/engine/src/flutter/runtime/isolate_configuration.h b/engine/src/flutter/runtime/isolate_configuration.h
 index 20aee674d8a..f3f9f3230f1 100644
 --- a/engine/src/flutter/runtime/isolate_configuration.h
@@ -23,18 +35,37 @@ index 20aee674d8a..f3f9f3230f1 100644
    //----------------------------------------------------------------------------
    /// @brief      Attempts to infer the isolate configuration from the
 diff --git a/engine/src/flutter/shell/common/BUILD.gn b/engine/src/flutter/shell/common/BUILD.gn
-index b09c9ee4be7..cd5c5dd6734 100644
+index b09c9ee4be7..d5b6afb1e14 100644
 --- a/engine/src/flutter/shell/common/BUILD.gn
 +++ b/engine/src/flutter/shell/common/BUILD.gn
-@@ -112,6 +112,8 @@ source_set("common") {
+@@ -68,6 +68,11 @@ source_set("platform_message_handler") {
+   deps = [ "//flutter/fml" ]
+ }
+ 
++source_set("runtime_launch_configuration") {
++  sources = [ "runtime_launch_configuration.h" ]
++  public_configs = [ "//flutter:config" ]
++}
++
+ source_set("display") {
+   sources = [
+     "display.cc",
+@@ -112,6 +117,7 @@ source_set("common") {
      "resource_cache_limit_calculator.h",
      "run_configuration.cc",
      "run_configuration.h",
 +    "run_configuration_dart.cc",
-+    "runtime_launch_configuration.h",
      "serialization_callbacks.cc",
      "serialization_callbacks.h",
      "shell.cc",
+@@ -144,6 +150,7 @@ source_set("common") {
+   public_deps = [
+     ":display",
+     ":platform_message_handler",
++    ":runtime_launch_configuration",
+     ":snapshot_pixel_format",
+     "//flutter/lib/ui:ui_image_decoding",
+     "//flutter/lib/ui:ui_core_types",
 diff --git a/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc b/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc
 index b82f1f02146..5b5dc141759 100644
 --- a/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc
@@ -148,7 +179,7 @@ index 199827290a7..bfbd29b6b70 100644
  
  }  // namespace flutter
 diff --git a/engine/src/flutter/shell/common/run_configuration.h b/engine/src/flutter/shell/common/run_configuration.h
-index 4287b8f97f0..a0e96c903b2 100644
+index 4287b8f97f0..64156768ff5 100644
 --- a/engine/src/flutter/shell/common/run_configuration.h
 +++ b/engine/src/flutter/shell/common/run_configuration.h
 @@ -13,11 +13,13 @@
@@ -158,10 +189,10 @@ index 4287b8f97f0..a0e96c903b2 100644
 -#include "flutter/fml/unique_fd.h"
 -#include "flutter/runtime/isolate_configuration.h"
 +#include "flutter/fml/task_runner.h"
++#include "flutter/shell/common/runtime_launch_configuration.h"
  
  namespace flutter {
  
-+class RuntimeLaunchConfiguration;
 +enum class IsolateLaunchType;
 +
  //------------------------------------------------------------------------------
@@ -343,3 +374,15 @@ index 00000000000..1be2e508867
 +}  // namespace flutter
 +
 +#endif  // FLUTTER_SHELL_COMMON_RUNTIME_LAUNCH_CONFIGURATION_H_
+diff --git a/engine/src/flutter/shell/common/shell.cc b/engine/src/flutter/shell/common/shell.cc
+index fe96d2ef60a..bdee81ac563 100644
+--- a/engine/src/flutter/shell/common/shell.cc
++++ b/engine/src/flutter/shell/common/shell.cc
+@@ -25,6 +25,7 @@
+ #include "flutter/fml/paths.h"
+ #include "flutter/fml/task_runner_util.h"
+ #include "flutter/fml/trace_event.h"
++#include "flutter/runtime/isolate_configuration.h"
+ #include "flutter/shell/common/base64.h"
+ #include "flutter/shell/common/engine.h"
+ #include "flutter/shell/common/shell_service_protocol.h"
