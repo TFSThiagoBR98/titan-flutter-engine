@@ -49,3 +49,5 @@ cada `const char*` é medido, validado e copiado, em contraste com o move das
 
 O restante fica para a S5.5: strings com tamanho explícito, menos validação e
 menos cópias por nó, junto com as otimizações estruturais da S4f e da S4g-3.
+
+Atualização (2026-10-29): a S5.5b reduziu o quadro de semântica em 3,2%; ver [runtime-spi-s55b.md](runtime-spi-s55b.md).

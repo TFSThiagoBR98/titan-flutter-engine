@@ -59,6 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime SPI S5b-2: o build gera também o `libflutter_engine_core.so`, só com o core e a host API (`FlutterCore*`), como artefato alternativo ao `libflutter_engine.so`.
 - Runtime SPI S5c: prova no artefato de que o `libflutter_engine_core.so` não tem Dart, build só do core (`--runtime none`, arg GN `titan_flutter_runtime_dart`) e um programa C que roda um runtime SPI só com o core.
 - Runtime SPI S5.5a: busca de handles sem trava e cache de paint sem alocação no miss (quadro composto −1,7%).
+- Runtime SPI S5.5b: atualização de semântica sem nó temporário nem vetores por nó (quadro de semântica −3,2%).
 
 ### Fixed
 

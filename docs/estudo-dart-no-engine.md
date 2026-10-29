@@ -1016,6 +1016,23 @@ slot com handle antigo, leitura enquanto outras threads crescem a tabela e
 cache não envenenado por uma conversão que falha. O resultado está em
 [runtime-spi-s55a.md](medidas/runtime-spi-s55a.md).
 
+## S5.5b: Semântica sem nó temporário
+
+O perfil (callgrind de `BM_DartSemanticsFrame`) mostrou o caminho SPI de
+`updateNode` em ~12% do quadro além do upstream: cópia, validação UTF-8 e
+`strlen` das strings (~4%), recriação dos atributos com `make_shared` no core
+(~1,7%), nó temporário com move e destrutor (~2%), cinco vetores de atributos
+por nó no `lib/ui` (~1,3%) e o wrapper do `SpiEngineApi` (~1%). A S5.5b ataca
+os dois do meio: o `UpdateNode` faz um `try_emplace` e converte direto no nó
+novo (se falhar, apaga a entrada; um id já existente continua passando por um
+temporário, para que uma atualização rejeitada preserve o nó anterior), e o
+`SemanticsUpdateBuilder` reutiliza os cinco vetores entre nós. Dois testes
+novos (`RejectedFirstUpdateLeavesNoNode`, `RejectedUpdateKeepsThePreviousNode`).
+
+O que fica: a cópia e a validação das strings são o preço do ABI C (o core não
+pode adotar memória do runtime nem confiar em UTF-8 que não validou). Resultado
+em [runtime-spi-s55b.md](medidas/runtime-spi-s55b.md).
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos

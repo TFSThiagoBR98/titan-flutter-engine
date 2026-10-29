@@ -275,6 +275,8 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0266-test-engine-smoke-test-the-core-library-from-c.patch` | exercise the core runtime through a C executable and keep the smoke test linked only to the core library and its C test runtime. | |
 | `0267-perf-engine-look-up-runtime-spi-handles-without-a-lock.patch` | remove mutex contention from raw handle lookup while preserving generation validation and the handle lifetime contract. | |
 | `0268-perf-engine-convert-cache-misses-in-place.patch` | avoid the temporary paint and vector allocation on cache misses while invalidating failed conversions safely. | |
+| `0269-perf-engine-convert-semantics-nodes-in-place.patch` | avoid constructing a temporary semantics node for new IDs while preserving the previous node when an update is rejected. | |
+| `0270-perf-engine-reuse-the-semantics-attribute-buffers.patch` | retain the five per-node SPI attribute vector capacities across synchronous updateNode calls. | |
 
 O fluxo é:
 
