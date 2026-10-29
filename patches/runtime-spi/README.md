@@ -271,6 +271,8 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0262-build-engine-add-the-core-only-engine-library.patch` | provide the alternative core-only shared library for the Runtime SPI. | |
 | `0263-refactor-engine-give-the-core-its-own-definitions-for-focus-requests-and-shell-initialization.patch` | The core-only engine library must not resolve neutral definitions from Dart-owned targets. Move view focus value definitions and shell initialization into core targets while keeping tonic's Dart logging handler in shell_dart.cc. | |
 | `0264-fix-engine-keep-core-shell-initialization-in-its-namespace.patch` | The initialization definition must remain in the flutter namespace after moving it out of shell_dart.cc, so the core shell implementation compiles without changing its behavior. | |
+| `0265-build-engine-add-the-titan-flutter-runtime-dart-gn-arg.patch` | allow the Flutter embedder graph to omit Dart-backed targets while retaining the core runtime. | |
+| `0266-test-engine-smoke-test-the-core-library-from-c.patch` | exercise the core runtime through a C executable and keep the smoke test linked only to the core library and its C test runtime. | |
 
 O fluxo é:
 

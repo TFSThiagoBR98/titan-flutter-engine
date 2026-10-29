@@ -953,6 +953,46 @@ de `ViewFocusChangeRequest` em `view_focus.cc`, que agora pertence ao alvo
 `shell_dart.cc` instala depois. O monólito sempre satisfazia esses símbolos,
 por isso a dependência só apareceu quando o core foi ligado isoladamente.
 
+## S5c: Provas no artefato
+
+A S5c transforma a separação de alvos da S5b-2 em uma prova no binário. O
+`check-core-artifact.sh` recebe um `libflutter_engine_core.so` e verifica:
+
+- (a) `NEEDED` contém somente bibliotecas do sistema: `libdl`, `libm`,
+  `libpthread`, `libc` e o carregador `ld-linux` (ou os equivalentes musl);
+- (b) os símbolos exportados por `nm -D` são somente `FlutterCore*` e os
+  delimitadores `__start_*`/`__stop_*` criados pelo linker;
+- (c) o `nm -C` da versão em `lib.unstripped` não contém `Dart_`, `dart::`,
+  `tonic::` nem os símbolos de snapshot da VM ou do isolate;
+- (d) `strings` não encontra a marca exata `kDartSnapshotData`. Essa é a
+  marca que o script procura; `kDartSnapshotText` também não aparece no core,
+  mas não é procurada pelo script. Da mesma forma,
+  `vm-snapshot-data` e `isolate-snapshot-data` não servem de prova: são nomes
+  de opções do core, não evidência de snapshots incorporados.
+
+O teste `test_check_core_artifact.sh` executa o checker contra o
+`libflutter_engine.so` como teste negativo e falha se a biblioteca Dart for
+aceita como core. Quando recebe o artefato correto, o checker termina com
+`core artifact: ok`.
+
+O build expõe o argumento GN `titan_flutter_runtime_dart`, habilitado por
+padrão. `build-engine.sh --runtime dart` mantém os alvos Dart e produz o
+engine normal; `build-engine.sh --runtime none` passa
+`titan_flutter_runtime_dart=false`, não cria os alvos Dart do embedder e
+produz somente `libflutter_engine_core.so`.
+
+O `flutter_engine_core_smoke` é um programa C ligado somente a
+`libflutter_engine_core.so` e ao runtime C de teste do SPI. Ele inicializa a
+host API, apresenta um quadro em software e confirma que o core executa um
+runtime SPI sem Dart. O checker exige `core smoke: ok`, além de confirmar que o
+executável não está ligado a outro `libflutter_engine*.so`.
+
+Com essas provas, a **S5 está concluída**: o core sai como artefato próprio,
+sem Dart, e essa ausência é provada no binário. O próximo passo é a S5.5,
+dedicada à otimização da série e do código. O roadmap também passa a prever a
+S8, um estudo de voltar ao modelo em que o `.so` Dart depende do core, caso a
+otimização e o empacotamento tornem essa composição preferível.
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos

@@ -57,6 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime SPI S5a: o alvo do core `shell/common:common` deixa de conter e de depender de Dart, com `assert_no_deps` no GN; o código Dart do shell vai para `shell/common:dart`; corrigido um teste instável da leitura de assets no worker.
 - Runtime SPI S5b-1: host API do core (`flutter_core_host.h`, funções `FlutterCore*`) sem Dart, num alvo próprio com `assert_no_deps`; a Embedder API (`embedder.h`) continua igual e passa a traduzir para ela.
 - Runtime SPI S5b-2: o build gera também o `libflutter_engine_core.so`, só com o core e a host API (`FlutterCore*`), como artefato alternativo ao `libflutter_engine.so`.
+- Runtime SPI S5c: prova no artefato de que o `libflutter_engine_core.so` não tem Dart, build só do core (`--runtime none`, arg GN `titan_flutter_runtime_dart`) e um programa C que roda um runtime SPI só com o core.
 
 ### Fixed
 
