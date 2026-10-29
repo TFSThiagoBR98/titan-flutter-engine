@@ -101,6 +101,7 @@ if [[ "${1:-}" == -C ]]; then
   output_directory=$2
   mkdir -p "$output_directory"
   : > "$output_directory/libflutter_engine.so"
+  : > "$output_directory/libflutter_engine_core.so"
   : > "$output_directory/flutter_embedder.h"
   : > "$output_directory/icudtl.dat"
 fi
@@ -412,6 +413,12 @@ run_engine --mode debug --out "$temporary_directory/verified-bundle"
   printf 'verified bundle was not published\n' >&2
   exit 1
 }
+[[ ! -f "$temporary_directory/verified-bundle/$flutter_commit/libflutter_engine_core.so" ]] || {
+  printf 'core-only engine was copied to the bundle\n' >&2
+  exit 1
+}
+assert_log_contains "$ninja_log" 'flutter/shell/platform/embedder:flutter_engine_core_library'
+assert_log_contains "$ninja_log" 'flutter/shell/platform/embedder:copy_core_headers'
 
 : > "$ninja_log"
 run_engine --mode release --out-name sdk_custom \

@@ -164,6 +164,8 @@ assert_contains "$ninja_log" '-k' 'ninja arguments'
 assert_contains "$ninja_log" '0' 'ninja arguments'
 grep -Fxq 'flutter/fml:fml_unittests' "$ninja_log" || \
   fail 'ninja target was not passed as one argument'
+grep -Fxq 'flutter/shell/platform/embedder:flutter_engine_core_library' "$ninja_log" || \
+  fail 'core engine target was not passed as one argument'
 assert_matches "$ninja_environment" 'CCACHE_DIR=.*/\.build_flutter/ccache$' 'ninja environment'
 assert_contains "$ninja_environment" 'DEPOT_TOOLS_UPDATE=0' 'ninja environment'
 assert_contains "$output_log" 'build: ok' 'stage summary'

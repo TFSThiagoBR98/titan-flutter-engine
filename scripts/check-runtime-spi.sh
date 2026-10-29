@@ -96,6 +96,7 @@ run_ninja() {
         cat "$repository_root/tests/runtime-spi/gtest-targets.txt"
         cat "$repository_root/tests/runtime-spi/benchmark-targets.txt"
         printf '%s\n' 'flutter/shell/platform/embedder:flutter_engine'
+        printf '%s\n' 'flutter/shell/platform/embedder:flutter_engine_core_library'
       } | sed 's/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d'
     )
   fi

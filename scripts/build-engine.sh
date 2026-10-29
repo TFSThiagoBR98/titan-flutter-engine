@@ -645,7 +645,11 @@ if ((${#ninja_targets[@]} > 0)); then
 fi
 run_within_cpu_budget ninja -C "$out_dir" -j "$jobs" -l "$load" \
   flutter/shell/platform/embedder:flutter_engine_library \
-  flutter/shell/platform/embedder:copy_headers
+  flutter/shell/platform/embedder:copy_headers \
+  flutter/shell/platform/embedder:flutter_engine_core_library \
+  flutter/shell/platform/embedder:copy_core_headers
+[[ -f "$out_dir/libflutter_engine_core.so" ]] || \
+  die "engine build did not produce $out_dir/libflutter_engine_core.so"
 if [[ "$mode" != debug ]]; then
   run_within_cpu_budget ninja -C "$out_dir" -j "$jobs" -l "$load" flutter/shell/common:gen_snapshot
 fi
