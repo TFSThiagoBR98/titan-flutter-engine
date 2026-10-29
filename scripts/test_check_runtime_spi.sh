@@ -66,6 +66,7 @@ set -euo pipefail
 }
 printf '%s\n' "$@" >> "$BUILD_LOG"
 mkdir -p "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug"
+ : > "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/libflutter_engine_core.so"
 printf '%s\n' "$FAKE_ARGS_GN" > \
   "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/args.gn"
 printf 'build\n' >> "$ORDER_LOG"
@@ -107,6 +108,30 @@ printf 'runner\n' >> "$ORDER_LOG"
 EOF
 chmod +x "$fake_bin/run-engine-tests"
 
+cat > "$fake_bin/readelf" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf ' 0x0000000000000001 (NEEDED)             Shared library: [libc.so]\n'
+EOF
+chmod +x "$fake_bin/readelf"
+
+cat > "$fake_bin/nm" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == '-D' ]]; then
+  printf '0000000000000000 T FlutterCoreEngineRun\n'
+fi
+EOF
+chmod +x "$fake_bin/nm"
+
+cat > "$fake_bin/strings" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+EOF
+chmod +x "$fake_bin/strings"
+
 run_check() {
   : > "$build_log"
   TITAN_WORK_DIR="$work_directory" \
@@ -123,6 +148,7 @@ run_check() {
   FAKE_ARGS_GN="${FAKE_ARGS_GN:-enable_unittests = true}" \
   FAKE_NINJA_STATUS="${FAKE_NINJA_STATUS:-0}" \
   FAKE_NINJA_SLEEP_SECONDS="${FAKE_NINJA_SLEEP_SECONDS:-0}" \
+  PATH="$fake_bin:$PATH" \
     "$check_script" "$@"
 }
 
@@ -171,6 +197,7 @@ assert_contains "$ninja_environment" 'DEPOT_TOOLS_UPDATE=0' 'ninja environment'
 assert_contains "$output_log" 'build: ok' 'stage summary'
 assert_contains "$output_log" 'ninja: ok' 'stage summary'
 assert_contains "$output_log" 'tests: ok' 'stage summary'
+assert_contains "$output_log" 'core artifact: ok' 'core artifact summary'
 
 rm -f "$runner_log" "$order_log" "$ninja_log"
 if FAKE_NO_UNIT_BUILD_STATUS=29 run_check >"$output_log" 2>&1; then

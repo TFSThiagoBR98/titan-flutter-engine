@@ -41,6 +41,7 @@ done
 build_engine=${TITAN_BUILD_ENGINE:-$repository_root/scripts/build-engine.sh}
 ninja=${TITAN_NINJA:-$TITAN_WORK_DIR/depot_tools/ninja}
 run_engine_tests=${TITAN_RUN_ENGINE_TESTS:-$repository_root/scripts/run-engine-tests.sh}
+check_core_artifact="$repository_root/scripts/check-core-artifact.sh"
 engine_source="$TITAN_WORK_DIR/flutter/engine/src"
 output_directory="$engine_source/out/host_debug"
 no_unittests_output_directory="$engine_source/out/host_debug_no_unittests"
@@ -184,3 +185,4 @@ fi
 run_build_without_unittests
 run_ninja
 run_tests
+"$check_core_artifact" "$output_directory/libflutter_engine_core.so"
