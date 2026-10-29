@@ -1,0 +1,363 @@
+# Why: keep runtime controller access inside the Dart runtime boundary while
+# allowing the shell core to spawn through the parent runtime backend.
+diff --git a/engine/src/flutter/runtime_spi/runtime_backend_factory.h b/engine/src/flutter/runtime_spi/runtime_backend_factory.h
+index 3678755d423..6eefe12475a 100644
+--- a/engine/src/flutter/runtime_spi/runtime_backend_factory.h
++++ b/engine/src/flutter/runtime_spi/runtime_backend_factory.h
+@@ -30,7 +30,6 @@ class DartVM;
+ class ImageDecoder;
+ class ImageGeneratorRegistry;
+ class IOManager;
+-class RuntimeController;
+ class RuntimeDelegate;
+ struct Settings;
+ struct PlatformData;
+@@ -61,7 +60,7 @@ class RuntimeBackendFactory {
+           runtime_stage_backend) = 0;
+ 
+   virtual std::unique_ptr<RuntimeBackend> Spawn(
+-      const RuntimeController& runtime_controller,
++      const RuntimeBackend& parent_backend,
+       RuntimeDelegate& runtime_delegate,
+       const TaskRunners& task_runners,
+       const Settings& settings,
+diff --git a/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc b/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
+index 498ff00342e..2c68db7b118 100644
+--- a/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
++++ b/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
+@@ -16,6 +16,7 @@
+ #include "flutter/runtime_spi/spi_runtime_backend.h"
+ #include "flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.h"
+ #include "flutter/shell/common/dart_runtime/flutter_dart_runtime.h"
++#include "flutter/shell/common/shell_dart.h"
+ #include "flutter/shell/common/shell_io_manager.h"
+ 
+ namespace flutter {
+@@ -92,7 +93,7 @@ std::unique_ptr<RuntimeBackend> DartRuntimeBackendFactory::Create(
+ }
+ 
+ std::unique_ptr<RuntimeBackend> DartRuntimeBackendFactory::Spawn(
+-    const RuntimeController& runtime_controller,
++    const RuntimeBackend& parent_backend,
+     RuntimeDelegate& runtime_delegate,
+     const TaskRunners& task_runners,
+     const Settings& settings,
+@@ -108,12 +109,16 @@ std::unique_ptr<RuntimeBackend> DartRuntimeBackendFactory::Spawn(
+     fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
+         image_generator_registry,
+     fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate) const {
++  const auto* runtime_controller = GetDartRuntimeController(parent_backend);
++  if (runtime_controller == nullptr) {
++    return nullptr;
++  }
+   auto delegate_bridge = std::make_unique<DartRuntimeDelegateBridge>();
+   auto backend_image_decoder = image_decoder;
+   auto backend_image_generator_registry = image_generator_registry;
+   auto backend_snapshot_delegate = snapshot_delegate;
+   auto backend_io_manager = io_manager;
+-  auto controller = runtime_controller.Spawn(
++  auto controller = runtime_controller->Spawn(
+       *delegate_bridge, advisory_script_uri, advisory_script_entrypoint,
+       idle_notification_callback, isolate_create_callback,
+       isolate_shutdown_callback, persistent_isolate_data, std::move(io_manager));
+diff --git a/engine/src/flutter/shell/common/dart_runtime_backend_factory.h b/engine/src/flutter/shell/common/dart_runtime_backend_factory.h
+index cf228168935..4c35b6333d0 100644
+--- a/engine/src/flutter/shell/common/dart_runtime_backend_factory.h
++++ b/engine/src/flutter/shell/common/dart_runtime_backend_factory.h
+@@ -41,7 +41,7 @@ class DartRuntimeBackendFactory final : public RuntimeBackendFactory {
+           runtime_stage_backend) override;
+ 
+   std::unique_ptr<RuntimeBackend> Spawn(
+-      const RuntimeController& runtime_controller,
++      const RuntimeBackend& parent_backend,
+       RuntimeDelegate& runtime_delegate,
+       const TaskRunners& task_runners,
+       const Settings& settings,
+diff --git a/engine/src/flutter/shell/common/engine.cc b/engine/src/flutter/shell/common/engine.cc
+index 74f96002903..e7caf8b70eb 100644
+--- a/engine/src/flutter/shell/common/engine.cc
++++ b/engine/src/flutter/shell/common/engine.cc
+@@ -21,7 +21,6 @@
+ #include "flutter/runtime_spi/spi_runtime_backend.h"
+ #include "flutter/runtime_spi/semantics/spi_semantics.h"
+ #include "flutter/shell/common/animator.h"
+-#include "flutter/shell/common/shell_dart.h"
+ #include "rapidjson/document.h"
+ 
+ namespace flutter {
+@@ -116,7 +115,7 @@ std::unique_ptr<Engine> Engine::Spawn(
+     const fml::WeakPtr<IOManager>& io_manager,
+     fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
+     const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch) const {
+-  if (!runtime_backend_factory_ || !GetRuntimeController()) {
++  if (!runtime_backend_factory_ || !runtime_backend_) {
+     FML_LOG(ERROR) << "Cannot spawn an engine without a Dart runtime backend.";
+     return nullptr;
+   }
+@@ -134,8 +133,8 @@ std::unique_ptr<Engine> Engine::Spawn(
+       /*gpu_disabled_switch=*/gpu_disabled_switch);
+   result->runtime_backend_factory_ = runtime_backend_factory_;
+   result->SetRootIsolateCreateCallback();
+-  result->runtime_backend_ = runtime_backend_factory_->Spawn(
+-      /*runtime_controller=*/ *GetRuntimeController(),
++  auto runtime_backend = runtime_backend_factory_->Spawn(
++      /*parent_backend=*/ *runtime_backend_,
+       /*runtime_delegate=*/*result,
+       /*task_runners=*/task_runners_,
+       /*settings=*/settings,
+@@ -151,6 +150,11 @@ std::unique_ptr<Engine> Engine::Spawn(
+       /*image_decoder=*/result->GetImageDecoderWeakPtr(),
+       /*image_generator_registry=*/result->GetImageGeneratorRegistry(),
+       /*snapshot_delegate=*/std::move(snapshot_delegate));
++  if (runtime_backend == nullptr) {
++    FML_LOG(ERROR) << "Cannot spawn an engine without a Dart runtime backend.";
++    return nullptr;
++  }
++  result->runtime_backend_ = std::move(runtime_backend);
+   result->initial_route_ = initial_route;
+   result->asset_manager_ = asset_manager_;
+   return result;
+@@ -166,11 +170,8 @@ void Engine::SetRootIsolateCreateCallback() {
+   };
+ }
+ 
+-const RuntimeController* Engine::GetRuntimeController() const {
+-  if (runtime_backend_ == nullptr) {
+-    return nullptr;
+-  }
+-  return GetDartRuntimeController(*runtime_backend_);
++const RuntimeBackend* Engine::GetRuntimeBackend() const {
++  return runtime_backend_.get();
+ }
+ 
+ fml::TaskRunnerAffineWeakPtr<Engine> Engine::GetWeakPtr() const {
+diff --git a/engine/src/flutter/shell/common/engine.h b/engine/src/flutter/shell/common/engine.h
+index 12aac628fc6..34cf0702aec 100644
+--- a/engine/src/flutter/shell/common/engine.h
++++ b/engine/src/flutter/shell/common/engine.h
+@@ -972,9 +972,9 @@ class Engine final : public RuntimeDelegate {
+                                     bool transient);
+ 
+   //--------------------------------------------------------------------------
+-  /// @brief      Accessor for the RuntimeController.
++  /// @brief      Accessor for the RuntimeBackend.
+   ///
+-  const RuntimeController* GetRuntimeController() const;
++  const RuntimeBackend* GetRuntimeBackend() const;
+ 
+   const std::weak_ptr<VsyncWaiter> GetVsyncWaiter() const;
+ 
+diff --git a/engine/src/flutter/shell/common/engine_dart.cc b/engine/src/flutter/shell/common/engine_dart.cc
+index 0c89e9d31bf..14a4a987002 100644
+--- a/engine/src/flutter/shell/common/engine_dart.cc
++++ b/engine/src/flutter/shell/common/engine_dart.cc
+@@ -16,6 +16,7 @@
+ #include "flutter/shell/common/dart_runtime_backend_factory.h"
+ #include "flutter/shell/common/dart_runtime/dart_runtime_delegate_bridge.h"
+ #include "flutter/shell/common/dart_runtime/flutter_dart_runtime.h"
++#include "flutter/shell/common/shell_dart.h"
+ 
+ namespace flutter {
+ 
+@@ -50,6 +51,14 @@ std::unique_ptr<RuntimeBackend> MakeDartRuntimeBackend(
+ 
+ }  // namespace
+ 
++const RuntimeController* GetDartRuntimeController(const Engine& engine) {
++  const auto* runtime_backend = engine.GetRuntimeBackend();
++  if (runtime_backend == nullptr) {
++    return nullptr;
++  }
++  return GetDartRuntimeController(*runtime_backend);
++}
++
+ std::unique_ptr<Engine> MakeDartEngine(
+     Engine::Delegate& delegate,
+     const std::shared_ptr<fml::ConcurrentTaskRunner>& image_decoder_task_runner,
+diff --git a/engine/src/flutter/shell/common/engine_dart.h b/engine/src/flutter/shell/common/engine_dart.h
+index 6ae907c3e30..12356a863d8 100644
+--- a/engine/src/flutter/shell/common/engine_dart.h
++++ b/engine/src/flutter/shell/common/engine_dart.h
+@@ -11,6 +11,8 @@
+ 
+ namespace flutter {
+ 
++const RuntimeController* GetDartRuntimeController(const Engine& engine);
++
+ /// Creates an engine backed by a Dart runtime controller.
+ std::unique_ptr<Engine> MakeDartEngine(
+     Engine::Delegate& delegate,
+diff --git a/engine/src/flutter/shell/common/engine_unittests.cc b/engine/src/flutter/shell/common/engine_unittests.cc
+index 59945311a92..cbea2e29c48 100644
+--- a/engine/src/flutter/shell/common/engine_unittests.cc
++++ b/engine/src/flutter/shell/common/engine_unittests.cc
+@@ -396,7 +396,7 @@ TEST_F(EngineTest, DartRuntimeControllerAvailableThroughSpi) {
+         std::move(engine_runtime_controller),
+         std::make_shared<fml::SyncSwitch>());
+ 
+-    EXPECT_EQ(engine->GetRuntimeController(),
++    EXPECT_EQ(GetDartRuntimeController(*engine),
+               engine_runtime_controller_pointer);
+   });
+ }
+@@ -570,7 +570,7 @@ TEST_F(EngineTest, SpawnWithCustomSettings) {
+                       io_manager_, snapshot_delegate_, nullptr);
+     EXPECT_TRUE(spawn != nullptr);
+     auto new_persistent_isolate_data =
+-        const_cast<RuntimeController*>(spawn->GetRuntimeController())
++        const_cast<RuntimeController*>(GetDartRuntimeController(*spawn))
+             ->GetPersistentIsolateData();
+     EXPECT_EQ(custom_settings.persistent_isolate_data->GetMapping(),
+               new_persistent_isolate_data->GetMapping());
+diff --git a/engine/src/flutter/shell/common/shell_benchmarks.cc b/engine/src/flutter/shell/common/shell_benchmarks.cc
+index e2ba1e22af8..27f06b91fe6 100644
+--- a/engine/src/flutter/shell/common/shell_benchmarks.cc
++++ b/engine/src/flutter/shell/common/shell_benchmarks.cc
+@@ -13,6 +13,7 @@
+ #include "flutter/runtime/dart_vm.h"
+ #include "flutter/runtime/runtime_controller.h"
+ #include "flutter/runtime_spi/testing/test_icu.h"
++#include "flutter/shell/common/engine_dart.h"
+ #include "flutter/shell/common/run_configuration.h"
+ #include "flutter/shell/common/shell_test.h"
+ #include "flutter/shell/common/thread_host.h"
+@@ -167,7 +168,7 @@ static void BM_DartParagraphFrame(benchmark::State& state) {
+           auto engine = shell->GetEngine();
+           FML_CHECK(engine);
+           const auto root_isolate = std::const_pointer_cast<DartIsolate>(
+-              engine->GetRuntimeController()->GetRootIsolate().lock());
++              GetDartRuntimeController(*engine)->GetRootIsolate().lock());
+           FML_CHECK(root_isolate);
+           tonic::DartState::Scope scope(root_isolate);
+           const Dart_Handle result = Dart_Invoke(
+@@ -213,7 +214,7 @@ static void BM_DartImageFrame(benchmark::State& state) {
+           auto engine = shell->GetEngine();
+           FML_CHECK(engine);
+           const auto root_isolate = std::const_pointer_cast<DartIsolate>(
+-              engine->GetRuntimeController()->GetRootIsolate().lock());
++              GetDartRuntimeController(*engine)->GetRootIsolate().lock());
+           FML_CHECK(root_isolate);
+           tonic::DartState::Scope scope(root_isolate);
+           const Dart_Handle result = Dart_Invoke(
+@@ -256,7 +257,7 @@ static void BM_DartCodecFrame(benchmark::State& state) {
+         auto engine = shell->GetEngine();
+         FML_CHECK(engine);
+         const auto root_isolate = std::const_pointer_cast<DartIsolate>(
+-            engine->GetRuntimeController()->GetRootIsolate().lock());
++            GetDartRuntimeController(*engine)->GetRootIsolate().lock());
+         FML_CHECK(root_isolate);
+         tonic::DartState::Scope scope(root_isolate);
+         const Dart_Handle result = Dart_Invoke(
+@@ -278,7 +279,7 @@ static void BM_DartCodecFrame(benchmark::State& state) {
+           auto engine = shell->GetEngine();
+           FML_CHECK(engine);
+           const auto root_isolate = std::const_pointer_cast<DartIsolate>(
+-              engine->GetRuntimeController()->GetRootIsolate().lock());
++              GetDartRuntimeController(*engine)->GetRootIsolate().lock());
+           FML_CHECK(root_isolate);
+           tonic::DartState::Scope scope(root_isolate);
+           const Dart_Handle result = Dart_Invoke(
+@@ -323,7 +324,7 @@ static void BM_DartSemanticsFrame(benchmark::State& state) {
+           auto engine = shell->GetEngine();
+           FML_CHECK(engine);
+           const auto root_isolate = std::const_pointer_cast<DartIsolate>(
+-              engine->GetRuntimeController()->GetRootIsolate().lock());
++              GetDartRuntimeController(*engine)->GetRootIsolate().lock());
+           FML_CHECK(root_isolate);
+           tonic::DartState::Scope scope(root_isolate);
+           const Dart_Handle result = Dart_Invoke(
+@@ -369,7 +370,7 @@ static void BM_DartCompositeFrame(benchmark::State& state) {
+           auto engine = shell->GetEngine();
+           FML_CHECK(engine);
+           const auto root_isolate = std::const_pointer_cast<DartIsolate>(
+-              engine->GetRuntimeController()->GetRootIsolate().lock());
++              GetDartRuntimeController(*engine)->GetRootIsolate().lock());
+           FML_CHECK(root_isolate);
+           tonic::DartState::Scope scope(root_isolate);
+           const Dart_Handle result = Dart_Invoke(
+diff --git a/engine/src/flutter/shell/common/shell_unittests.cc b/engine/src/flutter/shell/common/shell_unittests.cc
+index d4301281b8c..d3fa0a660f8 100644
+--- a/engine/src/flutter/shell/common/shell_unittests.cc
++++ b/engine/src/flutter/shell/common/shell_unittests.cc
+@@ -37,6 +37,7 @@
+ #include "flutter/runtime/dart_vm.h"
+ #include "flutter/runtime/dart_vm_lifecycle.h"
+ #include "flutter/runtime/runtime_controller.h"
++#include "flutter/shell/common/engine_dart.h"
+ #include "flutter/shell/common/platform_view.h"
+ #include "flutter/shell/common/rasterizer.h"
+ #include "flutter/shell/common/shell_test.h"
+@@ -3462,15 +3463,12 @@ TEST_F(ShellTest, Spawn) {
+                     spawn->GetEngine()->GetLastEntrypoint());
+           ASSERT_EQ(initial_route, spawn->GetEngine()->InitialRoute());
+ 
+-          ASSERT_NE(spawner->GetEngine()
+-                        ->GetRuntimeController()
++          ASSERT_NE(GetDartRuntimeController(*spawner->GetEngine())
+                         ->GetRootIsolateGroup(),
+                     0u);
+-          ASSERT_EQ(spawner->GetEngine()
+-                        ->GetRuntimeController()
++          ASSERT_EQ(GetDartRuntimeController(*spawner->GetEngine())
+                         ->GetRootIsolateGroup(),
+-                    spawn->GetEngine()
+-                        ->GetRuntimeController()
++                    GetDartRuntimeController(*spawn->GetEngine())
+                         ->GetRootIsolateGroup());
+           auto spawner_snapshot_delegate = spawner->GetRasterizer();
+           auto spawn_snapshot_delegate = spawn->GetRasterizer();
+@@ -3567,15 +3565,12 @@ TEST_F(ShellTest, SpawnWithDartEntrypointArgs) {
+                              spawn->GetEngine()->GetLastEntrypoint());
+                    ASSERT_EQ(initial_route, spawn->GetEngine()->InitialRoute());
+ 
+-                   ASSERT_NE(spawner->GetEngine()
+-                                 ->GetRuntimeController()
++                   ASSERT_NE(GetDartRuntimeController(*spawner->GetEngine())
+                                  ->GetRootIsolateGroup(),
+                              0u);
+-                   ASSERT_EQ(spawner->GetEngine()
+-                                 ->GetRuntimeController()
++                   ASSERT_EQ(GetDartRuntimeController(*spawner->GetEngine())
+                                  ->GetRootIsolateGroup(),
+-                             spawn->GetEngine()
+-                                 ->GetRuntimeController()
++                             GetDartRuntimeController(*spawn->GetEngine())
+                                  ->GetRootIsolateGroup());
+                  });
+ 
+@@ -3641,7 +3636,7 @@ TEST_F(ShellTest, IOManagerInSpawnedShellIsNotNullAfterParentShellDestroyed) {
+ 
+   PostSync(shell->GetTaskRunners().GetUITaskRunner(), [&shell] {
+     // We must get engine on UI thread.
+-    auto runtime_controller = shell->GetEngine()->GetRuntimeController();
++    auto runtime_controller = GetDartRuntimeController(*shell->GetEngine());
+     PostSync(shell->GetTaskRunners().GetIOTaskRunner(),
+              [&shell, &runtime_controller] {
+                // We must get io_manager on IO thread.
+@@ -3681,7 +3676,7 @@ TEST_F(ShellTest, IOManagerInSpawnedShellIsNotNullAfterParentShellDestroyed) {
+ 
+   PostSync(spawn->GetTaskRunners().GetUITaskRunner(), [&spawn] {
+     // We must get engine on UI thread.
+-    auto runtime_controller = spawn->GetEngine()->GetRuntimeController();
++    auto runtime_controller = GetDartRuntimeController(*spawn->GetEngine());
+     PostSync(spawn->GetTaskRunners().GetIOTaskRunner(),
+              [&spawn, &runtime_controller] {
+                // We must get io_manager on IO thread.
+@@ -4553,7 +4548,7 @@ TEST_F(ShellTest, NotifyIdleRejectsPastAndNearFuture) {
+   fml::TaskRunner::RunNowOrPostTask(
+       task_runners.GetUITaskRunner(), [&latch, &shell]() {
+         auto runtime_controller = const_cast<RuntimeController*>(
+-            shell->GetEngine()->GetRuntimeController());
++            GetDartRuntimeController(*shell->GetEngine()));
+ 
+         auto now = fml::TimeDelta::FromMicroseconds(Dart_TimelineGetMicros());
+ 
+@@ -4596,7 +4591,7 @@ TEST_F(ShellTest, NotifyIdleNotCalledInLatencyMode) {
+   AddFfiNativeCallback(
+       "NotifyNativeBool", CREATE_FFI_LAMBDA([&](bool is_in_latency_mode) {
+         auto runtime_controller = const_cast<RuntimeController*>(
+-            shell->GetEngine()->GetRuntimeController());
++            GetDartRuntimeController(*shell->GetEngine()));
+         bool success =
+             runtime_controller->NotifyIdle(fml::TimeDelta::FromMicroseconds(
+                 Dart_TimelineGetMicros() + 100000));
