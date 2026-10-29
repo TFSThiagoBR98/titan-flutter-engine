@@ -889,8 +889,11 @@ três grupos. São só Dart `FlutterEngineCreateAOTData`, `CollectAOTData`,
 
 Na S5b-1, as decisões de 2026-10-29 foram manter os tipos de `embedder.h`
 reutilizados e acrescentar somente funções novas com o prefixo
-`FlutterCore*`. A camada C++ interna entre os dois `.so` também fica
-explícita, emenda do ADR-0027.
+`FlutterCore*`. A fronteira entre os artefatos passa a ser formada por dois
+artefatos alternativos: `libflutter_engine.so`, com core e Dart e exportando
+o `embedder.h`, e `libflutter_engine_core.so`, somente com o core e exportando
+`FlutterCore*`; um processo carrega um ou outro, sem `DT_NEEDED` entre eles.
+Essa decisão foi revista na S5b-2.
 
 O novo `flutter_core_host.h` define `FlutterCoreHostArgs` com os campos de
 host de `FlutterProjectArgs`, incluindo `on_pre_engine_restart_callback`,
