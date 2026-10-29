@@ -54,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime SPI S4i-2: os últimos natives do `dart:ui` passam a usar só a ABI pública do SPI (exceto a ponte do `flutter_gpu`, até a S7); a ABI 0.23 acrescenta `path_set_volatile`; código do `dart:ui` sem uso desde a migração é removido.
 - Runtime SPI S4i-3a: o alvo Dart do `dart:ui` deixa de conter código do core (fontes, imagens diferidas, ponte do `flutter_gpu` em alvos próprios) e de expor tipos do core nas assinaturas dos natives; a ABI 0.24 acrescenta `rsuperellipse_contains`.
 - Runtime SPI S4i-3b: o alvo Dart do `dart:ui` só vê o core pela ABI C do SPI, com `assert_no_deps` no GN (exceções do `flutter_gpu` até a S7); corrigido o formato de pixel de `ImageDescriptor.raw`/`decodeImageFromPixels`, que trocava vermelho e azul em RGBA desde a migração dos codecs.
+- Runtime SPI S5a: o alvo do core `shell/common:common` deixa de conter e de depender de Dart, com `assert_no_deps` no GN; o código Dart do shell vai para `shell/common:dart`; corrigido um teste instável da leitura de assets no worker.
 
 ### Fixed
 

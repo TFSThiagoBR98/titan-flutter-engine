@@ -251,6 +251,14 @@ A série `runtime-spi` só modifica o repositório do Flutter.
 | `0242-build-engine-assert-that-dart-ui-only-sees-the-spi-abi.patch` | Keep the dart:ui target free of implementation dependencies that are owned by ui_text_core, which already carries the test-font dependency for font_collection.cc. | |
 | `0243-test-engine-pin-raw-image-pixel-formats-in-shell-unittests.patch` | prove in a gtest that the check runs that raw RGBA and BGRA pixels keep their channels through the SPI. | |
 | `0244-fix-engine-normalize-raw-pixel-test-assertion-types.patch` | keep the raw pixel gtest warning-free while preserving the packed channel assertions. | |
+| `0245-refactor-engine-keep-the-shell-service-protocol-off-the-dart-service-registry.patch` | keep the shell service protocol's parameter map owned by the shell core without including the Dart service registry. | |
+| `0246-refactor-engine-make-the-run-configuration-launch-payload-opaque-to-the-core.patch` | Keep Dart-specific isolate launch configuration details behind the shell common Dart boundary while preserving the existing RunConfiguration callers and launch behavior. | |
+| `0247-test-engine-wait-for-the-spi-asset-callback-instead-of-racing-the-worker.patch` | Wait for the worker-posted asset callback before asserting its result so the test does not race the UI task queue. | |
+| `0248-refactor-engine-build-dart-engines-outside-the-core-engine-class.patch` | keep worker-runner access behind RuntimeBackendFactory and retain the Dart VM include at the embedder boundary while moving Dart engine construction out of the core. | |
+| `0249-refactor-engine-let-the-runtime-factory-build-kernel-launch-payloads.patch` | keep Dart-specific kernel launch construction out of the shell core. | |
+| `0250-refactor-engine-spawn-runtime-backends-from-the-parent-backend.patch` | keep runtime controller access inside the Dart runtime boundary while allowing the shell core to spawn through the parent runtime backend. | |
+| `0251-refactor-engine-drop-dart-timeline-calls-from-the-shell-core.patch` | keep the shell core independent from Dart timeline APIs and runtime controller headers; the monotonic FML clock provides the same deadline domain. | |
+| `0252-build-engine-keep-dart-out-of-the-shell-core-target.patch` | isolate Dart shell sources and dependencies in a dedicated target while proving the common shell core cannot depend on Dart. | |
 
 O fluxo é:
 

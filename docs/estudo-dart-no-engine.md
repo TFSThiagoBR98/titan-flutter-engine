@@ -836,6 +836,55 @@ provado emulando o mapeamento antigo.
 A S4 está concluída: os natives do `dart:ui` passam todos pela ABI C do SPI e
 o GN prova isso. O próximo passo é a S5 (dois `.so`).
 
+## S5a: O core do shell sem Dart
+
+Na S5a, o alvo novo `//flutter/shell/common:dart` reúne
+`dart_runtime/*`, `dart_runtime_backend_factory`, `shell_dart`, `engine_dart` e
+`run_configuration_dart.cc`. O alvo `//flutter/shell/common:common` ganha um
+`assert_no_deps` para manter fora do core `third_party/dart/*`, `tonic`,
+`lib/ui:ui`, `runtime:runtime`, `runtime:libdart` e
+`shell/common:dart`. Assim, o core do shell deixa de conter e de depender de
+Dart, enquanto o código que precisa do runtime fica no alvo separado.
+
+Cada acoplamento encontrado exigiu uma mudança própria:
+
+- `RunConfiguration` passou a carregar um payload opaco
+  (`RuntimeLaunchConfiguration`), com o alvo próprio
+  `shell/common:runtime_launch_configuration`; `IsolateLaunchType` ficou
+  apenas declarado, e `InferFromSettings` ficou em duas sobrecargas.
+- Os construtores Dart de `Engine` viraram `MakeDartEngine` no lado Dart.
+- `Shell::GetConcurrentWorkerTaskRunner` passou a ser obtido pela fábrica.
+- `runInView` pede o payload à fábrica por
+  `CreateLaunchConfigurationFromKernel`; runtimes sem kernel respondem
+  `"not supported"`.
+- `RuntimeBackendFactory::Spawn` recebe o backend pai, e não mais o
+  `RuntimeController`; `GetDartRuntimeController(const Engine&)` saiu do
+  `Engine`.
+- O `ServiceProtocolMap` do `Shell` ocupa o lugar do header Dart.
+- `animator.cc` usa `fml::TimePoint::Now()` no lugar de
+  `Dart_TimelineGetMicros()`, mantendo o mesmo relógio do prazo do quadro.
+- Foram removidos os includes mortos de `dart_tools_api.h` e
+  `runtime_controller.h`.
+- `shell/profiling` ficou somente no alvo `:dart`.
+
+### Teste instável corrigido
+
+`SpiRuntimeBackendTest.SpiAsset_ReadsOnTheConcurrentWorker` falhava em cerca
+de 4% das execuções (13 de 300) por uma corrida entre o worker e a fila da
+UI. O teste agora espera a callback antes de verificar o resultado: 0 de 300
+execuções falharam.
+
+### Para a S5b
+
+O relatório da Task 5 classificou as funções exportadas de `embedder.h` em
+três grupos. São só Dart `FlutterEngineCreateAOTData`, `CollectAOTData`,
+`RunsAOTCompiledDartCode` e `PostDartObject`. São mistas `Run`, `Initialize`,
+`RunInitialized`, `AddView`, `RemoveView`, `Shutdown`, as funções
+`Send*Event`, as mensagens de plataforma, a semântica,
+`ReloadSystemFonts`, `UpdateLocales`, `NotifyLowMemoryWarning` e
+`NotifyDisplayUpdate`. As demais são só host. Os campos só Dart de
+`FlutterProjectArgs` também ficam para a S5b.
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos
