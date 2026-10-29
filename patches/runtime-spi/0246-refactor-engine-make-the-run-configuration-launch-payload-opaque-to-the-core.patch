@@ -1,0 +1,345 @@
+# Why: Keep Dart-specific isolate launch configuration details behind the
+# shell common Dart boundary while preserving the existing RunConfiguration
+# callers and launch behavior.
+diff --git a/engine/src/flutter/runtime/isolate_configuration.h b/engine/src/flutter/runtime/isolate_configuration.h
+index 20aee674d8a..f3f9f3230f1 100644
+--- a/engine/src/flutter/runtime/isolate_configuration.h
++++ b/engine/src/flutter/runtime/isolate_configuration.h
+@@ -14,6 +14,7 @@
+ #include "flutter/fml/macros.h"
+ #include "flutter/fml/mapping.h"
+ #include "flutter/runtime/dart_isolate.h"
++#include "flutter/shell/common/runtime_launch_configuration.h"
+ 
+ namespace flutter {
+ 
+@@ -44,7 +45,7 @@ enum class IsolateLaunchType {
+ ///             managed so care must be taken to ensure that subclasses do not
+ ///             reference any thread local state.
+ ///
+-class IsolateConfiguration {
++class IsolateConfiguration : public RuntimeLaunchConfiguration {
+  public:
+   //----------------------------------------------------------------------------
+   /// @brief      Attempts to infer the isolate configuration from the
+diff --git a/engine/src/flutter/shell/common/BUILD.gn b/engine/src/flutter/shell/common/BUILD.gn
+index b09c9ee4be7..cd5c5dd6734 100644
+--- a/engine/src/flutter/shell/common/BUILD.gn
++++ b/engine/src/flutter/shell/common/BUILD.gn
+@@ -112,6 +112,8 @@ source_set("common") {
+     "resource_cache_limit_calculator.h",
+     "run_configuration.cc",
+     "run_configuration.h",
++    "run_configuration_dart.cc",
++    "runtime_launch_configuration.h",
+     "serialization_callbacks.cc",
+     "serialization_callbacks.h",
+     "shell.cc",
+diff --git a/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc b/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc
+index b82f1f02146..5b5dc141759 100644
+--- a/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc
++++ b/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc
+@@ -16,6 +16,7 @@
+ #include "flutter/lib/ui/window/key_data.h"
+ #include "flutter/lib/ui/window/platform_message_response.h"
+ #include "flutter/runtime/dart_vm.h"
++#include "flutter/runtime/isolate_configuration.h"
+ #include "flutter/runtime/runtime_controller.h"
+ #include "flutter/runtime/service_protocol.h"
+ #include "flutter/runtime_spi/spi_runtime_backend.h"
+@@ -867,11 +868,14 @@ bool FlutterDartRuntime::LaunchRootIsolateThunk(void* user_data,
+     native_assets_manager = std::make_shared<NativeAssetsManager>();
+     native_assets_manager->RegisterNativeAssets(asset_manager);
+   }
++  auto launch_configuration = configuration->TakeLaunchConfiguration();
++  auto isolate_configuration = std::unique_ptr<IsolateConfiguration>(
++      static_cast<IsolateConfiguration*>(launch_configuration.release()));
+   return runtime->LaunchRootIsolate(
+       runtime->launch_settings_, runtime->root_isolate_create_callback_,
+       configuration->GetEntrypoint(), configuration->GetEntrypointLibrary(),
+       configuration->GetEntrypointArgs(),
+-      configuration->TakeIsolateConfiguration(),
++      std::move(isolate_configuration),
+       std::move(native_assets_manager), configuration->GetEngineId());
+ }
+ 
+diff --git a/engine/src/flutter/shell/common/run_configuration.cc b/engine/src/flutter/shell/common/run_configuration.cc
+index 199827290a7..bfbd29b6b70 100644
+--- a/engine/src/flutter/shell/common/run_configuration.cc
++++ b/engine/src/flutter/shell/common/run_configuration.cc
+@@ -4,64 +4,19 @@
+ 
+ #include "flutter/shell/common/run_configuration.h"
+ 
+-#include <sstream>
+ #include <utility>
+ 
+-#include "flutter/assets/directory_asset_bundle.h"
+ #include "flutter/common/graphics/persistent_cache.h"
+-#include "flutter/fml/file.h"
+-#include "flutter/fml/unique_fd.h"
+-#include "flutter/runtime/dart_vm.h"
+-#include "flutter/runtime/isolate_configuration.h"
++#include "flutter/shell/common/runtime_launch_configuration.h"
+ 
+ namespace flutter {
+ 
+-RunConfiguration RunConfiguration::InferFromSettings(
+-    const Settings& settings,
+-    const fml::RefPtr<fml::TaskRunner>& io_worker,
+-    IsolateLaunchType launch_type) {
+-  auto asset_manager = std::make_shared<AssetManager>();
+-
+-  if (fml::UniqueFD::traits_type::IsValid(settings.assets_dir)) {
+-    asset_manager->PushBack(std::make_unique<DirectoryAssetBundle>(
+-        fml::Duplicate(settings.assets_dir), true));
+-  }
+-
+-  asset_manager->PushBack(std::make_unique<DirectoryAssetBundle>(
+-      fml::OpenDirectory(settings.assets_path.c_str(), false,
+-                         fml::FilePermission::kRead),
+-      true));
+-
+-  return {IsolateConfiguration::InferFromSettings(settings, asset_manager,
+-                                                  io_worker, launch_type),
+-          asset_manager};
+-}
+-
+-RunConfiguration::RunConfiguration(
+-    std::unique_ptr<IsolateConfiguration> configuration)
+-    : RunConfiguration(std::move(configuration),
+-                       std::make_shared<AssetManager>()) {
+-#if !SLIMPELLER
+-  PersistentCache::SetAssetManager(asset_manager_);
+-#endif  //  !SLIMPELLER
+-}
+-
+-RunConfiguration::RunConfiguration(
+-    std::unique_ptr<IsolateConfiguration> configuration,
+-    std::shared_ptr<AssetManager> asset_manager)
+-    : isolate_configuration_(std::move(configuration)),
+-      asset_manager_(std::move(asset_manager)) {
+-#if !SLIMPELLER
+-  PersistentCache::SetAssetManager(asset_manager_);
+-#endif  //  !SLIMPELLER
+-}
+-
+ RunConfiguration::RunConfiguration(RunConfiguration&&) = default;
+ 
+ RunConfiguration::~RunConfiguration() = default;
+ 
+ bool RunConfiguration::IsValid() const {
+-  return asset_manager_ && isolate_configuration_;
++  return asset_manager_ && launch_configuration_;
+ }
+ 
+ bool RunConfiguration::AddAssetResolver(
+@@ -114,9 +69,9 @@ std::optional<int64_t> RunConfiguration::GetEngineId() const {
+   return engine_id_;
+ }
+ 
+-std::unique_ptr<IsolateConfiguration>
+-RunConfiguration::TakeIsolateConfiguration() {
+-  return std::move(isolate_configuration_);
++std::unique_ptr<RuntimeLaunchConfiguration>
++RunConfiguration::TakeLaunchConfiguration() {
++  return std::move(launch_configuration_);
+ }
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/shell/common/run_configuration.h b/engine/src/flutter/shell/common/run_configuration.h
+index 4287b8f97f0..a0e96c903b2 100644
+--- a/engine/src/flutter/shell/common/run_configuration.h
++++ b/engine/src/flutter/shell/common/run_configuration.h
+@@ -13,11 +13,13 @@
+ #include "flutter/common/settings.h"
+ #include "flutter/fml/macros.h"
+ #include "flutter/fml/mapping.h"
+-#include "flutter/fml/unique_fd.h"
+-#include "flutter/runtime/isolate_configuration.h"
++#include "flutter/fml/task_runner.h"
+ 
+ namespace flutter {
+ 
++class RuntimeLaunchConfiguration;
++enum class IsolateLaunchType;
++
+ //------------------------------------------------------------------------------
+ /// @brief      Specifies all the configuration required by the runtime library
+ ///             to launch the root isolate. This object may be created on any
+@@ -51,6 +53,20 @@ class RunConfiguration {
+   ///                        serial worker is kept alive for the lifetime of the
+   ///                        shell associated with the engine that this run
+   ///                        configuration is given to.
++  /// @return     A run configuration. Depending on the completeness of the
++  ///             settings, This object may potentially be invalid.
++  ///
++  static RunConfiguration InferFromSettings(
++      const Settings& settings,
++      fml::RefPtr<fml::TaskRunner> io_worker = nullptr);
++
++  //----------------------------------------------------------------------------
++  /// @brief      Attempts to infer a run configuration with the requested
++  ///             isolate launch type.
++  ///
++  /// @param[in]  settings   The settings object used to look for the various
++  ///                        snapshots and settings.
++  /// @param[in]  io_worker  An optional IO worker.
+   /// @param[in]  launch_type Whether to launch the new isolate into an existing
+   ///                         group or a new one.
+   ///
+@@ -59,28 +75,28 @@ class RunConfiguration {
+   ///
+   static RunConfiguration InferFromSettings(
+       const Settings& settings,
+-      const fml::RefPtr<fml::TaskRunner>& io_worker = nullptr,
+-      IsolateLaunchType launch_type = IsolateLaunchType::kNewGroup);
++      fml::RefPtr<fml::TaskRunner> io_worker,
++      IsolateLaunchType launch_type);
+ 
+   //----------------------------------------------------------------------------
+-  /// @brief      Creates a run configuration with only an isolate
++  /// @brief      Creates a run configuration with only a launch
+   ///             configuration. There is no asset manager and default
+   ///             entrypoint and root library are used ("main" in root library).
+   ///
+   /// @param[in]  configuration  The configuration
+   ///
+   explicit RunConfiguration(
+-      std::unique_ptr<IsolateConfiguration> configuration);
++      std::unique_ptr<RuntimeLaunchConfiguration> configuration);
+ 
+   //----------------------------------------------------------------------------
+-  /// @brief      Creates a run configuration with the specified isolate
++  /// @brief      Creates a run configuration with the specified launch
+   ///             configuration and asset manager. The default entrypoint and
+   ///             root library are used ("main" in root library).
+   ///
+   /// @param[in]  configuration  The configuration
+   /// @param[in]  asset_manager  The asset manager
+   ///
+-  RunConfiguration(std::unique_ptr<IsolateConfiguration> configuration,
++  RunConfiguration(std::unique_ptr<RuntimeLaunchConfiguration> configuration,
+                    std::shared_ptr<AssetManager> asset_manager);
+ 
+   //----------------------------------------------------------------------------
+@@ -184,7 +200,7 @@ class RunConfiguration {
+   const std::vector<std::string>& GetEntrypointArgs() const;
+ 
+   //----------------------------------------------------------------------------
+-  /// @brief      The engine uses this to take the isolate configuration from
++  /// @brief      The engine uses this to take the launch configuration from
+   ///             the run configuration. The run configuration is no longer
+   ///             valid after this call is made. The non-copyable nature of some
+   ///             of the snapshots referenced in the isolate configuration is
+@@ -192,7 +208,7 @@ class RunConfiguration {
+   ///
+   /// @return     The run configuration if one is present.
+   ///
+-  std::unique_ptr<IsolateConfiguration> TakeIsolateConfiguration();
++  std::unique_ptr<RuntimeLaunchConfiguration> TakeLaunchConfiguration();
+ 
+   //----------------------------------------------------------------------------
+   /// @brief      Sets the engine identifier to be passed to the platform
+@@ -204,7 +220,7 @@ class RunConfiguration {
+   std::optional<int64_t> GetEngineId() const;
+ 
+  private:
+-  std::unique_ptr<IsolateConfiguration> isolate_configuration_;
++  std::unique_ptr<RuntimeLaunchConfiguration> launch_configuration_;
+   std::shared_ptr<AssetManager> asset_manager_;
+   std::string entrypoint_ = "main";
+   std::string entrypoint_library_ = "";
+diff --git a/engine/src/flutter/shell/common/run_configuration_dart.cc b/engine/src/flutter/shell/common/run_configuration_dart.cc
+new file mode 100644
+index 00000000000..9bdb2ae59d6
+--- /dev/null
++++ b/engine/src/flutter/shell/common/run_configuration_dart.cc
+@@ -0,0 +1,64 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/shell/common/run_configuration.h"
++
++#include <utility>
++
++#include "flutter/assets/directory_asset_bundle.h"
++#include "flutter/common/graphics/persistent_cache.h"
++#include "flutter/fml/file.h"
++#include "flutter/fml/unique_fd.h"
++#include "flutter/runtime/isolate_configuration.h"
++
++namespace flutter {
++
++RunConfiguration RunConfiguration::InferFromSettings(
++    const Settings& settings,
++    fml::RefPtr<fml::TaskRunner> io_worker) {
++  return InferFromSettings(settings, std::move(io_worker),
++                           IsolateLaunchType::kNewGroup);
++}
++
++RunConfiguration RunConfiguration::InferFromSettings(
++    const Settings& settings,
++    fml::RefPtr<fml::TaskRunner> io_worker,
++    IsolateLaunchType launch_type) {
++  auto asset_manager = std::make_shared<AssetManager>();
++
++  if (fml::UniqueFD::traits_type::IsValid(settings.assets_dir)) {
++    asset_manager->PushBack(std::make_unique<DirectoryAssetBundle>(
++        fml::Duplicate(settings.assets_dir), true));
++  }
++
++  asset_manager->PushBack(std::make_unique<DirectoryAssetBundle>(
++      fml::OpenDirectory(settings.assets_path.c_str(), false,
++                         fml::FilePermission::kRead),
++      true));
++
++  return {IsolateConfiguration::InferFromSettings(settings, asset_manager,
++                                                  io_worker, launch_type),
++          asset_manager};
++}
++
++RunConfiguration::RunConfiguration(
++    std::unique_ptr<RuntimeLaunchConfiguration> configuration)
++    : RunConfiguration(std::move(configuration),
++                       std::make_shared<AssetManager>()) {
++#if !SLIMPELLER
++  PersistentCache::SetAssetManager(asset_manager_);
++#endif  //  !SLIMPELLER
++}
++
++RunConfiguration::RunConfiguration(
++    std::unique_ptr<RuntimeLaunchConfiguration> configuration,
++    std::shared_ptr<AssetManager> asset_manager)
++    : launch_configuration_(std::move(configuration)),
++      asset_manager_(std::move(asset_manager)) {
++#if !SLIMPELLER
++  PersistentCache::SetAssetManager(asset_manager_);
++#endif  //  !SLIMPELLER
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/shell/common/runtime_launch_configuration.h b/engine/src/flutter/shell/common/runtime_launch_configuration.h
+new file mode 100644
+index 00000000000..1be2e508867
+--- /dev/null
++++ b/engine/src/flutter/shell/common/runtime_launch_configuration.h
+@@ -0,0 +1,17 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_SHELL_COMMON_RUNTIME_LAUNCH_CONFIGURATION_H_
++#define FLUTTER_SHELL_COMMON_RUNTIME_LAUNCH_CONFIGURATION_H_
++
++namespace flutter {
++
++class RuntimeLaunchConfiguration {
++ public:
++  virtual ~RuntimeLaunchConfiguration() = default;
++};
++
++}  // namespace flutter
++
++#endif  // FLUTTER_SHELL_COMMON_RUNTIME_LAUNCH_CONFIGURATION_H_
