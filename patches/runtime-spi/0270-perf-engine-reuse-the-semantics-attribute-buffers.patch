@@ -1,0 +1,102 @@
+# Why: retain the five per-node SPI attribute vector capacities across
+# synchronous updateNode calls.
+diff --git a/engine/src/flutter/lib/ui/semantics/semantics_update_builder.cc b/engine/src/flutter/lib/ui/semantics/semantics_update_builder.cc
+index 4677959d7fe..8cda991ec51 100644
+--- a/engine/src/flutter/lib/ui/semantics/semantics_update_builder.cc
++++ b/engine/src/flutter/lib/ui/semantics/semantics_update_builder.cc
+@@ -159,16 +159,13 @@ void SemanticsUpdateBuilder::updateNode(
+          "childrenInHitTestOrder";
+   auto* flags_object =
+       tonic::DartConverter<flutter::NativeSemanticsFlags*>::FromDart(flags);
+-  std::vector<FlutterSpiStringAttribute> spi_label_attributes;
+-  std::vector<FlutterSpiStringAttribute> spi_value_attributes;
+-  std::vector<FlutterSpiStringAttribute> spi_increased_value_attributes;
+-  std::vector<FlutterSpiStringAttribute> spi_decreased_value_attributes;
+-  std::vector<FlutterSpiStringAttribute> spi_hint_attributes;
+-  ToSpiAttributes(labelAttributes, &spi_label_attributes);
+-  ToSpiAttributes(valueAttributes, &spi_value_attributes);
+-  ToSpiAttributes(increasedValueAttributes, &spi_increased_value_attributes);
+-  ToSpiAttributes(decreasedValueAttributes, &spi_decreased_value_attributes);
+-  ToSpiAttributes(hintAttributes, &spi_hint_attributes);
++  ToSpiAttributes(labelAttributes, &attribute_buffers_.spi_label_attributes);
++  ToSpiAttributes(valueAttributes, &attribute_buffers_.spi_value_attributes);
++  ToSpiAttributes(increasedValueAttributes,
++                  &attribute_buffers_.spi_increased_value_attributes);
++  ToSpiAttributes(decreasedValueAttributes,
++                  &attribute_buffers_.spi_decreased_value_attributes);
++  ToSpiAttributes(hintAttributes, &attribute_buffers_.spi_hint_attributes);
+ 
+   FlutterSpiSemanticsNode node = {};
+   node.struct_size = sizeof(FlutterSpiSemanticsNode);
+@@ -195,28 +192,30 @@ void SemanticsUpdateBuilder::updateNode(
+   node.identifier = identifier.c_str();
+   node.label = {
+       .text = label.c_str(),
+-      .attributes = spi_label_attributes.data(),
+-      .attribute_count = spi_label_attributes.size(),
++      .attributes = attribute_buffers_.spi_label_attributes.data(),
++      .attribute_count = attribute_buffers_.spi_label_attributes.size(),
+   };
+   node.value = {
+       .text = value.c_str(),
+-      .attributes = spi_value_attributes.data(),
+-      .attribute_count = spi_value_attributes.size(),
++      .attributes = attribute_buffers_.spi_value_attributes.data(),
++      .attribute_count = attribute_buffers_.spi_value_attributes.size(),
+   };
+   node.increased_value = {
+       .text = increasedValue.c_str(),
+-      .attributes = spi_increased_value_attributes.data(),
+-      .attribute_count = spi_increased_value_attributes.size(),
++      .attributes = attribute_buffers_.spi_increased_value_attributes.data(),
++      .attribute_count =
++          attribute_buffers_.spi_increased_value_attributes.size(),
+   };
+   node.decreased_value = {
+       .text = decreasedValue.c_str(),
+-      .attributes = spi_decreased_value_attributes.data(),
+-      .attribute_count = spi_decreased_value_attributes.size(),
++      .attributes = attribute_buffers_.spi_decreased_value_attributes.data(),
++      .attribute_count =
++          attribute_buffers_.spi_decreased_value_attributes.size(),
+   };
+   node.hint = {
+       .text = hint.c_str(),
+-      .attributes = spi_hint_attributes.data(),
+-      .attribute_count = spi_hint_attributes.size(),
++      .attributes = attribute_buffers_.spi_hint_attributes.data(),
++      .attribute_count = attribute_buffers_.spi_hint_attributes.size(),
+   };
+   node.tooltip = tooltip.c_str();
+   node.text_direction = textDirection;
+diff --git a/engine/src/flutter/lib/ui/semantics/semantics_update_builder.h b/engine/src/flutter/lib/ui/semantics/semantics_update_builder.h
+index c3b8c4d4e54..b0e29c2fdef 100644
+--- a/engine/src/flutter/lib/ui/semantics/semantics_update_builder.h
++++ b/engine/src/flutter/lib/ui/semantics/semantics_update_builder.h
+@@ -7,6 +7,7 @@
+ 
+ #include <any>
+ #include <list>
++#include <vector>
+ 
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "flutter/lib/ui/semantics/semantics_update.h"
+@@ -87,9 +88,18 @@ class SemanticsUpdateBuilder
+   void build(Dart_Handle semantics_update_handle);
+ 
+  private:
++  struct ReusableSemanticsAttributeBuffers {
++    std::vector<FlutterSpiStringAttribute> spi_label_attributes;
++    std::vector<FlutterSpiStringAttribute> spi_value_attributes;
++    std::vector<FlutterSpiStringAttribute> spi_increased_value_attributes;
++    std::vector<FlutterSpiStringAttribute> spi_decreased_value_attributes;
++    std::vector<FlutterSpiStringAttribute> spi_hint_attributes;
++  };
++
+   explicit SemanticsUpdateBuilder();
+   const FlutterSpiSemanticsApi* api_ = nullptr;
+   FlutterSpiSemanticsUpdateBuilder* builder_ = nullptr;
++  ReusableSemanticsAttributeBuffers attribute_buffers_;
+ };
+ 
+ }  // namespace flutter
