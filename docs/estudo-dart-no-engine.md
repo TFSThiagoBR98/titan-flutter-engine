@@ -1263,6 +1263,22 @@ subfase; e probe, check, `tools/ci.sh engine` e checkpoint em cópia limpa.
 
 O resultado está em [runtime-spi-s7e.md](medidas/runtime-spi-s7e.md).
 
+## S8: Estudo do `.so` Dart dependendo do core
+
+A S8 só estuda se vale voltar ao modelo original do ADR-0027, com o
+`libflutter_engine.so` dependendo (`DT_NEEDED`) do `libflutter_engine_core.so`.
+O core é um subconjunto exato do artefato Dart (2840 objetos em comum, 622 só do
+Dart). Como o compartilhamento de páginas é por arquivo, o que se duplica hoje no
+sistema é uma cópia das páginas do core que as pilhas Dart e Rust tocam (~4,5 MB
+de código e ~1,6 MB de dados somente leitura) e ~13 MB de disco em release, e só
+quando as duas pilhas estão instaladas. Hoje todos os apps do TitanDM são Dart.
+
+O lado Dart importa 408 símbolos do core: `libc++`, BoringSSL, ICU, Skia, 58 do
+`fml` e 67 de 28 classes `flutter::`, usados pela cola do caminho Dart. A
+recomendação é manter os dois artefatos e reabrir quando o primeiro app Rust for
+instalado por padrão; se reabrir, preferir a fronteira só em C. O relatório está
+em [runtime-spi-s8.md](medidas/runtime-spi-s8.md).
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos
