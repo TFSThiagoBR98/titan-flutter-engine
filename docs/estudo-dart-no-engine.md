@@ -1279,6 +1279,31 @@ recomendação é manter os dois artefatos e reabrir quando o primeiro app Rust 
 instalado por padrão; se reabrir, preferir a fronteira só em C. O relatório está
 em [runtime-spi-s8.md](medidas/runtime-spi-s8.md).
 
+## S6: Core estático em cada consumidor
+
+Depois do estudo da S8, a decisão (emenda do ADR-0027 de 2026-10-30) foi colar o
+core estaticamente em quem o usa: o runtime Rust linka o core no próprio
+binário, o `libflutter_engine.so` (Dart) continua com o core estático dentro, e o
+`libflutter_engine_core.so` fica para FFI de outras linguagens. Não há ABI C++
+entre bibliotecas: a única fronteira é a API C.
+
+O `libflutter_engine_core.a` é um objeto só: o `ld.lld -r` junta todo o core, a
+`libc++` (namespace `std::__fl`) e as bibliotecas de terceiros, e o
+`llvm-objcopy` deixa globais só os `FlutterCore*` — os mesmos que o `.so` do core
+exporta. Assim o core não colide com crates que tragam zlib, libpng ou OpenSSL,
+nem com a `libstdc++`, e o `--gc-sections` do link final continua descartando o
+que o consumidor não usa. A `libc++` precisou entrar como dependência explícita
+do alvo estático, porque o toolchain só a acrescenta a executáveis e bibliotecas
+dinâmicas. O que fica indefinido no `.a` é libc, libm, libdl e as rotinas do
+compilador; os `OPENSSL_memory_*` do BoringSSL são fracos.
+
+A prova é um crate Rust sem dependências (`tests/rust-static-link`) que linka o
+`.a` e roda o mesmo fluxo do smoke do core; o binário não tem `NEEDED` em nenhuma
+`libflutter_engine*`. Cada bundle passou a levar os três artefatos e um `include/`
+autossuficiente, conferidos pelo `verify_bundle`.
+
+O resultado está em [runtime-spi-s6.md](medidas/runtime-spi-s6.md).
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos

@@ -70,9 +70,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime SPI S7c-1: command buffers, render passes e image surfaces do `flutter_gpu` pela `FlutterSpiGpuApi` (ABI do SPI 0.27); o `gpu_unittests` deixa de existir e os testes dele rodam no `runtime_spi_unittests`.
 - Runtime SPI S7d: `Texture.asImage`, `Texture.fromImage` e `GpuSurface.getCurrentImage` pela `FlutterSpiGpuApi` (ABI do SPI 0.28); o `flutter_gpu` não inclui mais `impeller/` e o `ui_gpu_bridge` foi removido.
 - Runtime SPI S7e: o check roda um programa em C, sem Dart e só com o core, que desenha um triângulo pela `FlutterSpiGpuApi` em Vulkan (lavapipe) e lê os pixels pela tabela de imagens; fecha a S7.
+- Runtime SPI S6: o core sai também como biblioteca estática `libflutter_engine_core.a` (só `FlutterCore*` global); cada bundle leva `libflutter_engine.so`, `libflutter_engine_core.so`, `libflutter_engine_core.a` e `include/` com os headers do core; o check prova o link estático num binário Rust.
 
 ### Fixed
 
+- `build-engine.sh --mode release|profile` compila `//flutter:gen_snapshot` (o alvo antigo `flutter/shell/common:gen_snapshot` não existe).
 - `LICENSE` holds the unmodified Apache 2.0 text, so GitHub detects it; the
   copyright and the note on Flutter's BSD-3-Clause patches moved to `NOTICE`.
 

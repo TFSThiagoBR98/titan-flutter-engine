@@ -190,6 +190,7 @@ idêntica à anterior. A série antiga está no worktree do engine no branch
 | `0173-refactor-engine-move-the-flutter-gpu-image-crossing-behind-the-spi-table.patch` | S7d: lib/gpu no longer includes impeller/ nor uses internal bridges; assets are read with asset_get; the playground hooks call the core. | |
 | `0174-build-engine-drop-ui-gpu-bridge-and-guard-flutter-gpu-with-assert-no-deps.patch` | S7d: ui_gpu_bridge is gone and lib/gpu gets the dart:ui assert_no_deps list. | |
 | `0175-test-engine-draw-a-triangle-through-the-runtime-spi-gpu-table-from-c.patch` | S7e: a C program that links only the core draws a triangle through FlutterSpiGpuApi on Vulkan and reads it back as a FlutterSpiImage. | |
+| `0176-build-engine-produce-a-static-core-library.patch` | S6: the core also ships as libflutter_engine_core.a, one prelinked object (libc++ and third-party code inside) with only FlutterCore* global, for Rust and other native hosts (ADR-0027 amendment of 2026-10-30). | |
 
 O fluxo é:
 
