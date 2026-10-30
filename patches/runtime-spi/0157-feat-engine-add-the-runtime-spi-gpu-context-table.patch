@@ -1,0 +1,1350 @@
+# Why: S7a; add the FlutterSpiGpuApi context table and its core
+# implementation.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 61ecf621d5f..83ccd84073e 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -28,6 +28,8 @@ source_set("spi_backend") {
+     "spi_runtime_backend.h",
+     "spi_runtime_backend_factory.h",
+     "internal/spi_internal_bridges.h",
++    "gpu/spi_gpu_context.h",
++    "gpu/spi_gpu_formats.h",
+     "spi_engine_api.h",
+     "spi_scene.h",
+   ]
+@@ -42,6 +44,10 @@ source_set("spi_backend") {
+     "internal/spi_internal_bridges.h",
+     "internal/spi_utf8.cc",
+     "internal/spi_utf8.h",
++    "gpu/spi_gpu_context.cc",
++    "gpu/spi_gpu_context.h",
++    "gpu/spi_gpu_formats.cc",
++    "gpu/spi_gpu_formats.h",
+     "spi_scene.cc",
+     "spi_scene.h",
+   ]
+@@ -68,6 +74,7 @@ source_set("runtime_spi_c_api") {
+     "include/flutter_scene.h",
+     "include/flutter_text.h",
+     "include/flutter_image.h",
++    "include/flutter_gpu.h",
+     "include/flutter_paint_effects.h",
+     "include/flutter_semantics.h",
+   ]
+@@ -234,6 +241,7 @@ if (enable_unittests) {
+     testonly = true
+     sources = [
+       "spi_abi_frozen_unittests.cc",
++      "gpu/spi_gpu_unittests.cc",
+       "spi_conformance_unittests.cc",
+       "scene/spi_handle_table_unittests.cc",
+       "scene/spi_canvas_parity_unittests.cc",
+@@ -275,6 +283,7 @@ if (enable_unittests) {
+       ":text",
+       "//flutter/common",
+       "//flutter/fml",
++      "//flutter/impeller/renderer/testing:mocks",
+       "//flutter/lib/ui",
+       "//flutter/lib/ui:ui_text_core",
+       "//flutter/lib/ui/fixtures/shaders/general_shaders:compile_general_shaders",
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 5c555c37d14..68ed1a84739 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -6,6 +6,7 @@
+ 
+ #include "flutter/runtime_spi/include/flutter_runtime_spi.h"
+ #include "flutter/runtime_spi/include/flutter_image.h"
++#include "flutter/runtime_spi/include/flutter_gpu.h"
+ #include "flutter/runtime_spi/include/flutter_fragment.h"
+ #include "flutter/runtime_spi/include/flutter_paint_effects.h"
+ #include "flutter/runtime_spi/include/flutter_text.h"
+@@ -513,7 +514,7 @@ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, platform_message_sender_send,
+                   sizeof(void*) == 8 ? 304 : 164);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, platform_message_sender_release,
+                   sizeof(void*) == 8 ? 312 : 168);
+-SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 320 : 176);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 328 : 180);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, color, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, offset, 20);
+@@ -752,7 +753,7 @@ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, fragment,
+                   sizeof(void*) == 8 ? 144 : 84);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, semantics,
+                   sizeof(void*) == 8 ? 152 : 88);
+-SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 320 : 176);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 328 : 180);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, name,
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_context.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_context.cc
+new file mode 100644
+index 00000000000..88b9e92ce82
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_context.cc
+@@ -0,0 +1,276 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/gpu/spi_gpu_context.h"
++
++#include <future>
++#include <mutex>
++
++#include "flutter/fml/make_copyable.h"
++#include "flutter/lib/ui/io_manager.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_formats.h"
++#include "flutter/runtime_spi/scene/spi_handle_table.h"
++#include "flutter/runtime_spi/spi_runtime_backend.h"
++#include "impeller/renderer/capabilities.h"
++#include "impeller/renderer/context.h"
++
++namespace flutter {
++namespace {
++
++class SpiGpuContext final {
++ public:
++  SpiGpuContext(std::shared_ptr<impeller::Context> context,
++                fml::RefPtr<fml::TaskRunner> raster_task_runner)
++      : context_(std::move(context)),
++        raster_task_runner_(std::move(raster_task_runner)) {}
++
++  const std::shared_ptr<impeller::Context>& context() const { return context_; }
++
++  const fml::RefPtr<fml::TaskRunner>& raster_task_runner() const {
++    return raster_task_runner_;
++  }
++
++ private:
++  std::shared_ptr<impeller::Context> context_;
++  fml::RefPtr<fml::TaskRunner> raster_task_runner_;
++};
++
++SpiHandleTable<SpiGpuContext>& Contexts() {
++  return LeakedHandleTable<SpiGpuContext>();
++}
++
++uintptr_t HandleValue(FlutterSpiGpuContext* context) {
++  return reinterpret_cast<uintptr_t>(context);
++}
++
++FlutterSpiGpuContext* MakeHandle(uintptr_t value) {
++  return reinterpret_cast<FlutterSpiGpuContext*>(value);
++}
++
++SpiGpuContext* FindContext(FlutterSpiGpuContext* context) {
++  return Contexts().FindRaw(HandleValue(context));
++}
++
++std::mutex& OverrideMutex() {
++  static auto* mutex = new std::mutex();
++  return *mutex;
++}
++
++std::shared_ptr<impeller::Context>& OverrideContext() {
++  static auto* context = new std::shared_ptr<impeller::Context>();
++  return *context;
++}
++
++}  // namespace
++
++void SpiGpuSetDefaultContextOverride(
++    std::shared_ptr<impeller::Context> context) {
++  std::lock_guard<std::mutex> lock(OverrideMutex());
++  OverrideContext() = std::move(context);
++}
++
++std::shared_ptr<impeller::Context> SpiGpuGetDefaultContextOverride() {
++  std::lock_guard<std::mutex> lock(OverrideMutex());
++  return OverrideContext();
++}
++
++FlutterSpiResult SpiGpuContextGetDefault(FlutterSpiEngine* engine,
++                                         FlutterSpiGpuContext** out_context,
++                                         int32_t* out_reason) {
++  if (engine == nullptr || engine->backend == nullptr ||
++      out_context == nullptr || out_reason == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out_context = nullptr;
++  *out_reason = kFlutterSpiGpuUnavailableNone;
++
++  SpiRuntimeBackend* backend = engine->backend;
++  if (!backend->HasUiThread()) {
++    return kFlutterSpiWrongThread;
++  }
++
++  std::shared_ptr<impeller::Context> context =
++      SpiGpuGetDefaultContextOverride();
++  if (context == nullptr) {
++    if (!backend->impeller_enabled()) {
++      *out_reason = kFlutterSpiGpuUnavailableImpellerDisabled;
++      return kFlutterSpiUnsupported;
++    }
++    if (!backend->flutter_gpu_enabled()) {
++      *out_reason = kFlutterSpiGpuUnavailableFlutterGpuDisabled;
++      return kFlutterSpiUnsupported;
++    }
++
++    std::promise<std::shared_ptr<impeller::Context>> context_promise;
++    auto context_future = context_promise.get_future();
++    fml::TaskRunner::RunNowOrPostTask(
++        backend->task_runners_.GetIOTaskRunner(),
++        fml::MakeCopyable([promise = std::move(context_promise),
++                           io_manager = backend->io_manager_]() mutable {
++          promise.set_value(io_manager ? io_manager->GetImpellerContext()
++                                       : nullptr);
++        }));
++    context = context_future.get();
++    if (context == nullptr) {
++      *out_reason = kFlutterSpiGpuUnavailableNoContext;
++      return kFlutterSpiInternalError;
++    }
++  }
++
++  const uintptr_t handle = Contexts().Insert(std::make_shared<SpiGpuContext>(
++      std::move(context), backend->task_runners_.GetRasterTaskRunner()));
++  if (handle == 0) {
++    return kFlutterSpiInternalError;
++  }
++  *out_context = MakeHandle(handle);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiGpuContextRetain(FlutterSpiGpuContext* context) {
++  return Contexts().Retain(HandleValue(context)) ? kFlutterSpiOk
++                                                 : kFlutterSpiInvalidHandle;
++}
++
++FlutterSpiResult SpiGpuContextRelease(FlutterSpiGpuContext* context) {
++  return Contexts().Release(HandleValue(context)) ? kFlutterSpiOk
++                                                  : kFlutterSpiInvalidHandle;
++}
++
++FlutterSpiResult SpiGpuContextGetInfo(FlutterSpiGpuContext* context,
++                                      FlutterSpiGpuContextInfo* info) {
++  SpiGpuContext* context_value = FindContext(context);
++  if (context_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (info == nullptr || info->struct_size < sizeof(size_t)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const auto& impeller_context = context_value->context();
++  const auto& capabilities = impeller_context->GetCapabilities();
++  if (capabilities == nullptr) {
++    return kFlutterSpiInternalError;
++  }
++  const size_t size = info->struct_size;
++  if (size >=
++      offsetof(FlutterSpiGpuContextInfo, backend) + sizeof(info->backend)) {
++    info->backend = static_cast<int32_t>(impeller_context->GetBackendType());
++  }
++  if (size >= offsetof(FlutterSpiGpuContextInfo, default_color_format) +
++                  sizeof(info->default_color_format)) {
++    info->default_color_format =
++        SpiGpuFromImpellerPixelFormat(capabilities->GetDefaultColorFormat());
++  }
++  if (size >= offsetof(FlutterSpiGpuContextInfo, default_stencil_format) +
++                  sizeof(info->default_stencil_format)) {
++    info->default_stencil_format =
++        SpiGpuFromImpellerPixelFormat(capabilities->GetDefaultStencilFormat());
++  }
++  if (size >= offsetof(FlutterSpiGpuContextInfo, default_depth_stencil_format) +
++                  sizeof(info->default_depth_stencil_format)) {
++    info->default_depth_stencil_format = SpiGpuFromImpellerPixelFormat(
++        capabilities->GetDefaultDepthStencilFormat());
++  }
++  if (size >= offsetof(FlutterSpiGpuContextInfo, minimum_uniform_alignment) +
++                  sizeof(info->minimum_uniform_alignment)) {
++    info->minimum_uniform_alignment =
++        static_cast<int32_t>(capabilities->GetMinimumUniformAlignment());
++  }
++  if (size >= offsetof(FlutterSpiGpuContextInfo, max_sampler_anisotropy) +
++                  sizeof(info->max_sampler_anisotropy)) {
++    info->max_sampler_anisotropy =
++        static_cast<int32_t>(capabilities->GetMaxSamplerAnisotropy());
++  }
++  if (size >= offsetof(FlutterSpiGpuContextInfo, supports_offscreen_msaa) +
++                  sizeof(info->supports_offscreen_msaa)) {
++    info->supports_offscreen_msaa =
++        capabilities->SupportsOffscreenMSAA() &&
++        !capabilities->SupportsImplicitResolvingMSAA();
++  }
++  if (size >=
++      offsetof(FlutterSpiGpuContextInfo, supports_framebuffer_render_mipmap) +
++          sizeof(info->supports_framebuffer_render_mipmap)) {
++    info->supports_framebuffer_render_mipmap =
++        capabilities->SupportsFramebufferRenderMipmap();
++  }
++  if (size >=
++      offsetof(FlutterSpiGpuContextInfo, supports_manually_mipped_textures) +
++          sizeof(info->supports_manually_mipped_textures)) {
++    info->supports_manually_mipped_textures =
++        capabilities->SupportsManuallyMippedTextures();
++  }
++  if (size >= offsetof(FlutterSpiGpuContextInfo, supports_texture_arrays) +
++                  sizeof(info->supports_texture_arrays)) {
++    info->supports_texture_arrays =
++        impeller_context->GetBackendType() !=
++            impeller::Context::BackendType::kOpenGLES &&
++        capabilities->SupportsTextureArrays();
++  }
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiGpuContextSupportsTextureCompression(
++    FlutterSpiGpuContext* context,
++    int32_t family,
++    bool* out_supported) {
++  SpiGpuContext* context_value = FindContext(context);
++  if (context_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (out_supported == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out_supported =
++      context_value->context()->GetCapabilities()->SupportsTextureCompression(
++          SpiGpuToImpellerCompressionFamily(family));
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiGpuContextSupportsTextureFormat(
++    FlutterSpiGpuContext* context,
++    int32_t format,
++    uint32_t usage,
++    bool* out_supported) {
++  SpiGpuContext* context_value = FindContext(context);
++  if (context_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (out_supported == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const impeller::PixelFormat impeller_format =
++      SpiGpuToImpellerPixelFormat(format);
++  if (impeller_format == impeller::PixelFormat::kUnknown) {
++    *out_supported = false;
++    return kFlutterSpiOk;
++  }
++  const bool render_target =
++      (usage & kFlutterSpiGpuTextureUsageRenderTarget) != 0;
++  const bool shader_read = (usage & kFlutterSpiGpuTextureUsageShaderRead) != 0;
++  const bool shader_write =
++      (usage & kFlutterSpiGpuTextureUsageShaderWrite) != 0;
++  if (impeller::IsCompressed(impeller_format)) {
++    *out_supported =
++        shader_read && !render_target && !shader_write &&
++        context_value->context()->GetCapabilities()->SupportsTextureCompression(
++            impeller::CompressedTextureFamilyForFormat(impeller_format));
++    return kFlutterSpiOk;
++  }
++  *out_supported = true;
++  return kFlutterSpiOk;
++}
++
++std::shared_ptr<impeller::Context> SpiGpuContextGetImpeller(
++    FlutterSpiGpuContext* context) {
++  SpiGpuContext* context_value = FindContext(context);
++  return context_value == nullptr ? nullptr : context_value->context();
++}
++
++fml::RefPtr<fml::TaskRunner> SpiGpuContextGetRasterTaskRunner(
++    FlutterSpiGpuContext* context) {
++  SpiGpuContext* context_value = FindContext(context);
++  return context_value == nullptr ? nullptr
++                                  : context_value->raster_task_runner();
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_context.h b/engine/src/flutter/runtime_spi/gpu/spi_gpu_context.h
+new file mode 100644
+index 00000000000..ec6a573a9b6
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_context.h
+@@ -0,0 +1,50 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_CONTEXT_H_
++#define FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_CONTEXT_H_
++
++#include <memory>
++
++#include "flutter/fml/memory/ref_ptr.h"
++#include "flutter/runtime_spi/include/flutter_gpu.h"
++
++namespace fml {
++class TaskRunner;
++}
++
++namespace impeller {
++class Context;
++}
++
++namespace flutter {
++
++FlutterSpiResult SpiGpuContextGetDefault(FlutterSpiEngine* engine,
++                                         FlutterSpiGpuContext** out_context,
++                                         int32_t* out_reason);
++FlutterSpiResult SpiGpuContextRetain(FlutterSpiGpuContext* context);
++FlutterSpiResult SpiGpuContextRelease(FlutterSpiGpuContext* context);
++FlutterSpiResult SpiGpuContextGetInfo(FlutterSpiGpuContext* context,
++                                      FlutterSpiGpuContextInfo* info);
++FlutterSpiResult SpiGpuContextSupportsTextureCompression(
++    FlutterSpiGpuContext* context,
++    int32_t family,
++    bool* out_supported);
++FlutterSpiResult SpiGpuContextSupportsTextureFormat(
++    FlutterSpiGpuContext* context,
++    int32_t format,
++    uint32_t usage,
++    bool* out_supported);
++
++std::shared_ptr<impeller::Context> SpiGpuContextGetImpeller(
++    FlutterSpiGpuContext* context);
++fml::RefPtr<fml::TaskRunner> SpiGpuContextGetRasterTaskRunner(
++    FlutterSpiGpuContext* context);
++void SpiGpuSetDefaultContextOverride(
++    std::shared_ptr<impeller::Context> context);
++std::shared_ptr<impeller::Context> SpiGpuGetDefaultContextOverride();
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_CONTEXT_H_
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_formats.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_formats.cc
+new file mode 100644
+index 00000000000..c47c755d283
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_formats.cc
+@@ -0,0 +1,258 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/gpu/spi_gpu_formats.h"
++
++namespace flutter {
++namespace {
++
++static_assert(kFlutterSpiGpuStorageModeHostVisible ==
++              static_cast<int32_t>(impeller::StorageMode::kHostVisible));
++static_assert(kFlutterSpiGpuStorageModeDevicePrivate ==
++              static_cast<int32_t>(impeller::StorageMode::kDevicePrivate));
++static_assert(kFlutterSpiGpuStorageModeDeviceTransient ==
++              static_cast<int32_t>(impeller::StorageMode::kDeviceTransient));
++static_assert(kFlutterSpiGpuTextureType2D ==
++              static_cast<int32_t>(impeller::TextureType::kTexture2D));
++static_assert(
++    kFlutterSpiGpuTextureType2DMultisample ==
++    static_cast<int32_t>(impeller::TextureType::kTexture2DMultisample));
++static_assert(kFlutterSpiGpuTextureTypeCube ==
++              static_cast<int32_t>(impeller::TextureType::kTextureCube));
++static_assert(kFlutterSpiGpuTextureTypeExternalOES ==
++              static_cast<int32_t>(impeller::TextureType::kTextureExternalOES));
++static_assert(kFlutterSpiGpuTextureType2DArray ==
++              static_cast<int32_t>(impeller::TextureType::kTexture2DArray));
++static_assert(kFlutterSpiGpuTextureCompressionFamilyBC ==
++              static_cast<int32_t>(impeller::CompressedTextureFamily::kBC));
++static_assert(kFlutterSpiGpuTextureCompressionFamilyETC2 ==
++              static_cast<int32_t>(impeller::CompressedTextureFamily::kETC2));
++static_assert(kFlutterSpiGpuTextureCompressionFamilyASTC ==
++              static_cast<int32_t>(impeller::CompressedTextureFamily::kASTC));
++static_assert(
++    kFlutterSpiGpuTextureCompressionFamilyASTCHDR ==
++    static_cast<int32_t>(impeller::CompressedTextureFamily::kASTCHDR));
++static_assert(kFlutterSpiGpuBackendMetal ==
++              static_cast<int32_t>(impeller::Context::BackendType::kMetal));
++static_assert(kFlutterSpiGpuBackendOpenGLES ==
++              static_cast<int32_t>(impeller::Context::BackendType::kOpenGLES));
++static_assert(kFlutterSpiGpuBackendVulkan ==
++              static_cast<int32_t>(impeller::Context::BackendType::kVulkan));
++
++}  // namespace
++
++impeller::StorageMode SpiGpuToImpellerStorageMode(int32_t value) {
++  switch (value) {
++    case kFlutterSpiGpuStorageModeHostVisible:
++      return impeller::StorageMode::kHostVisible;
++    case kFlutterSpiGpuStorageModeDevicePrivate:
++      return impeller::StorageMode::kDevicePrivate;
++    case kFlutterSpiGpuStorageModeDeviceTransient:
++      return impeller::StorageMode::kDeviceTransient;
++    default:
++      return impeller::StorageMode::kDeviceTransient;
++  }
++}
++
++impeller::TextureType SpiGpuToImpellerTextureType(int32_t value) {
++  switch (value) {
++    case kFlutterSpiGpuTextureType2D:
++      return impeller::TextureType::kTexture2D;
++    case kFlutterSpiGpuTextureType2DMultisample:
++      return impeller::TextureType::kTexture2DMultisample;
++    case kFlutterSpiGpuTextureTypeCube:
++      return impeller::TextureType::kTextureCube;
++    case kFlutterSpiGpuTextureTypeExternalOES:
++      return impeller::TextureType::kTextureExternalOES;
++    case kFlutterSpiGpuTextureType2DArray:
++      return impeller::TextureType::kTexture2DArray;
++    default:
++      return impeller::TextureType::kTexture2D;
++  }
++}
++
++impeller::PixelFormat SpiGpuToImpellerPixelFormat(int32_t value) {
++  switch (value) {
++    case kFlutterSpiGpuPixelFormatUnknown:
++      return impeller::PixelFormat::kUnknown;
++    case kFlutterSpiGpuPixelFormatA8UNormInt:
++      return impeller::PixelFormat::kA8UNormInt;
++    case kFlutterSpiGpuPixelFormatR8UNormInt:
++      return impeller::PixelFormat::kR8UNormInt;
++    case kFlutterSpiGpuPixelFormatR8G8UNormInt:
++      return impeller::PixelFormat::kR8G8UNormInt;
++    case kFlutterSpiGpuPixelFormatR8G8B8A8UNormInt:
++      return impeller::PixelFormat::kR8G8B8A8UNormInt;
++    case kFlutterSpiGpuPixelFormatR8G8B8A8UNormIntSRGB:
++      return impeller::PixelFormat::kR8G8B8A8UNormIntSRGB;
++    case kFlutterSpiGpuPixelFormatB8G8R8A8UNormInt:
++      return impeller::PixelFormat::kB8G8R8A8UNormInt;
++    case kFlutterSpiGpuPixelFormatB8G8R8A8UNormIntSRGB:
++      return impeller::PixelFormat::kB8G8R8A8UNormIntSRGB;
++    case kFlutterSpiGpuPixelFormatR32G32B32A32Float:
++      return impeller::PixelFormat::kR32G32B32A32Float;
++    case kFlutterSpiGpuPixelFormatR16G16B16A16Float:
++      return impeller::PixelFormat::kR16G16B16A16Float;
++    case kFlutterSpiGpuPixelFormatR32Float:
++      return impeller::PixelFormat::kR32Float;
++    case kFlutterSpiGpuPixelFormatS8UInt:
++      return impeller::PixelFormat::kS8UInt;
++    case kFlutterSpiGpuPixelFormatD24UnormS8Uint:
++      return impeller::PixelFormat::kD24UnormS8Uint;
++    case kFlutterSpiGpuPixelFormatD32FloatS8UInt:
++      return impeller::PixelFormat::kD32FloatS8UInt;
++    case kFlutterSpiGpuPixelFormatBC1RGBAUNormInt:
++      return impeller::PixelFormat::kBC1RGBAUNormInt;
++    case kFlutterSpiGpuPixelFormatBC1RGBAUNormIntSRGB:
++      return impeller::PixelFormat::kBC1RGBAUNormIntSRGB;
++    case kFlutterSpiGpuPixelFormatBC3RGBAUNormInt:
++      return impeller::PixelFormat::kBC3RGBAUNormInt;
++    case kFlutterSpiGpuPixelFormatBC3RGBAUNormIntSRGB:
++      return impeller::PixelFormat::kBC3RGBAUNormIntSRGB;
++    case kFlutterSpiGpuPixelFormatBC5RGUNormInt:
++      return impeller::PixelFormat::kBC5RGUNormInt;
++    case kFlutterSpiGpuPixelFormatBC7RGBAUNormInt:
++      return impeller::PixelFormat::kBC7RGBAUNormInt;
++    case kFlutterSpiGpuPixelFormatBC7RGBAUNormIntSRGB:
++      return impeller::PixelFormat::kBC7RGBAUNormIntSRGB;
++    case kFlutterSpiGpuPixelFormatETC2RGB8UNormInt:
++      return impeller::PixelFormat::kETC2RGB8UNormInt;
++    case kFlutterSpiGpuPixelFormatETC2RGB8UNormIntSRGB:
++      return impeller::PixelFormat::kETC2RGB8UNormIntSRGB;
++    case kFlutterSpiGpuPixelFormatETC2RGBA8UNormInt:
++      return impeller::PixelFormat::kETC2RGBA8UNormInt;
++    case kFlutterSpiGpuPixelFormatETC2RGBA8UNormIntSRGB:
++      return impeller::PixelFormat::kETC2RGBA8UNormIntSRGB;
++    case kFlutterSpiGpuPixelFormatASTC4x4LDR:
++      return impeller::PixelFormat::kASTC4x4LDR;
++    case kFlutterSpiGpuPixelFormatASTC4x4LDRSRGB:
++      return impeller::PixelFormat::kASTC4x4LDRSRGB;
++    case kFlutterSpiGpuPixelFormatASTC8x8LDR:
++      return impeller::PixelFormat::kASTC8x8LDR;
++    case kFlutterSpiGpuPixelFormatASTC8x8LDRSRGB:
++      return impeller::PixelFormat::kASTC8x8LDRSRGB;
++    case kFlutterSpiGpuPixelFormatASTC4x4HDR:
++      return impeller::PixelFormat::kASTC4x4HDR;
++    case kFlutterSpiGpuPixelFormatASTC8x8HDR:
++      return impeller::PixelFormat::kASTC8x8HDR;
++    default:
++      return impeller::PixelFormat::kUnknown;
++  }
++}
++
++impeller::CompressedTextureFamily SpiGpuToImpellerCompressionFamily(
++    int32_t value) {
++  switch (value) {
++    case kFlutterSpiGpuTextureCompressionFamilyBC:
++      return impeller::CompressedTextureFamily::kBC;
++    case kFlutterSpiGpuTextureCompressionFamilyETC2:
++      return impeller::CompressedTextureFamily::kETC2;
++    case kFlutterSpiGpuTextureCompressionFamilyASTC:
++      return impeller::CompressedTextureFamily::kASTC;
++    case kFlutterSpiGpuTextureCompressionFamilyASTCHDR:
++      return impeller::CompressedTextureFamily::kASTCHDR;
++    default:
++      return impeller::CompressedTextureFamily::kBC;
++  }
++}
++
++impeller::Context::BackendType SpiGpuToImpellerBackend(int32_t value) {
++  switch (value) {
++    case kFlutterSpiGpuBackendMetal:
++      return impeller::Context::BackendType::kMetal;
++    case kFlutterSpiGpuBackendOpenGLES:
++      return impeller::Context::BackendType::kOpenGLES;
++    case kFlutterSpiGpuBackendVulkan:
++      return impeller::Context::BackendType::kVulkan;
++    default:
++      return impeller::Context::BackendType::kVulkan;
++  }
++}
++
++impeller::TextureUsageMask SpiGpuToImpellerTextureUsage(uint32_t value) {
++  impeller::TextureUsageMask usage = {};
++  if ((value & kFlutterSpiGpuTextureUsageRenderTarget) != 0) {
++    usage |= impeller::TextureUsage::kRenderTarget;
++  }
++  if ((value & kFlutterSpiGpuTextureUsageShaderRead) != 0) {
++    usage |= impeller::TextureUsage::kShaderRead;
++  }
++  if ((value & kFlutterSpiGpuTextureUsageShaderWrite) != 0) {
++    usage |= impeller::TextureUsage::kShaderWrite;
++  }
++  return usage;
++}
++
++int32_t SpiGpuFromImpellerPixelFormat(impeller::PixelFormat value) {
++  switch (value) {
++    case impeller::PixelFormat::kUnknown:
++      return kFlutterSpiGpuPixelFormatUnknown;
++    case impeller::PixelFormat::kA8UNormInt:
++      return kFlutterSpiGpuPixelFormatA8UNormInt;
++    case impeller::PixelFormat::kR8UNormInt:
++      return kFlutterSpiGpuPixelFormatR8UNormInt;
++    case impeller::PixelFormat::kR8G8UNormInt:
++      return kFlutterSpiGpuPixelFormatR8G8UNormInt;
++    case impeller::PixelFormat::kR8G8B8A8UNormInt:
++      return kFlutterSpiGpuPixelFormatR8G8B8A8UNormInt;
++    case impeller::PixelFormat::kR8G8B8A8UNormIntSRGB:
++      return kFlutterSpiGpuPixelFormatR8G8B8A8UNormIntSRGB;
++    case impeller::PixelFormat::kB8G8R8A8UNormInt:
++      return kFlutterSpiGpuPixelFormatB8G8R8A8UNormInt;
++    case impeller::PixelFormat::kB8G8R8A8UNormIntSRGB:
++      return kFlutterSpiGpuPixelFormatB8G8R8A8UNormIntSRGB;
++    case impeller::PixelFormat::kR32G32B32A32Float:
++      return kFlutterSpiGpuPixelFormatR32G32B32A32Float;
++    case impeller::PixelFormat::kR16G16B16A16Float:
++      return kFlutterSpiGpuPixelFormatR16G16B16A16Float;
++    case impeller::PixelFormat::kB10G10R10XR:
++    case impeller::PixelFormat::kB10G10R10XRSRGB:
++    case impeller::PixelFormat::kB10G10R10A10XR:
++      return kFlutterSpiGpuPixelFormatUnknown;
++    case impeller::PixelFormat::kR32Float:
++      return kFlutterSpiGpuPixelFormatR32Float;
++    case impeller::PixelFormat::kS8UInt:
++      return kFlutterSpiGpuPixelFormatS8UInt;
++    case impeller::PixelFormat::kD24UnormS8Uint:
++      return kFlutterSpiGpuPixelFormatD24UnormS8Uint;
++    case impeller::PixelFormat::kD32FloatS8UInt:
++      return kFlutterSpiGpuPixelFormatD32FloatS8UInt;
++    case impeller::PixelFormat::kBC1RGBAUNormInt:
++      return kFlutterSpiGpuPixelFormatBC1RGBAUNormInt;
++    case impeller::PixelFormat::kBC1RGBAUNormIntSRGB:
++      return kFlutterSpiGpuPixelFormatBC1RGBAUNormIntSRGB;
++    case impeller::PixelFormat::kBC3RGBAUNormInt:
++      return kFlutterSpiGpuPixelFormatBC3RGBAUNormInt;
++    case impeller::PixelFormat::kBC3RGBAUNormIntSRGB:
++      return kFlutterSpiGpuPixelFormatBC3RGBAUNormIntSRGB;
++    case impeller::PixelFormat::kBC5RGUNormInt:
++      return kFlutterSpiGpuPixelFormatBC5RGUNormInt;
++    case impeller::PixelFormat::kBC7RGBAUNormInt:
++      return kFlutterSpiGpuPixelFormatBC7RGBAUNormInt;
++    case impeller::PixelFormat::kBC7RGBAUNormIntSRGB:
++      return kFlutterSpiGpuPixelFormatBC7RGBAUNormIntSRGB;
++    case impeller::PixelFormat::kETC2RGB8UNormInt:
++      return kFlutterSpiGpuPixelFormatETC2RGB8UNormInt;
++    case impeller::PixelFormat::kETC2RGB8UNormIntSRGB:
++      return kFlutterSpiGpuPixelFormatETC2RGB8UNormIntSRGB;
++    case impeller::PixelFormat::kETC2RGBA8UNormInt:
++      return kFlutterSpiGpuPixelFormatETC2RGBA8UNormInt;
++    case impeller::PixelFormat::kETC2RGBA8UNormIntSRGB:
++      return kFlutterSpiGpuPixelFormatETC2RGBA8UNormIntSRGB;
++    case impeller::PixelFormat::kASTC4x4LDR:
++      return kFlutterSpiGpuPixelFormatASTC4x4LDR;
++    case impeller::PixelFormat::kASTC4x4LDRSRGB:
++      return kFlutterSpiGpuPixelFormatASTC4x4LDRSRGB;
++    case impeller::PixelFormat::kASTC8x8LDR:
++      return kFlutterSpiGpuPixelFormatASTC8x8LDR;
++    case impeller::PixelFormat::kASTC8x8LDRSRGB:
++      return kFlutterSpiGpuPixelFormatASTC8x8LDRSRGB;
++    case impeller::PixelFormat::kASTC4x4HDR:
++      return kFlutterSpiGpuPixelFormatASTC4x4HDR;
++    case impeller::PixelFormat::kASTC8x8HDR:
++      return kFlutterSpiGpuPixelFormatASTC8x8HDR;
++  }
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_formats.h b/engine/src/flutter/runtime_spi/gpu/spi_gpu_formats.h
+new file mode 100644
+index 00000000000..4f7c2ae88a9
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_formats.h
+@@ -0,0 +1,27 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_FORMATS_H_
++#define FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_FORMATS_H_
++
++#include "flutter/runtime_spi/include/flutter_gpu.h"
++#include "impeller/core/formats.h"
++#include "impeller/core/texture_descriptor.h"
++#include "impeller/renderer/context.h"
++
++namespace flutter {
++
++impeller::StorageMode SpiGpuToImpellerStorageMode(int32_t value);
++impeller::TextureType SpiGpuToImpellerTextureType(int32_t value);
++impeller::PixelFormat SpiGpuToImpellerPixelFormat(int32_t value);
++impeller::CompressedTextureFamily SpiGpuToImpellerCompressionFamily(
++    int32_t value);
++impeller::Context::BackendType SpiGpuToImpellerBackend(int32_t value);
++impeller::TextureUsageMask SpiGpuToImpellerTextureUsage(uint32_t value);
++
++int32_t SpiGpuFromImpellerPixelFormat(impeller::PixelFormat value);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_FORMATS_H_
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
+new file mode 100644
+index 00000000000..223c290d61e
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
+@@ -0,0 +1,242 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/gpu/spi_gpu_context.h"
++
++#include <memory>
++#include <string>
++#include <vector>
++
++#include "flutter/fml/message_loop.h"
++#include "flutter/runtime/runtime_delegate.h"
++#include "flutter/runtime_spi/spi_runtime_backend.h"
++#include "flutter/shell/common/display.h"
++#include "flutter/testing/testing.h"
++#include "gmock/gmock.h"
++#include "gtest/gtest.h"
++#include "impeller/renderer/testing/mocks.h"
++
++namespace flutter::testing {
++namespace {
++
++using ::testing::NiceMock;
++using ::testing::Return;
++using ::testing::ReturnRef;
++
++class TestRuntimeDelegate final : public RuntimeDelegate {
++ public:
++  std::string DefaultRouteName() override { return "/"; }
++  void ScheduleFrame(bool) override {}
++  void OnAllViewsRendered() override {}
++  void RenderScene(int64_t, FlutterSpiScene*, float) override {}
++  void UpdateSemantics(int64_t, FlutterSpiSemanticsUpdateBuilder*) override {}
++  void SetApplicationLocale(std::string) override {}
++  void SetSemanticsTreeEnabled(bool) override {}
++  void HandlePlatformMessage(std::unique_ptr<PlatformMessage>) override {}
++  FlutterSpiEngine* GetSpiEngine() override { return nullptr; }
++  std::shared_ptr<AssetManager> GetAssetManager() override { return nullptr; }
++  void OnRootIsolateCreated() override {}
++  void UpdateIsolateDescription(const std::string, int64_t) override {}
++  void SetNeedsReportTimings(bool) override {}
++  std::unique_ptr<std::vector<std::string>> ComputePlatformResolvedLocale(
++      const std::vector<std::string>&) override {
++    return std::make_unique<std::vector<std::string>>();
++  }
++  void RequestDartDeferredLibrary(intptr_t) override {}
++  std::weak_ptr<PlatformMessageHandler> GetPlatformMessageHandler()
++      const override {
++    return {};
++  }
++  void SendChannelUpdate(std::string, bool) override {}
++  double GetScaledFontSize(double value, int) const override { return value; }
++  void RequestViewFocusChange(const ViewFocusChangeRequest&) override {}
++  void ResetInternalState() override {}
++};
++
++class SpiGpuContextTest : public ::testing::Test {
++ protected:
++  void SetUp() override {
++    fml::MessageLoop::EnsureInitializedForCurrentThread();
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wdeprecated-declarations"
++    auto task_runner = fml::MessageLoop::GetCurrent().GetTaskRunner();
++#pragma clang diagnostic pop
++    task_runners_ = std::make_unique<TaskRunners>(
++        "spi-gpu-test", task_runner, task_runner, task_runner, task_runner);
++  }
++
++  std::unique_ptr<SpiRuntimeBackend> CreateBackend(bool impeller_enabled,
++                                                   bool flutter_gpu_enabled) {
++    FlutterSpiRuntimeTable table = {};
++    return std::unique_ptr<SpiRuntimeBackend>(new SpiRuntimeBackend(
++        delegate_, *task_runners_, table, fml::WeakPtr<IOManager>(), {}, {}, {},
++        nullptr, impeller_enabled,
++        std::shared_future<impeller::RuntimeStageBackend>{}, nullptr,
++        flutter_gpu_enabled));
++  }
++
++  void TearDown() override { SpiGpuSetDefaultContextOverride(nullptr); }
++
++  TestRuntimeDelegate delegate_;
++  std::unique_ptr<TaskRunners> task_runners_;
++};
++
++std::shared_ptr<NiceMock<impeller::testing::MockImpellerContext>>
++CreateMockContext(
++    std::shared_ptr<const impeller::Capabilities>* capabilities_out) {
++  auto context =
++      std::make_shared<NiceMock<impeller::testing::MockImpellerContext>>();
++  auto capabilities =
++      std::make_shared<NiceMock<impeller::testing::MockCapabilities>>();
++  *capabilities_out = capabilities;
++  ON_CALL(*context, GetBackendType())
++      .WillByDefault(Return(impeller::Context::BackendType::kVulkan));
++  ON_CALL(*context, GetCapabilities())
++      .WillByDefault(ReturnRef(*capabilities_out));
++  return context;
++}
++
++FlutterSpiGpuContext* GetDefaultContext(SpiRuntimeBackend* backend) {
++  FlutterSpiGpuContext* context = nullptr;
++  int32_t reason = kFlutterSpiGpuUnavailableNone;
++  EXPECT_EQ(
++      SpiGpuContextGetDefault(backend->engine_handle(), &context, &reason),
++      kFlutterSpiOk);
++  EXPECT_EQ(reason, kFlutterSpiGpuUnavailableNone);
++  return context;
++}
++
++TEST_F(SpiGpuContextTest, ContextGetDefaultUsesOverride) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  auto context = CreateMockContext(&capabilities);
++  SpiGpuSetDefaultContextOverride(context);
++  auto backend = CreateBackend(false, false);
++
++  FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());
++
++  EXPECT_EQ(SpiGpuContextGetImpeller(gpu_context), context);
++  EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, ContextGetDefaultReportsImpellerDisabled) {
++  auto backend = CreateBackend(false, true);
++  FlutterSpiGpuContext* context = nullptr;
++  int32_t reason = kFlutterSpiGpuUnavailableNone;
++
++  EXPECT_EQ(
++      SpiGpuContextGetDefault(backend->engine_handle(), &context, &reason),
++      kFlutterSpiUnsupported);
++  EXPECT_EQ(reason, kFlutterSpiGpuUnavailableImpellerDisabled);
++  EXPECT_EQ(context, nullptr);
++}
++
++TEST_F(SpiGpuContextTest, ContextGetDefaultReportsFlutterGpuDisabled) {
++  auto backend = CreateBackend(true, false);
++  FlutterSpiGpuContext* context = nullptr;
++  int32_t reason = kFlutterSpiGpuUnavailableNone;
++
++  EXPECT_EQ(
++      SpiGpuContextGetDefault(backend->engine_handle(), &context, &reason),
++      kFlutterSpiUnsupported);
++  EXPECT_EQ(reason, kFlutterSpiGpuUnavailableFlutterGpuDisabled);
++  EXPECT_EQ(context, nullptr);
++}
++
++TEST_F(SpiGpuContextTest, ContextInfoReadsCapabilities) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  auto context = CreateMockContext(&capabilities);
++  auto* mock_capabilities = const_cast<impeller::testing::MockCapabilities*>(
++      static_cast<const impeller::testing::MockCapabilities*>(
++          capabilities.get()));
++  ON_CALL(*mock_capabilities, GetDefaultColorFormat())
++      .WillByDefault(Return(impeller::PixelFormat::kR8G8B8A8UNormInt));
++  ON_CALL(*mock_capabilities, GetDefaultStencilFormat())
++      .WillByDefault(Return(impeller::PixelFormat::kS8UInt));
++  ON_CALL(*mock_capabilities, GetDefaultDepthStencilFormat())
++      .WillByDefault(Return(impeller::PixelFormat::kD24UnormS8Uint));
++  ON_CALL(*mock_capabilities, GetMinimumUniformAlignment())
++      .WillByDefault(Return(256u));
++  ON_CALL(*mock_capabilities, GetMaxSamplerAnisotropy())
++      .WillByDefault(Return(16u));
++  ON_CALL(*mock_capabilities, SupportsOffscreenMSAA())
++      .WillByDefault(Return(true));
++  ON_CALL(*mock_capabilities, SupportsImplicitResolvingMSAA())
++      .WillByDefault(Return(false));
++  ON_CALL(*mock_capabilities, SupportsFramebufferRenderMipmap())
++      .WillByDefault(Return(true));
++  ON_CALL(*mock_capabilities, SupportsManuallyMippedTextures())
++      .WillByDefault(Return(true));
++  ON_CALL(*mock_capabilities, SupportsTextureArrays())
++      .WillByDefault(Return(true));
++  auto backend = CreateBackend(true, true);
++  SpiGpuSetDefaultContextOverride(context);
++  FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());
++
++  FlutterSpiGpuContextInfo info = {.struct_size = sizeof(info)};
++  EXPECT_EQ(SpiGpuContextGetInfo(gpu_context, &info), kFlutterSpiOk);
++  EXPECT_EQ(info.backend, kFlutterSpiGpuBackendVulkan);
++  EXPECT_EQ(info.default_color_format,
++            kFlutterSpiGpuPixelFormatR8G8B8A8UNormInt);
++  EXPECT_EQ(info.default_stencil_format, kFlutterSpiGpuPixelFormatS8UInt);
++  EXPECT_EQ(info.default_depth_stencil_format,
++            kFlutterSpiGpuPixelFormatD24UnormS8Uint);
++  EXPECT_EQ(info.minimum_uniform_alignment, 256);
++  EXPECT_EQ(info.max_sampler_anisotropy, 16);
++  EXPECT_TRUE(info.supports_offscreen_msaa);
++  EXPECT_TRUE(info.supports_framebuffer_render_mipmap);
++  EXPECT_TRUE(info.supports_manually_mipped_textures);
++  EXPECT_TRUE(info.supports_texture_arrays);
++  EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, ContextInfoHonorsSmallStructSize) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  auto context = CreateMockContext(&capabilities);
++  SpiGpuSetDefaultContextOverride(context);
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());
++  FlutterSpiGpuContextInfo info = {
++      .struct_size =
++          offsetof(FlutterSpiGpuContextInfo, backend) + sizeof(info.backend),
++      .backend = -1,
++      .default_color_format = -1,
++      .default_stencil_format = -1,
++      .default_depth_stencil_format = -1,
++      .minimum_uniform_alignment = -1,
++      .max_sampler_anisotropy = -1,
++      .supports_offscreen_msaa = true,
++      .supports_framebuffer_render_mipmap = true,
++      .supports_manually_mipped_textures = true,
++      .supports_texture_arrays = true,
++  };
++
++  EXPECT_EQ(SpiGpuContextGetInfo(gpu_context, &info), kFlutterSpiOk);
++  EXPECT_EQ(info.backend, kFlutterSpiGpuBackendVulkan);
++  EXPECT_EQ(info.default_color_format, -1);
++  EXPECT_TRUE(info.supports_texture_arrays);
++  EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, ContextCallsRejectNullAndReleasedHandles) {
++  FlutterSpiGpuContextInfo info = {.struct_size = sizeof(info)};
++  bool supported = false;
++  EXPECT_EQ(SpiGpuContextRetain(nullptr), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuContextRelease(nullptr), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuContextGetInfo(nullptr, &info), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuContextSupportsTextureCompression(nullptr, 0, &supported),
++            kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuContextSupportsTextureFormat(nullptr, 0, 0, &supported),
++            kFlutterSpiInvalidHandle);
++
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  SpiGpuSetDefaultContextOverride(CreateMockContext(&capabilities));
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* context = GetDefaultContext(backend.get());
++  EXPECT_EQ(SpiGpuContextRelease(context), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuContextRelease(context), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuContextGetInfo(context, &info), kFlutterSpiInvalidHandle);
++}
++
++}  // namespace
++}  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_gpu.h b/engine/src/flutter/runtime_spi/include/flutter_gpu.h
+new file mode 100644
+index 00000000000..380ae07d1a4
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/include/flutter_gpu.h
+@@ -0,0 +1,137 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_GPU_H_
++#define FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_GPU_H_
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#include "flutter_scene.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef struct FlutterSpiGpuContext FlutterSpiGpuContext;
++typedef struct FlutterSpiGpuBuffer FlutterSpiGpuBuffer;
++typedef struct FlutterSpiGpuTexture FlutterSpiGpuTexture;
++
++// These values are kept in the same order as the corresponding Flutter GPU
++// enums in lib/gpu/formats.h.
++typedef enum {
++  kFlutterSpiGpuStorageModeHostVisible = 0,
++  kFlutterSpiGpuStorageModeDevicePrivate = 1,
++  kFlutterSpiGpuStorageModeDeviceTransient = 2,
++} FlutterSpiGpuStorageMode;
++
++typedef enum {
++  kFlutterSpiGpuPixelFormatUnknown = 0,
++  kFlutterSpiGpuPixelFormatA8UNormInt = 1,
++  kFlutterSpiGpuPixelFormatR8UNormInt = 2,
++  kFlutterSpiGpuPixelFormatR8G8UNormInt = 3,
++  kFlutterSpiGpuPixelFormatR8G8B8A8UNormInt = 4,
++  kFlutterSpiGpuPixelFormatR8G8B8A8UNormIntSRGB = 5,
++  kFlutterSpiGpuPixelFormatB8G8R8A8UNormInt = 6,
++  kFlutterSpiGpuPixelFormatB8G8R8A8UNormIntSRGB = 7,
++  kFlutterSpiGpuPixelFormatR32G32B32A32Float = 8,
++  kFlutterSpiGpuPixelFormatR16G16B16A16Float = 9,
++  kFlutterSpiGpuPixelFormatR32Float = 10,
++  kFlutterSpiGpuPixelFormatS8UInt = 11,
++  kFlutterSpiGpuPixelFormatD24UnormS8Uint = 12,
++  kFlutterSpiGpuPixelFormatD32FloatS8UInt = 13,
++  kFlutterSpiGpuPixelFormatBC1RGBAUNormInt = 14,
++  kFlutterSpiGpuPixelFormatBC1RGBAUNormIntSRGB = 15,
++  kFlutterSpiGpuPixelFormatBC3RGBAUNormInt = 16,
++  kFlutterSpiGpuPixelFormatBC3RGBAUNormIntSRGB = 17,
++  kFlutterSpiGpuPixelFormatBC5RGUNormInt = 18,
++  kFlutterSpiGpuPixelFormatBC7RGBAUNormInt = 19,
++  kFlutterSpiGpuPixelFormatBC7RGBAUNormIntSRGB = 20,
++  kFlutterSpiGpuPixelFormatETC2RGB8UNormInt = 21,
++  kFlutterSpiGpuPixelFormatETC2RGB8UNormIntSRGB = 22,
++  kFlutterSpiGpuPixelFormatETC2RGBA8UNormInt = 23,
++  kFlutterSpiGpuPixelFormatETC2RGBA8UNormIntSRGB = 24,
++  kFlutterSpiGpuPixelFormatASTC4x4LDR = 25,
++  kFlutterSpiGpuPixelFormatASTC4x4LDRSRGB = 26,
++  kFlutterSpiGpuPixelFormatASTC8x8LDR = 27,
++  kFlutterSpiGpuPixelFormatASTC8x8LDRSRGB = 28,
++  kFlutterSpiGpuPixelFormatASTC4x4HDR = 29,
++  kFlutterSpiGpuPixelFormatASTC8x8HDR = 30,
++} FlutterSpiGpuPixelFormat;
++
++typedef enum {
++  kFlutterSpiGpuTextureType2D = 0,
++  kFlutterSpiGpuTextureType2DMultisample = 1,
++  kFlutterSpiGpuTextureTypeCube = 2,
++  kFlutterSpiGpuTextureTypeExternalOES = 3,
++  kFlutterSpiGpuTextureType2DArray = 4,
++} FlutterSpiGpuTextureType;
++
++typedef enum {
++  kFlutterSpiGpuTextureCompressionFamilyBC = 0,
++  kFlutterSpiGpuTextureCompressionFamilyETC2 = 1,
++  kFlutterSpiGpuTextureCompressionFamilyASTC = 2,
++  kFlutterSpiGpuTextureCompressionFamilyASTCHDR = 3,
++} FlutterSpiGpuTextureCompressionFamily;
++
++typedef enum {
++  kFlutterSpiGpuBackendMetal = 0,
++  kFlutterSpiGpuBackendOpenGLES = 1,
++  kFlutterSpiGpuBackendVulkan = 2,
++} FlutterSpiGpuBackend;
++
++typedef uint32_t FlutterSpiGpuTextureUsage;
++enum {
++  kFlutterSpiGpuTextureUsageRenderTarget = 1u << 0,
++  kFlutterSpiGpuTextureUsageShaderRead = 1u << 1,
++  kFlutterSpiGpuTextureUsageShaderWrite = 1u << 2,
++};
++
++typedef enum {
++  kFlutterSpiGpuUnavailableNone = 0,
++  kFlutterSpiGpuUnavailableImpellerDisabled = 1,
++  kFlutterSpiGpuUnavailableFlutterGpuDisabled = 2,
++  kFlutterSpiGpuUnavailableNoContext = 3,
++} FlutterSpiGpuUnavailableReason;
++
++typedef struct {
++  size_t struct_size;
++  int32_t backend;
++  int32_t default_color_format;
++  int32_t default_stencil_format;
++  int32_t default_depth_stencil_format;
++  int32_t minimum_uniform_alignment;
++  int32_t max_sampler_anisotropy;
++  bool supports_offscreen_msaa;
++  bool supports_framebuffer_render_mipmap;
++  bool supports_manually_mipped_textures;
++  bool supports_texture_arrays;
++} FlutterSpiGpuContextInfo;
++
++typedef struct FlutterSpiGpuApi {
++  size_t struct_size;
++  FlutterSpiResult (*context_get_default)(FlutterSpiEngine* engine,
++                                          FlutterSpiGpuContext** out_context,
++                                          int32_t* out_reason);
++  FlutterSpiResult (*context_retain)(FlutterSpiGpuContext* context);
++  FlutterSpiResult (*context_release)(FlutterSpiGpuContext* context);
++  FlutterSpiResult (*context_get_info)(FlutterSpiGpuContext* context,
++                                       FlutterSpiGpuContextInfo* info);
++  FlutterSpiResult (*context_supports_texture_compression)(
++      FlutterSpiGpuContext* context,
++      int32_t family,
++      bool* out_supported);
++  FlutterSpiResult (*context_supports_texture_format)(
++      FlutterSpiGpuContext* context,
++      int32_t format,
++      uint32_t usage,
++      bool* out_supported);
++} FlutterSpiGpuApi;
++
++#ifdef __cplusplus
++}  // extern "C"
++#endif
++
++#endif  // FLUTTER_RUNTIME_SPI_INCLUDE_FLUTTER_GPU_H_
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index aee465d2357..668b365b143 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 24
++#define FLUTTER_SPI_VERSION_MINOR 25
+ 
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+@@ -31,6 +31,7 @@ enum {
+   kFlutterSpiCapFragmentPrograms = 1ULL << 13,
+   kFlutterSpiCapSemanticsUpdate = 1ULL << 14,
+   kFlutterSpiCapBackgroundPlatformMessages = 1ULL << 15,
++  kFlutterSpiCapGpu = 1ULL << 16,
+ };
+ 
+ typedef struct FlutterSpiEngine FlutterSpiEngine;
+@@ -42,6 +43,7 @@ typedef struct FlutterSpiEngineApi FlutterSpiEngineApi;
+ #include "flutter_scene.h"
+ #include "flutter_text.h"
+ #include "flutter_image.h"
++#include "flutter_gpu.h"
+ #include "flutter_paint_effects.h"
+ #include "flutter_fragment.h"
+ #include "flutter_semantics.h"
+@@ -341,6 +343,7 @@ struct FlutterSpiEngineApi {
+   /* Any thread. */
+   FlutterSpiResult (*platform_message_sender_release)(
+       FlutterSpiPlatformMessageSender* sender);
++  const FlutterSpiGpuApi* gpu;
+ };
+ 
+ /*
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index 53b587b6908..934f943cc7d 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -10,6 +10,7 @@
+ #include "flutter/runtime_spi/include/flutter_runtime_extensions.h"
+ #include "flutter/runtime_spi/include/flutter_runtime_spi.h"
+ #include "flutter/runtime_spi/include/flutter_image.h"
++#include "flutter/runtime_spi/include/flutter_gpu.h"
+ #include "flutter/runtime_spi/include/flutter_fragment.h"
+ #include "flutter/runtime_spi/include/flutter_paint_effects.h"
+ #include "flutter/runtime_spi/include/flutter_text.h"
+@@ -57,6 +58,7 @@ TEST(SpiAbi, CapabilityValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiCapFragmentPrograms, 1ULL << 13);
+   EXPECT_EQ(kFlutterSpiCapSemanticsUpdate, 1ULL << 14);
+   EXPECT_EQ(kFlutterSpiCapBackgroundPlatformMessages, 1ULL << 15);
++  EXPECT_EQ(kFlutterSpiCapGpu, 1ULL << 16);
+ }
+ 
+ TEST(SpiAbi, SemanticsEnumValuesMatchCore) {
+@@ -94,7 +96,38 @@ TEST(SpiAbi, ImageEnumValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawUnmodified, 2);
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawExtendedRGBA128, 3);
+   EXPECT_EQ(kFlutterSpiImageByteFormatPNG, 4);
+-  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 24);
++  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 25);
++}
++
++TEST(SpiAbi, GpuContextInfoLayoutIsFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiGpuContextInfo, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuContextInfo, backend, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuContextInfo, default_color_format, 12, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuContextInfo, default_stencil_format, 16, 12);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuContextInfo, default_depth_stencil_format,
++                    20, 16);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuContextInfo, minimum_uniform_alignment, 24,
++                    20);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuContextInfo, max_sampler_anisotropy, 28, 24);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuContextInfo, supports_offscreen_msaa, 32, 28);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuContextInfo,
++                    supports_framebuffer_render_mipmap, 33, 29);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuContextInfo,
++                    supports_manually_mipped_textures, 34, 30);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuContextInfo, supports_texture_arrays, 35, 31);
++  EXPECT_EQ(sizeof(FlutterSpiGpuContextInfo), sizeof(void*) == 8 ? 40u : 32u);
++}
++
++TEST(SpiAbi, GpuApiLayoutIsFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, context_get_default, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, context_retain, 16, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, context_release, 24, 12);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, context_get_info, 32, 16);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, context_supports_texture_compression,
++                    40, 20);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, context_supports_texture_format, 48, 24);
++  EXPECT_EQ(sizeof(FlutterSpiGpuApi), sizeof(void*) == 8 ? 56u : 28u);
+ }
+ 
+ TEST(SpiAbi, SemanticsLayoutIsFrozen) {
+@@ -613,7 +646,8 @@ TEST(SpiAbi, EngineApiLayoutIsFrozen) {
+                     platform_message_sender_release,
+                     312,
+                     168);
+-  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 320u : 176u);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, gpu, 320, 176);
++  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 328u : 180u);
+ }
+ 
+ TEST(SpiAbi, FragmentUniformInfoLayoutIsFrozen) {
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index 1ad69ab1ce0..36333d23972 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -20,6 +20,7 @@
+ #include "flutter/runtime_spi/effects/spi_fragment.h"
+ #include "flutter/runtime_spi/effects/spi_shader.h"
+ #include "flutter/runtime_spi/effects/spi_vertices.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_context.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
+ #include "flutter/runtime_spi/image/spi_image_canvas.h"
+ #include "flutter/runtime_spi/image/spi_image_codec.h"
+@@ -148,6 +149,16 @@ const FlutterSpiSemanticsApi kSemanticsApi = {
+ }  // namespace
+ 
+ FlutterSpiEngineApi SpiEngineApi::Create() {
++  static const FlutterSpiGpuApi gpu_api = {
++      .struct_size = sizeof(FlutterSpiGpuApi),
++      .context_get_default = SpiGpuContextGetDefault,
++      .context_retain = SpiGpuContextRetain,
++      .context_release = SpiGpuContextRelease,
++      .context_get_info = SpiGpuContextGetInfo,
++      .context_supports_texture_compression =
++          SpiGpuContextSupportsTextureCompression,
++      .context_supports_texture_format = SpiGpuContextSupportsTextureFormat,
++  };
+   static const FlutterSpiImageApi image_api = {
+       .struct_size = sizeof(FlutterSpiImageApi),
+       .image_decode = SpiEngineApi::ImageDecode,
+@@ -246,7 +257,8 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+                       kFlutterSpiCapSceneLayers |
+                       kFlutterSpiCapFragmentPrograms |
+                       kFlutterSpiCapSemanticsUpdate |
+-                      kFlutterSpiCapBackgroundPlatformMessages,
++                      kFlutterSpiCapBackgroundPlatformMessages |
++                      kFlutterSpiCapGpu,
+       .request_frame = RequestFrame,
+       .scene_create_empty = SceneCreateEmpty,
+       .scene_release = SceneRelease,
+@@ -284,6 +296,7 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+       .platform_message_sender_create = PlatformMessageSenderCreate,
+       .platform_message_sender_send = PlatformMessageSenderSend,
+       .platform_message_sender_release = PlatformMessageSenderRelease,
++      .gpu = &gpu_api,
+   };
+ }
+ 
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+index 99fa9c82ad9..63c3c38cbba 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.cc
+@@ -184,7 +184,8 @@ SpiRuntimeBackend::SpiRuntimeBackend(
+     fml::RefPtr<SkiaUnrefQueue> unref_queue,
+     bool impeller_enabled,
+     std::shared_future<impeller::RuntimeStageBackend> runtime_stage_backend,
+-    std::shared_ptr<fml::ConcurrentTaskRunner> concurrent_worker_task_runner)
++    std::shared_ptr<fml::ConcurrentTaskRunner> concurrent_worker_task_runner,
++    bool flutter_gpu_enabled)
+     : runtime_delegate_(runtime_delegate),
+       task_runners_(task_runners),
+       concurrent_worker_task_runner_(std::move(concurrent_worker_task_runner)),
+@@ -195,6 +196,7 @@ SpiRuntimeBackend::SpiRuntimeBackend(
+       snapshot_delegate_(snapshot_delegate),
+       runtime_stage_backend_(std::move(runtime_stage_backend)),
+       impeller_enabled_(impeller_enabled),
++      flutter_gpu_enabled_(flutter_gpu_enabled),
+       image_snapshot_(std::make_unique<SpiImageSnapshot>(ImageSnapshotContext{
+           task_runners.GetUITaskRunner(), task_runners.GetRasterTaskRunner(),
+           std::move(snapshot_delegate), std::move(unref_queue),
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend.h b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+index 52b53d5487d..a19c82f4503 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend.h
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend.h
+@@ -69,7 +69,8 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+                     std::shared_future<impeller::RuntimeStageBackend>
+                         runtime_stage_backend = {},
+                     std::shared_ptr<fml::ConcurrentTaskRunner>
+-                        concurrent_worker_task_runner = nullptr);
++                        concurrent_worker_task_runner = nullptr,
++                    bool flutter_gpu_enabled = false);
+   ~SpiRuntimeBackend() override;
+ 
+   std::unique_ptr<RuntimeBackend> Clone() const override;
+@@ -190,6 +191,7 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+   const FlutterSpiEngineApi& engine_api() const { return engine_api_; }
+   FlutterSpiEngine* engine_handle() { return engine_handle_; }
+   bool impeller_enabled() const { return impeller_enabled_; }
++  bool flutter_gpu_enabled() const { return flutter_gpu_enabled_; }
+ 
+  private:
+   friend class SpiEngineApi;
+@@ -197,6 +199,10 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+   friend FontCollection& SpiEngineFontCollection(FlutterSpiEngine* engine);
+   friend std::shared_ptr<AssetManager> SpiEngineAssetManager(
+       FlutterSpiEngine* engine);
++  friend FlutterSpiResult SpiGpuContextGetDefault(
++      FlutterSpiEngine* engine,
++      ::FlutterSpiGpuContext** out_context,
++      int32_t* out_reason);
+ 
+   bool HasUiThread() const;
+   bool HasCapability(FlutterSpiCapabilities capability) const;
+@@ -239,6 +245,7 @@ class SpiRuntimeBackend final : public RuntimeBackend {
+   fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate_;
+   std::shared_future<impeller::RuntimeStageBackend> runtime_stage_backend_;
+   bool impeller_enabled_ = false;
++  bool flutter_gpu_enabled_ = false;
+   std::unique_ptr<SpiImageSnapshot> image_snapshot_;
+   std::unique_ptr<SpiImageDecoding> image_decoding_;
+ 
+diff --git a/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc b/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc
+index 355fe6434aa..0eb9b26d743 100644
+--- a/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc
++++ b/engine/src/flutter/runtime_spi/spi_runtime_backend_factory.cc
+@@ -63,7 +63,8 @@ std::unique_ptr<RuntimeBackend> SpiRuntimeBackendFactory::Create(
+                                              std::move(unref_queue),
+                                              settings.enable_impeller,
+                                              runtime_stage_backend,
+-                                             GetConcurrentWorkerTaskRunner());
++                                             GetConcurrentWorkerTaskRunner(),
++                                             settings.enable_flutter_gpu);
+ }
+ 
+ }  // namespace flutter
+diff --git a/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc b/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
+index 4ad5c342243..b3e86a060b7 100644
+--- a/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
++++ b/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
+@@ -132,7 +132,7 @@ std::unique_ptr<RuntimeBackend> DartRuntimeBackendFactory::Spawn(
+       std::move(backend_image_generator_registry),
+       std::move(backend_snapshot_delegate), nullptr, settings.enable_impeller,
+       std::shared_future<impeller::RuntimeStageBackend>{},
+-      GetConcurrentWorkerTaskRunner());
++      GetConcurrentWorkerTaskRunner(), settings.enable_flutter_gpu);
+   runtime.release();
+   return backend;
+ }

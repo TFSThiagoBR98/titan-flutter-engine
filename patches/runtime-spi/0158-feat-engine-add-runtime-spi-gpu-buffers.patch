@@ -1,0 +1,531 @@
+# Why: S7a; add runtime SPI GPU buffer operations and handles.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 83ccd84073e..876734ae390 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -30,6 +30,7 @@ source_set("spi_backend") {
+     "internal/spi_internal_bridges.h",
+     "gpu/spi_gpu_context.h",
+     "gpu/spi_gpu_formats.h",
++    "gpu/spi_gpu_buffer.h",
+     "spi_engine_api.h",
+     "spi_scene.h",
+   ]
+@@ -48,6 +49,8 @@ source_set("spi_backend") {
+     "gpu/spi_gpu_context.h",
+     "gpu/spi_gpu_formats.cc",
+     "gpu/spi_gpu_formats.h",
++    "gpu/spi_gpu_buffer.cc",
++    "gpu/spi_gpu_buffer.h",
+     "spi_scene.cc",
+     "spi_scene.h",
+   ]
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_buffer.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_buffer.cc
+new file mode 100644
+index 00000000000..b52cbd75fff
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_buffer.cc
+@@ -0,0 +1,182 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/gpu/spi_gpu_buffer.h"
++
++#include <limits>
++
++#include "flutter/runtime_spi/gpu/spi_gpu_context.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_formats.h"
++#include "flutter/runtime_spi/scene/spi_handle_table.h"
++#include "impeller/core/allocator.h"
++#include "impeller/core/device_buffer.h"
++#include "impeller/core/device_buffer_descriptor.h"
++#include "impeller/core/range.h"
++#include "impeller/renderer/context.h"
++
++namespace flutter {
++namespace {
++
++class SpiGpuBuffer final {
++ public:
++  SpiGpuBuffer(std::shared_ptr<impeller::Context> context,
++               std::shared_ptr<impeller::DeviceBuffer> buffer)
++      : context_(std::move(context)), buffer_(std::move(buffer)) {}
++
++  const std::shared_ptr<impeller::Context>& context() const { return context_; }
++
++  const std::shared_ptr<impeller::DeviceBuffer>& buffer() const {
++    return buffer_;
++  }
++
++ private:
++  std::shared_ptr<impeller::Context> context_;
++  std::shared_ptr<impeller::DeviceBuffer> buffer_;
++};
++
++SpiHandleTable<SpiGpuBuffer>& Buffers() {
++  return LeakedHandleTable<SpiGpuBuffer>();
++}
++
++uintptr_t HandleValue(FlutterSpiGpuBuffer* buffer) {
++  return reinterpret_cast<uintptr_t>(buffer);
++}
++
++FlutterSpiGpuBuffer* MakeHandle(uintptr_t value) {
++  return reinterpret_cast<FlutterSpiGpuBuffer*>(value);
++}
++
++SpiGpuBuffer* FindBuffer(FlutterSpiGpuBuffer* buffer) {
++  return Buffers().FindRaw(HandleValue(buffer));
++}
++
++FlutterSpiResult InsertBuffer(std::shared_ptr<impeller::Context> context,
++                              std::shared_ptr<impeller::DeviceBuffer> buffer,
++                              FlutterSpiGpuBuffer** out_buffer) {
++  if (buffer == nullptr) {
++    return kFlutterSpiInternalError;
++  }
++  const uintptr_t handle = Buffers().Insert(
++      std::make_shared<SpiGpuBuffer>(std::move(context), std::move(buffer)));
++  if (handle == 0) {
++    return kFlutterSpiInternalError;
++  }
++  *out_buffer = MakeHandle(handle);
++  return kFlutterSpiOk;
++}
++
++bool IsValidStorageMode(int32_t storage_mode) {
++  return storage_mode >= kFlutterSpiGpuStorageModeHostVisible &&
++         storage_mode <= kFlutterSpiGpuStorageModeDeviceTransient;
++}
++
++}  // namespace
++
++FlutterSpiResult SpiGpuBufferCreate(
++    FlutterSpiGpuContext* context,
++    const FlutterSpiGpuBufferDescriptor* descriptor,
++    FlutterSpiGpuBuffer** out_buffer) {
++  if (out_buffer == nullptr || descriptor == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (descriptor->struct_size < offsetof(FlutterSpiGpuBufferDescriptor, size) +
++                                    sizeof(descriptor->size)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (!IsValidStorageMode(descriptor->storage_mode)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  std::shared_ptr<impeller::Context> context_value =
++      SpiGpuContextGetImpeller(context);
++  if (context_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  impeller::DeviceBufferDescriptor impeller_descriptor;
++  impeller_descriptor.storage_mode =
++      SpiGpuToImpellerStorageMode(descriptor->storage_mode);
++  impeller_descriptor.size = descriptor->size;
++  auto buffer =
++      context_value->GetResourceAllocator()->CreateBuffer(impeller_descriptor);
++  return InsertBuffer(std::move(context_value), std::move(buffer), out_buffer);
++}
++
++FlutterSpiResult SpiGpuBufferCreateWithData(FlutterSpiGpuContext* context,
++                                            const uint8_t* data,
++                                            size_t size,
++                                            FlutterSpiGpuBuffer** out_buffer) {
++  if (out_buffer == nullptr || (data == nullptr && size != 0)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  std::shared_ptr<impeller::Context> context_value =
++      SpiGpuContextGetImpeller(context);
++  if (context_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  auto buffer =
++      context_value->GetResourceAllocator()->CreateBufferWithCopy(data, size);
++  return InsertBuffer(std::move(context_value), std::move(buffer), out_buffer);
++}
++
++FlutterSpiResult SpiGpuBufferOverwrite(FlutterSpiGpuBuffer* buffer,
++                                       const uint8_t* data,
++                                       size_t size,
++                                       size_t destination_offset) {
++  SpiGpuBuffer* buffer_value = FindBuffer(buffer);
++  if (buffer_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (data == nullptr && size != 0) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const size_t buffer_size =
++      buffer_value->buffer()->GetDeviceBufferDescriptor().size;
++  if (destination_offset > buffer_size ||
++      size > buffer_size - destination_offset) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (!buffer_value->buffer()->CopyHostBuffer(data, impeller::Range(0, size),
++                                              destination_offset)) {
++    return kFlutterSpiInternalError;
++  }
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiGpuBufferFlush(FlutterSpiGpuBuffer* buffer,
++                                   size_t offset,
++                                   size_t size) {
++  SpiGpuBuffer* buffer_value = FindBuffer(buffer);
++  if (buffer_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  const size_t buffer_size =
++      buffer_value->buffer()->GetDeviceBufferDescriptor().size;
++  if (offset > buffer_size) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const size_t remaining = buffer_size - offset;
++  if (size != SIZE_MAX && size > remaining) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const size_t flush_size = size == SIZE_MAX ? remaining : size;
++  buffer_value->buffer()->Flush(impeller::Range(offset, flush_size));
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiGpuBufferRetain(FlutterSpiGpuBuffer* buffer) {
++  return Buffers().Retain(HandleValue(buffer)) ? kFlutterSpiOk
++                                               : kFlutterSpiInvalidHandle;
++}
++
++FlutterSpiResult SpiGpuBufferRelease(FlutterSpiGpuBuffer* buffer) {
++  return Buffers().Release(HandleValue(buffer)) ? kFlutterSpiOk
++                                                : kFlutterSpiInvalidHandle;
++}
++
++std::shared_ptr<impeller::DeviceBuffer> SpiGpuBufferGetImpeller(
++    FlutterSpiGpuBuffer* buffer) {
++  SpiGpuBuffer* buffer_value = FindBuffer(buffer);
++  return buffer_value == nullptr ? nullptr : buffer_value->buffer();
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_buffer.h b/engine/src/flutter/runtime_spi/gpu/spi_gpu_buffer.h
+new file mode 100644
+index 00000000000..ec0e077b3e7
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_buffer.h
+@@ -0,0 +1,41 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_BUFFER_H_
++#define FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_BUFFER_H_
++
++#include <memory>
++
++#include "flutter/runtime_spi/include/flutter_gpu.h"
++
++namespace impeller {
++class DeviceBuffer;
++}
++
++namespace flutter {
++
++FlutterSpiResult SpiGpuBufferCreate(
++    FlutterSpiGpuContext* context,
++    const FlutterSpiGpuBufferDescriptor* descriptor,
++    FlutterSpiGpuBuffer** out_buffer);
++FlutterSpiResult SpiGpuBufferCreateWithData(FlutterSpiGpuContext* context,
++                                            const uint8_t* data,
++                                            size_t size,
++                                            FlutterSpiGpuBuffer** out_buffer);
++FlutterSpiResult SpiGpuBufferOverwrite(FlutterSpiGpuBuffer* buffer,
++                                       const uint8_t* data,
++                                       size_t size,
++                                       size_t destination_offset);
++FlutterSpiResult SpiGpuBufferFlush(FlutterSpiGpuBuffer* buffer,
++                                   size_t offset,
++                                   size_t size);
++FlutterSpiResult SpiGpuBufferRetain(FlutterSpiGpuBuffer* buffer);
++FlutterSpiResult SpiGpuBufferRelease(FlutterSpiGpuBuffer* buffer);
++
++std::shared_ptr<impeller::DeviceBuffer> SpiGpuBufferGetImpeller(
++    FlutterSpiGpuBuffer* buffer);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_BUFFER_H_
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
+index 223c290d61e..544b0800222 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
+@@ -3,6 +3,7 @@
+ // found in the LICENSE file.
+ 
+ #include "flutter/runtime_spi/gpu/spi_gpu_context.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_buffer.h"
+ 
+ #include <memory>
+ #include <string>
+@@ -238,5 +239,168 @@ TEST_F(SpiGpuContextTest, ContextCallsRejectNullAndReleasedHandles) {
+   EXPECT_EQ(SpiGpuContextGetInfo(context, &info), kFlutterSpiInvalidHandle);
+ }
+ 
++TEST_F(SpiGpuContextTest, BufferCreateUsesDescriptor) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  auto context = CreateMockContext(&capabilities);
++  auto allocator =
++      std::make_shared<NiceMock<impeller::testing::MockAllocator>>();
++  auto device_buffer = std::make_shared<NiceMock<impeller::testing::MockDeviceBuffer>>(
++      impeller::DeviceBufferDescriptor{});
++  impeller::DeviceBufferDescriptor received_descriptor;
++  EXPECT_CALL(*allocator, OnCreateBuffer(::testing::_))
++      .WillOnce(::testing::DoAll(::testing::SaveArg<0>(&received_descriptor),
++                                 Return(device_buffer)));
++  ON_CALL(*context, GetResourceAllocator()).WillByDefault(Return(allocator));
++  SpiGpuSetDefaultContextOverride(context);
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());
++  FlutterSpiGpuBufferDescriptor descriptor = {
++      .struct_size = sizeof(descriptor),
++      .storage_mode = kFlutterSpiGpuStorageModeHostVisible,
++      .size = 64,
++  };
++  FlutterSpiGpuBuffer* buffer = nullptr;
++
++  EXPECT_EQ(SpiGpuBufferCreate(gpu_context, &descriptor, &buffer),
++            kFlutterSpiOk);
++  EXPECT_EQ(received_descriptor.storage_mode,
++            impeller::StorageMode::kHostVisible);
++  EXPECT_EQ(received_descriptor.size, 64u);
++  EXPECT_EQ(SpiGpuBufferRelease(buffer), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, BufferCreateRejectsSmallStruct) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  auto context = CreateMockContext(&capabilities);
++  SpiGpuSetDefaultContextOverride(context);
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());
++  FlutterSpiGpuBufferDescriptor descriptor = {
++      .struct_size = offsetof(FlutterSpiGpuBufferDescriptor, size),
++      .storage_mode = kFlutterSpiGpuStorageModeHostVisible,
++      .size = 64,
++  };
++  FlutterSpiGpuBuffer* buffer = nullptr;
++
++  EXPECT_EQ(SpiGpuBufferCreate(gpu_context, &descriptor, &buffer),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(buffer, nullptr);
++  EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, BufferOverwriteRejectsOutOfRange) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  auto context = CreateMockContext(&capabilities);
++  auto allocator =
++      std::make_shared<NiceMock<impeller::testing::MockAllocator>>();
++  auto device_buffer = std::make_shared<NiceMock<impeller::testing::MockDeviceBuffer>>(
++      impeller::DeviceBufferDescriptor{
++          .storage_mode = impeller::StorageMode::kHostVisible,
++          .size = 8,
++      });
++  EXPECT_CALL(*allocator, OnCreateBuffer(::testing::_))
++      .WillOnce(Return(device_buffer));
++  EXPECT_CALL(*device_buffer, OnCopyHostBuffer(::testing::_, ::testing::_,
++                                               ::testing::_))
++      .Times(0);
++  ON_CALL(*context, GetResourceAllocator()).WillByDefault(Return(allocator));
++  SpiGpuSetDefaultContextOverride(context);
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());
++  FlutterSpiGpuBufferDescriptor descriptor = {
++      .struct_size = sizeof(descriptor),
++      .storage_mode = kFlutterSpiGpuStorageModeHostVisible,
++      .size = 8,
++  };
++  FlutterSpiGpuBuffer* buffer = nullptr;
++  ASSERT_EQ(SpiGpuBufferCreate(gpu_context, &descriptor, &buffer),
++            kFlutterSpiOk);
++  const uint8_t data[4] = {1, 2, 3, 4};
++
++  EXPECT_EQ(SpiGpuBufferOverwrite(buffer, data, sizeof(data), 6),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(SpiGpuBufferRelease(buffer), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, BufferCreateWithDataCopiesBytes) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  auto context = CreateMockContext(&capabilities);
++  auto allocator =
++      std::make_shared<NiceMock<impeller::testing::MockAllocator>>();
++  auto device_buffer = std::make_shared<NiceMock<impeller::testing::MockDeviceBuffer>>(
++      impeller::DeviceBufferDescriptor{
++          .storage_mode = impeller::StorageMode::kHostVisible,
++          .size = 3,
++      });
++  EXPECT_CALL(*allocator, OnCreateBuffer(::testing::_))
++      .WillOnce(Return(device_buffer));
++  const uint8_t data[3] = {7, 8, 9};
++  const uint8_t* copied_data = nullptr;
++  impeller::Range copied_range;
++  EXPECT_CALL(*device_buffer, OnCopyHostBuffer(::testing::_, ::testing::_ , 0))
++      .WillOnce(::testing::DoAll(::testing::SaveArg<0>(&copied_data),
++                                 ::testing::SaveArg<1>(&copied_range),
++                                 Return(true)));
++  ON_CALL(*context, GetResourceAllocator()).WillByDefault(Return(allocator));
++  SpiGpuSetDefaultContextOverride(context);
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());
++  FlutterSpiGpuBuffer* buffer = nullptr;
++
++  EXPECT_EQ(SpiGpuBufferCreateWithData(gpu_context, data, sizeof(data),
++                                       &buffer),
++            kFlutterSpiOk);
++  EXPECT_EQ(copied_data, data);
++  EXPECT_EQ(copied_range, impeller::Range(0, sizeof(data)));
++  EXPECT_EQ(SpiGpuBufferRelease(buffer), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, BufferCallsRejectNullAndReleasedHandles) {
++  FlutterSpiGpuBufferDescriptor descriptor = {
++      .struct_size = sizeof(descriptor),
++      .storage_mode = kFlutterSpiGpuStorageModeHostVisible,
++      .size = 8,
++  };
++  const uint8_t data[1] = {1};
++  EXPECT_EQ(SpiGpuBufferCreate(nullptr, &descriptor, nullptr),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(SpiGpuBufferCreateWithData(nullptr, data, sizeof(data), nullptr),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(SpiGpuBufferOverwrite(nullptr, data, sizeof(data), 0),
++            kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuBufferFlush(nullptr, 0, SIZE_MAX), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuBufferRetain(nullptr), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuBufferRelease(nullptr), kFlutterSpiInvalidHandle);
++
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  auto context = CreateMockContext(&capabilities);
++  auto allocator =
++      std::make_shared<NiceMock<impeller::testing::MockAllocator>>();
++  auto device_buffer = std::make_shared<NiceMock<impeller::testing::MockDeviceBuffer>>(
++      impeller::DeviceBufferDescriptor{
++          .storage_mode = impeller::StorageMode::kHostVisible,
++          .size = 8,
++      });
++  ON_CALL(*allocator, OnCreateBuffer(::testing::_))
++      .WillByDefault(Return(device_buffer));
++  ON_CALL(*context, GetResourceAllocator()).WillByDefault(Return(allocator));
++  SpiGpuSetDefaultContextOverride(context);
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());
++  FlutterSpiGpuBuffer* buffer = nullptr;
++  ASSERT_EQ(SpiGpuBufferCreate(gpu_context, &descriptor, &buffer),
++            kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuBufferRelease(buffer), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuBufferRetain(buffer), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuBufferOverwrite(buffer, data, sizeof(data), 0),
++            kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuBufferFlush(buffer, 0, SIZE_MAX), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuBufferGetImpeller(buffer), nullptr);
++  EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
++}
++
+ }  // namespace
+ }  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_gpu.h b/engine/src/flutter/runtime_spi/include/flutter_gpu.h
+index 380ae07d1a4..84bb785d918 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_gpu.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_gpu.h
+@@ -110,6 +110,12 @@ typedef struct {
+   bool supports_texture_arrays;
+ } FlutterSpiGpuContextInfo;
+ 
++typedef struct {
++  size_t struct_size;
++  int32_t storage_mode;
++  size_t size;
++} FlutterSpiGpuBufferDescriptor;
++
+ typedef struct FlutterSpiGpuApi {
+   size_t struct_size;
+   FlutterSpiResult (*context_get_default)(FlutterSpiEngine* engine,
+@@ -128,6 +134,23 @@ typedef struct FlutterSpiGpuApi {
+       int32_t format,
+       uint32_t usage,
+       bool* out_supported);
++  FlutterSpiResult (*buffer_create)(
++      FlutterSpiGpuContext* context,
++      const FlutterSpiGpuBufferDescriptor* descriptor,
++      FlutterSpiGpuBuffer** out_buffer);
++  FlutterSpiResult (*buffer_create_with_data)(FlutterSpiGpuContext* context,
++                                              const uint8_t* data,
++                                              size_t size,
++                                              FlutterSpiGpuBuffer** out_buffer);
++  FlutterSpiResult (*buffer_overwrite)(FlutterSpiGpuBuffer* buffer,
++                                       const uint8_t* data,
++                                       size_t size,
++                                       size_t destination_offset);
++  FlutterSpiResult (*buffer_flush)(FlutterSpiGpuBuffer* buffer,
++                                   size_t offset,
++                                   size_t size);
++  FlutterSpiResult (*buffer_retain)(FlutterSpiGpuBuffer* buffer);
++  FlutterSpiResult (*buffer_release)(FlutterSpiGpuBuffer* buffer);
+ } FlutterSpiGpuApi;
+ 
+ #ifdef __cplusplus
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index 934f943cc7d..b6e26be99ad 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -127,7 +127,21 @@ TEST(SpiAbi, GpuApiLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi, context_supports_texture_compression,
+                     40, 20);
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi, context_supports_texture_format, 48, 24);
+-  EXPECT_EQ(sizeof(FlutterSpiGpuApi), sizeof(void*) == 8 ? 56u : 28u);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, buffer_create, 56, 28);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, buffer_create_with_data, 64, 32);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, buffer_overwrite, 72, 36);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, buffer_flush, 80, 40);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, buffer_retain, 88, 44);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, buffer_release, 96, 48);
++  EXPECT_EQ(sizeof(FlutterSpiGpuApi), sizeof(void*) == 8 ? 104u : 52u);
++}
++
++TEST(SpiAbi, GpuBufferDescriptorLayoutIsFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiGpuBufferDescriptor, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuBufferDescriptor, storage_mode, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuBufferDescriptor, size, 16, 8);
++  EXPECT_EQ(sizeof(FlutterSpiGpuBufferDescriptor),
++            sizeof(void*) == 8 ? 24u : 16u);
+ }
+ 
+ TEST(SpiAbi, SemanticsLayoutIsFrozen) {
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index 36333d23972..9c1883f790f 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -21,6 +21,7 @@
+ #include "flutter/runtime_spi/effects/spi_shader.h"
+ #include "flutter/runtime_spi/effects/spi_vertices.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_context.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_buffer.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
+ #include "flutter/runtime_spi/image/spi_image_canvas.h"
+ #include "flutter/runtime_spi/image/spi_image_codec.h"
+@@ -158,6 +159,12 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+       .context_supports_texture_compression =
+           SpiGpuContextSupportsTextureCompression,
+       .context_supports_texture_format = SpiGpuContextSupportsTextureFormat,
++      .buffer_create = SpiGpuBufferCreate,
++      .buffer_create_with_data = SpiGpuBufferCreateWithData,
++      .buffer_overwrite = SpiGpuBufferOverwrite,
++      .buffer_flush = SpiGpuBufferFlush,
++      .buffer_retain = SpiGpuBufferRetain,
++      .buffer_release = SpiGpuBufferRelease,
+   };
+   static const FlutterSpiImageApi image_api = {
+       .struct_size = sizeof(FlutterSpiImageApi),

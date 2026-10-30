@@ -1,0 +1,861 @@
+# Why: S7a; flutter_gpu contexts, buffers and textures now use
+# FlutterSpiGpuApi for resource ownership and operations.
+diff --git a/engine/src/flutter/lib/gpu/BUILD.gn b/engine/src/flutter/lib/gpu/BUILD.gn
+index cfe869f1d5c..8b7af2d1ffe 100644
+--- a/engine/src/flutter/lib/gpu/BUILD.gn
++++ b/engine/src/flutter/lib/gpu/BUILD.gn
+@@ -66,6 +66,7 @@ source_set("gpu") {
+     "//flutter/lib/ui",
+     "//flutter/lib/ui:ui_image_decoding",
+     "//flutter/lib/ui:ui_gpu_bridge",
++    "//flutter/runtime_spi:spi_backend",
+     "//flutter/third_party/tonic",
+     "//third_party/abseil-cpp/absl/status",
+     "//third_party/abseil-cpp/absl/status:statusor",
+diff --git a/engine/src/flutter/lib/gpu/context.cc b/engine/src/flutter/lib/gpu/context.cc
+index 8501857e6c2..f485667a4e3 100644
+--- a/engine/src/flutter/lib/gpu/context.cc
++++ b/engine/src/flutter/lib/gpu/context.cc
+@@ -4,21 +4,40 @@
+ 
+ #include "flutter/lib/gpu/context.h"
+ 
+-#include <future>
+-
+ #include "flutter/lib/gpu/formats.h"
+-#include "flutter/lib/ui/io_manager.h"
+-#include "flutter/lib/ui/ui_dart_state.h"
+-#include "fml/make_copyable.h"
+-#include "impeller/core/allocator.h"
+-#include "impeller/core/formats.h"
+-#include "impeller/core/texture_descriptor.h"
++#include "flutter/lib/ui/painting/image.h"
++#include "flutter/lib/ui/spi_api.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "impeller/renderer/context.h"
+ #include "tonic/converter/dart_converter.h"
+ 
+ namespace flutter {
+ namespace gpu {
+ 
++namespace {
++
++std::string UnavailableReasonMessage(int32_t reason) {
++  switch (reason) {
++    case kFlutterSpiGpuUnavailableImpellerDisabled:
++      return
++          "Flutter GPU requires the Impeller rendering backend, but Impeller "
++          "is not enabled. For more details about where Impeller is available "
++          "and how to enable it, see: https://docs.flutter.dev/perf/impeller";
++    case kFlutterSpiGpuUnavailableFlutterGpuDisabled:
++      return
++          "Flutter GPU must be enabled via the Flutter GPU manifest setting. "
++          "This can be done either via command line argument "
++          "--enable-flutter-gpu or by adding the FLTEnableFlutterGPU key set "
++          "to true in the Info.plist on iOS/macOS, or the "
++          "io.flutter.embedding.android.EnableFlutterGPU metadata key to true "
++          "in the AndroidManifest.xml on Android.";
++    default:
++      return "Unable to retrieve the Impeller context.";
++  }
++}
++
++}  // namespace
++
+ bool SupportsNormalOffscreenMSAA(const impeller::Context& context) {
+   auto& capabilities = context.GetCapabilities();
+   return capabilities->SupportsOffscreenMSAA() &&
+@@ -27,72 +46,62 @@ bool SupportsNormalOffscreenMSAA(const impeller::Context& context) {
+ 
+ IMPLEMENT_WRAPPERTYPEINFO(flutter_gpu, Context);
+ 
+-std::shared_ptr<impeller::Context> Context::default_context_;
+-
+ void Context::SetOverrideContext(std::shared_ptr<impeller::Context> context) {
+-  default_context_ = std::move(context);
++  SpiGpuSetDefaultContextOverride(std::move(context));
+ }
+ 
+ std::shared_ptr<impeller::Context> Context::GetOverrideContext() {
+-  return default_context_;
++  return SpiGpuGetDefaultContextOverride();
+ }
+ 
+ std::shared_ptr<impeller::Context> Context::GetDefaultContext(
+     std::optional<std::string>& out_error) {
+-  auto override_context = GetOverrideContext();
+-  if (override_context) {
+-    return override_context;
+-  }
+-
+-  auto dart_state = flutter::UIDartState::Current();
+-  if (!dart_state->IsImpellerEnabled()) {
+-    out_error =
+-        "Flutter GPU requires the Impeller rendering backend, but Impeller is "
+-        "not enabled. For more details about where Impeller is available and "
+-        "how to enable it, see: https://docs.flutter.dev/perf/impeller";
+-    return nullptr;
+-  }
+-  if (!dart_state->IsFlutterGPUEnabled()) {
+-    out_error =
+-        "Flutter GPU must be enabled via the Flutter GPU manifest "
+-        "setting. This can be done either via command line argument "
+-        "--enable-flutter-gpu or "
+-        "by adding the FLTEnableFlutterGPU key set to true in the Info.plist "
+-        "on iOS/macOS, or the io.flutter.embedding.android.EnableFlutterGPU "
+-        "metadata key to true in the AndroidManifest.xml on Android.";
++  FlutterSpiGpuContext* spi_context = nullptr;
++  int32_t reason = kFlutterSpiGpuUnavailableNone;
++  if (SpiApi().gpu->context_get_default(CanvasImage::GetSpiEngine(),
++                                        &spi_context,
++                                        &reason) != kFlutterSpiOk) {
++    out_error = UnavailableReasonMessage(reason);
+     return nullptr;
+   }
+-  // Grab the Impeller context from the IO manager.
+-  std::promise<std::shared_ptr<impeller::Context>> context_promise;
+-  auto impeller_context_future = context_promise.get_future();
+-  fml::TaskRunner::RunNowOrPostTask(
+-      dart_state->GetTaskRunners().GetIOTaskRunner(),
+-      fml::MakeCopyable([promise = std::move(context_promise),
+-                         io_manager = dart_state->GetIOManager()]() mutable {
+-        promise.set_value(io_manager ? io_manager->GetImpellerContext()
+-                                     : nullptr);
+-      }));
+-  auto context = impeller_context_future.get();
+ 
++  auto context = SpiGpuContextGetImpeller(spi_context);
++  SpiApi().gpu->context_release(spi_context);
+   if (!context) {
+     out_error = "Unable to retrieve the Impeller context.";
+   }
+   return context;
+ }
+ 
+-Context::Context(std::shared_ptr<impeller::Context> context)
+-    : context_(std::move(context)) {}
++Context::Context(FlutterSpiGpuContext* context) : spi_context_(context) {
++  context_ = SpiGpuContextGetImpeller(spi_context_);
++  info_.struct_size = sizeof(info_);
++  SpiApi().gpu->context_get_info(spi_context_, &info_);
++}
+ 
+-Context::~Context() = default;
++Context::~Context() {
++  if (spi_context_ != nullptr) {
++    SpiApi().gpu->context_release(spi_context_);
++  }
++}
+ 
+ impeller::Context& Context::GetContext() {
+   return *context_;
+ }
+ 
+ std::shared_ptr<impeller::Context>& Context::GetContextShared() {
++  // Impeller access remains during the transition until the S7c migration.
+   return context_;
+ }
+ 
++FlutterSpiGpuContext* Context::GetSpiContext() const {
++  return spi_context_;
++}
++
++const FlutterSpiGpuContextInfo& Context::GetInfo() const {
++  return info_;
++}
++
+ }  // namespace gpu
+ }  // namespace flutter
+ 
+@@ -101,13 +110,16 @@ std::shared_ptr<impeller::Context>& Context::GetContextShared() {
+ ///
+ 
+ Dart_Handle InternalFlutterGpu_Context_InitializeDefault(Dart_Handle wrapper) {
+-  std::optional<std::string> out_error;
+-  auto impeller_context = flutter::gpu::Context::GetDefaultContext(out_error);
+-  if (out_error.has_value()) {
+-    return tonic::ToDart(out_error.value());
++  FlutterSpiGpuContext* spi_context = nullptr;
++  int32_t reason = kFlutterSpiGpuUnavailableNone;
++  if (flutter::SpiApi().gpu->context_get_default(
++          flutter::CanvasImage::GetSpiEngine(), &spi_context, &reason) !=
++      kFlutterSpiOk) {
++    return tonic::ToDart(
++        flutter::gpu::UnavailableReasonMessage(reason));
+   }
+ 
+-  auto res = fml::MakeRefCounted<flutter::gpu::Context>(impeller_context);
++  auto res = fml::MakeRefCounted<flutter::gpu::Context>(spi_context);
+   res->AssociateWithDartWrapper(wrapper);
+ 
+   return Dart_Null();
+@@ -115,69 +127,56 @@ Dart_Handle InternalFlutterGpu_Context_InitializeDefault(Dart_Handle wrapper) {
+ 
+ extern int InternalFlutterGpu_Context_GetDefaultColorFormat(
+     flutter::gpu::Context* wrapper) {
+-  return static_cast<int>(flutter::gpu::FromImpellerPixelFormat(
+-      wrapper->GetContext().GetCapabilities()->GetDefaultColorFormat()));
++  return wrapper->GetInfo().default_color_format;
+ }
+ 
+ extern int InternalFlutterGpu_Context_GetDefaultStencilFormat(
+     flutter::gpu::Context* wrapper) {
+-  return static_cast<int>(flutter::gpu::FromImpellerPixelFormat(
+-      wrapper->GetContext().GetCapabilities()->GetDefaultStencilFormat()));
++  return wrapper->GetInfo().default_stencil_format;
+ }
+ 
+ extern int InternalFlutterGpu_Context_GetDefaultDepthStencilFormat(
+     flutter::gpu::Context* wrapper) {
+-  return static_cast<int>(flutter::gpu::FromImpellerPixelFormat(
+-      wrapper->GetContext().GetCapabilities()->GetDefaultDepthStencilFormat()));
++  return wrapper->GetInfo().default_depth_stencil_format;
+ }
+ 
+ extern int InternalFlutterGpu_Context_GetMinimumUniformByteAlignment(
+     flutter::gpu::Context* wrapper) {
+-  return wrapper->GetContext().GetCapabilities()->GetMinimumUniformAlignment();
++  return wrapper->GetInfo().minimum_uniform_alignment;
+ }
+ 
+ extern bool InternalFlutterGpu_Context_GetSupportsOffscreenMSAA(
+     flutter::gpu::Context* wrapper) {
+-  return flutter::gpu::SupportsNormalOffscreenMSAA(wrapper->GetContext());
++  return wrapper->GetInfo().supports_offscreen_msaa;
+ }
+ 
+ extern bool InternalFlutterGpu_Context_GetSupportsFramebufferRenderMipmap(
+     flutter::gpu::Context* wrapper) {
+-  return wrapper->GetContext()
+-      .GetCapabilities()
+-      ->SupportsFramebufferRenderMipmap();
++  return wrapper->GetInfo().supports_framebuffer_render_mipmap;
+ }
+ 
+ extern bool InternalFlutterGpu_Context_GetSupportsManuallyMippedTextures(
+     flutter::gpu::Context* wrapper) {
+-  return wrapper->GetContext()
+-      .GetCapabilities()
+-      ->SupportsManuallyMippedTextures();
++  return wrapper->GetInfo().supports_manually_mipped_textures;
+ }
+ 
+ extern bool InternalFlutterGpu_Context_GetSupportsTextureArrays(
+     flutter::gpu::Context* wrapper) {
+-  // TODO(bdero): Shader bundles do not carry an OpenGL ES 3.0 shader variant
+-  // yet, so user shaders cannot sample 2D array textures on the GLES backend
+-  // even when the context itself supports them. Once the bundle format gains
+-  // an ES 3.0 variant, gate on the context capability alone.
+-  if (wrapper->GetContext().GetBackendType() ==
+-      impeller::Context::BackendType::kOpenGLES) {
+-    return false;
+-  }
+-  return wrapper->GetContext().GetCapabilities()->SupportsTextureArrays();
++  return wrapper->GetInfo().supports_texture_arrays;
+ }
+ 
+ extern int InternalFlutterGpu_Context_GetMaxSamplerAnisotropy(
+     flutter::gpu::Context* wrapper) {
+-  return wrapper->GetContext().GetCapabilities()->GetMaxSamplerAnisotropy();
++  return wrapper->GetInfo().max_sampler_anisotropy;
+ }
+ 
+ extern bool InternalFlutterGpu_Context_SupportsTextureCompression(
+     flutter::gpu::Context* wrapper,
+     int family) {
+-  return wrapper->GetContext().GetCapabilities()->SupportsTextureCompression(
+-      flutter::gpu::ToImpellerCompressedTextureFamily(family));
++  bool supported = false;
++  return flutter::SpiApi().gpu->context_supports_texture_compression(
++             wrapper->GetSpiContext(), family, &supported) == kFlutterSpiOk &&
++         supported;
+ }
+ 
+ extern bool InternalFlutterGpu_Context_SupportsTextureFormat(
+@@ -186,22 +185,19 @@ extern bool InternalFlutterGpu_Context_SupportsTextureFormat(
+     bool render_target,
+     bool shader_read,
+     bool shader_write) {
+-  const impeller::PixelFormat impeller_format =
+-      flutter::gpu::ToImpellerPixelFormat(format);
+-  if (impeller_format == impeller::PixelFormat::kUnknown) {
+-    return false;
++  uint32_t usage = 0;
++  if (render_target) {
++    usage |= kFlutterSpiGpuTextureUsageRenderTarget;
++  }
++  if (shader_read) {
++    usage |= kFlutterSpiGpuTextureUsageShaderRead;
+   }
+-  // Compressed formats are sample-only: shader_read must be true, and
+-  // render-target or shader-write usage is never available.
+-  if (impeller::IsCompressed(impeller_format)) {
+-    if (render_target || shader_write || !shader_read) {
+-      return false;
+-    }
+-    return wrapper->GetContext().GetCapabilities()->SupportsTextureCompression(
+-        impeller::CompressedTextureFamilyForFormat(impeller_format));
++  if (shader_write) {
++    usage |= kFlutterSpiGpuTextureUsageShaderWrite;
+   }
+-  // For uncompressed formats, today's Impeller capability surface does not
+-  // expose a per-format usage query, so this returns true. As that surface
+-  // grows it should be wired in here.
+-  return true;
++  bool supported = false;
++  return flutter::SpiApi().gpu->context_supports_texture_format(
++             wrapper->GetSpiContext(), format, usage, &supported) ==
++             kFlutterSpiOk &&
++         supported;
+ }
+diff --git a/engine/src/flutter/lib/gpu/context.h b/engine/src/flutter/lib/gpu/context.h
+index c0ce6ab62c9..3b4a30de22e 100644
+--- a/engine/src/flutter/lib/gpu/context.h
++++ b/engine/src/flutter/lib/gpu/context.h
+@@ -8,6 +8,7 @@
+ #include "dart_api.h"
+ #include "flutter/lib/gpu/export.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
++#include "flutter/runtime_spi/include/flutter_gpu.h"
+ #include "impeller/renderer/context.h"
+ 
+ namespace flutter {
+@@ -27,19 +28,19 @@ class Context : public RefCountedDartWrappable<Context> {
+   static std::shared_ptr<impeller::Context> GetDefaultContext(
+       std::optional<std::string>& out_error);
+ 
+-  explicit Context(std::shared_ptr<impeller::Context> context);
++  explicit Context(FlutterSpiGpuContext* context);
+   ~Context() override;
+ 
+   impeller::Context& GetContext();
+ 
+   std::shared_ptr<impeller::Context>& GetContextShared();
+ 
+- private:
+-  /// An Impeller context that takes precedent over the IO state context when
+-  /// set. This is used to inject the context when running with the Impeller
+-  /// playground, which doesn't instantiate an Engine instance.
+-  static std::shared_ptr<impeller::Context> default_context_;
++  FlutterSpiGpuContext* GetSpiContext() const;
++  const FlutterSpiGpuContextInfo& GetInfo() const;
+ 
++ private:
++  FlutterSpiGpuContext* spi_context_ = nullptr;
++  FlutterSpiGpuContextInfo info_ = {};
+   std::shared_ptr<impeller::Context> context_;
+ 
+   FML_DISALLOW_COPY_AND_ASSIGN(Context);
+diff --git a/engine/src/flutter/lib/gpu/device_buffer.cc b/engine/src/flutter/lib/gpu/device_buffer.cc
+index 1304d9b2692..1b4442b6a05 100644
+--- a/engine/src/flutter/lib/gpu/device_buffer.cc
++++ b/engine/src/flutter/lib/gpu/device_buffer.cc
+@@ -4,13 +4,13 @@
+ 
+ #include "flutter/lib/gpu/device_buffer.h"
+ 
++#include <limits>
++
+ #include "dart_api.h"
+-#include "flutter/lib/gpu/formats.h"
+-#include "fml/mapping.h"
++#include "flutter/lib/ui/painting/image.h"
++#include "flutter/lib/ui/spi_api.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "impeller/core/device_buffer.h"
+-#include "impeller/core/device_buffer_descriptor.h"
+-#include "impeller/core/formats.h"
+-#include "impeller/core/range.h"
+ #include "third_party/tonic/typed_data/dart_byte_data.h"
+ #include "tonic/converter/dart_converter.h"
+ 
+@@ -19,25 +19,28 @@ namespace gpu {
+ 
+ IMPLEMENT_WRAPPERTYPEINFO(flutter_gpu, DeviceBuffer);
+ 
+-DeviceBuffer::DeviceBuffer(
+-    std::shared_ptr<impeller::DeviceBuffer> device_buffer)
+-    : device_buffer_(std::move(device_buffer)) {}
++DeviceBuffer::DeviceBuffer(FlutterSpiGpuBuffer* buffer) : spi_buffer_(buffer) {}
+ 
+-DeviceBuffer::~DeviceBuffer() = default;
++DeviceBuffer::~DeviceBuffer() {
++  if (spi_buffer_ != nullptr) {
++    SpiApi().gpu->buffer_release(spi_buffer_);
++  }
++}
+ 
+ std::shared_ptr<impeller::DeviceBuffer> DeviceBuffer::GetBuffer() {
+-  return device_buffer_;
++  return SpiGpuBufferGetImpeller(spi_buffer_);
++}
++
++FlutterSpiGpuBuffer* DeviceBuffer::GetSpiBuffer() const {
++  return spi_buffer_;
+ }
+ 
+ bool DeviceBuffer::Overwrite(const tonic::DartByteData& source_bytes,
+                              size_t destination_offset_in_bytes) {
+-  if (!device_buffer_->CopyHostBuffer(
+-          reinterpret_cast<const uint8_t*>(source_bytes.data()),
+-          impeller::Range(0, source_bytes.length_in_bytes()),
+-          destination_offset_in_bytes)) {
+-    return false;
+-  }
+-  return true;
++  return SpiApi().gpu->buffer_overwrite(
++             spi_buffer_, static_cast<const uint8_t*>(source_bytes.data()),
++             source_bytes.length_in_bytes(),
++             destination_offset_in_bytes) == kFlutterSpiOk;
+ }
+ 
+ }  // namespace gpu
+@@ -52,18 +55,18 @@ bool InternalFlutterGpu_DeviceBuffer_Initialize(
+     flutter::gpu::Context* gpu_context,
+     int storage_mode,
+     int size_in_bytes) {
+-  impeller::DeviceBufferDescriptor desc;
+-  desc.storage_mode = flutter::gpu::ToImpellerStorageMode(storage_mode);
++  FlutterSpiGpuBufferDescriptor desc = {};
++  desc.struct_size = sizeof(desc);
++  desc.storage_mode = storage_mode;
+   desc.size = size_in_bytes;
+-  auto device_buffer =
+-      gpu_context->GetContext().GetResourceAllocator()->CreateBuffer(desc);
+-  if (!device_buffer) {
++  FlutterSpiGpuBuffer* buffer = nullptr;
++  if (flutter::SpiApi().gpu->buffer_create(gpu_context->GetSpiContext(), &desc,
++                                           &buffer) != kFlutterSpiOk) {
+     FML_LOG(ERROR) << "Failed to create device buffer.";
+     return false;
+   }
+ 
+-  auto res =
+-      fml::MakeRefCounted<flutter::gpu::DeviceBuffer>(std::move(device_buffer));
++  auto res = fml::MakeRefCounted<flutter::gpu::DeviceBuffer>(buffer);
+   res->AssociateWithDartWrapper(wrapper);
+ 
+   return true;
+@@ -73,25 +76,26 @@ bool InternalFlutterGpu_DeviceBuffer_InitializeWithHostData(
+     Dart_Handle wrapper,
+     flutter::gpu::Context* gpu_context,
+     Dart_Handle byte_data) {
+-  std::shared_ptr<impeller::DeviceBuffer> device_buffer = nullptr;
++  FlutterSpiGpuBuffer* buffer = nullptr;
+   {
+     // `DartByteData` gets raw pointers into the Dart heap via
+-    // `Dart_TypedDataAcquireData`. So it must be destructed before
+-    // `AssociateWithDartWrapper` is called, which mutates the heap.
++    // `Dart_TypedDataAcquireData`. It must be destructed before the wrapper
++    // is associated because that mutates the heap.
+     auto data = tonic::DartByteData(byte_data);
+-    auto mapping = fml::NonOwnedMapping(reinterpret_cast<uint8_t*>(data.data()),
+-                                        data.length_in_bytes());
+-    device_buffer =
+-        gpu_context->GetContext().GetResourceAllocator()->CreateBufferWithCopy(
+-            mapping);
++    if (flutter::SpiApi().gpu->buffer_create_with_data(
++            gpu_context->GetSpiContext(),
++            static_cast<const uint8_t*>(data.data()), data.length_in_bytes(),
++            &buffer) != kFlutterSpiOk) {
++      FML_LOG(ERROR) << "Failed to create device buffer with copy.";
++      return false;
++    }
+   }
+-  if (!device_buffer) {
++  if (buffer == nullptr) {
+     FML_LOG(ERROR) << "Failed to create device buffer with copy.";
+     return false;
+   }
+ 
+-  auto res =
+-      fml::MakeRefCounted<flutter::gpu::DeviceBuffer>(std::move(device_buffer));
++  auto res = fml::MakeRefCounted<flutter::gpu::DeviceBuffer>(buffer);
+   res->AssociateWithDartWrapper(wrapper);
+ 
+   return true;
+@@ -109,7 +113,9 @@ bool InternalFlutterGpu_DeviceBuffer_Flush(
+     flutter::gpu::DeviceBuffer* device_buffer,
+     int offset_in_bytes,
+     int size_in_bytes) {
+-  device_buffer->GetBuffer()->Flush(
+-      impeller::Range(offset_in_bytes, size_in_bytes));
+-  return true;
++  const size_t size = size_in_bytes == -1 ? std::numeric_limits<size_t>::max()
++                                          : static_cast<size_t>(size_in_bytes);
++  return flutter::SpiApi().gpu->buffer_flush(
++             device_buffer->GetSpiBuffer(),
++             static_cast<size_t>(offset_in_bytes), size) == kFlutterSpiOk;
+ }
+diff --git a/engine/src/flutter/lib/gpu/device_buffer.h b/engine/src/flutter/lib/gpu/device_buffer.h
+index af8c8b0c9d1..720f3c80959 100644
+--- a/engine/src/flutter/lib/gpu/device_buffer.h
++++ b/engine/src/flutter/lib/gpu/device_buffer.h
+@@ -19,17 +19,19 @@ class DeviceBuffer : public RefCountedDartWrappable<DeviceBuffer> {
+   FML_FRIEND_MAKE_REF_COUNTED(DeviceBuffer);
+ 
+  public:
+-  explicit DeviceBuffer(std::shared_ptr<impeller::DeviceBuffer> device_buffer);
++  explicit DeviceBuffer(FlutterSpiGpuBuffer* buffer);
+ 
+   ~DeviceBuffer() override;
+ 
+   std::shared_ptr<impeller::DeviceBuffer> GetBuffer();
+ 
++  FlutterSpiGpuBuffer* GetSpiBuffer() const;
++
+   bool Overwrite(const tonic::DartByteData& source_bytes,
+                  size_t destination_offset_in_bytes);
+ 
+  private:
+-  std::shared_ptr<impeller::DeviceBuffer> device_buffer_;
++  FlutterSpiGpuBuffer* spi_buffer_ = nullptr;
+ 
+   FML_DISALLOW_COPY_AND_ASSIGN(DeviceBuffer);
+ };
+diff --git a/engine/src/flutter/lib/gpu/texture.cc b/engine/src/flutter/lib/gpu/texture.cc
+index bbdf911f704..f0dbd0fc17d 100644
+--- a/engine/src/flutter/lib/gpu/texture.cc
++++ b/engine/src/flutter/lib/gpu/texture.cc
+@@ -10,18 +10,9 @@
+ #include "flutter/lib/gpu/formats.h"
+ #include "flutter/lib/ui/painting/image.h"
+ #include "flutter/lib/ui/painting/image_gpu_bridge.h"
+-#include "flutter/lib/ui/ui_dart_state.h"
+-#include "fml/make_copyable.h"
+-#include "fml/mapping.h"
+-#include "impeller/core/allocator.h"
+-#include "impeller/core/buffer_view.h"
+-#include "impeller/core/device_buffer.h"
+-#include "impeller/core/formats.h"
++#include "flutter/lib/ui/spi_api.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "impeller/core/texture.h"
+-#include "impeller/geometry/rect.h"
+-#include "impeller/renderer/blit_pass.h"
+-#include "impeller/renderer/command_buffer.h"
+-#include "impeller/renderer/command_queue.h"
+ #include "impeller/renderer/context.h"
+ 
+ #if IMPELLER_SUPPORTS_RENDERING
+@@ -38,114 +29,36 @@ namespace gpu {
+ 
+ IMPLEMENT_WRAPPERTYPEINFO(flutter_gpu, Texture);
+ 
++Texture::Texture(FlutterSpiGpuTexture* texture) : spi_texture_(texture) {
++  texture_ = SpiGpuTextureGetImpeller(spi_texture_);
++}
++
+ Texture::Texture(std::shared_ptr<impeller::Texture> texture)
+     : texture_(std::move(texture)) {}
+ 
+-Texture::~Texture() = default;
++Texture::~Texture() {
++  if (spi_texture_ != nullptr) {
++    SpiApi().gpu->texture_release(spi_texture_);
++  }
++}
+ 
+-std::shared_ptr<impeller::Texture> Texture::GetTexture() {
++std::shared_ptr<impeller::Texture> Texture::GetTexture() const {
+   return texture_;
+ }
+ 
+-// Returns the size in pixels of the given dimension at `mip_level`, clamped
+-// at 1, matching standard mip-chain semantics. The Dart-side helper
+-// `Texture.getMipLevelSizeInBytes` uses the same `max(1, dim >> level)`
+-// formula in pixel-count form; if either is updated, both must be kept in
+-// sync.
+-static int32_t MipDimensionAtLevel(int32_t base_dimension, uint32_t mip_level) {
+-  const int32_t shifted = base_dimension >> mip_level;
+-  return shifted > 0 ? shifted : 1;
+-}
+-
+-// Records a blit-pass that copies `source_bytes` into the given mip level and
+-// slice of `texture` on `context`, then submits the command buffer. Returns
+-// true if the encode and submit both succeed. The actual GPU upload may
+-// complete asynchronously after this call returns.
+-static bool EncodeAndSubmitOverwrite(
+-    impeller::Context& context,
+-    const std::shared_ptr<impeller::Texture>& texture,
+-    const std::shared_ptr<impeller::DeviceBuffer>& staging_buffer,
+-    size_t source_length,
+-    impeller::IRect destination_region,
+-    uint32_t mip_level,
+-    uint32_t slice) {
+-  auto command_buffer = context.CreateCommandBuffer();
+-  if (!command_buffer) {
+-    FML_LOG(ERROR) << "Failed to create command buffer for texture overwrite.";
+-    return false;
+-  }
+-  auto blit_pass = command_buffer->CreateBlitPass();
+-  if (!blit_pass) {
+-    FML_LOG(ERROR) << "Failed to create blit pass for texture overwrite.";
+-    return false;
+-  }
+-  impeller::BufferView buffer_view(staging_buffer,
+-                                   impeller::Range(0, source_length));
+-  if (!blit_pass->AddCopy(std::move(buffer_view), texture, destination_region,
+-                          /*label=*/"Texture.overwrite", mip_level, slice)) {
+-    return false;
+-  }
+-  if (!blit_pass->EncodeCommands()) {
+-    return false;
+-  }
+-  return context.GetCommandQueue()->Submit({std::move(command_buffer)}).ok();
++FlutterSpiGpuTexture* Texture::GetSpiTexture() const {
++  return spi_texture_;
+ }
+ 
+ bool Texture::Overwrite(Context& gpu_context,
+                         const tonic::DartByteData& source_bytes,
+                         uint32_t mip_level,
+                         uint32_t slice) {
+-  const uint8_t* data = static_cast<const uint8_t*>(source_bytes.data());
+-  const size_t length = source_bytes.length_in_bytes();
+-
+-  auto& impeller_context = gpu_context.GetContext();
+-  auto staging_buffer =
+-      impeller_context.GetResourceAllocator()->CreateBufferWithCopy(data,
+-                                                                    length);
+-  if (!staging_buffer) {
+-    FML_LOG(ERROR) << "Failed to allocate staging buffer for texture "
+-                      "overwrite.";
+-    return false;
+-  }
+-
+-  // Compute the destination region for the requested mip level. The
+-  // BlitPass::AddCopy validation requires the region to fit within the base
+-  // texture size, and the actual GPU copy uses this rectangle as the
+-  // destination on the chosen mip level. The same `max(1, dim >> level)`
+-  // formula is used by `Texture.getMipLevelSizeInBytes` on the Dart side; if
+-  // either is updated, both must be kept in sync.
+-  const impeller::ISize base_size = texture_->GetSize();
+-  const impeller::IRect destination_region = impeller::IRect::MakeXYWH(
+-      0, 0, MipDimensionAtLevel(base_size.width, mip_level),
+-      MipDimensionAtLevel(base_size.height, mip_level));
+-
+-  // For the GLES backend, command queue submission just flushes the reactor,
+-  // which needs to happen on the raster thread.
+-  if (impeller_context.GetBackendType() ==
+-      impeller::Context::BackendType::kOpenGLES) {
+-    auto dart_state = flutter::UIDartState::Current();
+-    auto& task_runners = dart_state->GetTaskRunners();
+-    auto context_shared = gpu_context.GetContextShared();
+-    task_runners.GetRasterTaskRunner()->PostTask(fml::MakeCopyable(
+-        [context_shared, texture = texture_, staging_buffer, length,
+-         destination_region, mip_level, slice]() mutable {
+-          if (!EncodeAndSubmitOverwrite(*context_shared, texture,
+-                                        staging_buffer, length,
+-                                        destination_region, mip_level, slice)) {
+-            FML_LOG(ERROR) << "Failed to encode texture overwrite blit on the "
+-                              "raster thread.";
+-          }
+-          context_shared->DisposeThreadLocalCachedResources();
+-        }));
+-    return true;
+-  }
+-
+-  if (!EncodeAndSubmitOverwrite(impeller_context, texture_, staging_buffer,
+-                                length, destination_region, mip_level, slice)) {
+-    return false;
+-  }
+-  impeller_context.DisposeThreadLocalCachedResources();
+-  return true;
++  (void)gpu_context;
++  return SpiApi().gpu->texture_overwrite(
++             spi_texture_, static_cast<const uint8_t*>(source_bytes.data()),
++             source_bytes.length_in_bytes(), static_cast<int32_t>(mip_level),
++             static_cast<int32_t>(slice)) == kFlutterSpiOk;
+ }
+ 
+ #if IMPELLER_SUPPORTS_RENDERING
+@@ -188,7 +101,7 @@ Dart_Handle Texture::AsImage() const {
+   // Impeller is disabled, it's impossible to get here anyhow, so just ifdef it
+   // out.
+ #if IMPELLER_SUPPORTS_RENDERING
+-  auto dl_image = impeller::DlImageImpeller::Make(texture_);
++  auto dl_image = impeller::DlImageImpeller::Make(GetTexture());
+   auto image = flutter::CanvasImageFromDlImageForGpu(std::move(dl_image));
+   auto wrapped = image->CreateOuterWrapping();
+   return wrapped;
+@@ -224,47 +137,35 @@ bool InternalFlutterGpu_Texture_Initialize(Dart_Handle wrapper,
+     return false;
+   }
+   FML_DCHECK(layer_count <= std::numeric_limits<uint16_t>::max());
+-  impeller::TextureDescriptor desc;
+-  desc.storage_mode = flutter::gpu::ToImpellerStorageMode(storage_mode);
+-  desc.size = {width, height};
+-  desc.format = flutter::gpu::ToImpellerPixelFormat(format);
+-  desc.mip_count = static_cast<size_t>(mip_level_count);
+-  desc.array_layer_count = static_cast<uint16_t>(layer_count);
+-  desc.usage = {};
++  FlutterSpiGpuTextureDescriptor desc = {};
++  desc.struct_size = sizeof(desc);
++  desc.storage_mode = storage_mode;
++  desc.format = format;
++  desc.width = width;
++  desc.height = height;
++  desc.sample_count = sample_count;
++  desc.texture_type = texture_type;
++  desc.usage = 0;
+   if (enable_render_target_usage) {
+-    desc.usage |= impeller::TextureUsage::kRenderTarget;
++    desc.usage |= kFlutterSpiGpuTextureUsageRenderTarget;
+   }
+   if (enable_shader_read_usage) {
+-    desc.usage |= impeller::TextureUsage::kShaderRead;
++    desc.usage |= kFlutterSpiGpuTextureUsageShaderRead;
+   }
+   if (enable_shader_write_usage) {
+-    desc.usage |= impeller::TextureUsage::kShaderWrite;
+-  }
+-  switch (sample_count) {
+-    case 1:
+-      desc.sample_count = impeller::SampleCount::kCount1;
+-      break;
+-    case 4:
+-      desc.sample_count = impeller::SampleCount::kCount4;
+-      break;
+-    default:
+-      return false;
+-  }
+-  desc.type = flutter::gpu::ToImpellerTextureType(texture_type);
+-  if (!impeller::IsMultisampleCapable(desc.type) &&
+-      desc.sample_count != impeller::SampleCount::kCount1) {
+-    return false;
++    desc.usage |= kFlutterSpiGpuTextureUsageShaderWrite;
+   }
++  desc.mip_level_count = mip_level_count;
++  desc.layer_count = layer_count;
+ 
+-  auto texture =
+-      gpu_context->GetContext().GetResourceAllocator()->CreateTexture(desc,
+-                                                                      true);
+-  if (!texture) {
++  FlutterSpiGpuTexture* texture = nullptr;
++  if (flutter::SpiApi().gpu->texture_create(gpu_context->GetSpiContext(), &desc,
++                                            &texture) != kFlutterSpiOk) {
+     FML_LOG(ERROR) << "Failed to create texture.";
+     return false;
+   }
+ 
+-  auto res = fml::MakeRefCounted<flutter::gpu::Texture>(std::move(texture));
++  auto res = fml::MakeRefCounted<flutter::gpu::Texture>(texture);
+   res->AssociateWithDartWrapper(wrapper);
+ 
+   return true;
+@@ -345,7 +246,13 @@ bool InternalFlutterGpu_Texture_InitializeFromImage(
+   if (!texture) {
+     return false;
+   }
+-  auto res = fml::MakeRefCounted<flutter::gpu::Texture>(std::move(texture));
++  FlutterSpiGpuTexture* spi_texture = nullptr;
++  if (flutter::SpiGpuTextureWrapImpeller(gpu_context->GetSpiContext(),
++                                         std::move(texture),
++                                         &spi_texture) != kFlutterSpiOk) {
++    return false;
++  }
++  auto res = fml::MakeRefCounted<flutter::gpu::Texture>(spi_texture);
+   res->AssociateWithDartWrapper(wrapper);
+   return true;
+ #else
+diff --git a/engine/src/flutter/lib/gpu/texture.h b/engine/src/flutter/lib/gpu/texture.h
+index ed019804a2a..dff1b681681 100644
+--- a/engine/src/flutter/lib/gpu/texture.h
++++ b/engine/src/flutter/lib/gpu/texture.h
+@@ -19,11 +19,14 @@ class Texture : public RefCountedDartWrappable<Texture> {
+   FML_FRIEND_MAKE_REF_COUNTED(Texture);
+ 
+  public:
++  explicit Texture(FlutterSpiGpuTexture* texture);
+   explicit Texture(std::shared_ptr<impeller::Texture> texture);
+ 
+   ~Texture() override;
+ 
+-  std::shared_ptr<impeller::Texture> GetTexture();
++  std::shared_ptr<impeller::Texture> GetTexture() const;
++
++  FlutterSpiGpuTexture* GetSpiTexture() const;
+ 
+   bool Overwrite(Context& gpu_context,
+                  const tonic::DartByteData& source_bytes,
+@@ -33,6 +36,7 @@ class Texture : public RefCountedDartWrappable<Texture> {
+   Dart_Handle AsImage() const;
+ 
+  private:
++  FlutterSpiGpuTexture* spi_texture_ = nullptr;
+   std::shared_ptr<impeller::Texture> texture_;
+ 
+   FML_DISALLOW_COPY_AND_ASSIGN(Texture);
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+index 197f7ab817f..e62b4a66b51 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+@@ -14,6 +14,12 @@
+ #include "flutter/display_list/image/dl_image.h"
+ #include "flutter/runtime_spi/include/flutter_runtime_spi.h"
+ 
++namespace impeller {
++class Context;
++class DeviceBuffer;
++class Texture;
++}  // namespace impeller
++
+ namespace flutter {
+ 
+ class AssetManager;
+@@ -31,9 +37,26 @@ std::unique_ptr<LayerTree> SpiSceneTakeLayerTree(FlutterSpiScene* scene);
+ // Temporary bridge until S4f moves font access behind dart:ui SPI.
+ FontCollection& SpiEngineFontCollection(FlutterSpiEngine* engine);
+ 
+-// Bridge kept for flutter_gpu and the Dart isolate configuration, which need a C++ AssetManager; dart:ui reads assets through asset_read.
++// Bridge kept for flutter_gpu and the Dart isolate configuration, which need a
++// C++ AssetManager; dart:ui reads assets through asset_read.
+ std::shared_ptr<AssetManager> SpiEngineAssetManager(FlutterSpiEngine* engine);
+ 
++// Temporary bridges until flutter_gpu moves its Impeller consumers behind the
++// runtime SPI table.
++std::shared_ptr<impeller::Context> SpiGpuContextGetImpeller(
++    FlutterSpiGpuContext* context);
++std::shared_ptr<impeller::DeviceBuffer> SpiGpuBufferGetImpeller(
++    FlutterSpiGpuBuffer* buffer);
++std::shared_ptr<impeller::Texture> SpiGpuTextureGetImpeller(
++    FlutterSpiGpuTexture* texture);
++FlutterSpiResult SpiGpuTextureWrapImpeller(
++    FlutterSpiGpuContext* context,
++    std::shared_ptr<impeller::Texture> texture,
++    FlutterSpiGpuTexture** out_texture);
++void SpiGpuSetDefaultContextOverride(
++    std::shared_ptr<impeller::Context> context);
++std::shared_ptr<impeller::Context> SpiGpuGetDefaultContextOverride();
++
+ }  // namespace flutter
+ 
+ #endif  // FLUTTER_RUNTIME_SPI_INTERNAL_SPI_INTERNAL_BRIDGES_H_
+diff --git a/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc b/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
+index b3e86a060b7..30a64c5df1b 100644
+--- a/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
++++ b/engine/src/flutter/shell/common/dart_runtime_backend_factory.cc
+@@ -87,7 +87,7 @@ std::unique_ptr<RuntimeBackend> DartRuntimeBackendFactory::Create(
+       std::move(backend_image_generator_registry),
+       std::move(backend_snapshot_delegate), std::move(backend_unref_queue),
+       settings.enable_impeller, runtime_stage_backend,
+-      (*vm_)->GetConcurrentWorkerTaskRunner());
++      (*vm_)->GetConcurrentWorkerTaskRunner(), settings.enable_flutter_gpu);
+   runtime.release();
+   return backend;
+ }
+diff --git a/engine/src/flutter/shell/common/engine_dart.cc b/engine/src/flutter/shell/common/engine_dart.cc
+index 14a4a987002..c453b68beba 100644
+--- a/engine/src/flutter/shell/common/engine_dart.cc
++++ b/engine/src/flutter/shell/common/engine_dart.cc
+@@ -44,7 +44,7 @@ std::unique_ptr<RuntimeBackend> MakeDartRuntimeBackend(
+       std::move(image_generator_registry),
+       fml::TaskRunnerAffineWeakPtr<SnapshotDelegate>{}, nullptr, false,
+       std::shared_future<impeller::RuntimeStageBackend>{},
+-      concurrent_worker_task_runner);
++      concurrent_worker_task_runner, settings.enable_flutter_gpu);
+   runtime.release();
+   return backend;
+ }
