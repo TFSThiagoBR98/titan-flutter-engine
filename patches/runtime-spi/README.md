@@ -181,6 +181,11 @@ idêntica à anterior. A série antiga está no worktree do engine no branch
 | `0164-feat-engine-add-runtime-spi-gpu-binding-sets.patch` | S7b: binding sets resolve uniforms, textures and samplers in the core. | |
 | `0165-refactor-engine-back-flutter-gpu-shaders-pipelines-and-binding-sets-with-the-spi-table.patch` | S7b: lib/gpu shaders, libraries, pipelines and binding sets hold SPI handles; the render pass reaches the core classes through internal bridges until S7c. | |
 | `0166-fix-engine-convert-spi-display-ids-explicitly-on-32-bit-targets.patch` | The ARM 32-bit engine builds failed on narrowings from 64-bit ids and shader-bundle fields to size_t (display ids since the view-results patch, reflection fields since S7b). | |
+| `0167-feat-engine-add-runtime-spi-gpu-command-buffers.patch` | S7c-1: command buffers, blit copies and submit with a completion callback delivered on the UI thread live in the core (SPI ABI 0.27). | |
+| `0168-feat-engine-add-runtime-spi-gpu-render-passes.patch` | S7c-1: render passes record mutable pipeline state, bindings and draws in the core. | |
+| `0169-feat-engine-add-runtime-spi-gpu-image-surfaces.patch` | S7c-1: offscreen image surfaces acquire, present, discard and resize frames in the core. | |
+| `0170-refactor-engine-back-flutter-gpu-command-buffers-render-passes-and-surfaces-with-the-spi-table.patch` | S7c-1: lib/gpu command buffers, render passes and surfaces hold SPI handles; the S7a/S7b bridges leave except the texture and surface-image ones kept until S7d. | |
+| `0171-test-engine-move-the-flutter-gpu-render-pass-tests-to-the-core.patch` | S7c-1: the render pass tests follow the render pass into runtime_spi_unittests; gpu_unittests is gone. | |
 
 O fluxo é:
 

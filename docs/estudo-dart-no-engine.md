@@ -1193,6 +1193,27 @@ registro; o core passou a tratar contexto sem library sem cair.
 
 O resultado está em [runtime-spi-s7b.md](medidas/runtime-spi-s7b.md).
 
+## S7c-1: Command buffers, render passes e surfaces pela tabela C
+
+A S7c foi dividida em duas. A S7c-1 leva para o core o resto do caminho de
+desenho do `flutter_gpu`: o command buffer (cópias por blit e `submit` com
+callback de conclusão entregue na thread da UI), o render pass (attachments,
+estado mutável do pipeline com memo, binding sets, bindings avulsos, `draw` e
+`draw_indexed`) e a image surface (quadros fora da tela). Com isso o
+`gpu_unittests` ficou vazio e saiu: os 7 testes dele foram para o
+`runtime_spi_unittests` com os mesmos nomes. As pontes da S7a e da S7b saíram,
+menos a do contexto Impeller, que o `Texture.asImage` ainda usa, e as de textura
+e imagem da surface, que são da travessia textura ↔ imagem (S7d).
+
+O `draw_indexed` do core chegou a mandar o desenho para a GPU sem ligar
+uniforms, texturas e binding sets, porque o código tinha sido dividido em dois
+métodos que divergiram; o `gpu_test.dart` caía no SwiftShader sem dizer em que
+teste. Os dois caminhos voltaram a ser um só, na ordem do original (contagem
+zero antes da falta de index buffer). O teste em C sem Dart (prova 3 do spec)
+fica para a S7c-2, porque exige montar em C um engine com Impeller em Vulkan.
+
+O resultado está em [runtime-spi-s7c1.md](medidas/runtime-spi-s7c1.md).
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos
