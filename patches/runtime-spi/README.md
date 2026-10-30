@@ -191,6 +191,7 @@ idêntica à anterior. A série antiga está no worktree do engine no branch
 | `0174-build-engine-drop-ui-gpu-bridge-and-guard-flutter-gpu-with-assert-no-deps.patch` | S7d: ui_gpu_bridge is gone and lib/gpu gets the dart:ui assert_no_deps list. | |
 | `0175-test-engine-draw-a-triangle-through-the-runtime-spi-gpu-table-from-c.patch` | S7e: a C program that links only the core draws a triangle through FlutterSpiGpuApi on Vulkan and reads it back as a FlutterSpiImage. | |
 | `0176-build-engine-produce-a-static-core-library.patch` | S6: the core also ships as libflutter_engine_core.a, one prelinked object (libc++ and third-party code inside) with only FlutterCore* global, for Rust and other native hosts (ADR-0027 amendment of 2026-10-30). | |
+| `0177-test-runtime-spi-run-the-conformance-suite-against-an-external-runtime.patch` | R0a: the SPI conformance suite can load an external runtime and run its supported tests against the same engine fixture. | |
 
 O fluxo é:
 

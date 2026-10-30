@@ -177,6 +177,61 @@ run_tests() {
   printf 'tests: ok\n'
 }
 
+run_conformance_rust() {
+  local flutter_rs_directory=${TITAN_FLUTTER_RS_DIR:-$repository_root/../../flutter-rs}
+  if ((skip_tests)); then
+    printf 'spi conformance rust: skipped (tests skipped)\n'
+    return 0
+  fi
+  if [[ ! -f "$flutter_rs_directory/Cargo.toml" ]]; then
+    printf 'spi conformance rust: skipped (flutter-rs not found)\n'
+    return 0
+  fi
+  if ! command -v cargo >/dev/null 2>&1; then
+    printf 'spi conformance rust: skipped (cargo not installed)\n'
+    return 0
+  fi
+
+  local rust_target_directory="$output_directory/flutter-rs"
+  local runtime_library="$rust_target_directory/debug/libflutter_rs_conformance.so"
+  local conformance_log="$output_directory/spi-conformance-rust.log"
+  local conformance_status=0
+
+  if ! (
+    CARGO_TARGET_DIR="$rust_target_directory" \
+      cargo build --locked --offline \
+        --manifest-path "$flutter_rs_directory/Cargo.toml" \
+        -p flutter-rs-conformance
+  ); then
+    die 'spi conformance rust build failed'
+  fi
+  [[ -f "$runtime_library" ]] || die "Rust conformance runtime is missing: $runtime_library"
+
+  if (
+    cd "$engine_source"
+    FLUTTER_SPI_CONFORMANCE_RUNTIME="$runtime_library" \
+      "$output_directory/runtime_spi_unittests" \
+      '--gtest_filter=SpiConformance.*'
+  ) >"$conformance_log" 2>&1; then
+    conformance_status=0
+  else
+    conformance_status=$?
+  fi
+
+  if ((conformance_status != 0)) || grep -Fq '[  FAILED  ]' "$conformance_log"; then
+    die 'spi conformance rust failed'
+  fi
+
+  local passed_count
+  local skipped_count
+  passed_count=$(sed -nE 's/^\[  PASSED  \] ([0-9]+) tests?\.?$/\1/p' "$conformance_log" | tail -n 1)
+  skipped_count=$(sed -nE 's/^\[  SKIPPED \] ([0-9]+) tests?\.?$/\1/p' "$conformance_log" | tail -n 1)
+  [[ -n "$passed_count" ]] || die 'spi conformance rust pass count is missing'
+  [[ -n "$skipped_count" ]] || die 'spi conformance rust skip count is missing'
+  printf 'spi conformance rust: %s passed, %s skipped\n' \
+    "$passed_count" "$skipped_count"
+}
+
 check_core_engine_dependencies() {
   local executable=$1
   local dynamic_output
@@ -345,6 +400,7 @@ fi
 run_build_without_unittests
 run_ninja
 run_tests
+run_conformance_rust
 run_core_smoke
 run_core_static_rust
 run_core_static_symbols

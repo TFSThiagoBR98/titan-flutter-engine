@@ -71,6 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime SPI S7d: `Texture.asImage`, `Texture.fromImage` e `GpuSurface.getCurrentImage` pela `FlutterSpiGpuApi` (ABI do SPI 0.28); o `flutter_gpu` não inclui mais `impeller/` e o `ui_gpu_bridge` foi removido.
 - Runtime SPI S7e: o check roda um programa em C, sem Dart e só com o core, que desenha um triângulo pela `FlutterSpiGpuApi` em Vulkan (lavapipe) e lê os pixels pela tabela de imagens; fecha a S7.
 - Runtime SPI S6: o core sai também como biblioteca estática `libflutter_engine_core.a` (só `FlutterCore*` global); cada bundle leva `libflutter_engine.so`, `libflutter_engine_core.so`, `libflutter_engine_core.a` e `include/` com os headers do core; o check prova o link estático num binário Rust.
+- Runtime SPI R0a: a suíte de conformidade aceita um runtime externo e o check a executa contra o runtime Rust do `flutter-rs`.
 
 ### Fixed
 

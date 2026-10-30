@@ -53,6 +53,8 @@ ninja_pid_log="$temporary_directory/ninja-pids.log"
 ninja_environment="$temporary_directory/ninja-environment.log"
 runner_log="$temporary_directory/runner.log"
 dart_runner_log="$temporary_directory/dart-runner.log"
+rust_conformance_log="$temporary_directory/rust-conformance.log"
+rust_conformance_cargo_log="$temporary_directory/rust-conformance-cargo.log"
 order_log="$temporary_directory/order.log"
 output_log="$temporary_directory/output.log"
 baseline_output_log="$temporary_directory/baseline-output.log"
@@ -91,6 +93,23 @@ fi
 printf 'core gpu triangle: ok\n'
 TRIANGLE_EOF
 chmod +x "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/flutter_engine_core_gpu_triangle"
+: > "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/runtime_spi_unittests"
+cat > "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/runtime_spi_unittests" <<'RUNTIME_SPI_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$@" > "$RUST_CONFORMANCE_LOG"
+printf 'FLUTTER_SPI_CONFORMANCE_RUNTIME=%s\n' \
+  "${FLUTTER_SPI_CONFORMANCE_RUNTIME:-}" >> "$RUST_CONFORMANCE_LOG"
+printf 'rust-conformance\n' >> "$ORDER_LOG"
+if ((FAKE_RUST_CONFORMANCE_FAILED != 0)); then
+  printf '[  FAILED  ] SpiConformance.ExternalFailure\n'
+fi
+printf '[  PASSED  ] 24 tests.\n'
+printf '[  SKIPPED ] 13 tests.\n'
+exit "${FAKE_RUST_CONFORMANCE_STATUS:-0}"
+RUNTIME_SPI_EOF
+chmod +x "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/runtime_spi_unittests"
 : > "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/playground.shaderbundle"
 printf '%s\n' "$FAKE_ARGS_GN" > \
   "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/args.gn"
@@ -194,6 +213,13 @@ cat > "$fake_bin/cargo" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
+printf '%s\n' "$@" >> "$CARGO_LOG"
+if [[ " $* " == *' -p flutter-rs-conformance '* ]]; then
+  mkdir -p "$CARGO_TARGET_DIR/debug"
+  : > "$CARGO_TARGET_DIR/debug/libflutter_rs_conformance.so"
+  exit "${FAKE_CONFORMANCE_BUILD_STATUS:-0}"
+fi
+
 mkdir -p "$CARGO_TARGET_DIR/debug"
 cat > "$CARGO_TARGET_DIR/debug/core-static-link" <<'RUST_EOF'
 #!/usr/bin/env bash
@@ -227,6 +253,8 @@ run_check() {
   NINJA_ENVIRONMENT="$ninja_environment" \
   RUNNER_LOG="$runner_log" \
   DART_RUNNER_LOG="$dart_runner_log" \
+  RUST_CONFORMANCE_LOG="$rust_conformance_log" \
+  CARGO_LOG="$rust_conformance_cargo_log" \
   ORDER_LOG="$order_log" \
   TITAN_LAVAPIPE_ICD="${FAKE_LAVAPIPE_ICD:-$fake_lavapipe_icd}" \
   FAKE_TRIANGLE_STATUS="${FAKE_TRIANGLE_STATUS:-0}" \
@@ -235,6 +263,9 @@ run_check() {
   FAKE_RUST_BUILD_STATUS="${FAKE_RUST_BUILD_STATUS:-0}" \
   FAKE_RUST_RUN_STATUS="${FAKE_RUST_RUN_STATUS:-0}" \
   FAKE_RUST_UNEXPECTED="${FAKE_RUST_UNEXPECTED:-0}" \
+  FAKE_RUST_CONFORMANCE_STATUS="${FAKE_RUST_CONFORMANCE_STATUS:-0}" \
+  FAKE_RUST_CONFORMANCE_FAILED="${FAKE_RUST_CONFORMANCE_FAILED:-0}" \
+  FAKE_CONFORMANCE_BUILD_STATUS="${FAKE_CONFORMANCE_BUILD_STATUS:-0}" \
   FAKE_NO_UNIT_BUILD_STATUS="${FAKE_NO_UNIT_BUILD_STATUS:-0}" \
   FAKE_ARGS_GN="${FAKE_ARGS_GN:-enable_unittests = true}" \
   FAKE_NINJA_STATUS="${FAKE_NINJA_STATUS:-0}" \
@@ -271,7 +302,7 @@ else
   fail 'the complete fake check should pass'
 fi
 
-[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner smoke rust triangle ' ]] || \
+[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner rust-conformance smoke rust triangle ' ]] || \
   fail 'steps did not run in build, ninja, runner order'
 assert_contains "$build_log" '--unittests' 'build arguments'
 assert_contains "$build_log" '--gn-only' 'build arguments'
@@ -302,6 +333,16 @@ assert_contains "$output_log" 'core artifact: ok' 'core artifact summary'
 assert_contains "$output_log" 'core static symbols: ok' 'core static symbols summary'
 assert_contains "$output_log" 'core static rust: ok' 'core static rust summary'
 assert_contains "$output_log" 'core gpu triangle: ok' 'core gpu triangle summary'
+assert_contains "$output_log" 'spi conformance rust: 24 passed, 13 skipped' \
+  'Rust SPI conformance summary'
+assert_contains "$rust_conformance_log" '--gtest_filter=SpiConformance.*' \
+  'Rust SPI conformance filter'
+assert_matches "$rust_conformance_log" \
+  'FLUTTER_SPI_CONFORMANCE_RUNTIME=.*/libflutter_rs_conformance\.so$' \
+  'Rust SPI conformance runtime path'
+assert_contains "$rust_conformance_cargo_log" '-p' 'Rust SPI conformance cargo package'
+assert_contains "$rust_conformance_cargo_log" 'flutter-rs-conformance' \
+  'Rust SPI conformance cargo package name'
 cp "$output_log" "$baseline_output_log"
 
 rm -f "$runner_log" "$dart_runner_log" "$order_log"
@@ -410,7 +451,7 @@ assert_contains "$output_log" 'unit tests are disabled in' 'disabled unit test d
 
 rm -f "$runner_log" "$dart_runner_log" "$order_log"
 FAKE_ARGS_GN='# default is enabled' run_check >"$output_log" 2>&1
-[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner smoke rust triangle ' ]] || \
+[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner rust-conformance smoke rust triangle ' ]] || \
   fail 'steps did not continue when enable_unittests is absent'
 assert_contains "$output_log" 'tests: ok' 'missing unit test setting summary'
 
@@ -423,10 +464,49 @@ fi
 [[ "$status" -eq 23 ]] || fail "ninja failure returned $status instead of 23"
 [[ ! -e "$runner_log" ]] || fail 'runner ran after ninja failure'
 
-rm -f "$runner_log" "$dart_runner_log" "$order_log"
+rm -f "$runner_log" "$dart_runner_log" "$rust_conformance_log" "$rust_conformance_cargo_log" \
+  "$order_log"
+if FAKE_RUST_CONFORMANCE_FAILED=1 run_check >"$output_log" 2>&1; then
+  fail 'reported Rust conformance failure should fail the check'
+else
+  status=$?
+fi
+[[ "$status" -eq 2 ]] || fail "reported Rust conformance failure returned $status instead of 2"
+assert_contains "$output_log" 'spi conformance rust failed' \
+  'reported Rust conformance failure diagnostic'
+
+rm -f "$runner_log" "$dart_runner_log" "$rust_conformance_log" "$rust_conformance_cargo_log" \
+  "$order_log"
+if FAKE_RUST_CONFORMANCE_STATUS=17 run_check >"$output_log" 2>&1; then
+  fail 'Rust conformance exit failure should fail the check'
+else
+  status=$?
+fi
+[[ "$status" -eq 2 ]] || fail "Rust conformance exit failure returned $status instead of 2"
+assert_contains "$output_log" 'spi conformance rust failed' \
+  'Rust conformance exit failure diagnostic'
+
+rm -f "$runner_log" "$dart_runner_log" "$rust_conformance_log" "$rust_conformance_cargo_log" \
+  "$order_log"
+missing_flutter_rs="$temporary_directory/missing-flutter-rs"
+if TITAN_FLUTTER_RS_DIR="$missing_flutter_rs" run_check >"$output_log" 2>&1; then
+  :
+else
+  cat "$output_log" >&2
+  fail 'missing flutter-rs should skip the Rust conformance check'
+fi
+assert_contains "$output_log" 'spi conformance rust: skipped (flutter-rs not found)' \
+  'missing flutter-rs skip diagnostic'
+[[ ! -e "$rust_conformance_log" ]] || fail 'Rust conformance ran without flutter-rs'
+
+rm -f "$runner_log" "$dart_runner_log" "$rust_conformance_log" "$rust_conformance_cargo_log" \
+  "$order_log"
 run_check --skip-tests >"$output_log" 2>&1
 [[ ! -e "$runner_log" ]] || fail 'runner ran with --skip-tests'
 [[ ! -e "$dart_runner_log" ]] || fail 'Dart runner ran with --skip-tests'
+[[ ! -e "$rust_conformance_log" ]] || fail 'Rust conformance ran with --skip-tests'
+assert_contains "$output_log" 'spi conformance rust: skipped (tests skipped)' \
+  'Rust SPI conformance skip-tests diagnostic'
 assert_not_exact_line "$output_log" 'tests: ok' 'skip-tests summary'
 
 lock_directory="$work_directory/flutter/engine/src/out/host_debug"
@@ -447,6 +527,8 @@ if timeout 10 env \
   NINJA_ENVIRONMENT="$ninja_environment" \
   RUNNER_LOG="$runner_log" \
   DART_RUNNER_LOG="$dart_runner_log" \
+  RUST_CONFORMANCE_LOG="$rust_conformance_log" \
+  CARGO_LOG="$rust_conformance_cargo_log" \
   ORDER_LOG="$order_log" \
   FAKE_NO_UNIT_BUILD_STATUS=0 \
   FAKE_ARGS_GN='enable_unittests = true' \
@@ -478,6 +560,8 @@ if timeout --foreground --preserve-status 2 env \
   NINJA_ENVIRONMENT="$ninja_environment" \
   RUNNER_LOG="$runner_log" \
   DART_RUNNER_LOG="$dart_runner_log" \
+  RUST_CONFORMANCE_LOG="$rust_conformance_log" \
+  CARGO_LOG="$rust_conformance_cargo_log" \
   ORDER_LOG="$order_log" \
   FAKE_NO_UNIT_BUILD_STATUS=0 \
   FAKE_ARGS_GN='enable_unittests = true' \
