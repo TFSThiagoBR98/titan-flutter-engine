@@ -1214,6 +1214,31 @@ fica para a S7c-2, porque exige montar em C um engine com Impeller em Vulkan.
 
 O resultado está em [runtime-spi-s7c1.md](medidas/runtime-spi-s7c1.md).
 
+## S7d: Travessia textura ↔ imagem e lib/gpu sem Impeller
+
+A S7d fecha o lado Dart do `flutter_gpu`. A textura vira imagem e a imagem vira
+textura pela tabela (`texture_as_image`, `texture_from_image`), com a imagem como
+o mesmo `FlutterSpiImage` do `dart:ui`; o `ImageTextureInfo` lê o descritor da
+textura (`texture_get_descriptor`) e a surface entrega a imagem atual pela
+tabela. O `ShaderLibrary.fromAsset` lê o asset com o `asset_get` do SPI, e a
+marca de shader sujo depois de uma recarga virou uma entrada (`shader_is_dirty`)
+em vez de ponte de teste.
+
+Com isso o `lib/gpu` não inclui mais nada de `impeller/`, não depende do
+`spi_backend` e ganhou o `assert_no_deps` do alvo Dart do `dart:ui`. A entrada
+`//flutter/impeller/*` ficou fora da lista porque o próprio `dart:ui` depende de
+`//flutter/impeller/runtime_stage` (o `UIDartState` guarda o backend dos runtime
+stages); a prova de que o `lib/gpu` não inclui o Impeller é um `git grep`. O
+`ui_gpu_bridge` saiu: o único outro usuário era um teste do embedder, que agora
+lê a imagem do core com `SpiImageGet`. O playground do Impeller chama direto os
+ganchos de override do core.
+
+O submit do command buffer deixou de reenviar o callback para a thread da UI no
+`lib/gpu`: o core já o entrega lá desde a S7c-1. Isso tirou o último include que
+puxava o Impeller pelo `dart:ui`.
+
+O resultado está em [runtime-spi-s7d.md](medidas/runtime-spi-s7d.md).
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos

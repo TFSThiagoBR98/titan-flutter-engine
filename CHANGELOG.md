@@ -68,6 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime SPI S7b: shader libraries, shaders, render pipelines e binding sets do `flutter_gpu` pela `FlutterSpiGpuApi` (ABI do SPI 0.26); a lógica e os testes deles passam para o core.
 - Builds completos em ARM 32-bit voltam a compilar: conversões explícitas de ids de display e de campos de reflexão de shader de 64 bits para `size_t`.
 - Runtime SPI S7c-1: command buffers, render passes e image surfaces do `flutter_gpu` pela `FlutterSpiGpuApi` (ABI do SPI 0.27); o `gpu_unittests` deixa de existir e os testes dele rodam no `runtime_spi_unittests`.
+- Runtime SPI S7d: `Texture.asImage`, `Texture.fromImage` e `GpuSurface.getCurrentImage` pela `FlutterSpiGpuApi` (ABI do SPI 0.28); o `flutter_gpu` não inclui mais `impeller/` e o `ui_gpu_bridge` foi removido.
 
 ### Fixed
 

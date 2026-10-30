@@ -186,6 +186,9 @@ idêntica à anterior. A série antiga está no worktree do engine no branch
 | `0169-feat-engine-add-runtime-spi-gpu-image-surfaces.patch` | S7c-1: offscreen image surfaces acquire, present, discard and resize frames in the core. | |
 | `0170-refactor-engine-back-flutter-gpu-command-buffers-render-passes-and-surfaces-with-the-spi-table.patch` | S7c-1: lib/gpu command buffers, render passes and surfaces hold SPI handles; the S7a/S7b bridges leave except the texture and surface-image ones kept until S7d. | |
 | `0171-test-engine-move-the-flutter-gpu-render-pass-tests-to-the-core.patch` | S7c-1: the render pass tests follow the render pass into runtime_spi_unittests; gpu_unittests is gone. | |
+| `0172-feat-engine-add-runtime-spi-gpu-texture-and-image-crossing.patch` | S7d: textures cross to and from FlutterSpiImage, texture descriptors, surface images and shader dirtiness go through the table (SPI ABI 0.28). | |
+| `0173-refactor-engine-move-the-flutter-gpu-image-crossing-behind-the-spi-table.patch` | S7d: lib/gpu no longer includes impeller/ nor uses internal bridges; assets are read with asset_get; the playground hooks call the core. | |
+| `0174-build-engine-drop-ui-gpu-bridge-and-guard-flutter-gpu-with-assert-no-deps.patch` | S7d: ui_gpu_bridge is gone and lib/gpu gets the dart:ui assert_no_deps list. | |
 
 O fluxo é:
 
