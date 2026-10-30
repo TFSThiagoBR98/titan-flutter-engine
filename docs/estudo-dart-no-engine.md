@@ -1239,6 +1239,30 @@ puxava o Impeller pelo `dart:ui`.
 
 O resultado está em [runtime-spi-s7d.md](medidas/runtime-spi-s7d.md).
 
+## S7e: Triângulo em C e fechamento da S7
+
+O último item da prova da S7 é um programa em C (`flutter_engine_core_gpu_triangle`)
+que só linka `libflutter_engine_core.so`. Ele sobe o engine com Impeller em
+Vulkan sobre o lavapipe, sem desenhar nenhum quadro, e na thread da UI faz tudo
+pela `FlutterSpiGpuApi`: carrega o `playground.shaderbundle`, cria o pipeline
+dos shaders unlit, desenha um triângulo vermelho numa textura 64×64, converte a
+textura em `FlutterSpiImage` e lê os pixels com o `image_to_bytes` da tabela de
+imagens. O centro tem que ser vermelho (só o uniform ligado dá essa cor) e o
+canto, a cor de limpeza. O check roda o programa e confere por `readelf` que ele
+não linka outra biblioteca do engine.
+
+Mesmo sem surface, o Impeller exige na instância Vulkan `VK_KHR_surface` e uma
+extensão WSI de plataforma, e `VK_KHR_swapchain` no device; o lavapipe oferece as
+três.
+
+Com isso a S7 fecha as cinco provas do design: os testes do `flutter_gpu`
+verdes sobre a ABI C; o `lib/gpu` sem nenhum include de `impeller/` (a entrada
+`//flutter/impeller/*` fica fora do `assert_no_deps` porque o `dart:ui` depende
+do `runtime_stage`); este teste em C; o portão A/B do `BM_DartGpuFrame` em cada
+subfase; e probe, check, `tools/ci.sh engine` e checkpoint em cópia limpa.
+
+O resultado está em [runtime-spi-s7e.md](medidas/runtime-spi-s7e.md).
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos
