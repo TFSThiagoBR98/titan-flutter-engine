@@ -1,0 +1,138 @@
+# Why: S7 needs a gate on a frame that exercises buffers, textures, a pipeline
+# and a render pass.
+diff --git a/engine/src/flutter/testing/dart/BUILD.gn b/engine/src/flutter/testing/dart/BUILD.gn
+index 71b41edf596..0c07a35dd07 100644
+--- a/engine/src/flutter/testing/dart/BUILD.gn
++++ b/engine/src/flutter/testing/dart/BUILD.gn
+@@ -18,6 +18,7 @@ tests = [
+   "fragment_shader_test.dart",
+   "geometry_test.dart",
+   "gesture_settings_test.dart",
++  "gpu_frame_benchmark.dart",
+   "gpu_shader_reload_test.dart",
+   "gpu_test.dart",
+   "gradient_test.dart",
+diff --git a/engine/src/flutter/testing/dart/gpu_frame_benchmark.dart b/engine/src/flutter/testing/dart/gpu_frame_benchmark.dart
+new file mode 100644
+index 00000000000..571d6521a85
+--- /dev/null
++++ b/engine/src/flutter/testing/dart/gpu_frame_benchmark.dart
+@@ -0,0 +1,118 @@
++// Copyright 2013 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// ignore_for_file: avoid_relative_lib_imports
++
++import 'dart:async';
++import 'dart:isolate';
++import 'dart:typed_data';
++
++import '../../lib/gpu/lib/gpu.dart' as gpu;
++
++const int _frameSize = 256;
++const int _warmupFrameCount = 50;
++const int _measuredFrameCount = 500;
++
++ByteData _float32(List<double> values) {
++  return Float32List.fromList(values).buffer.asByteData();
++}
++
++ByteData _triangleVertices() {
++  return _float32(<double>[
++    -0.5, 0.5, //
++    0.0, -0.5, //
++    0.5, 0.5, //
++  ]);
++}
++
++ByteData _unlitUniform() {
++  return _float32(<double>[
++    1, 0, 0, 0, // matrix
++    0, 1, 0, 0, // matrix
++    0, 0, 1, 0, // matrix
++    0, 0, 0, 1, // matrix
++    0, 1, 0, 1, // color
++  ]);
++}
++
++Future<gpu.RenderPipeline> _createUnlitRenderPipeline() async {
++  final gpu.ShaderLibrary? library = await gpu.ShaderLibrary.fromAsset('test.shaderbundle');
++  assert(library != null);
++  final gpu.Shader? vertex = library!['UnlitVertex'];
++  assert(vertex != null);
++  final gpu.Shader? fragment = library['UnlitFragment'];
++  assert(fragment != null);
++  return gpu.gpuContext.createRenderPipeline(vertex!, fragment!);
++}
++
++Future<void> _submitAndWait(gpu.CommandBuffer commandBuffer) {
++  final completer = Completer<void>();
++  commandBuffer.submit(
++    completionCallback: (bool success) {
++      if (success) {
++        completer.complete();
++      } else {
++        completer.completeError(Exception('CommandBuffer submit failed'));
++      }
++    },
++  );
++  return completer.future;
++}
++
++Future<void> _drawFrame(gpu.RenderPipeline pipeline, gpu.UniformSlot vertInfo) async {
++  final gpu.Texture renderTexture = gpu.gpuContext.createTexture(
++    gpu.StorageMode.devicePrivate,
++    _frameSize,
++    _frameSize,
++  );
++  final gpu.HostBuffer hostBuffer = gpu.gpuContext.createHostBuffer();
++  final gpu.BufferView vertices = hostBuffer.emplace(_triangleVertices());
++  final gpu.BufferView uniform = hostBuffer.emplace(_unlitUniform());
++  final gpu.CommandBuffer commandBuffer = gpu.gpuContext.createCommandBuffer();
++  final renderTarget = gpu.RenderTarget.singleColor(gpu.ColorAttachment(texture: renderTexture));
++  final gpu.RenderPass renderPass = commandBuffer.createRenderPass(renderTarget);
++
++  renderPass.bindPipeline(pipeline);
++  renderPass.bindVertexBuffer(vertices);
++  renderPass.bindUniform(vertInfo, uniform);
++  renderPass.draw(3);
++  await _submitAndWait(commandBuffer);
++}
++
++int _percentile(List<int> samples, int percentile) {
++  final int index = (samples.length * percentile + 99) ~/ 100 - 1;
++  return samples[index];
++}
++
++Future<void> main() async {
++  // flutter_tester exits once the isolate has no open ports; the GPU
++  // completion callbacks do not hold one.
++  final keepAlive = RawReceivePort();
++  try {
++    await _runBenchmark();
++  } finally {
++    keepAlive.close();
++  }
++}
++
++Future<void> _runBenchmark() async {
++  final gpu.RenderPipeline pipeline = await _createUnlitRenderPipeline();
++  final gpu.UniformSlot vertInfo = pipeline.vertexShader.getUniformSlot('VertInfo');
++
++  for (var frame = 0; frame < _warmupFrameCount; frame++) {
++    await _drawFrame(pipeline, vertInfo);
++  }
++
++  final samples = <int>[];
++  for (var frame = 0; frame < _measuredFrameCount; frame++) {
++    final frameStopwatch = Stopwatch()..start();
++    await _drawFrame(pipeline, vertInfo);
++    samples.add(frameStopwatch.elapsedMicroseconds);
++  }
++  samples.sort();
++  print(
++    'BM_DartGpuFrame median_us=${_percentile(samples, 50)} '
++    'p90_us=${_percentile(samples, 90)} frames=$_measuredFrameCount',
++  );
++}

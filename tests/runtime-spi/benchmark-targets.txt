@@ -1,4 +1,5 @@
 flutter/runtime_spi:runtime_spi_benchmarks
 flutter/shell/common:shell_benchmarks
 flutter/lib/ui:ui_benchmarks
+flutter/testing/dart:compile_gpu_frame_benchmark.dart
 flutter/shell/platform/embedder:flutter_engine_core_smoke

@@ -52,6 +52,7 @@ ninja_log="$temporary_directory/ninja.log"
 ninja_pid_log="$temporary_directory/ninja-pids.log"
 ninja_environment="$temporary_directory/ninja-environment.log"
 runner_log="$temporary_directory/runner.log"
+dart_runner_log="$temporary_directory/dart-runner.log"
 order_log="$temporary_directory/order.log"
 output_log="$temporary_directory/output.log"
 locale_output_log="$temporary_directory/locale-output.log"
@@ -117,6 +118,15 @@ printf 'runner\n' >> "$ORDER_LOG"
 EOF
 chmod +x "$fake_bin/run-engine-tests"
 
+cat > "$fake_bin/run-dart-tests" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$@" > "$DART_RUNNER_LOG"
+printf 'dart-runner\n' >> "$ORDER_LOG"
+EOF
+chmod +x "$fake_bin/run-dart-tests"
+
 cat > "$fake_bin/readelf" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -158,11 +168,13 @@ run_check() {
   TITAN_BUILD_ENGINE="$fake_bin/build-engine" \
   TITAN_NINJA="$fake_bin/ninja" \
   TITAN_RUN_ENGINE_TESTS="$fake_bin/run-engine-tests" \
+  TITAN_RUN_DART_TESTS="$fake_bin/run-dart-tests" \
   BUILD_LOG="$build_log" \
   NINJA_LOG="$ninja_log" \
   NINJA_PID_LOG="$ninja_pid_log" \
   NINJA_ENVIRONMENT="$ninja_environment" \
   RUNNER_LOG="$runner_log" \
+  DART_RUNNER_LOG="$dart_runner_log" \
   ORDER_LOG="$order_log" \
   FAKE_NO_UNIT_BUILD_STATUS="${FAKE_NO_UNIT_BUILD_STATUS:-0}" \
   FAKE_ARGS_GN="${FAKE_ARGS_GN:-enable_unittests = true}" \
@@ -200,7 +212,7 @@ else
   fail 'the complete fake check should pass'
 fi
 
-[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner smoke ' ]] || \
+[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner smoke ' ]] || \
   fail 'steps did not run in build, ninja, runner order'
 assert_contains "$build_log" '--unittests' 'build arguments'
 assert_contains "$build_log" '--gn-only' 'build arguments'
@@ -212,6 +224,10 @@ grep -Fxq 'flutter/fml:fml_unittests' "$ninja_log" || \
   fail 'ninja target was not passed as one argument'
 grep -Fxq 'flutter/shell/platform/embedder:flutter_engine_core_library' "$ninja_log" || \
   fail 'core engine target was not passed as one argument'
+grep -Fxq 'flutter/shell/testing:flutter_tester' "$ninja_log" || \
+  fail 'flutter_tester target was not passed as one argument'
+grep -Fxq 'flutter/testing/dart:compile_gpu_test.dart' "$ninja_log" || \
+  fail 'gpu_test.dart compile target was not passed as one argument'
 assert_matches "$ninja_environment" 'CCACHE_DIR=.*/\.build_flutter/ccache$' 'ninja environment'
 assert_contains "$ninja_environment" 'DEPOT_TOOLS_UPDATE=0' 'ninja environment'
 assert_contains "$output_log" 'build: ok' 'stage summary'
@@ -228,7 +244,7 @@ if [[ -z "$non_c_locale" ]]; then
   ')
 fi
 if [[ -n "$non_c_locale" ]]; then
-  rm -f "$runner_log" "$order_log" "$ninja_log" "$ninja_pid_log"
+  rm -f "$runner_log" "$dart_runner_log" "$order_log" "$ninja_log" "$ninja_pid_log"
   if LC_ALL="$non_c_locale" LANG="$non_c_locale" run_check >"$locale_output_log" 2>&1; then
     :
   else
@@ -243,7 +259,7 @@ else
   printf 'locale-independent check: skipped; no non-C locale available\n'
 fi
 
-rm -f "$runner_log" "$order_log" "$ninja_log"
+rm -f "$runner_log" "$dart_runner_log" "$order_log" "$ninja_log"
 if FAKE_NO_UNIT_BUILD_STATUS=29 run_check >"$output_log" 2>&1; then
   fail 'GN without unit tests failure should fail the check'
 else
@@ -254,7 +270,7 @@ assert_contains "$output_log" 'gn without unit tests: failed' \
   'GN without unit tests diagnostic'
 [[ ! -e "$ninja_log" ]] || fail 'ninja ran after GN without unit tests failure'
 
-rm -f "$runner_log" "$order_log" "$ninja_log"
+rm -f "$runner_log" "$dart_runner_log" "$order_log" "$ninja_log"
 if FAKE_ARGS_GN='enable_unittests = false' run_check >"$output_log" 2>&1; then
   fail 'disabled unit tests should fail'
 else
@@ -264,13 +280,13 @@ fi
 assert_contains "$output_log" 'unit tests are disabled in' 'disabled unit test diagnostic'
 [[ ! -e "$runner_log" ]] || fail 'runner ran with disabled unit tests'
 
-rm -f "$runner_log" "$order_log"
+rm -f "$runner_log" "$dart_runner_log" "$order_log"
 FAKE_ARGS_GN='# default is enabled' run_check >"$output_log" 2>&1
-[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner smoke ' ]] || \
+[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner smoke ' ]] || \
   fail 'steps did not continue when enable_unittests is absent'
 assert_contains "$output_log" 'tests: ok' 'missing unit test setting summary'
 
-rm -f "$runner_log" "$order_log"
+rm -f "$runner_log" "$dart_runner_log" "$order_log"
 if FAKE_NINJA_STATUS=23 run_check >"$output_log" 2>&1; then
   fail 'ninja failure should fail the check'
 else
@@ -279,9 +295,10 @@ fi
 [[ "$status" -eq 23 ]] || fail "ninja failure returned $status instead of 23"
 [[ ! -e "$runner_log" ]] || fail 'runner ran after ninja failure'
 
-rm -f "$runner_log" "$order_log"
+rm -f "$runner_log" "$dart_runner_log" "$order_log"
 run_check --skip-tests >"$output_log" 2>&1
 [[ ! -e "$runner_log" ]] || fail 'runner ran with --skip-tests'
+[[ ! -e "$dart_runner_log" ]] || fail 'Dart runner ran with --skip-tests'
 assert_not_exact_line "$output_log" 'tests: ok' 'skip-tests summary'
 
 lock_directory="$work_directory/flutter/engine/src/out/host_debug"
@@ -290,16 +307,18 @@ lock_ready="$temporary_directory/check-lock-ready"
 mkdir -p "$lock_directory"
 start_lock_holder "$lock_path" "$lock_ready"
 : > "$build_log"
-rm -f "$ninja_log" "$runner_log"
+rm -f "$ninja_log" "$runner_log" "$dart_runner_log"
 if timeout 10 env \
   TITAN_WORK_DIR="$work_directory" \
   TITAN_BUILD_ENGINE="$fake_bin/build-engine" \
   TITAN_NINJA="$fake_bin/ninja" \
   TITAN_RUN_ENGINE_TESTS="$fake_bin/run-engine-tests" \
+  TITAN_RUN_DART_TESTS="$fake_bin/run-dart-tests" \
   BUILD_LOG="$build_log" \
   NINJA_LOG="$ninja_log" \
   NINJA_ENVIRONMENT="$ninja_environment" \
   RUNNER_LOG="$runner_log" \
+  DART_RUNNER_LOG="$dart_runner_log" \
   ORDER_LOG="$order_log" \
   FAKE_NO_UNIT_BUILD_STATUS=0 \
   FAKE_ARGS_GN='enable_unittests = true' \
@@ -318,17 +337,19 @@ assert_contains "$output_log" "another build is running in $lock_directory" \
 [[ ! -e "$ninja_log" ]] || fail 'ninja ran while the check lock was held'
 [[ ! -e "$runner_log" ]] || fail 'runner ran while the check lock was held'
 
-rm -f "$ninja_log" "$runner_log" "$ninja_pid_log"
+rm -f "$ninja_log" "$runner_log" "$dart_runner_log" "$ninja_pid_log"
 if timeout --foreground --preserve-status 2 env \
   TITAN_WORK_DIR="$work_directory" \
   TITAN_BUILD_ENGINE="$fake_bin/build-engine" \
   TITAN_NINJA="$fake_bin/ninja" \
   TITAN_RUN_ENGINE_TESTS="$fake_bin/run-engine-tests" \
+  TITAN_RUN_DART_TESTS="$fake_bin/run-dart-tests" \
   BUILD_LOG="$build_log" \
   NINJA_LOG="$ninja_log" \
   NINJA_PID_LOG="$ninja_pid_log" \
   NINJA_ENVIRONMENT="$ninja_environment" \
   RUNNER_LOG="$runner_log" \
+  DART_RUNNER_LOG="$dart_runner_log" \
   ORDER_LOG="$order_log" \
   FAKE_NO_UNIT_BUILD_STATUS=0 \
   FAKE_ARGS_GN='enable_unittests = true' \

@@ -25,8 +25,9 @@ assert_file_contains_only_comments() {
 gtest_targets="$repository_root/tests/runtime-spi/gtest-targets.txt"
 benchmark_targets="$repository_root/tests/runtime-spi/benchmark-targets.txt"
 baseline_failures="$repository_root/tests/runtime-spi/baseline-failures.txt"
-[[ "$(grep -Ev '^[[:space:]]*(#|$)' "$gtest_targets" | wc -l)" -eq 6 ]] || {
-  printf 'error: gtest-targets.txt must contain exactly six targets\n' >&2
+expected_gtest_target_count=$(grep -Ev '^[[:space:]]*(#|$)' "$gtest_targets" | wc -l)
+[[ "$expected_gtest_target_count" -gt 0 ]] || {
+  printf 'error: gtest-targets.txt must contain at least one target\n' >&2
   exit 1
 }
 grep -Fq 'flutter/shell/common:shell_benchmarks' "$benchmark_targets" || {

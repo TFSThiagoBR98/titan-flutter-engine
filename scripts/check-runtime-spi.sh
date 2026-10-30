@@ -44,6 +44,7 @@ done
 build_engine=${TITAN_BUILD_ENGINE:-$repository_root/scripts/build-engine.sh}
 ninja=${TITAN_NINJA:-$TITAN_WORK_DIR/depot_tools/ninja}
 run_engine_tests=${TITAN_RUN_ENGINE_TESTS:-$repository_root/scripts/run-engine-tests.sh}
+run_dart_tests=${TITAN_RUN_DART_TESTS:-$repository_root/scripts/run-dart-tests.sh}
 check_core_artifact="$repository_root/scripts/check-core-artifact.sh"
 engine_source="$TITAN_WORK_DIR/flutter/engine/src"
 output_directory="$engine_source/out/host_debug"
@@ -102,6 +103,16 @@ run_ninja() {
       {
         cat "$repository_root/tests/runtime-spi/gtest-targets.txt"
         cat "$repository_root/tests/runtime-spi/benchmark-targets.txt"
+        printf '%s\n' 'flutter/shell/testing:flutter_tester'
+        awk -F'|' '
+          {
+            sub(/#.*/, "", $1)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1)
+            if ($1 != "" && !seen[$1]++) {
+              print "flutter/testing/dart:compile_" $1
+            }
+          }
+        ' "$repository_root/tests/runtime-spi/dart-tests.txt"
         printf '%s\n' 'flutter/shell/platform/embedder:flutter_engine'
         printf '%s\n' 'flutter/shell/platform/embedder:flutter_engine_core_library'
       } | sed 's/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d'
@@ -133,16 +144,30 @@ run_tests() {
     return 0
   fi
 
+  local engine_tests_status=0
   if timeout 1500 "$run_engine_tests" "$output_directory" \
     --baseline "$repository_root/tests/runtime-spi/baseline-failures.txt"; then
-    printf 'tests: ok\n'
-    return 0
+    :
   else
-    status=$?
+    engine_tests_status=$?
+  fi
+  if ((engine_tests_status != 0)); then
+    printf 'tests: failed (%s)\n' "$engine_tests_status" >&2
+    return "$engine_tests_status"
   fi
 
-  printf 'tests: failed (%s)\n' "$status" >&2
-  return "$status"
+  local dart_tests_status=0
+  if "$run_dart_tests" "$output_directory"; then
+    :
+  else
+    dart_tests_status=$?
+  fi
+  if ((dart_tests_status != 0)); then
+    printf 'tests: failed (%s)\n' "$dart_tests_status" >&2
+    return "$dart_tests_status"
+  fi
+
+  printf 'tests: ok\n'
 }
 
 run_core_smoke() {
