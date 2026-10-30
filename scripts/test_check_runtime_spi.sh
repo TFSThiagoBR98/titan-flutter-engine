@@ -73,6 +73,7 @@ set -euo pipefail
 printf '%s\n' "$@" >> "$BUILD_LOG"
 mkdir -p "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug"
  : > "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/libflutter_engine_core.so"
+: > "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/libflutter_engine_core.a"
 mkdir -p "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/gen/flutter/shell/platform/embedder/assets"
 : > "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/icudtl.dat"
 cat > "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/flutter_engine_core_smoke" <<'SMOKE_EOF'
@@ -170,7 +171,14 @@ cat > "$fake_bin/nm" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "${1:-}" == '-D' ]]; then
+if [[ " $* " == *libflutter_engine_core.a* ]]; then
+  printf '0000000000000000 T FlutterCoreEngineRun\n'
+  if ((FAKE_STATIC_EXTRA != 0)); then
+    printf '0000000000000000 T UnexpectedStaticGlobal\n'
+  fi
+elif [[ " $* " == *libflutter_engine_core.so* ]]; then
+  printf '0000000000000000 T FlutterCoreEngineRun\n'
+elif [[ "${1:-}" == '-D' ]]; then
   printf '0000000000000000 T FlutterCoreEngineRun\n'
 fi
 EOF
@@ -189,6 +197,7 @@ run_check() {
   TITAN_NINJA="$fake_bin/ninja" \
   TITAN_RUN_ENGINE_TESTS="$fake_bin/run-engine-tests" \
   TITAN_RUN_DART_TESTS="$fake_bin/run-dart-tests" \
+  TITAN_LLVM_NM="$fake_bin/nm" \
   BUILD_LOG="$build_log" \
   NINJA_LOG="$ninja_log" \
   NINJA_PID_LOG="$ninja_pid_log" \
@@ -199,6 +208,7 @@ run_check() {
   TITAN_LAVAPIPE_ICD="${FAKE_LAVAPIPE_ICD:-$fake_lavapipe_icd}" \
   FAKE_TRIANGLE_STATUS="${FAKE_TRIANGLE_STATUS:-0}" \
   FAKE_GPU_UNEXPECTED="${FAKE_GPU_UNEXPECTED:-0}" \
+  FAKE_STATIC_EXTRA="${FAKE_STATIC_EXTRA:-0}" \
   FAKE_NO_UNIT_BUILD_STATUS="${FAKE_NO_UNIT_BUILD_STATUS:-0}" \
   FAKE_ARGS_GN="${FAKE_ARGS_GN:-enable_unittests = true}" \
   FAKE_NINJA_STATUS="${FAKE_NINJA_STATUS:-0}" \
@@ -247,6 +257,10 @@ grep -Fxq 'flutter/fml:fml_unittests' "$ninja_log" || \
   fail 'ninja target was not passed as one argument'
 grep -Fxq 'flutter/shell/platform/embedder:flutter_engine_core_library' "$ninja_log" || \
   fail 'core engine target was not passed as one argument'
+grep -Fxq 'flutter/shell/platform/embedder:flutter_engine_core_static' "$ninja_log" || \
+  fail 'static core engine target was not passed as one argument'
+grep -Fxq 'flutter/shell/platform/embedder:flutter_engine_core_smoke_entry' "$ninja_log" || \
+  fail 'core smoke entry target was not passed as one argument'
 grep -Fxq 'flutter/shell/platform/embedder:flutter_engine_core_gpu_triangle' "$ninja_log" || \
   fail 'core gpu triangle target was not passed as one argument'
 grep -Fxq 'flutter/shell/testing:flutter_tester' "$ninja_log" || \
@@ -259,8 +273,19 @@ assert_contains "$output_log" 'build: ok' 'stage summary'
 assert_contains "$output_log" 'ninja: ok' 'stage summary'
 assert_contains "$output_log" 'tests: ok' 'stage summary'
 assert_contains "$output_log" 'core artifact: ok' 'core artifact summary'
+assert_contains "$output_log" 'core static symbols: ok' 'core static symbols summary'
 assert_contains "$output_log" 'core gpu triangle: ok' 'core gpu triangle summary'
 cp "$output_log" "$baseline_output_log"
+
+rm -f "$runner_log" "$dart_runner_log" "$order_log"
+if FAKE_STATIC_EXTRA=1 run_check >"$output_log" 2>&1; then
+  fail 'unexpected static core symbol should fail the check'
+else
+  status=$?
+fi
+[[ "$status" -eq 2 ]] || fail "unexpected static symbol returned $status instead of 2"
+assert_contains "$output_log" 'core static archive has symbols different' \
+  'core static symbols diagnostic'
 
 rm -f "$runner_log" "$dart_runner_log" "$order_log"
 if FAKE_TRIANGLE_STATUS=17 run_check >"$output_log" 2>&1; then

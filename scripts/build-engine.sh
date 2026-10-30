@@ -49,12 +49,48 @@ verify_bundle() {
   local target_cpu=$2
   local target_libc=$3
   local expected_arm_abi=$4
+  local bundle_directory core_library core_archive toolchain_bin
+  local clang llvm_ar llvm_nm
+  local temporary_directory archive_member
   local header elf_class machine header_flags expected_class expected_machine
   local max_glibc_symbol
-  local -a needed_libraries
+  local -a needed_libraries archive_members
 
   command -v readelf >/dev/null || die "readelf is required for bundle verification"
   command -v objdump >/dev/null || die "objdump is required for bundle verification"
+  verify_elf_header() {
+    local artifact=$1
+    local artifact_header artifact_class artifact_machine artifact_flags
+
+    artifact_header=$(LC_ALL=C readelf -h "$artifact")
+    artifact_class=$(sed -n 's/^ *Class: *//p' <<<"$artifact_header")
+    artifact_machine=$(sed -n 's/^ *Machine: *//p' <<<"$artifact_header")
+    artifact_flags=$(sed -n 's/^ *Flags: *//p' <<<"$artifact_header")
+    [[ "$artifact_class" == "$expected_class" ]] || \
+      die "ELF class verification failed for $artifact: expected $expected_class, got $artifact_class"
+    [[ "$artifact_machine" == "$expected_machine" ]] || \
+      die "ELF machine verification failed for $artifact: expected $expected_machine, got $artifact_machine"
+    if [[ "$target_cpu" == arm ]]; then
+      if [[ "$expected_arm_abi" == hard ]]; then
+        grep -Fq 'hard-float ABI' <<<"$artifact_flags" || \
+          die "ARM hard-float ABI verification failed for $artifact"
+      else
+        grep -Fq 'soft-float ABI' <<<"$artifact_flags" || \
+          die "ARM soft-float ABI verification failed for $artifact"
+      fi
+    fi
+    printf 'ELF: artifact=%s cpu=%s class=%s machine=%s\n' \
+      "$artifact" "$target_cpu" "$artifact_class" "$artifact_machine"
+  }
+
+  bundle_directory=$(dirname "$engine_path")
+  core_library="$bundle_directory/libflutter_engine_core.so"
+  core_archive="$bundle_directory/libflutter_engine_core.a"
+  toolchain_bin="$engine_src/flutter/buildtools/linux-x64/clang/bin"
+  clang=${TITAN_CLANG:-$toolchain_bin/clang}
+  llvm_ar=${TITAN_LLVM_AR:-$toolchain_bin/llvm-ar}
+  llvm_nm=${TITAN_LLVM_NM:-$toolchain_bin/llvm-nm}
+
   header=$(LC_ALL=C readelf -h "$engine_path")
   elf_class=$(sed -n 's/^ *Class: *//p' <<<"$header")
   machine=$(sed -n 's/^ *Machine: *//p' <<<"$header")
@@ -108,6 +144,50 @@ verify_bundle() {
     )
     printf 'glibc max symbol: %s\n' "${max_glibc_symbol:-none}"
   fi
+
+  [[ -f "$core_library" ]] || die "core library is missing from bundle: $core_library"
+  [[ -f "$core_archive" ]] || die "static core library is missing from bundle: $core_archive"
+  [[ -x "$clang" ]] || die "toolchain clang is missing: $clang"
+  [[ -x "$llvm_ar" ]] || die "toolchain llvm-ar is missing: $llvm_ar"
+  [[ -x "$llvm_nm" ]] || die "toolchain llvm-nm is missing: $llvm_nm"
+  verify_elf_header "$core_library"
+
+  temporary_directory=$(mktemp -d)
+  mapfile -t archive_members < <("$llvm_ar" t "$core_archive")
+  ((${#archive_members[@]} == 1)) || \
+    die "static core archive must contain one object: $core_archive"
+  archive_member=${archive_members[0]}
+  (
+    cd "$temporary_directory"
+    "$llvm_ar" x "$core_archive" "$archive_member"
+  ) || die "could not extract static core archive: $core_archive"
+  verify_elf_header "$temporary_directory/$archive_member"
+
+  local static_symbols="$temporary_directory/static-symbols.txt"
+  local dynamic_symbols="$temporary_directory/dynamic-symbols.txt"
+  if ! "$llvm_nm" --extern-only --defined-only "$core_archive" |
+    awk '$NF !~ /:$/ && $NF != "" { print $NF }' | sort -u >"$static_symbols"; then
+    die "llvm-nm failed for $core_archive"
+  fi
+  if ! "$llvm_nm" -D --defined-only "$core_library" |
+    awk '$NF ~ /^FlutterCore/ { print $NF }' | sort -u >"$dynamic_symbols"; then
+    die "llvm-nm failed for $core_library"
+  fi
+  if ! diff -u "$dynamic_symbols" "$static_symbols"; then
+    die "static core symbols differ from the dynamic core exports"
+  fi
+
+  local header_smoke="$temporary_directory/core_header_smoke.c"
+  cat >"$header_smoke" <<'EOF'
+#include "flutter_core_host.h"
+
+int main(void) {
+  return 0;
+}
+EOF
+  "$clang" -fsyntax-only -I"$bundle_directory/include" "$header_smoke" || \
+    die "core public headers do not compile from the bundle"
+  rm -rf "$temporary_directory"
 }
 
 mode=debug
@@ -659,9 +739,11 @@ printf 'building Flutter Engine in %s\n' "$out_dir"
 if [[ "$runtime" == none ]]; then
   run_within_cpu_budget ninja -C "$out_dir" -j "$jobs" -l "$load" \
     flutter/shell/platform/embedder:flutter_engine_core_library \
+    flutter/shell/platform/embedder:flutter_engine_core_static \
     flutter/shell/platform/embedder:copy_core_headers
-  [[ -f "$out_dir/libflutter_engine_core.so" ]] || \
-    die "engine build did not produce $out_dir/libflutter_engine_core.so"
+  for artifact in libflutter_engine_core.so libflutter_engine_core.a; do
+    [[ -f "$out_dir/$artifact" ]] || die "engine build did not produce $out_dir/$artifact"
+  done
   exit 0
 fi
 if ((${#ninja_targets[@]} > 0)); then
@@ -673,11 +755,13 @@ run_within_cpu_budget ninja -C "$out_dir" -j "$jobs" -l "$load" \
   flutter/shell/platform/embedder:flutter_engine_library \
   flutter/shell/platform/embedder:copy_headers \
   flutter/shell/platform/embedder:flutter_engine_core_library \
+  flutter/shell/platform/embedder:flutter_engine_core_static \
   flutter/shell/platform/embedder:copy_core_headers
-[[ -f "$out_dir/libflutter_engine_core.so" ]] || \
-  die "engine build did not produce $out_dir/libflutter_engine_core.so"
+for artifact in libflutter_engine_core.so libflutter_engine_core.a; do
+  [[ -f "$out_dir/$artifact" ]] || die "engine build did not produce $out_dir/$artifact"
+done
 if [[ "$mode" != debug ]]; then
-  run_within_cpu_budget ninja -C "$out_dir" -j "$jobs" -l "$load" flutter/shell/common:gen_snapshot
+  run_within_cpu_budget ninja -C "$out_dir" -j "$jobs" -l "$load" flutter:gen_snapshot
 fi
 
 # The bare commit name is the TitanDM bundle (x64 glibc debug); every other
@@ -697,9 +781,25 @@ stage=$(mktemp -d "$artifact_root/.stage.XXXXXX")
 chmod 755 "$stage"  # mktemp creates 0700; the bundle is read by other tools
 trap 'rm -rf "$stage"' EXIT
 
-for artifact in libflutter_engine.so flutter_embedder.h icudtl.dat; do
+for artifact in \
+  libflutter_engine.so \
+  libflutter_engine_core.so \
+  libflutter_engine_core.a \
+  flutter_embedder.h \
+  icudtl.dat; do
   [[ -f "$out_dir/$artifact" ]] || die "engine build did not produce $out_dir/$artifact"
   cp -a "$out_dir/$artifact" "$stage/$artifact"
+done
+include_stage="$stage/include"
+runtime_spi_include="$flutter_dir/engine/src/flutter/runtime_spi/include"
+embedder_include="$flutter_dir/engine/src/flutter/shell/platform/embedder"
+mkdir -p "$include_stage/flutter/runtime_spi/include" \
+  "$include_stage/flutter/shell/platform/embedder"
+cp -a "$embedder_include/flutter_core_host.h" "$include_stage/flutter_core_host.h"
+cp -a "$embedder_include/embedder.h" \
+  "$include_stage/flutter/shell/platform/embedder/embedder.h"
+for header in "$runtime_spi_include"/*.h; do
+  cp -a "$header" "$include_stage/flutter/runtime_spi/include/"
 done
 if [[ "$mode" != debug ]]; then
   [[ -f "$out_dir/gen_snapshot" ]] || die "engine build did not produce $out_dir/gen_snapshot"

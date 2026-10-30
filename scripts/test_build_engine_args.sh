@@ -91,6 +91,28 @@ printf '%s\n' "$*" >> "$TITAN_GN_LOG"
 EOF
 chmod +x "$fake_gn"
 
+toolchain_bin="$flutter_directory/engine/src/flutter/buildtools/linux-x64/clang/bin"
+runtime_spi_include="$flutter_directory/engine/src/flutter/runtime_spi/include"
+embedder_include="$flutter_directory/engine/src/flutter/shell/platform/embedder"
+mkdir -p "$toolchain_bin" "$runtime_spi_include" "$embedder_include"
+cat > "$embedder_include/flutter_core_host.h" <<'EOF'
+#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
+#include "flutter/shell/platform/embedder/embedder.h"
+EOF
+: > "$embedder_include/embedder.h"
+for header in \
+  flutter_fragment.h \
+  flutter_gpu.h \
+  flutter_image.h \
+  flutter_paint_effects.h \
+  flutter_runtime_extensions.h \
+  flutter_runtime_spi.h \
+  flutter_scene.h \
+  flutter_semantics.h \
+  flutter_text.h; do
+  : > "$runtime_spi_include/$header"
+done
+
 fake_ninja="$fake_bin/ninja"
 cat > "$fake_ninja" <<'EOF'
 #!/usr/bin/env bash
@@ -102,8 +124,12 @@ if [[ "${1:-}" == -C ]]; then
   mkdir -p "$output_directory"
   : > "$output_directory/libflutter_engine.so"
   : > "$output_directory/libflutter_engine_core.so"
+  : > "$output_directory/libflutter_engine_core.a"
   : > "$output_directory/flutter_embedder.h"
   : > "$output_directory/icudtl.dat"
+  if [[ " $* " == *' flutter:gen_snapshot '* ]]; then
+    : > "$output_directory/gen_snapshot"
+  fi
 fi
 EOF
 chmod +x "$fake_ninja"
@@ -139,6 +165,42 @@ printf '0000000000000000 g    DF .text  0000000000000001 GLIBC_2.38 fake_symbol\
 EOF
 chmod +x "$fake_bin/objdump"
 
+cat > "$fake_bin/llvm-ar" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}" in
+  t)
+    printf 'flutter_engine_core.o\n'
+    ;;
+  x)
+    : > "${3:-flutter_engine_core.o}"
+    ;;
+  *)
+    printf 'unsupported llvm-ar operation: %s\n' "${1:-}" >&2
+    exit 1
+    ;;
+esac
+EOF
+chmod +x "$fake_bin/llvm-ar"
+
+cat > "$fake_bin/llvm-nm" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '0000000000000000 T FlutterCoreEngineRun\n'
+EOF
+chmod +x "$fake_bin/llvm-nm"
+
+cat > "$fake_bin/clang" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+EOF
+chmod +x "$fake_bin/clang"
+ln -s "$fake_bin/llvm-ar" "$toolchain_bin/llvm-ar"
+ln -s "$fake_bin/llvm-nm" "$toolchain_bin/llvm-nm"
+ln -s "$fake_bin/clang" "$toolchain_bin/clang"
+
 run_engine() {
   TITAN_GN="$fake_gn" \
   TITAN_GN_LOG="$gn_log" \
@@ -146,6 +208,9 @@ run_engine() {
   TITAN_REAL_PYTHON="$real_python" \
   TITAN_HOST_SYSROOT="$host_sysroot" \
   TITAN_NINJA_LOG="$ninja_log" \
+  TITAN_CLANG="$fake_bin/clang" \
+  TITAN_LLVM_AR="$fake_bin/llvm-ar" \
+  TITAN_LLVM_NM="$fake_bin/llvm-nm" \
   TITAN_WORK_DIR="$temporary_directory/work" \
   TITAN_BUNDLE_DIR="$temporary_directory/bundle" \
   FVM_ROOT="$temporary_directory/fvm" \
@@ -414,11 +479,21 @@ run_engine --mode debug --out "$temporary_directory/verified-bundle"
   printf 'verified bundle was not published\n' >&2
   exit 1
 }
-[[ ! -f "$temporary_directory/verified-bundle/$flutter_commit/libflutter_engine_core.so" ]] || {
-  printf 'core-only engine was copied to the bundle\n' >&2
-  exit 1
-}
+for artifact in \
+  libflutter_engine_core.so \
+  libflutter_engine_core.a \
+  icudtl.dat \
+  flutter_embedder.h \
+  include/flutter_core_host.h \
+  include/flutter/runtime_spi/include/flutter_runtime_spi.h \
+  include/flutter/shell/platform/embedder/embedder.h; do
+  [[ -f "$temporary_directory/verified-bundle/$flutter_commit/$artifact" ]] || {
+    printf 'verified bundle is missing %s\n' "$artifact" >&2
+    exit 1
+  }
+done
 assert_log_contains "$ninja_log" 'flutter/shell/platform/embedder:flutter_engine_core_library'
+assert_log_contains "$ninja_log" 'flutter/shell/platform/embedder:flutter_engine_core_static'
 assert_log_contains "$ninja_log" 'flutter/shell/platform/embedder:copy_core_headers'
 
 : > "$gn_log"
@@ -426,6 +501,7 @@ assert_log_contains "$ninja_log" 'flutter/shell/platform/embedder:copy_core_head
 run_engine --runtime none --out-name host_debug_nodart
 assert_log_contains "$gn_log" 'titan_flutter_runtime_dart=false'
 assert_log_contains "$ninja_log" 'flutter/shell/platform/embedder:flutter_engine_core_library'
+assert_log_contains "$ninja_log" 'flutter/shell/platform/embedder:flutter_engine_core_static'
 assert_log_contains "$ninja_log" 'flutter/shell/platform/embedder:copy_core_headers'
 assert_log_not_contains "$ninja_log" 'flutter/shell/platform/embedder:flutter_engine_library'
 assert_log_not_contains "$ninja_log" 'flutter/shell/platform/embedder:copy_headers'
@@ -436,6 +512,15 @@ run_engine --mode release --out-name sdk_custom \
 assert_log_contains "$ninja_log" '-C '
 assert_log_contains "$ninja_log" 'first/target second/target'
 assert_log_not_contains "$ninja_log" 'flutter/shell/platform/embedder:flutter_engine_library'
+
+: > "$ninja_log"
+run_engine --mode release --out "$temporary_directory/release-bundle"
+assert_log_contains "$ninja_log" 'flutter/shell/platform/embedder:flutter_engine_core_static'
+assert_log_contains "$ninja_log" 'flutter:gen_snapshot'
+[[ -f "$temporary_directory/release-bundle/$flutter_commit-release-x64/gen_snapshot" ]] || {
+  printf 'release bundle did not include gen_snapshot\n' >&2
+  exit 1
+}
 
 [[ "$(run_engine --mode debug --cpu x64 --print-out-name)" == host_debug ]] || {
   printf 'unexpected default output name\n' >&2

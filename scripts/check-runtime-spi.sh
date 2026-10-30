@@ -52,6 +52,8 @@ no_unittests_output_directory="$engine_source/out/host_debug_no_unittests"
 args_file="$output_directory/args.gn"
 core_smoke="$output_directory/flutter_engine_core_smoke"
 core_gpu_triangle="$output_directory/flutter_engine_core_gpu_triangle"
+core_library="$output_directory/libflutter_engine_core.so"
+core_archive="$output_directory/libflutter_engine_core.a"
 icu_data="$output_directory/icudtl.dat"
 assets_directory="$output_directory/gen/flutter/shell/platform/embedder/assets"
 shader_bundle="$output_directory/playground.shaderbundle"
@@ -118,6 +120,8 @@ run_ninja() {
         ' "$repository_root/tests/runtime-spi/dart-tests.txt"
         printf '%s\n' 'flutter/shell/platform/embedder:flutter_engine'
         printf '%s\n' 'flutter/shell/platform/embedder:flutter_engine_core_library'
+        printf '%s\n' 'flutter/shell/platform/embedder:flutter_engine_core_static'
+        printf '%s\n' 'flutter/shell/platform/embedder:flutter_engine_core_smoke_entry'
       } | sed 's/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d'
     )
   fi
@@ -226,6 +230,36 @@ run_core_gpu_triangle() {
   printf 'core gpu triangle: ok\n'
 }
 
+run_core_static_symbols() {
+  [[ -f "$core_library" ]] || die "core library is missing: $core_library"
+  [[ -f "$core_archive" ]] || die "static core library is missing: $core_archive"
+
+  local llvm_nm=${TITAN_LLVM_NM:-$engine_source/flutter/buildtools/linux-x64/clang/bin/llvm-nm}
+  [[ -x "$llvm_nm" ]] || die "toolchain llvm-nm is missing: $llvm_nm"
+
+  local temporary_directory
+  local static_symbols
+  local dynamic_symbols
+  temporary_directory=$(mktemp -d)
+  trap 'rm -rf "$temporary_directory"' RETURN
+  static_symbols="$temporary_directory/static-symbols.txt"
+  dynamic_symbols="$temporary_directory/dynamic-symbols.txt"
+  if ! "$llvm_nm" --extern-only --defined-only "$core_archive" |
+    awk '$NF !~ /:$/ && $NF != "" { print $NF }' | sort -u >"$static_symbols"; then
+    die "llvm-nm failed for $core_archive"
+  fi
+  if ! "$llvm_nm" -D --defined-only "$core_library" |
+    awk '$NF ~ /^FlutterCore/ { print $NF }' | sort -u >"$dynamic_symbols"; then
+    die "llvm-nm failed for $core_library"
+  fi
+  if ! diff -u "$dynamic_symbols" "$static_symbols"; then
+    die "core static archive has symbols different from the dynamic core exports"
+  fi
+
+  rm -rf "$temporary_directory"
+  printf 'core static symbols: ok\n'
+}
+
 ninja_pid=''
 
 stop_ninja() {
@@ -273,5 +307,6 @@ run_build_without_unittests
 run_ninja
 run_tests
 run_core_smoke
+run_core_static_symbols
 run_core_gpu_triangle
-"$check_core_artifact" "$output_directory/libflutter_engine_core.so"
+"$check_core_artifact" "$core_library"
