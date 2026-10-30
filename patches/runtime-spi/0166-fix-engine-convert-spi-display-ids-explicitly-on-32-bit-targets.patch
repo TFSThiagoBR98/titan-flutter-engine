@@ -1,0 +1,41 @@
+# Why: the ARM 32-bit engine builds failed on a narrowing from
+# FlutterSpiDisplay::id (uint64_t) to DisplayId (size_t).
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader_library.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader_library.cc
+index ec406333d7f..bff0f3bbdd7 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader_library.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader_library.cc
+@@ -299,14 +299,14 @@ SpiGpuShaderLibrary::ShaderMap ParseShaderBundle(
+         for (const auto& input : *inputs_fb) {
+           impeller::ShaderStageIOSlot slot{
+               .name = input->name()->c_str(),
+-              .location = input->location(),
+-              .set = input->set(),
+-              .binding = input->binding(),
++              .location = static_cast<size_t>(input->location()),
++              .set = static_cast<size_t>(input->set()),
++              .binding = static_cast<size_t>(input->binding()),
+               .type = FromInputType(input->type()),
+-              .bit_width = input->bit_width(),
+-              .vec_size = input->vec_size(),
+-              .columns = input->columns(),
+-              .offset = input->offset(),
++              .bit_width = static_cast<size_t>(input->bit_width()),
++              .vec_size = static_cast<size_t>(input->vec_size()),
++              .columns = static_cast<size_t>(input->columns()),
++              .offset = static_cast<size_t>(input->offset()),
+           };
+           inputs.push_back(slot);
+           default_stride +=
+diff --git a/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc b/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc
+index 5b5dc141759..e7002a4a64e 100644
+--- a/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc
++++ b/engine/src/flutter/shell/common/dart_runtime/flutter_dart_runtime.cc
+@@ -590,7 +590,7 @@ void FlutterDartRuntime::SetDisplaysThunk(void* user_data,
+   std::vector<DisplayData> values;
+   values.reserve(count);
+   for (size_t index = 0; index < count; index++) {
+-    values.push_back({.id = displays[index].id,
++    values.push_back({.id = static_cast<DisplayId>(displays[index].id),
+                       .width = displays[index].width,
+                       .height = displays[index].height,
+                       .pixel_ratio = displays[index].pixel_ratio,
