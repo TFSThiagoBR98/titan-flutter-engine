@@ -1,0 +1,424 @@
+# Why: S6; produce a static core artifact while preserving the existing core
+# smoke behavior.
+diff --git a/engine/src/flutter/shell/platform/embedder/BUILD.gn b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+index cb0fd3b8f81..553d8f6658b 100644
+--- a/engine/src/flutter/shell/platform/embedder/BUILD.gn
++++ b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ import("//build/toolchain/clang.gni")
++import("//build/toolchain/toolchain.gni")
+ import("//flutter/build/zip_bundle.gni")
+ import("//flutter/common/config.gni")
+ import("//flutter/impeller/tools/impeller.gni")
+@@ -560,6 +561,56 @@ shared_library("flutter_engine_core_library") {
+   public_configs = [ "//flutter:config" ]
+ }
+ 
++static_library("flutter_engine_core_objects") {
++  visibility = [ ":*" ]
++
++  complete_static_lib = true
++
++  output_name = "flutter_engine_core_objects"
++
++  deps = [ ":embedder_core" ]
++  deps += [ "//flutter/third_party/libcxx" ]
++
++  assert_no_deps = [
++    "//flutter/third_party/dart/*",
++    "//flutter/third_party/tonic/*",
++    "//flutter/lib/ui:ui",
++    "//flutter/runtime:runtime",
++    "//flutter/runtime:libdart",
++    "//flutter/shell/common:dart",
++  ]
++
++  public_configs = [ "//flutter:config" ]
++}
++
++action("flutter_engine_core_static") {
++  visibility = [ ":*" ]
++
++  script = "make_static_core.py"
++
++  _objects_archive =
++      "$root_out_dir/obj/flutter/shell/platform/embedder/libflutter_engine_core_objects.a"
++  _clang_bin = "$buildtools_path/${host_os}-${host_cpu}/clang/bin"
++
++  inputs = [ _objects_archive ]
++  outputs = [ "$root_out_dir/libflutter_engine_core.a" ]
++
++  args = [
++    "--archive",
++    rebase_path(_objects_archive, root_build_dir),
++    "--output",
++    rebase_path(outputs[0], root_build_dir),
++    "--ld",
++    rebase_path("$_clang_bin/ld.lld", root_build_dir),
++    "--objcopy",
++    rebase_path("$_clang_bin/llvm-objcopy", root_build_dir),
++    "--ar",
++    rebase_path("$_clang_bin/llvm-ar", root_build_dir),
++  ]
++
++  deps = [ ":flutter_engine_core_objects" ]
++}
++
+ if (enable_unittests) {
+   copy("copy_core_gpu_triangle_shaderbundle") {
+     testonly = true
+@@ -576,6 +627,16 @@ if (enable_unittests) {
+     deps = [
+       ":embedder_headers",
+       ":flutter_engine_core_library",
++      ":flutter_engine_core_smoke_entry",
++    ]
++  }
++
++  static_library("flutter_engine_core_smoke_entry") {
++    testonly = true
++    complete_static_lib = true
++    sources = [ "tests/core_smoke_entry.c" ]
++    deps = [
++      ":embedder_headers",
+       "//flutter/runtime_spi:c_test_runtime",
+     ]
+   }
+diff --git a/engine/src/flutter/shell/platform/embedder/make_static_core.py b/engine/src/flutter/shell/platform/embedder/make_static_core.py
+new file mode 100644
+index 00000000000..add8a90473b
+--- /dev/null
++++ b/engine/src/flutter/shell/platform/embedder/make_static_core.py
+@@ -0,0 +1,51 @@
++#!/usr/bin/env python3
++"""Builds the exported static Flutter core archive from its object archive."""
++
++import argparse
++import subprocess
++import tempfile
++from pathlib import Path
++from typing import List, Union
++
++
++def parse_arguments() -> argparse.Namespace:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--archive", type=Path, required=True)
++    parser.add_argument("--output", type=Path, required=True)
++    parser.add_argument("--ld", type=Path, required=True)
++    parser.add_argument("--objcopy", type=Path, required=True)
++    parser.add_argument("--ar", type=Path, required=True)
++    return parser.parse_args()
++
++
++def run(command: List[Union[Path, str]]) -> None:
++    subprocess.run(command, check=True)
++
++
++def build_static_core(arguments: argparse.Namespace) -> None:
++    arguments.output.parent.mkdir(parents=True, exist_ok=True)
++    with tempfile.TemporaryDirectory() as temporary_directory:
++        object_path = Path(temporary_directory) / "flutter_engine_core.o"
++        run([
++            arguments.ld,
++            "-r",
++            "--whole-archive",
++            arguments.archive,
++            "-o",
++            object_path,
++        ])
++        run([
++            arguments.objcopy,
++            "--wildcard",
++            "--keep-global-symbol=FlutterCore*",
++            object_path,
++        ])
++        run([arguments.ar, "crs", arguments.output, object_path])
++
++
++def main() -> None:
++    build_static_core(parse_arguments())
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/engine/src/flutter/shell/platform/embedder/tests/core_library_smoke.c b/engine/src/flutter/shell/platform/embedder/tests/core_library_smoke.c
+index 28c9498a501..61f237bedf0 100644
+--- a/engine/src/flutter/shell/platform/embedder/tests/core_library_smoke.c
++++ b/engine/src/flutter/shell/platform/embedder/tests/core_library_smoke.c
+@@ -2,64 +2,9 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+-#include <errno.h>
+-#include <stdatomic.h>
+-#include <stdbool.h>
+ #include <stdio.h>
+-#include <time.h>
+ 
+-#include "flutter/runtime_spi/testing/c_test_runtime.h"
+-#include "flutter/shell/platform/embedder/flutter_core_host.h"
+-
+-static const int kSurfaceWaitSeconds = 10;
+-
+-typedef struct {
+-  atomic_bool surface_presented;
+-} CoreSmokeState;
+-
+-static bool PresentSoftwareSurface(void* user_data,
+-                                   const void* allocation,
+-                                   size_t row_bytes,
+-                                   size_t height) {
+-  (void)allocation;
+-  (void)row_bytes;
+-  (void)height;
+-  CoreSmokeState* state = (CoreSmokeState*)user_data;
+-  atomic_store_explicit(&state->surface_presented, true, memory_order_release);
+-  return true;
+-}
+-
+-static bool IsAfter(const struct timespec* left, const struct timespec* right) {
+-  return left->tv_sec > right->tv_sec ||
+-         (left->tv_sec == right->tv_sec && left->tv_nsec >= right->tv_nsec);
+-}
+-
+-static bool WaitForSurface(CoreSmokeState* state) {
+-  struct timespec deadline;
+-  if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) {
+-    return false;
+-  }
+-  deadline.tv_sec += kSurfaceWaitSeconds;
+-
+-  while (!atomic_load_explicit(&state->surface_presented, memory_order_acquire)) {
+-    struct timespec current_time;
+-    if (clock_gettime(CLOCK_MONOTONIC, &current_time) != 0 ||
+-        IsAfter(&current_time, &deadline)) {
+-      return false;
+-    }
+-
+-    const struct timespec sleep_duration = {.tv_sec = 0, .tv_nsec = 1000000};
+-    if (nanosleep(&sleep_duration, NULL) != 0 && errno != EINTR) {
+-      return false;
+-    }
+-  }
+-  return true;
+-}
+-
+-static int Fail(const char* message) {
+-  fprintf(stderr, "core smoke: %s\n", message);
+-  return 1;
+-}
++#include "core_smoke_entry.h"
+ 
+ int main(int argc, char** argv) {
+   if (argc != 3) {
+@@ -67,58 +12,5 @@ int main(int argc, char** argv) {
+     return 2;
+   }
+ 
+-  CTestRuntime* runtime = c_test_runtime_create();
+-  if (runtime == NULL) {
+-    return Fail("could not create the test runtime");
+-  }
+-  runtime->draw_scene_on_begin_frame = true;
+-
+-  CoreSmokeState state;
+-  atomic_init(&state.surface_presented, false);
+-
+-  FlutterRendererConfig renderer_config = {0};
+-  renderer_config.type = kSoftware;
+-  renderer_config.software.struct_size = sizeof(FlutterSoftwareRendererConfig);
+-  renderer_config.software.surface_present_callback = PresentSoftwareSurface;
+-
+-  FlutterCoreHostArgs host_args = {0};
+-  host_args.struct_size = sizeof(FlutterCoreHostArgs);
+-  host_args.assets_path = argv[2];
+-  host_args.icu_data_path = argv[1];
+-
+-  const FlutterSpiRuntimeTable runtime_table = c_test_runtime_table(runtime);
+-  FlutterCoreEngine engine = NULL;
+-  FlutterEngineResult result = FlutterCoreEngineRun(
+-      FLUTTER_ENGINE_VERSION, &renderer_config, &host_args, &runtime_table,
+-      &state, &engine);
+-  if (result != kSuccess || engine == NULL) {
+-    c_test_runtime_free(runtime);
+-    return Fail("could not start the core engine");
+-  }
+-
+-  FlutterWindowMetricsEvent metrics = {
+-      .struct_size = sizeof(FlutterWindowMetricsEvent),
+-      .width = 800,
+-      .height = 600,
+-      .pixel_ratio = 1.0,
+-  };
+-  if (FlutterCoreEngineSendWindowMetricsEvent(engine, &metrics) != kSuccess ||
+-      FlutterCoreEngineScheduleFrame(engine) != kSuccess) {
+-    FlutterCoreEngineShutdown(engine);
+-    c_test_runtime_free(runtime);
+-    return Fail("could not schedule the first frame");
+-  }
+-
+-  const bool presented = WaitForSurface(&state);
+-  const FlutterEngineResult shutdown_result = FlutterCoreEngineShutdown(engine);
+-  c_test_runtime_free(runtime);
+-  if (!presented) {
+-    return Fail("the surface was not presented within 10 seconds");
+-  }
+-  if (shutdown_result != kSuccess) {
+-    return Fail("could not shut down the core engine");
+-  }
+-
+-  printf("core smoke: ok\n");
+-  return 0;
++  return flutter_core_smoke_run(argv[1], argv[2]);
+ }
+diff --git a/engine/src/flutter/shell/platform/embedder/tests/core_smoke_entry.c b/engine/src/flutter/shell/platform/embedder/tests/core_smoke_entry.c
+new file mode 100644
+index 00000000000..656f6e76974
+--- /dev/null
++++ b/engine/src/flutter/shell/platform/embedder/tests/core_smoke_entry.c
+@@ -0,0 +1,119 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include <errno.h>
++#include <stdatomic.h>
++#include <stdbool.h>
++#include <stdio.h>
++#include <time.h>
++
++#include "flutter/runtime_spi/testing/c_test_runtime.h"
++#include "flutter/shell/platform/embedder/flutter_core_host.h"
++
++static const int kSurfaceWaitSeconds = 10;
++
++typedef struct {
++  atomic_bool surface_presented;
++} CoreSmokeState;
++
++static bool PresentSoftwareSurface(void* user_data,
++                                   const void* allocation,
++                                   size_t row_bytes,
++                                   size_t height) {
++  (void)allocation;
++  (void)row_bytes;
++  (void)height;
++  CoreSmokeState* state = (CoreSmokeState*)user_data;
++  atomic_store_explicit(&state->surface_presented, true, memory_order_release);
++  return true;
++}
++
++static bool IsAfter(const struct timespec* left, const struct timespec* right) {
++  return left->tv_sec > right->tv_sec ||
++         (left->tv_sec == right->tv_sec && left->tv_nsec >= right->tv_nsec);
++}
++
++static bool WaitForSurface(CoreSmokeState* state) {
++  struct timespec deadline;
++  if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) {
++    return false;
++  }
++  deadline.tv_sec += kSurfaceWaitSeconds;
++
++  while (!atomic_load_explicit(&state->surface_presented, memory_order_acquire)) {
++    struct timespec current_time;
++    if (clock_gettime(CLOCK_MONOTONIC, &current_time) != 0 ||
++        IsAfter(&current_time, &deadline)) {
++      return false;
++    }
++
++    const struct timespec sleep_duration = {.tv_sec = 0, .tv_nsec = 1000000};
++    if (nanosleep(&sleep_duration, NULL) != 0 && errno != EINTR) {
++      return false;
++    }
++  }
++  return true;
++}
++
++static int Fail(const char* message) {
++  fprintf(stderr, "core smoke: %s\n", message);
++  return 1;
++}
++
++int flutter_core_smoke_run(const char* icu_path, const char* assets_path) {
++  CTestRuntime* runtime = c_test_runtime_create();
++  if (runtime == NULL) {
++    return Fail("could not create the test runtime");
++  }
++  runtime->draw_scene_on_begin_frame = true;
++
++  CoreSmokeState state;
++  atomic_init(&state.surface_presented, false);
++
++  FlutterRendererConfig renderer_config = {0};
++  renderer_config.type = kSoftware;
++  renderer_config.software.struct_size = sizeof(FlutterSoftwareRendererConfig);
++  renderer_config.software.surface_present_callback = PresentSoftwareSurface;
++
++  FlutterCoreHostArgs host_args = {0};
++  host_args.struct_size = sizeof(FlutterCoreHostArgs);
++  host_args.assets_path = assets_path;
++  host_args.icu_data_path = icu_path;
++
++  const FlutterSpiRuntimeTable runtime_table = c_test_runtime_table(runtime);
++  FlutterCoreEngine engine = NULL;
++  FlutterEngineResult result = FlutterCoreEngineRun(
++      FLUTTER_ENGINE_VERSION, &renderer_config, &host_args, &runtime_table,
++      &state, &engine);
++  if (result != kSuccess || engine == NULL) {
++    c_test_runtime_free(runtime);
++    return Fail("could not start the core engine");
++  }
++
++  FlutterWindowMetricsEvent metrics = {
++      .struct_size = sizeof(FlutterWindowMetricsEvent),
++      .width = 800,
++      .height = 600,
++      .pixel_ratio = 1.0,
++  };
++  if (FlutterCoreEngineSendWindowMetricsEvent(engine, &metrics) != kSuccess ||
++      FlutterCoreEngineScheduleFrame(engine) != kSuccess) {
++    FlutterCoreEngineShutdown(engine);
++    c_test_runtime_free(runtime);
++    return Fail("could not schedule the first frame");
++  }
++
++  const bool presented = WaitForSurface(&state);
++  const FlutterEngineResult shutdown_result = FlutterCoreEngineShutdown(engine);
++  c_test_runtime_free(runtime);
++  if (!presented) {
++    return Fail("the surface was not presented within 10 seconds");
++  }
++  if (shutdown_result != kSuccess) {
++    return Fail("could not shut down the core engine");
++  }
++
++  printf("core smoke: ok\n");
++  return 0;
++}
+diff --git a/engine/src/flutter/shell/platform/embedder/tests/core_smoke_entry.h b/engine/src/flutter/shell/platform/embedder/tests/core_smoke_entry.h
+new file mode 100644
+index 00000000000..9d1859bf57a
+--- /dev/null
++++ b/engine/src/flutter/shell/platform/embedder/tests/core_smoke_entry.h
+@@ -0,0 +1,18 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_SHELL_PLATFORM_EMBEDDER_TESTS_CORE_SMOKE_ENTRY_H_
++#define FLUTTER_SHELL_PLATFORM_EMBEDDER_TESTS_CORE_SMOKE_ENTRY_H_
++
++#if defined(__cplusplus)
++extern "C" {
++#endif
++
++int flutter_core_smoke_run(const char* icu_path, const char* assets_path);
++
++#if defined(__cplusplus)
++}
++#endif
++
++#endif  // FLUTTER_SHELL_PLATFORM_EMBEDDER_TESTS_CORE_SMOKE_ENTRY_H_
