@@ -1,0 +1,1609 @@
+# Why: S7d; flutter_gpu image crossing uses FlutterSpiGpuApi and lib/gpu no
+# longer depends on Impeller bridges.
+diff --git a/engine/src/flutter/impeller/renderer/BUILD.gn b/engine/src/flutter/impeller/renderer/BUILD.gn
+index a1bc7bdd1e4..cfcd0bad867 100644
+--- a/engine/src/flutter/impeller/renderer/BUILD.gn
++++ b/engine/src/flutter/impeller/renderer/BUILD.gn
+@@ -175,6 +175,7 @@ impeller_component("renderer_dart_unittests") {
+     "//flutter/lib/gpu",
+     "//flutter/lib/snapshot",
+     "//flutter/runtime",
++    "//flutter/runtime_spi:spi_backend",
+     "//flutter/testing:fixture_test",
+     "//flutter/testing:testing_lib",
+   ]
+diff --git a/engine/src/flutter/impeller/renderer/renderer_dart_unittests.cc b/engine/src/flutter/impeller/renderer/renderer_dart_unittests.cc
+index 36653e0e7fd..fbf1f37d6ce 100644
+--- a/engine/src/flutter/impeller/renderer/renderer_dart_unittests.cc
++++ b/engine/src/flutter/impeller/renderer/renderer_dart_unittests.cc
+@@ -11,6 +11,8 @@
+ #include "flutter/lib/gpu/context.h"
+ #include "flutter/lib/gpu/shader_library.h"
+ #include "flutter/lib/gpu/texture.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_context.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_shader_library.h"
+ #include "flutter/runtime/dart_isolate.h"
+ #include "flutter/runtime/dart_vm_lifecycle.h"
+ #include "flutter/testing/dart_fixture.h"
+@@ -35,9 +37,16 @@ namespace testing {
+ static void InstantiateTestShaderLibrary(Context::BackendType backend_type) {
+   auto fixture =
+       flutter::testing::OpenFixtureAsMapping("playground.shaderbundle");
+-  auto library = flutter::gpu::ShaderLibrary::MakeFromFlatbuffer(
+-      backend_type, std::move(fixture));
+-  flutter::gpu::ShaderLibrary::SetOverride(library);
++  FlutterSpiGpuShaderLibrary* library = nullptr;
++  if (flutter::SpiGpuShaderLibraryCreateForBackend(
++          static_cast<int32_t>(backend_type),
++          static_cast<const uint8_t*>(fixture->GetMapping()), fixture->GetSize(),
++          nullptr, &library) != kFlutterSpiOk ||
++      library == nullptr) {
++    return;
++  }
++  flutter::gpu::ShaderLibrary::SetOverride(
++      fml::MakeRefCounted<flutter::gpu::ShaderLibrary>(library));
+ }
+ 
+ // Drains the microtask queue so async Dart entry points run to completion.
+@@ -89,7 +98,7 @@ class RendererDartTest : public PlaygroundTest,
+   flutter::testing::AutoIsolateShutdown* GetIsolate() {
+     // Sneak the context into the Flutter GPU API.
+     assert(GetContext() != nullptr);
+-    flutter::gpu::Context::SetOverrideContext(GetContext());
++    flutter::SpiGpuSetDefaultContextOverride(GetContext());
+ 
+     InstantiateTestShaderLibrary(GetContext()->GetBackendType());
+ 
+diff --git a/engine/src/flutter/lib/gpu/BUILD.gn b/engine/src/flutter/lib/gpu/BUILD.gn
+index cb85f16d0e5..ee1a46560c4 100644
+--- a/engine/src/flutter/lib/gpu/BUILD.gn
++++ b/engine/src/flutter/lib/gpu/BUILD.gn
+@@ -3,7 +3,6 @@
+ # found in the LICENSE file.
+ 
+ import("//flutter/common/config.gni")
+-import("//flutter/impeller/tools/impeller.gni")
+ import("//flutter/testing/testing.gni")
+ 
+ source_set("gpu") {
+@@ -42,8 +41,6 @@ source_set("gpu") {
+       "device_buffer.h",
+       "export.cc",
+       "export.h",
+-      "formats.cc",
+-      "formats.h",
+       "render_pass.cc",
+       "render_pass.h",
+       "render_pipeline.cc",
+@@ -59,23 +56,14 @@ source_set("gpu") {
+     ]
+   }
+   deps = [
+-    "//flutter/assets",
+-    "//flutter/impeller",
+-    "//flutter/impeller/display_list:skia_conversions",
+     "//flutter/lib/ui",
+-    "//flutter/lib/ui:ui_image_decoding",
+-    "//flutter/lib/ui:ui_gpu_bridge",
+-    "//flutter/runtime_spi:spi_backend",
++    "//flutter/runtime_spi:runtime_spi_c_api",
+     "//flutter/third_party/tonic",
+     "//third_party/abseil-cpp/absl/status",
+     "//third_party/abseil-cpp/absl/status:statusor",
+     "//third_party/abseil-cpp/absl/strings",
+   ]
+ 
+-  if (impeller_supports_rendering) {
+-    deps += [ "//flutter/impeller/display_list" ]
+-  }
+-
+   if (is_win) {
+     # Required for M_PI and others.
+     defines += [ "_USE_MATH_DEFINES" ]
+diff --git a/engine/src/flutter/lib/gpu/command_buffer.cc b/engine/src/flutter/lib/gpu/command_buffer.cc
+index 327fcfa760f..61ba34c0179 100644
+--- a/engine/src/flutter/lib/gpu/command_buffer.cc
++++ b/engine/src/flutter/lib/gpu/command_buffer.cc
+@@ -10,9 +10,8 @@
+ #include "flutter/lib/gpu/texture.h"
+ #include "flutter/lib/ui/painting/image.h"
+ #include "flutter/lib/ui/spi_api.h"
+-#include "fml/make_copyable.h"
+-#include "lib/ui/ui_dart_state.h"
+ #include "tonic/converter/dart_converter.h"
++#include "tonic/dart_state.h"
+ #include "tonic/logging/dart_invoke.h"
+ 
+ namespace flutter {
+@@ -22,23 +21,20 @@ namespace {
+ 
+ struct CompletionState {
+   std::unique_ptr<tonic::DartPersistentValue> callback;
+-  fml::RefPtr<fml::TaskRunner> ui_task_runner;
+ };
+ 
+ void DispatchCompletion(void* user_data, FlutterSpiResult result) {
+   auto* state = static_cast<CompletionState*>(user_data);
+   auto callback = std::move(state->callback);
+   const bool success = result == kFlutterSpiOk;
+-  state->ui_task_runner->PostTask(
+-      fml::MakeCopyable([callback = std::move(callback), success]() mutable {
+-        auto dart_state = callback->dart_state().lock();
+-        if (!dart_state) {
+-          return;
+-        }
+-        tonic::DartState::Scope scope(dart_state);
+-        tonic::DartInvoke(callback->Get(), {tonic::ToDart(success)});
+-        callback.reset();
+-      }));
++  auto dart_state = callback->dart_state().lock();
++  if (!dart_state) {
++    delete state;
++    return;
++  }
++  tonic::DartState::Scope scope(dart_state);
++  tonic::DartInvoke(callback->Get(), {tonic::ToDart(success)});
++  callback.reset();
+   delete state;
+ }
+ 
+@@ -69,11 +65,10 @@ Dart_Handle CommandBuffer::Submit(Dart_Handle completion_callback) {
+     return tonic::ToDart("Completion callback must be a function");
+   }
+ 
+-  auto dart_state = flutter::UIDartState::Current();
++  auto dart_state = tonic::DartState::Current();
+   auto* state = new CompletionState{
+       .callback = std::make_unique<tonic::DartPersistentValue>(
+           dart_state, completion_callback),
+-      .ui_task_runner = dart_state->GetTaskRunners().GetUITaskRunner(),
+   };
+   const FlutterSpiResult result = SpiApi().gpu->command_buffer_submit(
+       spi_command_buffer_, DispatchCompletion, state);
+diff --git a/engine/src/flutter/lib/gpu/context.cc b/engine/src/flutter/lib/gpu/context.cc
+index ef0a29eff53..9f762ea1d02 100644
+--- a/engine/src/flutter/lib/gpu/context.cc
++++ b/engine/src/flutter/lib/gpu/context.cc
+@@ -4,11 +4,8 @@
+ 
+ #include "flutter/lib/gpu/context.h"
+ 
+-#include "flutter/lib/gpu/formats.h"
+ #include "flutter/lib/ui/painting/image.h"
+ #include "flutter/lib/ui/spi_api.h"
+-#include "flutter/runtime_spi/gpu/spi_gpu_context.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "tonic/converter/dart_converter.h"
+ 
+ namespace flutter {
+@@ -42,24 +39,9 @@ std::string UnavailableReasonMessage(int32_t reason) {
+ 
+ }  // namespace
+ 
+-bool SupportsNormalOffscreenMSAA(const impeller::Context& context) {
+-  auto& capabilities = context.GetCapabilities();
+-  return capabilities->SupportsOffscreenMSAA() &&
+-         !capabilities->SupportsImplicitResolvingMSAA();
+-}
+-
+ IMPLEMENT_WRAPPERTYPEINFO(flutter_gpu, Context);
+ 
+-void Context::SetOverrideContext(std::shared_ptr<impeller::Context> context) {
+-  SpiGpuSetDefaultContextOverride(std::move(context));
+-}
+-
+-std::shared_ptr<impeller::Context> Context::GetOverrideContext() {
+-  return SpiGpuGetDefaultContextOverride();
+-}
+-
+ Context::Context(FlutterSpiGpuContext* context) : spi_context_(context) {
+-  context_ = SpiGpuContextGetImpeller(spi_context_);
+   info_.struct_size = sizeof(info_);
+   SpiApi().gpu->context_get_info(spi_context_, &info_);
+ }
+@@ -74,14 +56,6 @@ FlutterSpiGpuContext* Context::GetSpiContext() const {
+   return spi_context_;
+ }
+ 
+-impeller::Context& Context::GetContext() {
+-  return *context_;
+-}
+-
+-std::shared_ptr<impeller::Context>& Context::GetContextShared() {
+-  return context_;
+-}
+-
+ const FlutterSpiGpuContextInfo& Context::GetInfo() const {
+   return info_;
+ }
+diff --git a/engine/src/flutter/lib/gpu/context.h b/engine/src/flutter/lib/gpu/context.h
+index ae4412e78a3..ebd6961f59d 100644
+--- a/engine/src/flutter/lib/gpu/context.h
++++ b/engine/src/flutter/lib/gpu/context.h
+@@ -9,39 +9,24 @@
+ #include "flutter/lib/gpu/export.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
+ #include "flutter/runtime_spi/include/flutter_gpu.h"
+-#include "impeller/renderer/context.h"
+-
+-namespace impeller {
+-class Context;
+-}
+ 
+ namespace flutter {
+ namespace gpu {
+ 
+-bool SupportsNormalOffscreenMSAA(const impeller::Context& context);
+-
+ class Context : public RefCountedDartWrappable<Context> {
+   DEFINE_WRAPPERTYPEINFO();
+   FML_FRIEND_MAKE_REF_COUNTED(Context);
+ 
+  public:
+-  static void SetOverrideContext(std::shared_ptr<impeller::Context> context);
+-
+-  static std::shared_ptr<impeller::Context> GetOverrideContext();
+-
+   explicit Context(FlutterSpiGpuContext* context);
+   ~Context() override;
+ 
+   FlutterSpiGpuContext* GetSpiContext() const;
+   const FlutterSpiGpuContextInfo& GetInfo() const;
+ 
+-  impeller::Context& GetContext();
+-  std::shared_ptr<impeller::Context>& GetContextShared();
+-
+  private:
+   FlutterSpiGpuContext* spi_context_ = nullptr;
+   FlutterSpiGpuContextInfo info_ = {};
+-  std::shared_ptr<impeller::Context> context_;
+ 
+   FML_DISALLOW_COPY_AND_ASSIGN(Context);
+ };
+diff --git a/engine/src/flutter/lib/gpu/formats.cc b/engine/src/flutter/lib/gpu/formats.cc
+deleted file mode 100644
+index 07f1f6b17fb..00000000000
+--- a/engine/src/flutter/lib/gpu/formats.cc
++++ /dev/null
+@@ -1,13 +0,0 @@
+-// Copyright 2013 The Flutter Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style license that can be
+-// found in the LICENSE file.
+-
+-#include "flutter/lib/gpu/formats.h"
+-
+-namespace flutter {
+-namespace gpu {
+-
+-//
+-
+-}  // namespace gpu
+-}  // namespace flutter
+diff --git a/engine/src/flutter/lib/gpu/formats.h b/engine/src/flutter/lib/gpu/formats.h
+deleted file mode 100644
+index fa9fd127380..00000000000
+--- a/engine/src/flutter/lib/gpu/formats.h
++++ /dev/null
+@@ -1,735 +0,0 @@
+-// Copyright 2013 The Flutter Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style license that can be
+-// found in the LICENSE file.
+-
+-#ifndef FLUTTER_LIB_GPU_FORMATS_H_
+-#define FLUTTER_LIB_GPU_FORMATS_H_
+-
+-#include <algorithm>
+-
+-#include "fml/logging.h"
+-#include "impeller/core/formats.h"
+-#include "impeller/core/sampler_descriptor.h"
+-#include "impeller/core/shader_types.h"
+-
+-// ATTENTION! ATTENTION! ATTENTION!
+-// All enums defined in this file must exactly match the contents and order of
+-// the corresponding enums defined in `gpu/lib/src/formats.dart`.
+-
+-namespace flutter {
+-namespace gpu {
+-
+-enum class FlutterGPUStorageMode {
+-  kHostVisible,
+-  kDevicePrivate,
+-  kDeviceTransient,
+-};
+-
+-constexpr impeller::StorageMode ToImpellerStorageMode(
+-    FlutterGPUStorageMode value) {
+-  switch (value) {
+-    case FlutterGPUStorageMode::kHostVisible:
+-      return impeller::StorageMode::kHostVisible;
+-    case FlutterGPUStorageMode::kDevicePrivate:
+-      return impeller::StorageMode::kDevicePrivate;
+-    case FlutterGPUStorageMode::kDeviceTransient:
+-      return impeller::StorageMode::kDeviceTransient;
+-  }
+-}
+-
+-constexpr impeller::StorageMode ToImpellerStorageMode(int value) {
+-  return ToImpellerStorageMode(static_cast<FlutterGPUStorageMode>(value));
+-}
+-
+-constexpr FlutterGPUStorageMode FromImpellerStorageMode(
+-    impeller::StorageMode value) {
+-  switch (value) {
+-    case impeller::StorageMode::kHostVisible:
+-      return FlutterGPUStorageMode::kHostVisible;
+-    case impeller::StorageMode::kDevicePrivate:
+-      return FlutterGPUStorageMode::kDevicePrivate;
+-    case impeller::StorageMode::kDeviceTransient:
+-      return FlutterGPUStorageMode::kDeviceTransient;
+-  }
+-}
+-
+-enum class FlutterGPUTextureType {
+-  kTexture2D,
+-  kTexture2DMultisample,
+-  kTextureCube,
+-  kTextureExternalOES,
+-  kTexture2DArray,
+-};
+-
+-constexpr impeller::TextureType ToImpellerTextureType(
+-    FlutterGPUTextureType value) {
+-  switch (value) {
+-    case FlutterGPUTextureType::kTexture2D:
+-      return impeller::TextureType::kTexture2D;
+-    case FlutterGPUTextureType::kTexture2DMultisample:
+-      return impeller::TextureType::kTexture2DMultisample;
+-    case FlutterGPUTextureType::kTextureCube:
+-      return impeller::TextureType::kTextureCube;
+-    case FlutterGPUTextureType::kTextureExternalOES:
+-      return impeller::TextureType::kTextureExternalOES;
+-    case FlutterGPUTextureType::kTexture2DArray:
+-      return impeller::TextureType::kTexture2DArray;
+-  }
+-}
+-
+-constexpr impeller::TextureType ToImpellerTextureType(int value) {
+-  return ToImpellerTextureType(static_cast<FlutterGPUTextureType>(value));
+-}
+-
+-constexpr FlutterGPUTextureType FromImpellerTextureType(
+-    impeller::TextureType value) {
+-  switch (value) {
+-    case impeller::TextureType::kTexture2D:
+-      return FlutterGPUTextureType::kTexture2D;
+-    case impeller::TextureType::kTexture2DMultisample:
+-      return FlutterGPUTextureType::kTexture2DMultisample;
+-    case impeller::TextureType::kTextureCube:
+-      return FlutterGPUTextureType::kTextureCube;
+-    case impeller::TextureType::kTextureExternalOES:
+-      return FlutterGPUTextureType::kTextureExternalOES;
+-    case impeller::TextureType::kTexture2DArray:
+-      return FlutterGPUTextureType::kTexture2DArray;
+-  }
+-}
+-
+-enum class FlutterGPUPixelFormat {
+-  kUnknown,
+-  kA8UNormInt,
+-  kR8UNormInt,
+-  kR8G8UNormInt,
+-  kR8G8B8A8UNormInt,
+-  kR8G8B8A8UNormIntSRGB,
+-  kB8G8R8A8UNormInt,
+-  kB8G8R8A8UNormIntSRGB,
+-  kR32G32B32A32Float,
+-  kR16G16B16A16Float,
+-  kR32Float,
+-  kS8UInt,
+-  kD24UnormS8Uint,
+-  kD32FloatS8UInt,
+-  // Block-compressed formats. Sample-only; support is per-family.
+-  kBC1RGBAUNormInt,
+-  kBC1RGBAUNormIntSRGB,
+-  kBC3RGBAUNormInt,
+-  kBC3RGBAUNormIntSRGB,
+-  kBC5RGUNormInt,
+-  kBC7RGBAUNormInt,
+-  kBC7RGBAUNormIntSRGB,
+-  kETC2RGB8UNormInt,
+-  kETC2RGB8UNormIntSRGB,
+-  kETC2RGBA8UNormInt,
+-  kETC2RGBA8UNormIntSRGB,
+-  kASTC4x4LDR,
+-  kASTC4x4LDRSRGB,
+-  kASTC8x8LDR,
+-  kASTC8x8LDRSRGB,
+-  // ASTC HDR has no sRGB variant; the data is already linear floating point.
+-  kASTC4x4HDR,
+-  kASTC8x8HDR,
+-};
+-
+-enum class FlutterGPUTextureCompressionFamily {
+-  kBC,
+-  kETC2,
+-  kASTC,
+-  kASTCHDR,
+-};
+-
+-constexpr impeller::CompressedTextureFamily ToImpellerCompressedTextureFamily(
+-    FlutterGPUTextureCompressionFamily value) {
+-  switch (value) {
+-    case FlutterGPUTextureCompressionFamily::kBC:
+-      return impeller::CompressedTextureFamily::kBC;
+-    case FlutterGPUTextureCompressionFamily::kETC2:
+-      return impeller::CompressedTextureFamily::kETC2;
+-    case FlutterGPUTextureCompressionFamily::kASTC:
+-      return impeller::CompressedTextureFamily::kASTC;
+-    case FlutterGPUTextureCompressionFamily::kASTCHDR:
+-      return impeller::CompressedTextureFamily::kASTCHDR;
+-  }
+-}
+-
+-constexpr impeller::CompressedTextureFamily ToImpellerCompressedTextureFamily(
+-    int value) {
+-  return ToImpellerCompressedTextureFamily(
+-      static_cast<FlutterGPUTextureCompressionFamily>(value));
+-}
+-
+-constexpr impeller::PixelFormat ToImpellerPixelFormat(
+-    FlutterGPUPixelFormat value) {
+-  switch (value) {
+-    case FlutterGPUPixelFormat::kUnknown:
+-      return impeller::PixelFormat::kUnknown;
+-    case FlutterGPUPixelFormat::kA8UNormInt:
+-      return impeller::PixelFormat::kA8UNormInt;
+-    case FlutterGPUPixelFormat::kR8UNormInt:
+-      return impeller::PixelFormat::kR8UNormInt;
+-    case FlutterGPUPixelFormat::kR8G8UNormInt:
+-      return impeller::PixelFormat::kR8G8UNormInt;
+-    case FlutterGPUPixelFormat::kR8G8B8A8UNormInt:
+-      return impeller::PixelFormat::kR8G8B8A8UNormInt;
+-    case FlutterGPUPixelFormat::kR8G8B8A8UNormIntSRGB:
+-      return impeller::PixelFormat::kR8G8B8A8UNormIntSRGB;
+-    case FlutterGPUPixelFormat::kB8G8R8A8UNormInt:
+-      return impeller::PixelFormat::kB8G8R8A8UNormInt;
+-    case FlutterGPUPixelFormat::kB8G8R8A8UNormIntSRGB:
+-      return impeller::PixelFormat::kB8G8R8A8UNormIntSRGB;
+-    case FlutterGPUPixelFormat::kR32G32B32A32Float:
+-      return impeller::PixelFormat::kR32G32B32A32Float;
+-    case FlutterGPUPixelFormat::kR16G16B16A16Float:
+-      return impeller::PixelFormat::kR16G16B16A16Float;
+-    case FlutterGPUPixelFormat::kR32Float:
+-      return impeller::PixelFormat::kR32Float;
+-    case FlutterGPUPixelFormat::kS8UInt:
+-      return impeller::PixelFormat::kS8UInt;
+-    case FlutterGPUPixelFormat::kD24UnormS8Uint:
+-      return impeller::PixelFormat::kD24UnormS8Uint;
+-    case FlutterGPUPixelFormat::kD32FloatS8UInt:
+-      return impeller::PixelFormat::kD32FloatS8UInt;
+-    case FlutterGPUPixelFormat::kBC1RGBAUNormInt:
+-      return impeller::PixelFormat::kBC1RGBAUNormInt;
+-    case FlutterGPUPixelFormat::kBC1RGBAUNormIntSRGB:
+-      return impeller::PixelFormat::kBC1RGBAUNormIntSRGB;
+-    case FlutterGPUPixelFormat::kBC3RGBAUNormInt:
+-      return impeller::PixelFormat::kBC3RGBAUNormInt;
+-    case FlutterGPUPixelFormat::kBC3RGBAUNormIntSRGB:
+-      return impeller::PixelFormat::kBC3RGBAUNormIntSRGB;
+-    case FlutterGPUPixelFormat::kBC5RGUNormInt:
+-      return impeller::PixelFormat::kBC5RGUNormInt;
+-    case FlutterGPUPixelFormat::kBC7RGBAUNormInt:
+-      return impeller::PixelFormat::kBC7RGBAUNormInt;
+-    case FlutterGPUPixelFormat::kBC7RGBAUNormIntSRGB:
+-      return impeller::PixelFormat::kBC7RGBAUNormIntSRGB;
+-    case FlutterGPUPixelFormat::kETC2RGB8UNormInt:
+-      return impeller::PixelFormat::kETC2RGB8UNormInt;
+-    case FlutterGPUPixelFormat::kETC2RGB8UNormIntSRGB:
+-      return impeller::PixelFormat::kETC2RGB8UNormIntSRGB;
+-    case FlutterGPUPixelFormat::kETC2RGBA8UNormInt:
+-      return impeller::PixelFormat::kETC2RGBA8UNormInt;
+-    case FlutterGPUPixelFormat::kETC2RGBA8UNormIntSRGB:
+-      return impeller::PixelFormat::kETC2RGBA8UNormIntSRGB;
+-    case FlutterGPUPixelFormat::kASTC4x4LDR:
+-      return impeller::PixelFormat::kASTC4x4LDR;
+-    case FlutterGPUPixelFormat::kASTC4x4LDRSRGB:
+-      return impeller::PixelFormat::kASTC4x4LDRSRGB;
+-    case FlutterGPUPixelFormat::kASTC8x8LDR:
+-      return impeller::PixelFormat::kASTC8x8LDR;
+-    case FlutterGPUPixelFormat::kASTC8x8LDRSRGB:
+-      return impeller::PixelFormat::kASTC8x8LDRSRGB;
+-    case FlutterGPUPixelFormat::kASTC4x4HDR:
+-      return impeller::PixelFormat::kASTC4x4HDR;
+-    case FlutterGPUPixelFormat::kASTC8x8HDR:
+-      return impeller::PixelFormat::kASTC8x8HDR;
+-  }
+-}
+-
+-constexpr impeller::PixelFormat ToImpellerPixelFormat(int value) {
+-  return ToImpellerPixelFormat(static_cast<FlutterGPUPixelFormat>(value));
+-}
+-
+-constexpr FlutterGPUPixelFormat FromImpellerPixelFormat(
+-    impeller::PixelFormat value) {
+-  switch (value) {
+-    case impeller::PixelFormat::kUnknown:
+-      return FlutterGPUPixelFormat::kUnknown;
+-    case impeller::PixelFormat::kR32Float:
+-      return FlutterGPUPixelFormat::kR32Float;
+-    case impeller::PixelFormat::kA8UNormInt:
+-      return FlutterGPUPixelFormat::kA8UNormInt;
+-    case impeller::PixelFormat::kR8UNormInt:
+-      return FlutterGPUPixelFormat::kR8UNormInt;
+-    case impeller::PixelFormat::kR8G8UNormInt:
+-      return FlutterGPUPixelFormat::kR8G8UNormInt;
+-    case impeller::PixelFormat::kR8G8B8A8UNormInt:
+-      return FlutterGPUPixelFormat::kR8G8B8A8UNormInt;
+-    case impeller::PixelFormat::kR8G8B8A8UNormIntSRGB:
+-      return FlutterGPUPixelFormat::kR8G8B8A8UNormIntSRGB;
+-    case impeller::PixelFormat::kB8G8R8A8UNormInt:
+-      return FlutterGPUPixelFormat::kB8G8R8A8UNormInt;
+-    case impeller::PixelFormat::kB8G8R8A8UNormIntSRGB:
+-      return FlutterGPUPixelFormat::kB8G8R8A8UNormIntSRGB;
+-    case impeller::PixelFormat::kR32G32B32A32Float:
+-      return FlutterGPUPixelFormat::kR32G32B32A32Float;
+-    case impeller::PixelFormat::kR16G16B16A16Float:
+-      return FlutterGPUPixelFormat::kR16G16B16A16Float;
+-    case impeller::PixelFormat::kB10G10R10XR:
+-    case impeller::PixelFormat::kB10G10R10XRSRGB:
+-    case impeller::PixelFormat::kB10G10R10A10XR:
+-      // Apple-only extended-range formats, not exposed by the Flutter GPU API.
+-      return FlutterGPUPixelFormat::kUnknown;
+-    case impeller::PixelFormat::kS8UInt:
+-      return FlutterGPUPixelFormat::kS8UInt;
+-    case impeller::PixelFormat::kD24UnormS8Uint:
+-      return FlutterGPUPixelFormat::kD24UnormS8Uint;
+-    case impeller::PixelFormat::kD32FloatS8UInt:
+-      return FlutterGPUPixelFormat::kD32FloatS8UInt;
+-    case impeller::PixelFormat::kBC1RGBAUNormInt:
+-      return FlutterGPUPixelFormat::kBC1RGBAUNormInt;
+-    case impeller::PixelFormat::kBC1RGBAUNormIntSRGB:
+-      return FlutterGPUPixelFormat::kBC1RGBAUNormIntSRGB;
+-    case impeller::PixelFormat::kBC3RGBAUNormInt:
+-      return FlutterGPUPixelFormat::kBC3RGBAUNormInt;
+-    case impeller::PixelFormat::kBC3RGBAUNormIntSRGB:
+-      return FlutterGPUPixelFormat::kBC3RGBAUNormIntSRGB;
+-    case impeller::PixelFormat::kBC5RGUNormInt:
+-      return FlutterGPUPixelFormat::kBC5RGUNormInt;
+-    case impeller::PixelFormat::kBC7RGBAUNormInt:
+-      return FlutterGPUPixelFormat::kBC7RGBAUNormInt;
+-    case impeller::PixelFormat::kBC7RGBAUNormIntSRGB:
+-      return FlutterGPUPixelFormat::kBC7RGBAUNormIntSRGB;
+-    case impeller::PixelFormat::kETC2RGB8UNormInt:
+-      return FlutterGPUPixelFormat::kETC2RGB8UNormInt;
+-    case impeller::PixelFormat::kETC2RGB8UNormIntSRGB:
+-      return FlutterGPUPixelFormat::kETC2RGB8UNormIntSRGB;
+-    case impeller::PixelFormat::kETC2RGBA8UNormInt:
+-      return FlutterGPUPixelFormat::kETC2RGBA8UNormInt;
+-    case impeller::PixelFormat::kETC2RGBA8UNormIntSRGB:
+-      return FlutterGPUPixelFormat::kETC2RGBA8UNormIntSRGB;
+-    case impeller::PixelFormat::kASTC4x4LDR:
+-      return FlutterGPUPixelFormat::kASTC4x4LDR;
+-    case impeller::PixelFormat::kASTC4x4LDRSRGB:
+-      return FlutterGPUPixelFormat::kASTC4x4LDRSRGB;
+-    case impeller::PixelFormat::kASTC8x8LDR:
+-      return FlutterGPUPixelFormat::kASTC8x8LDR;
+-    case impeller::PixelFormat::kASTC8x8LDRSRGB:
+-      return FlutterGPUPixelFormat::kASTC8x8LDRSRGB;
+-    case impeller::PixelFormat::kASTC4x4HDR:
+-      return FlutterGPUPixelFormat::kASTC4x4HDR;
+-    case impeller::PixelFormat::kASTC8x8HDR:
+-      return FlutterGPUPixelFormat::kASTC8x8HDR;
+-  }
+-}
+-
+-enum class FlutterGPUBlendFactor {
+-  kZero,
+-  kOne,
+-  kSourceColor,
+-  kOneMinusSourceColor,
+-  kSourceAlpha,
+-  kOneMinusSourceAlpha,
+-  kDestinationColor,
+-  kOneMinusDestinationColor,
+-  kDestinationAlpha,
+-  kOneMinusDestinationAlpha,
+-  kSourceAlphaSaturated,
+-  kBlendColor,
+-  kOneMinusBlendColor,
+-  kBlendAlpha,
+-  kOneMinusBlendAlpha,
+-};
+-
+-constexpr impeller::BlendFactor ToImpellerBlendFactor(
+-    FlutterGPUBlendFactor value) {
+-  switch (value) {
+-    case FlutterGPUBlendFactor::kZero:
+-      return impeller::BlendFactor::kZero;
+-    case FlutterGPUBlendFactor::kOne:
+-      return impeller::BlendFactor::kOne;
+-    case FlutterGPUBlendFactor::kSourceColor:
+-      return impeller::BlendFactor::kSourceColor;
+-    case FlutterGPUBlendFactor::kOneMinusSourceColor:
+-      return impeller::BlendFactor::kOneMinusSourceColor;
+-    case FlutterGPUBlendFactor::kSourceAlpha:
+-      return impeller::BlendFactor::kSourceAlpha;
+-    case FlutterGPUBlendFactor::kOneMinusSourceAlpha:
+-      return impeller::BlendFactor::kOneMinusSourceAlpha;
+-    case FlutterGPUBlendFactor::kDestinationColor:
+-      return impeller::BlendFactor::kDestinationColor;
+-    case FlutterGPUBlendFactor::kOneMinusDestinationColor:
+-      return impeller::BlendFactor::kOneMinusDestinationColor;
+-    case FlutterGPUBlendFactor::kDestinationAlpha:
+-      return impeller::BlendFactor::kDestinationAlpha;
+-    case FlutterGPUBlendFactor::kOneMinusDestinationAlpha:
+-      return impeller::BlendFactor::kOneMinusDestinationAlpha;
+-    case FlutterGPUBlendFactor::kSourceAlphaSaturated:
+-      return impeller::BlendFactor::kSourceAlphaSaturated;
+-    case FlutterGPUBlendFactor::kBlendColor:
+-      return impeller::BlendFactor::kBlendColor;
+-    case FlutterGPUBlendFactor::kOneMinusBlendColor:
+-      return impeller::BlendFactor::kOneMinusBlendColor;
+-    case FlutterGPUBlendFactor::kBlendAlpha:
+-      return impeller::BlendFactor::kBlendAlpha;
+-    case FlutterGPUBlendFactor::kOneMinusBlendAlpha:
+-      return impeller::BlendFactor::kOneMinusBlendAlpha;
+-  }
+-}
+-
+-constexpr impeller::BlendFactor ToImpellerBlendFactor(int value) {
+-  return ToImpellerBlendFactor(static_cast<FlutterGPUBlendFactor>(value));
+-}
+-
+-enum class FlutterGPUBlendOperation {
+-  kAdd,
+-  kSubtract,
+-  kReverseSubtract,
+-};
+-
+-constexpr impeller::BlendOperation ToImpellerBlendOperation(
+-    FlutterGPUBlendOperation value) {
+-  switch (value) {
+-    case FlutterGPUBlendOperation::kAdd:
+-      return impeller::BlendOperation::kAdd;
+-    case FlutterGPUBlendOperation::kSubtract:
+-      return impeller::BlendOperation::kSubtract;
+-    case FlutterGPUBlendOperation::kReverseSubtract:
+-      return impeller::BlendOperation::kReverseSubtract;
+-  }
+-}
+-
+-constexpr impeller::BlendOperation ToImpellerBlendOperation(int value) {
+-  return ToImpellerBlendOperation(static_cast<FlutterGPUBlendOperation>(value));
+-}
+-
+-enum class FlutterGPULoadAction {
+-  kDontCare,
+-  kLoad,
+-  kClear,
+-};
+-
+-constexpr impeller::LoadAction ToImpellerLoadAction(
+-    FlutterGPULoadAction value) {
+-  switch (value) {
+-    case FlutterGPULoadAction::kDontCare:
+-      return impeller::LoadAction::kDontCare;
+-    case FlutterGPULoadAction::kLoad:
+-      return impeller::LoadAction::kLoad;
+-    case FlutterGPULoadAction::kClear:
+-      return impeller::LoadAction::kClear;
+-  }
+-}
+-
+-constexpr impeller::LoadAction ToImpellerLoadAction(int value) {
+-  return ToImpellerLoadAction(static_cast<FlutterGPULoadAction>(value));
+-}
+-
+-enum class FlutterGPUStoreAction {
+-  kDontCare,
+-  kStore,
+-  kMultisampleResolve,
+-  kStoreAndMultisampleResolve,
+-};
+-
+-constexpr impeller::StoreAction ToImpellerStoreAction(
+-    FlutterGPUStoreAction value) {
+-  switch (value) {
+-    case FlutterGPUStoreAction::kDontCare:
+-      return impeller::StoreAction::kDontCare;
+-    case FlutterGPUStoreAction::kStore:
+-      return impeller::StoreAction::kStore;
+-    case FlutterGPUStoreAction::kMultisampleResolve:
+-      return impeller::StoreAction::kMultisampleResolve;
+-    case FlutterGPUStoreAction::kStoreAndMultisampleResolve:
+-      return impeller::StoreAction::kStoreAndMultisampleResolve;
+-  }
+-}
+-
+-constexpr impeller::StoreAction ToImpellerStoreAction(int value) {
+-  return ToImpellerStoreAction(static_cast<FlutterGPUStoreAction>(value));
+-}
+-
+-enum class FlutterGPUShaderStage {
+-  kVertex,
+-  kFragment,
+-};
+-
+-constexpr impeller::ShaderStage ToImpellerShaderStage(
+-    FlutterGPUShaderStage value) {
+-  switch (value) {
+-    case FlutterGPUShaderStage::kVertex:
+-      return impeller::ShaderStage::kVertex;
+-    case FlutterGPUShaderStage::kFragment:
+-      return impeller::ShaderStage::kFragment;
+-  }
+-}
+-
+-constexpr impeller::ShaderStage ToImpellerShaderStage(int value) {
+-  return ToImpellerShaderStage(static_cast<FlutterGPUShaderStage>(value));
+-}
+-
+-constexpr FlutterGPUShaderStage FromImpellerShaderStage(
+-    impeller::ShaderStage value) {
+-  switch (value) {
+-    case impeller::ShaderStage::kVertex:
+-      return FlutterGPUShaderStage::kVertex;
+-    case impeller::ShaderStage::kFragment:
+-      return FlutterGPUShaderStage::kFragment;
+-    case impeller::ShaderStage::kUnknown:
+-    case impeller::ShaderStage::kCompute:
+-      FML_LOG(FATAL) << "Invalid Flutter GPU ShaderStage "
+-                     << static_cast<size_t>(value);
+-      FML_UNREACHABLE();
+-  }
+-}
+-
+-enum class FlutterGPUMinMagFilter {
+-  kNearest,
+-  kLinear,
+-};
+-
+-constexpr impeller::MinMagFilter ToImpellerMinMagFilter(
+-    FlutterGPUMinMagFilter value) {
+-  switch (value) {
+-    case FlutterGPUMinMagFilter::kNearest:
+-      return impeller::MinMagFilter::kNearest;
+-    case FlutterGPUMinMagFilter::kLinear:
+-      return impeller::MinMagFilter::kLinear;
+-  }
+-}
+-
+-constexpr impeller::MinMagFilter ToImpellerMinMagFilter(int value) {
+-  return ToImpellerMinMagFilter(static_cast<FlutterGPUMinMagFilter>(value));
+-}
+-
+-enum class FlutterGPUMipFilter {
+-  kNearest,
+-  kLinear,
+-};
+-
+-constexpr impeller::MipFilter ToImpellerMipFilter(FlutterGPUMipFilter value) {
+-  switch (value) {
+-    case FlutterGPUMipFilter::kNearest:
+-      return impeller::MipFilter::kNearest;
+-    case FlutterGPUMipFilter::kLinear:
+-      return impeller::MipFilter::kLinear;
+-  }
+-}
+-
+-constexpr impeller::MipFilter ToImpellerMipFilter(int value) {
+-  return ToImpellerMipFilter(static_cast<FlutterGPUMipFilter>(value));
+-}
+-
+-enum class FlutterGPUSamplerAddressMode {
+-  kClampToEdge,
+-  kRepeat,
+-  kMirror,
+-};
+-
+-constexpr impeller::SamplerAddressMode ToImpellerSamplerAddressMode(
+-    FlutterGPUSamplerAddressMode value) {
+-  switch (value) {
+-    case FlutterGPUSamplerAddressMode::kClampToEdge:
+-      return impeller::SamplerAddressMode::kClampToEdge;
+-    case FlutterGPUSamplerAddressMode::kRepeat:
+-      return impeller::SamplerAddressMode::kRepeat;
+-    case FlutterGPUSamplerAddressMode::kMirror:
+-      return impeller::SamplerAddressMode::kMirror;
+-  }
+-}
+-
+-constexpr impeller::SamplerAddressMode ToImpellerSamplerAddressMode(int value) {
+-  return ToImpellerSamplerAddressMode(
+-      static_cast<FlutterGPUSamplerAddressMode>(value));
+-}
+-
+-/// Builds a sampler descriptor from the enum indices and anisotropy clamp
+-/// that `SamplerOptions` marshals across the Dart boundary.
+-inline impeller::SamplerDescriptor ToImpellerSamplerDescriptor(
+-    int min_filter,
+-    int mag_filter,
+-    int mip_filter,
+-    int width_address_mode,
+-    int height_address_mode,
+-    int max_anisotropy) {
+-  impeller::SamplerDescriptor desc;
+-  desc.min_filter = ToImpellerMinMagFilter(min_filter);
+-  desc.mag_filter = ToImpellerMinMagFilter(mag_filter);
+-  desc.mip_filter = ToImpellerMipFilter(mip_filter);
+-  desc.width_address_mode = ToImpellerSamplerAddressMode(width_address_mode);
+-  desc.height_address_mode = ToImpellerSamplerAddressMode(height_address_mode);
+-  // Backends clamp this to the device limit reported by
+-  // Capabilities::GetMaxSamplerAnisotropy.
+-  desc.max_anisotropy =
+-      static_cast<uint8_t>(std::clamp(max_anisotropy, 1, 255));
+-  return desc;
+-}
+-
+-enum class FlutterGPUIndexType {
+-  k16bit,
+-  k32bit,
+-};
+-
+-constexpr impeller::IndexType ToImpellerIndexType(FlutterGPUIndexType value) {
+-  switch (value) {
+-    case FlutterGPUIndexType::k16bit:
+-      return impeller::IndexType::k16bit;
+-    case FlutterGPUIndexType::k32bit:
+-      return impeller::IndexType::k32bit;
+-  }
+-}
+-
+-constexpr impeller::IndexType ToImpellerIndexType(int value) {
+-  return ToImpellerIndexType(static_cast<FlutterGPUIndexType>(value));
+-}
+-
+-enum class FlutterGPUPrimitiveType {
+-  kTriangle,
+-  kTriangleStrip,
+-  kLine,
+-  kLineStrip,
+-  kPoint,
+-};
+-
+-constexpr impeller::PrimitiveType ToImpellerPrimitiveType(
+-    FlutterGPUPrimitiveType value) {
+-  switch (value) {
+-    case FlutterGPUPrimitiveType::kTriangle:
+-      return impeller::PrimitiveType::kTriangle;
+-    case FlutterGPUPrimitiveType::kTriangleStrip:
+-      return impeller::PrimitiveType::kTriangleStrip;
+-    case FlutterGPUPrimitiveType::kLine:
+-      return impeller::PrimitiveType::kLine;
+-    case FlutterGPUPrimitiveType::kLineStrip:
+-      return impeller::PrimitiveType::kLineStrip;
+-    case FlutterGPUPrimitiveType::kPoint:
+-      return impeller::PrimitiveType::kPoint;
+-  }
+-}
+-
+-constexpr impeller::PrimitiveType ToImpellerPrimitiveType(int value) {
+-  return ToImpellerPrimitiveType(static_cast<FlutterGPUPrimitiveType>(value));
+-}
+-
+-enum class FlutterGPUCompareFunction {
+-  kNever,
+-  kAlways,
+-  kLess,
+-  kEqual,
+-  kLessEqual,
+-  kGreater,
+-  kNotEqual,
+-  kGreaterEqual,
+-};
+-
+-constexpr impeller::CompareFunction ToImpellerCompareFunction(
+-    FlutterGPUCompareFunction value) {
+-  switch (value) {
+-    case FlutterGPUCompareFunction::kNever:
+-      return impeller::CompareFunction::kNever;
+-    case FlutterGPUCompareFunction::kAlways:
+-      return impeller::CompareFunction::kAlways;
+-    case FlutterGPUCompareFunction::kLess:
+-      return impeller::CompareFunction::kLess;
+-    case FlutterGPUCompareFunction::kEqual:
+-      return impeller::CompareFunction::kEqual;
+-    case FlutterGPUCompareFunction::kLessEqual:
+-      return impeller::CompareFunction::kLessEqual;
+-    case FlutterGPUCompareFunction::kGreater:
+-      return impeller::CompareFunction::kGreater;
+-    case FlutterGPUCompareFunction::kNotEqual:
+-      return impeller::CompareFunction::kNotEqual;
+-    case FlutterGPUCompareFunction::kGreaterEqual:
+-      return impeller::CompareFunction::kGreaterEqual;
+-  }
+-}
+-
+-constexpr impeller::CompareFunction ToImpellerCompareFunction(int value) {
+-  return ToImpellerCompareFunction(
+-      static_cast<FlutterGPUCompareFunction>(value));
+-}
+-
+-enum class FlutterGPUStencilOperation {
+-  kKeep,
+-  kZero,
+-  kSetToReferenceValue,
+-  kIncrementClamp,
+-  kDecrementClamp,
+-  kInvert,
+-  kIncrementWrap,
+-  kDecrementWrap,
+-};
+-
+-constexpr impeller::StencilOperation ToImpellerStencilOperation(
+-    FlutterGPUStencilOperation value) {
+-  switch (value) {
+-    case FlutterGPUStencilOperation::kKeep:
+-      return impeller::StencilOperation::kKeep;
+-    case FlutterGPUStencilOperation::kZero:
+-      return impeller::StencilOperation::kZero;
+-    case FlutterGPUStencilOperation::kSetToReferenceValue:
+-      return impeller::StencilOperation::kSetToReferenceValue;
+-    case FlutterGPUStencilOperation::kIncrementClamp:
+-      return impeller::StencilOperation::kIncrementClamp;
+-    case FlutterGPUStencilOperation::kDecrementClamp:
+-      return impeller::StencilOperation::kDecrementClamp;
+-    case FlutterGPUStencilOperation::kInvert:
+-      return impeller::StencilOperation::kInvert;
+-    case FlutterGPUStencilOperation::kIncrementWrap:
+-      return impeller::StencilOperation::kIncrementWrap;
+-    case FlutterGPUStencilOperation::kDecrementWrap:
+-      return impeller::StencilOperation::kDecrementWrap;
+-  }
+-}
+-
+-constexpr impeller::StencilOperation ToImpellerStencilOperation(int value) {
+-  return ToImpellerStencilOperation(
+-      static_cast<FlutterGPUStencilOperation>(value));
+-}
+-
+-enum class FlutterGPUCullMode {
+-  kNone,
+-  kFrontFace,
+-  kBackFace,
+-};
+-
+-constexpr impeller::CullMode ToImpellerCullMode(FlutterGPUCullMode value) {
+-  switch (value) {
+-    case FlutterGPUCullMode::kNone:
+-      return impeller::CullMode::kNone;
+-    case FlutterGPUCullMode::kFrontFace:
+-      return impeller::CullMode::kFrontFace;
+-    case FlutterGPUCullMode::kBackFace:
+-      return impeller::CullMode::kBackFace;
+-  }
+-}
+-
+-constexpr impeller::CullMode ToImpellerCullMode(int value) {
+-  return ToImpellerCullMode(static_cast<FlutterGPUCullMode>(value));
+-}
+-
+-enum class FlutterGPUWindingOrder {
+-  kClockwise,
+-  kCounterClockwise,
+-};
+-
+-constexpr impeller::WindingOrder ToImpellerWindingOrder(
+-    FlutterGPUWindingOrder value) {
+-  switch (value) {
+-    case FlutterGPUWindingOrder::kClockwise:
+-      return impeller::WindingOrder::kClockwise;
+-    case FlutterGPUWindingOrder::kCounterClockwise:
+-      return impeller::WindingOrder::kCounterClockwise;
+-  }
+-}
+-
+-constexpr impeller::WindingOrder ToImpellerWindingOrder(int value) {
+-  return ToImpellerWindingOrder(static_cast<FlutterGPUWindingOrder>(value));
+-}
+-
+-enum class FlutterGPUPolygonMode {
+-  kFill,
+-  kLine,
+-};
+-
+-constexpr impeller::PolygonMode ToImpellerPolygonMode(
+-    FlutterGPUPolygonMode value) {
+-  switch (value) {
+-    case FlutterGPUPolygonMode::kFill:
+-      return impeller::PolygonMode::kFill;
+-    case FlutterGPUPolygonMode::kLine:
+-      return impeller::PolygonMode::kLine;
+-  }
+-}
+-
+-constexpr impeller::PolygonMode ToImpellerPolygonMode(int value) {
+-  return ToImpellerPolygonMode(static_cast<FlutterGPUPolygonMode>(value));
+-}
+-
+-}  // namespace gpu
+-}  // namespace flutter
+-
+-#endif  // FLUTTER_LIB_GPU_FORMATS_H_
+diff --git a/engine/src/flutter/lib/gpu/shader.cc b/engine/src/flutter/lib/gpu/shader.cc
+index 29999e57e6f..c4503eefea0 100644
+--- a/engine/src/flutter/lib/gpu/shader.cc
++++ b/engine/src/flutter/lib/gpu/shader.cc
+@@ -5,7 +5,6 @@
+ #include "flutter/lib/gpu/shader.h"
+ 
+ #include "flutter/lib/ui/spi_api.h"
+-#include "flutter/runtime_spi/gpu/spi_gpu_shader.h"
+ #include "tonic/converter/dart_converter.h"
+ 
+ namespace flutter {
+@@ -22,7 +21,9 @@ Shader::~Shader() {
+ }
+ 
+ bool Shader::IsDirty() const {
+-  return SpiGpuShaderIsDirtyForTesting(spi_shader_);
++  bool is_dirty = false;
++  return SpiApi().gpu->shader_is_dirty(spi_shader_, &is_dirty) == kFlutterSpiOk &&
++         is_dirty;
+ }
+ 
+ FlutterSpiGpuShader* Shader::GetSpiShader() const {
+@@ -88,5 +89,5 @@ int InternalFlutterGpu_Shader_GetUniformMemberOffset(
+ }
+ 
+ bool InternalFlutterGpu_Shader_DebugIsDirty(flutter::gpu::Shader* wrapper) {
+-  return flutter::SpiGpuShaderIsDirtyForTesting(wrapper->GetSpiShader());
++  return wrapper->IsDirty();
+ }
+diff --git a/engine/src/flutter/lib/gpu/shader_library.cc b/engine/src/flutter/lib/gpu/shader_library.cc
+index a5a547f942e..060fba32081 100644
+--- a/engine/src/flutter/lib/gpu/shader_library.cc
++++ b/engine/src/flutter/lib/gpu/shader_library.cc
+@@ -7,13 +7,8 @@
+ #include <utility>
+ #include <vector>
+ 
+-#include "flutter/assets/asset_manager.h"
+ #include "flutter/lib/ui/painting/image.h"
+ #include "flutter/lib/ui/spi_api.h"
+-#include "flutter/lib/ui/ui_dart_state.h"
+-#include "flutter/lib/ui/window/platform_configuration.h"
+-#include "flutter/runtime_spi/gpu/spi_gpu_shader_library.h"
+-#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "fml/mapping.h"
+ #include "third_party/tonic/typed_data/dart_byte_data.h"
+ 
+@@ -78,24 +73,6 @@ std::shared_ptr<fml::Mapping> ShaderBundleMappingFromByteData(
+       std::vector<uint8_t>(bytes, bytes + data.length_in_bytes()));
+ }
+ 
+-FlutterSpiGpuShaderLibrary* CreateLibraryForBackend(
+-    impeller::Context::BackendType backend_type,
+-    const std::shared_ptr<fml::Mapping>& payload,
+-    const std::string& library_id) {
+-  if (payload == nullptr || payload->GetMapping() == nullptr) {
+-    return nullptr;
+-  }
+-  FlutterSpiGpuShaderLibrary* library = nullptr;
+-  const char* id = library_id.empty() ? nullptr : library_id.c_str();
+-  if (SpiGpuShaderLibraryCreateForBackend(
+-          static_cast<int32_t>(backend_type),
+-          static_cast<const uint8_t*>(payload->GetMapping()), payload->GetSize(),
+-          id, &library) != kFlutterSpiOk) {
+-    return nullptr;
+-  }
+-  return library;
+-}
+-
+ std::string ErrorOrFallback(char* error, const char* fallback) {
+   std::string message = TakeSpiError(error);
+   return message.empty() ? fallback : message;
+@@ -108,10 +85,8 @@ IMPLEMENT_WRAPPERTYPEINFO(flutter_gpu, ShaderLibrary);
+ fml::RefPtr<ShaderLibrary> ShaderLibrary::override_shader_library_;
+ 
+ fml::RefPtr<ShaderLibrary> ShaderLibrary::MakeFromAsset(
+-    impeller::Context::BackendType backend_type,
+     const std::string& name,
+     std::string& out_error) {
+-  (void)backend_type;
+   if (override_shader_library_) {
+     return override_shader_library_;
+   }
+@@ -121,11 +96,8 @@ fml::RefPtr<ShaderLibrary> ShaderLibrary::MakeFromAsset(
+     return nullptr;
+   }
+ 
+-  auto dart_state = UIDartState::Current();
+-  std::shared_ptr<AssetManager> asset_manager =
+-      dart_state->platform_configuration()->client()->GetAssetManager();
+-  std::unique_ptr<fml::Mapping> data = asset_manager->GetAsMapping(name);
+-  if (data == nullptr) {
++  FlutterSpiMapping mapping = {};
++  if (!SpiApi().asset_get(CanvasImage::GetSpiEngine(), name.c_str(), &mapping)) {
+     ReleaseSpiContext(context);
+     out_error = std::string("Asset '") + name + "' not found.";
+     return nullptr;
+@@ -134,14 +106,17 @@ fml::RefPtr<ShaderLibrary> ShaderLibrary::MakeFromAsset(
+   FlutterSpiGpuShaderLibraryDescriptor descriptor = {};
+   descriptor.struct_size = sizeof(descriptor);
+   descriptor.format = kFlutterSpiGpuShaderFormatImpellerBundle;
+-  descriptor.data = static_cast<const uint8_t*>(data->GetMapping());
+-  descriptor.size = data->GetSize();
++  descriptor.data = static_cast<const uint8_t*>(mapping.data);
++  descriptor.size = mapping.size;
+   descriptor.library_id = name.c_str();
+ 
+   FlutterSpiGpuShaderLibrary* library = nullptr;
+   char* error = nullptr;
+   const FlutterSpiResult result = SpiApi().gpu->shader_library_create(
+       context, &descriptor, &library, &error);
++  if (mapping.release != nullptr) {
++    mapping.release(mapping.release_user_data);
++  }
+   ReleaseSpiContext(context);
+   if (result != kFlutterSpiOk || library == nullptr) {
+     out_error = ErrorOrFallback(
+@@ -182,35 +157,24 @@ fml::RefPtr<ShaderLibrary> ShaderLibrary::MakeFromBytes(
+   return fml::MakeRefCounted<ShaderLibrary>(library);
+ }
+ 
+-fml::RefPtr<ShaderLibrary> ShaderLibrary::MakeFromFlatbuffer(
+-    impeller::Context::BackendType backend_type,
+-    std::shared_ptr<fml::Mapping> payload,
+-    std::string library_id) {
+-  // This backend-specific path is kept for the renderer playground override.
+-  FlutterSpiGpuShaderLibrary* library =
+-      CreateLibraryForBackend(backend_type, payload, library_id);
+-  return library == nullptr ? nullptr
+-                            : fml::MakeRefCounted<ShaderLibrary>(library);
+-}
+-
+ std::string ShaderLibrary::ReloadFromAsset(const std::string& name) {
+-  auto dart_state = UIDartState::Current();
+-  std::shared_ptr<AssetManager> asset_manager =
+-      dart_state->platform_configuration()->client()->GetAssetManager();
+-  std::unique_ptr<fml::Mapping> data = asset_manager->GetAsMapping(name);
+-  if (data == nullptr) {
++  FlutterSpiMapping mapping = {};
++  if (!SpiApi().asset_get(CanvasImage::GetSpiEngine(), name.c_str(), &mapping)) {
+     return "Asset '" + name + "' not found.";
+   }
+ 
+   FlutterSpiGpuShaderLibraryDescriptor descriptor = {};
+   descriptor.struct_size = sizeof(descriptor);
+   descriptor.format = kFlutterSpiGpuShaderFormatImpellerBundle;
+-  descriptor.data = static_cast<const uint8_t*>(data->GetMapping());
+-  descriptor.size = data->GetSize();
++  descriptor.data = static_cast<const uint8_t*>(mapping.data);
++  descriptor.size = mapping.size;
+ 
+   char* error = nullptr;
+   const FlutterSpiResult result = SpiApi().gpu->shader_library_reload(
+       spi_library_, &descriptor, &error);
++  if (mapping.release != nullptr) {
++    mapping.release(mapping.release_user_data);
++  }
+   if (result != kFlutterSpiOk) {
+     return ErrorOrFallback(error, "Shader bundle could not be parsed.");
+   }
+@@ -297,7 +261,6 @@ Dart_Handle InternalFlutterGpu_ShaderLibrary_InitializeWithAsset(
+ 
+   std::string error;
+   auto library = flutter::gpu::ShaderLibrary::MakeFromAsset(
+-      impeller::Context::BackendType::kVulkan,
+       tonic::StdStringFromDart(asset_name), error);
+   if (!library) {
+     return tonic::ToDart(error);
+diff --git a/engine/src/flutter/lib/gpu/shader_library.h b/engine/src/flutter/lib/gpu/shader_library.h
+index 17906f2a118..1dea04a4a9a 100644
+--- a/engine/src/flutter/lib/gpu/shader_library.h
++++ b/engine/src/flutter/lib/gpu/shader_library.h
+@@ -13,6 +13,7 @@
+ #include "flutter/lib/gpu/export.h"
+ #include "flutter/lib/gpu/shader.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
++#include "fml/mapping.h"
+ #include "fml/memory/ref_ptr.h"
+ 
+ namespace flutter {
+@@ -26,20 +27,13 @@ class ShaderLibrary : public RefCountedDartWrappable<ShaderLibrary> {
+  public:
+   using ShaderMap = std::unordered_map<std::string, fml::RefPtr<Shader>>;
+ 
+-  static fml::RefPtr<ShaderLibrary> MakeFromAsset(
+-      impeller::Context::BackendType backend_type,
+-      const std::string& name,
+-      std::string& out_error);
++  static fml::RefPtr<ShaderLibrary> MakeFromAsset(const std::string& name,
++                                                  std::string& out_error);
+ 
+   static fml::RefPtr<ShaderLibrary> MakeFromBytes(
+       std::shared_ptr<fml::Mapping> payload,
+       std::string& out_error);
+ 
+-  static fml::RefPtr<ShaderLibrary> MakeFromFlatbuffer(
+-      impeller::Context::BackendType backend_type,
+-      std::shared_ptr<fml::Mapping> payload,
+-      std::string library_id = "");
+-
+   static void SetOverride(fml::RefPtr<ShaderLibrary> override_shader_library);
+ 
+   std::string ReloadFromAsset(const std::string& name);
+@@ -52,6 +46,8 @@ class ShaderLibrary : public RefCountedDartWrappable<ShaderLibrary> {
+   fml::RefPtr<Shader> FindShaderForTesting(
+       const std::string& shader_name) const;
+ 
++  explicit ShaderLibrary(FlutterSpiGpuShaderLibrary* library);
++
+   ~ShaderLibrary() override;
+ 
+  private:
+@@ -60,8 +56,6 @@ class ShaderLibrary : public RefCountedDartWrappable<ShaderLibrary> {
+   FlutterSpiGpuShaderLibrary* spi_library_ = nullptr;
+   ShaderMap shaders_;
+ 
+-  explicit ShaderLibrary(FlutterSpiGpuShaderLibrary* library);
+-
+   FML_DISALLOW_COPY_AND_ASSIGN(ShaderLibrary);
+ };
+ 
+diff --git a/engine/src/flutter/lib/gpu/surface.cc b/engine/src/flutter/lib/gpu/surface.cc
+index fb111f621df..efaa401c448 100644
+--- a/engine/src/flutter/lib/gpu/surface.cc
++++ b/engine/src/flutter/lib/gpu/surface.cc
+@@ -10,17 +10,9 @@
+ #include "flutter/lib/gpu/context.h"
+ #include "flutter/lib/gpu/texture.h"
+ #include "flutter/lib/ui/painting/image.h"
+-#include "flutter/lib/ui/painting/image_gpu_bridge.h"
+ #include "flutter/lib/ui/spi_api.h"
+-#include "flutter/runtime_spi/gpu/spi_gpu_surface.h"
+-#include "flutter/runtime_spi/gpu/spi_gpu_texture.h"
+ #include "tonic/converter/dart_converter.h"
+ 
+-#if IMPELLER_SUPPORTS_RENDERING
+-#include "flutter/display_list/image/dl_image.h"      // nogncheck
+-#include "impeller/display_list/dl_image_impeller.h"  // nogncheck
+-#endif
+-
+ namespace flutter {
+ namespace gpu {
+ namespace {
+@@ -78,17 +70,13 @@ void Surface::DiscardFrame(int texture_index) {
+ }
+ 
+ Dart_Handle Surface::GetCurrentImage() const {
+-#if IMPELLER_SUPPORTS_RENDERING
+-  auto texture = SpiGpuSurfaceGetCurrentTexture(spi_surface_);
+-  if (texture == nullptr) {
++  FlutterSpiImage* image = nullptr;
++  if (SpiApi().gpu->image_surface_get_current_image(spi_surface_, &image) !=
++          kFlutterSpiOk ||
++      image == nullptr) {
+     return Dart_Null();
+   }
+-  auto image = flutter::CanvasImageFromDlImageForGpu(
+-      impeller::DlImageImpeller::Make(std::move(texture)));
+-  return image->CreateOuterWrapping();
+-#else
+-  return Dart_Null();
+-#endif
++  return CanvasImage::Create(image)->CreateOuterWrapping();
+ }
+ 
+ Dart_Handle Surface::Resize(int width, int height) {
+diff --git a/engine/src/flutter/lib/gpu/texture.cc b/engine/src/flutter/lib/gpu/texture.cc
+index 243290d73bb..bebf48621a9 100644
+--- a/engine/src/flutter/lib/gpu/texture.cc
++++ b/engine/src/flutter/lib/gpu/texture.cc
+@@ -7,19 +7,8 @@
+ #include <cstring>
+ #include <limits>
+ 
+-#include "flutter/lib/gpu/formats.h"
+ #include "flutter/lib/ui/painting/image.h"
+-#include "flutter/lib/ui/painting/image_gpu_bridge.h"
+ #include "flutter/lib/ui/spi_api.h"
+-#include "flutter/runtime_spi/gpu/spi_gpu_texture.h"
+-#include "impeller/core/texture.h"
+-#include "impeller/renderer/context.h"
+-
+-#if IMPELLER_SUPPORTS_RENDERING
+-#include "flutter/display_list/image/dl_image.h"      // nogncheck
+-#include "impeller/display_list/aiks_context.h"       // nogncheck
+-#include "impeller/display_list/dl_image_impeller.h"  // nogncheck
+-#endif
+ #include "third_party/tonic/converter/dart_converter.h"
+ #include "third_party/tonic/dart_wrappable.h"
+ #include "third_party/tonic/typed_data/dart_byte_data.h"
+@@ -52,54 +41,13 @@ bool Texture::Overwrite(Context& gpu_context,
+              static_cast<int32_t>(slice)) == kFlutterSpiOk;
+ }
+ 
+-#if IMPELLER_SUPPORTS_RENDERING
+-// Extracts the impeller::Texture that backs the ui.Image `image_wrapper`.
+-// Returns nullptr if the image is not backed by a Flutter GPU compatible
+-// texture, for example a non-Impeller image or a deferred image (from
+-// Picture.toImageSync) that has not finished rasterizing yet.
+-static std::shared_ptr<impeller::Texture> GetTextureFromImage(
+-    Context* gpu_context,
+-    Dart_Handle image_wrapper) {
+-  if (gpu_context == nullptr || Dart_IsNull(image_wrapper)) {
+-    return nullptr;
+-  }
+-  // A `ui.Image` wraps the private `_Image` native field holder.
+-  Dart_Handle inner = Dart_GetField(image_wrapper, tonic::ToDart("_image"));
+-  if (Dart_IsError(inner) || Dart_IsNull(inner)) {
+-    return nullptr;
+-  }
+-  auto* canvas_image =
+-      tonic::DartConverter<flutter::CanvasImage*>::FromDart(inner);
+-  if (!canvas_image) {
+-    return nullptr;
+-  }
+-  sk_sp<flutter::DlImage> dl_image =
+-      flutter::DlImageFromCanvasImageForGpu(*canvas_image);
+-  if (!dl_image) {
+-    return nullptr;
+-  }
+-  const impeller::DlImageImpeller* impeller_image = dl_image->asImpellerImage();
+-  if (!impeller_image) {
+-    return nullptr;
+-  }
+-  impeller::AiksContext aiks_context(gpu_context->GetContextShared(), nullptr);
+-  return impeller_image->GetImpellerTexture(aiks_context.GetContentContext());
+-}
+-#endif
+-
+ Dart_Handle Texture::AsImage() const {
+-  // DlImageImpeller isn't compiled in builds with Impeller disabled. If
+-  // Impeller is disabled, it's impossible to get here anyhow, so just ifdef it
+-  // out.
+-#if IMPELLER_SUPPORTS_RENDERING
+-  auto dl_image =
+-      impeller::DlImageImpeller::Make(SpiGpuTextureGetImpeller(spi_texture_));
+-  auto image = flutter::CanvasImageFromDlImageForGpu(std::move(dl_image));
+-  auto wrapped = image->CreateOuterWrapping();
+-  return wrapped;
+-#else
+-  return Dart_Null();
+-#endif
++  FlutterSpiImage* image = nullptr;
++  if (SpiApi().gpu->texture_as_image(spi_texture_, &image) != kFlutterSpiOk ||
++      image == nullptr) {
++    return Dart_Null();
++  }
++  return CanvasImage::Create(image)->CreateOuterWrapping();
+ }
+ 
+ }  // namespace gpu
+@@ -183,30 +131,53 @@ Dart_Handle InternalFlutterGpu_Texture_AsImage(flutter::gpu::Texture* wrapper) {
+ Dart_Handle InternalFlutterGpu_Texture_ImageTextureInfo(
+     flutter::gpu::Context* gpu_context,
+     Dart_Handle image_wrapper) {
+-#if IMPELLER_SUPPORTS_RENDERING
+-  auto texture = flutter::gpu::GetTextureFromImage(gpu_context, image_wrapper);
+-  if (!texture) {
++  if (gpu_context == nullptr || Dart_IsNull(image_wrapper)) {
++    return Dart_NewTypedData(Dart_TypedData_kInt32, 0);
++  }
++
++  Dart_Handle inner = Dart_GetField(image_wrapper, tonic::ToDart("_image"));
++  if (Dart_IsError(inner) || Dart_IsNull(inner)) {
++    return Dart_NewTypedData(Dart_TypedData_kInt32, 0);
++  }
++  auto* canvas_image =
++      tonic::DartConverter<flutter::CanvasImage*>::FromDart(inner);
++  if (canvas_image == nullptr || canvas_image->spi_handle() == nullptr) {
++    return Dart_NewTypedData(Dart_TypedData_kInt32, 0);
++  }
++
++  FlutterSpiGpuTexture* texture = nullptr;
++  if (flutter::SpiApi().gpu->texture_from_image(
++          gpu_context->GetSpiContext(), canvas_image->spi_handle(), &texture) !=
++          kFlutterSpiOk ||
++      texture == nullptr) {
++    return Dart_NewTypedData(Dart_TypedData_kInt32, 0);
++  }
++
++  FlutterSpiGpuTextureDescriptor descriptor = {};
++  descriptor.struct_size = sizeof(descriptor);
++  const FlutterSpiResult result = flutter::SpiApi().gpu->texture_get_descriptor(
++      texture, &descriptor);
++  flutter::SpiApi().gpu->texture_release(texture);
++  if (result != kFlutterSpiOk) {
+     return Dart_NewTypedData(Dart_TypedData_kInt32, 0);
+   }
+-  const impeller::TextureDescriptor& desc = texture->GetTextureDescriptor();
+-  const impeller::TextureUsageMask usage = desc.usage;
+ 
+   // Layout must match the parsing in the Dart `Texture._fromImage`.
+   int32_t values[11];
+-  values[0] = static_cast<int32_t>(
+-      flutter::gpu::FromImpellerStorageMode(desc.storage_mode));
+-  values[1] =
+-      static_cast<int32_t>(flutter::gpu::FromImpellerPixelFormat(desc.format));
+-  values[2] = static_cast<int32_t>(desc.size.width);
+-  values[3] = static_cast<int32_t>(desc.size.height);
+-  values[4] = static_cast<int32_t>(desc.sample_count);
+-  values[5] =
+-      static_cast<int32_t>(flutter::gpu::FromImpellerTextureType(desc.type));
+-  values[6] = (usage & impeller::TextureUsage::kRenderTarget) ? 1 : 0;
+-  values[7] = (usage & impeller::TextureUsage::kShaderRead) ? 1 : 0;
+-  values[8] = (usage & impeller::TextureUsage::kShaderWrite) ? 1 : 0;
+-  values[9] = static_cast<int32_t>(desc.mip_count);
+-  values[10] = static_cast<int32_t>(desc.array_layer_count);
++  values[0] = descriptor.storage_mode;
++  values[1] = descriptor.format;
++  values[2] = descriptor.width;
++  values[3] = descriptor.height;
++  values[4] = descriptor.sample_count;
++  values[5] = descriptor.texture_type;
++  values[6] =
++      (descriptor.usage & kFlutterSpiGpuTextureUsageRenderTarget) ? 1 : 0;
++  values[7] =
++      (descriptor.usage & kFlutterSpiGpuTextureUsageShaderRead) ? 1 : 0;
++  values[8] =
++      (descriptor.usage & kFlutterSpiGpuTextureUsageShaderWrite) ? 1 : 0;
++  values[9] = descriptor.mip_level_count;
++  values[10] = descriptor.layer_count;
+ 
+   const intptr_t length = sizeof(values) / sizeof(values[0]);
+   Dart_Handle list = Dart_NewTypedData(Dart_TypedData_kInt32, length);
+@@ -224,30 +195,34 @@ Dart_Handle InternalFlutterGpu_Texture_ImageTextureInfo(
+   std::memcpy(data, values, sizeof(values));
+   Dart_TypedDataReleaseData(list);
+   return list;
+-#else
+-  return Dart_NewTypedData(Dart_TypedData_kInt32, 0);
+-#endif
+ }
+ 
+ bool InternalFlutterGpu_Texture_InitializeFromImage(
+     Dart_Handle wrapper,
+     flutter::gpu::Context* gpu_context,
+     Dart_Handle image_wrapper) {
+-#if IMPELLER_SUPPORTS_RENDERING
+-  auto texture = flutter::gpu::GetTextureFromImage(gpu_context, image_wrapper);
+-  if (!texture) {
++  if (gpu_context == nullptr || Dart_IsNull(image_wrapper)) {
+     return false;
+   }
++
++  Dart_Handle inner = Dart_GetField(image_wrapper, tonic::ToDart("_image"));
++  if (Dart_IsError(inner) || Dart_IsNull(inner)) {
++    return false;
++  }
++  auto* canvas_image =
++      tonic::DartConverter<flutter::CanvasImage*>::FromDart(inner);
++  if (canvas_image == nullptr || canvas_image->spi_handle() == nullptr) {
++    return false;
++  }
++
+   FlutterSpiGpuTexture* spi_texture = nullptr;
+-  if (flutter::SpiGpuTextureWrapImpeller(gpu_context->GetSpiContext(),
+-                                         std::move(texture),
+-                                         &spi_texture) != kFlutterSpiOk) {
++  if (flutter::SpiApi().gpu->texture_from_image(
++          gpu_context->GetSpiContext(), canvas_image->spi_handle(),
++          &spi_texture) != kFlutterSpiOk ||
++      spi_texture == nullptr) {
+     return false;
+   }
+   auto res = fml::MakeRefCounted<flutter::gpu::Texture>(spi_texture);
+   res->AssociateWithDartWrapper(wrapper);
+   return true;
+-#else
+-  return false;
+-#endif
+ }
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_context.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_context.cc
+index 2a48ab08633..e8bfd66f766 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_context.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_context.cc
+@@ -274,11 +274,6 @@ std::shared_ptr<impeller::Context> GetImpellerContext(
+   return context_value == nullptr ? nullptr : context_value->context();
+ }
+ 
+-std::shared_ptr<impeller::Context> SpiGpuContextGetImpeller(
+-    FlutterSpiGpuContext* context) {
+-  return GetImpellerContext(context);
+-}
+-
+ fml::RefPtr<fml::TaskRunner> SpiGpuContextGetRasterTaskRunner(
+     FlutterSpiGpuContext* context) {
+   SpiGpuContext* context_value = FindContext(context);
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.cc
+index fe08ef35988..b68ce21db5f 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.cc
+@@ -265,11 +265,6 @@ FlutterSpiGpuShader* SpiGpuShaderInsertHandle(
+   return handle == 0 ? nullptr : MakeHandle(handle);
+ }
+ 
+-bool SpiGpuShaderIsDirtyForTesting(FlutterSpiGpuShader* shader) {
+-  SpiGpuShader* shader_value = FindShader(shader);
+-  return shader_value != nullptr && shader_value->IsDirty();
+-}
+-
+ FlutterSpiResult SpiGpuShaderGetUniformStructSize(FlutterSpiGpuShader* shader,
+                                                   const char* struct_name,
+                                                   int32_t* out_size) {
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.h b/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.h
+index 057086cb91b..5b0f8ddb3d0 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.h
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.h
+@@ -113,7 +113,6 @@ FlutterSpiResult SpiGpuShaderRelease(FlutterSpiGpuShader* shader);
+ FlutterSpiResult SpiGpuShaderIsDirty(FlutterSpiGpuShader* shader, bool* out);
+ 
+ SpiGpuShader* GetCoreShader(FlutterSpiGpuShader* shader);
+-bool SpiGpuShaderIsDirtyForTesting(FlutterSpiGpuShader* shader);
+ FlutterSpiGpuShader* SpiGpuShaderInsertHandle(
+     std::shared_ptr<SpiGpuShader> shader);
+ 
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_surface.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_surface.cc
+index 8821d6a205e..81a085cd3c3 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_surface.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_surface.cc
+@@ -421,11 +421,4 @@ FlutterSpiResult SpiGpuImageSurfaceRelease(FlutterSpiGpuImageSurface* surface) {
+              : kFlutterSpiInvalidHandle;
+ }
+ 
+-std::shared_ptr<impeller::Texture> SpiGpuSurfaceGetCurrentTexture(
+-    FlutterSpiGpuImageSurface* surface) {
+-  SpiGpuImageSurface* surface_value = FindImageSurface(surface);
+-  return surface_value == nullptr ? nullptr
+-                                  : surface_value->GetCurrentTexture();
+-}
+-
+ }  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_surface.h b/engine/src/flutter/runtime_spi/gpu/spi_gpu_surface.h
+index 4938a4ea3c8..02faa19357b 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_surface.h
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_surface.h
+@@ -99,9 +99,6 @@ FlutterSpiResult SpiGpuImageSurfaceGetCurrentImage(
+ FlutterSpiResult SpiGpuImageSurfaceRetain(FlutterSpiGpuImageSurface* surface);
+ FlutterSpiResult SpiGpuImageSurfaceRelease(FlutterSpiGpuImageSurface* surface);
+ 
+-std::shared_ptr<impeller::Texture> SpiGpuSurfaceGetCurrentTexture(
+-    FlutterSpiGpuImageSurface* surface);
+-
+ }  // namespace flutter
+ 
+ #endif  // FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_SURFACE_H_
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+index 405372b5cc7..74c476c9db9 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+@@ -17,7 +17,6 @@
+ namespace impeller {
+ class Context;
+ class DeviceBuffer;
+-class Texture;
+ }  // namespace impeller
+ 
+ namespace flutter {
+@@ -25,9 +24,6 @@ namespace flutter {
+ class AssetManager;
+ class FontCollection;
+ class LayerTree;
+-class SpiGpuBindingSet;
+-class SpiGpuRenderPipeline;
+-class SpiGpuShader;
+ 
+ sk_sp<DlImage> SpiImageToDlImage(FlutterSpiImage*);
+ 
+@@ -44,18 +40,6 @@ FontCollection& SpiEngineFontCollection(FlutterSpiEngine* engine);
+ // C++ AssetManager; dart:ui reads assets through asset_read.
+ std::shared_ptr<AssetManager> SpiEngineAssetManager(FlutterSpiEngine* engine);
+ 
+-// Transição até a S7d (Texture.asImage).
+-std::shared_ptr<impeller::Context> SpiGpuContextGetImpeller(
+-    FlutterSpiGpuContext* context);
+-
+-// Temporary bridge until flutter_gpu moves its texture consumers behind the
+-// runtime SPI table.
+-std::shared_ptr<impeller::Texture> SpiGpuTextureGetImpeller(
+-    FlutterSpiGpuTexture* texture);
+-FlutterSpiResult SpiGpuTextureWrapImpeller(
+-    FlutterSpiGpuContext* context,
+-    std::shared_ptr<impeller::Texture> texture,
+-    FlutterSpiGpuTexture** out_texture);
+ void SpiGpuSetDefaultContextOverride(
+     std::shared_ptr<impeller::Context> context);
+ std::shared_ptr<impeller::Context> SpiGpuGetDefaultContextOverride();

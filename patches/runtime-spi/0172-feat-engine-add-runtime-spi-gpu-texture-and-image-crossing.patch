@@ -1,0 +1,778 @@
+# Why: S7d; define the GPU texture and image crossing behavior before the core
+# implementation.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 1915015a754..6ebe0ed52c9 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -90,6 +90,7 @@ source_set("spi_backend") {
+     ":semantics",
+     ":text",
+     "//flutter/lib/ui:ui_text_core",
++    "//flutter/impeller/display_list",
+     "//flutter/impeller/shader_bundle:shader_bundle_flatbuffers",
+   ]
+ }
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 06b6c39c209..051d1e8d4bb 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -902,7 +902,17 @@ SPI_EXPECT_OFFSET(FlutterSpiGpuApi, image_surface_retain,
+                   sizeof(void*) == 8 ? 616 : 308);
+ SPI_EXPECT_OFFSET(FlutterSpiGpuApi, image_surface_release,
+                   sizeof(void*) == 8 ? 624 : 312);
+-SPI_EXPECT_SIZE(FlutterSpiGpuApi, sizeof(void*) == 8 ? 632 : 316);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, texture_as_image,
++                  sizeof(void*) == 8 ? 632 : 316);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, texture_from_image,
++                  sizeof(void*) == 8 ? 640 : 320);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, texture_get_descriptor,
++                  sizeof(void*) == 8 ? 648 : 324);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, image_surface_get_current_image,
++                  sizeof(void*) == 8 ? 656 : 328);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_is_dirty,
++                  sizeof(void*) == 8 ? 664 : 332);
++SPI_EXPECT_SIZE(FlutterSpiGpuApi, sizeof(void*) == 8 ? 672 : 336);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiGpuRegion, x, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiGpuRegion, y, 4);
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.cc
+index 687eb3bfab8..fe08ef35988 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.cc
+@@ -343,4 +343,17 @@ FlutterSpiResult SpiGpuShaderRelease(FlutterSpiGpuShader* shader) {
+                                                 : kFlutterSpiInvalidHandle;
+ }
+ 
++FlutterSpiResult SpiGpuShaderIsDirty(FlutterSpiGpuShader* shader, bool* out) {
++  if (out == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out = false;
++  SpiGpuShader* shader_value = FindShader(shader);
++  if (shader_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  *out = shader_value->IsDirty();
++  return kFlutterSpiOk;
++}
++
+ }  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.h b/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.h
+index 0a8f836fe59..057086cb91b 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.h
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.h
+@@ -110,6 +110,7 @@ FlutterSpiResult SpiGpuShaderGetUniformTextureIndex(FlutterSpiGpuShader* shader,
+                                                     int32_t* out_index);
+ FlutterSpiResult SpiGpuShaderRetain(FlutterSpiGpuShader* shader);
+ FlutterSpiResult SpiGpuShaderRelease(FlutterSpiGpuShader* shader);
++FlutterSpiResult SpiGpuShaderIsDirty(FlutterSpiGpuShader* shader, bool* out);
+ 
+ SpiGpuShader* GetCoreShader(FlutterSpiGpuShader* shader);
+ bool SpiGpuShaderIsDirtyForTesting(FlutterSpiGpuShader* shader);
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_surface.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_surface.cc
+index b21df9a7449..8821d6a205e 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_surface.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_surface.cc
+@@ -13,10 +13,12 @@
+ #include "flutter/runtime_spi/gpu/spi_gpu_context.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_formats.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_texture.h"
++#include "flutter/runtime_spi/image/spi_image.h"
+ #include "flutter/runtime_spi/scene/spi_handle_table.h"
+ #include "fml/logging.h"
+ #include "impeller/core/allocator.h"
+ #include "impeller/core/texture.h"
++#include "impeller/display_list/dl_image_impeller.h"
+ #include "impeller/renderer/context.h"
+ 
+ namespace flutter {
+@@ -270,6 +272,19 @@ FlutterSpiResult SpiGpuImageSurface::GetBackingTextureCount(
+   return kFlutterSpiOk;
+ }
+ 
++FlutterSpiResult SpiGpuImageSurface::GetCurrentImage(
++    FlutterSpiImage** out_image) const {
++  if (out_image == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out_image = nullptr;
++  const std::shared_ptr<impeller::Texture> texture = GetCurrentTexture();
++  if (texture == nullptr) {
++    return kFlutterSpiOk;
++  }
++  return SpiImageWrap(impeller::DlImageImpeller::Make(texture), out_image);
++}
++
+ std::shared_ptr<impeller::Texture> SpiGpuImageSurface::GetCurrentTexture()
+     const {
+   if (!current_index_.has_value() ||
+@@ -383,6 +398,17 @@ FlutterSpiResult SpiGpuImageSurfaceGetBackingTextureCount(
+              : surface_value->GetBackingTextureCount(out_count);
+ }
+ 
++FlutterSpiResult SpiGpuImageSurfaceGetCurrentImage(
++    FlutterSpiGpuImageSurface* surface,
++    FlutterSpiImage** out_image) {
++  if (out_image == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  SpiGpuImageSurface* surface_value = FindImageSurface(surface);
++  return surface_value == nullptr ? kFlutterSpiInvalidHandle
++                                  : surface_value->GetCurrentImage(out_image);
++}
++
+ FlutterSpiResult SpiGpuImageSurfaceRetain(FlutterSpiGpuImageSurface* surface) {
+   return ImageSurfaces().Retain(HandleValue(surface))
+              ? kFlutterSpiOk
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_surface.h b/engine/src/flutter/runtime_spi/gpu/spi_gpu_surface.h
+index 7b42020457a..4938a4ea3c8 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_surface.h
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_surface.h
+@@ -37,6 +37,7 @@ class SpiGpuImageSurface final {
+   FlutterSpiResult DiscardFrame(int32_t index);
+   FlutterSpiResult Resize(impeller::ISize size, char** out_error);
+   FlutterSpiResult GetBackingTextureCount(int32_t* out_count) const;
++  FlutterSpiResult GetCurrentImage(FlutterSpiImage** out_image) const;
+ 
+   std::shared_ptr<impeller::Texture> GetCurrentTexture() const;
+ 
+@@ -92,6 +93,9 @@ FlutterSpiResult SpiGpuImageSurfaceResize(FlutterSpiGpuImageSurface* surface,
+ FlutterSpiResult SpiGpuImageSurfaceGetBackingTextureCount(
+     FlutterSpiGpuImageSurface* surface,
+     int32_t* out_count);
++FlutterSpiResult SpiGpuImageSurfaceGetCurrentImage(
++    FlutterSpiGpuImageSurface* surface,
++    FlutterSpiImage** out_image);
+ FlutterSpiResult SpiGpuImageSurfaceRetain(FlutterSpiGpuImageSurface* surface);
+ FlutterSpiResult SpiGpuImageSurfaceRelease(FlutterSpiGpuImageSurface* surface);
+ 
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_texture.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_texture.cc
+index e46bb512c13..1805b9e8743 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_texture.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_texture.cc
+@@ -11,11 +11,14 @@
+ #include "flutter/fml/task_runner.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_context.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_formats.h"
++#include "flutter/runtime_spi/image/spi_image.h"
+ #include "flutter/runtime_spi/scene/spi_handle_table.h"
+ #include "impeller/core/allocator.h"
+ #include "impeller/core/buffer_view.h"
+ #include "impeller/core/texture.h"
+ #include "impeller/core/texture_descriptor.h"
++#include "impeller/display_list/aiks_context.h"
++#include "impeller/display_list/dl_image_impeller.h"
+ #include "impeller/geometry/rect.h"
+ #include "impeller/renderer/blit_pass.h"
+ #include "impeller/renderer/command_buffer.h"
+@@ -264,6 +267,118 @@ FlutterSpiResult SpiGpuTextureRelease(FlutterSpiGpuTexture* texture) {
+                                                   : kFlutterSpiInvalidHandle;
+ }
+ 
++FlutterSpiResult SpiGpuTextureAsImage(FlutterSpiGpuTexture* texture,
++                                      FlutterSpiImage** out_image) {
++  if (out_image == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out_image = nullptr;
++  SpiGpuTexture* texture_value = FindTexture(texture);
++  if (texture_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  return SpiImageWrap(impeller::DlImageImpeller::Make(texture_value->texture()),
++                      out_image);
++}
++
++FlutterSpiResult SpiGpuTextureFromImage(FlutterSpiGpuContext* context,
++                                        FlutterSpiImage* image,
++                                        FlutterSpiGpuTexture** out_texture) {
++  if (out_texture == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out_texture = nullptr;
++  std::shared_ptr<impeller::Context> context_value =
++      GetImpellerContext(context);
++  if (context_value == nullptr || image == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  const sk_sp<DlImage> dl_image = SpiImageGet(image);
++  if (dl_image == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  const impeller::DlImageImpeller* impeller_image = dl_image->asImpellerImage();
++  if (impeller_image == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  impeller::AiksContext aiks_context(context_value, nullptr);
++  std::shared_ptr<impeller::Texture> texture =
++      impeller_image->GetImpellerTexture(aiks_context.GetContentContext());
++  if (texture == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return InsertTexture(std::move(context_value),
++                       SpiGpuContextGetRasterTaskRunner(context),
++                       std::move(texture), out_texture);
++}
++
++FlutterSpiResult SpiGpuTextureGetDescriptor(
++    FlutterSpiGpuTexture* texture,
++    FlutterSpiGpuTextureDescriptor* out_descriptor) {
++  SpiGpuTexture* texture_value = FindTexture(texture);
++  if (texture_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (out_descriptor == nullptr ||
++      out_descriptor->struct_size < sizeof(size_t)) {
++    return kFlutterSpiInvalidArgument;
++  }
++
++  const size_t size = out_descriptor->struct_size;
++  const impeller::TextureDescriptor& descriptor =
++      texture_value->texture()->GetTextureDescriptor();
++  if (size >= offsetof(FlutterSpiGpuTextureDescriptor, storage_mode) +
++                  sizeof(out_descriptor->storage_mode)) {
++    out_descriptor->storage_mode =
++        static_cast<int32_t>(descriptor.storage_mode);
++  }
++  if (size >= offsetof(FlutterSpiGpuTextureDescriptor, format) +
++                  sizeof(out_descriptor->format)) {
++    out_descriptor->format = SpiGpuFromImpellerPixelFormat(descriptor.format);
++  }
++  if (size >= offsetof(FlutterSpiGpuTextureDescriptor, width) +
++                  sizeof(out_descriptor->width)) {
++    out_descriptor->width = descriptor.size.width;
++  }
++  if (size >= offsetof(FlutterSpiGpuTextureDescriptor, height) +
++                  sizeof(out_descriptor->height)) {
++    out_descriptor->height = descriptor.size.height;
++  }
++  if (size >= offsetof(FlutterSpiGpuTextureDescriptor, sample_count) +
++                  sizeof(out_descriptor->sample_count)) {
++    out_descriptor->sample_count =
++        static_cast<int32_t>(descriptor.sample_count);
++  }
++  if (size >= offsetof(FlutterSpiGpuTextureDescriptor, texture_type) +
++                  sizeof(out_descriptor->texture_type)) {
++    out_descriptor->texture_type = static_cast<int32_t>(descriptor.type);
++  }
++  if (size >= offsetof(FlutterSpiGpuTextureDescriptor, usage) +
++                  sizeof(out_descriptor->usage)) {
++    out_descriptor->usage = 0;
++    if (descriptor.usage & impeller::TextureUsage::kRenderTarget) {
++      out_descriptor->usage |= kFlutterSpiGpuTextureUsageRenderTarget;
++    }
++    if (descriptor.usage & impeller::TextureUsage::kShaderRead) {
++      out_descriptor->usage |= kFlutterSpiGpuTextureUsageShaderRead;
++    }
++    if (descriptor.usage & impeller::TextureUsage::kShaderWrite) {
++      out_descriptor->usage |= kFlutterSpiGpuTextureUsageShaderWrite;
++    }
++  }
++  if (size >= offsetof(FlutterSpiGpuTextureDescriptor, mip_level_count) +
++                  sizeof(out_descriptor->mip_level_count)) {
++    out_descriptor->mip_level_count =
++        static_cast<int32_t>(descriptor.mip_count);
++  }
++  if (size >= offsetof(FlutterSpiGpuTextureDescriptor, layer_count) +
++                  sizeof(out_descriptor->layer_count)) {
++    out_descriptor->layer_count =
++        static_cast<int32_t>(descriptor.array_layer_count);
++  }
++  return kFlutterSpiOk;
++}
++
+ std::shared_ptr<impeller::Texture> SpiGpuTextureGetImpeller(
+     FlutterSpiGpuTexture* texture) {
+   SpiGpuTexture* texture_value = FindTexture(texture);
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_texture.h b/engine/src/flutter/runtime_spi/gpu/spi_gpu_texture.h
+index 75c1b7e9edc..9183f675b1a 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_texture.h
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_texture.h
+@@ -27,6 +27,14 @@ FlutterSpiResult SpiGpuTextureOverwrite(FlutterSpiGpuTexture* texture,
+                                         int32_t slice);
+ FlutterSpiResult SpiGpuTextureRetain(FlutterSpiGpuTexture* texture);
+ FlutterSpiResult SpiGpuTextureRelease(FlutterSpiGpuTexture* texture);
++FlutterSpiResult SpiGpuTextureAsImage(FlutterSpiGpuTexture* texture,
++                                      FlutterSpiImage** out_image);
++FlutterSpiResult SpiGpuTextureFromImage(FlutterSpiGpuContext* context,
++                                        FlutterSpiImage* image,
++                                        FlutterSpiGpuTexture** out_texture);
++FlutterSpiResult SpiGpuTextureGetDescriptor(
++    FlutterSpiGpuTexture* texture,
++    FlutterSpiGpuTextureDescriptor* out_descriptor);
+ 
+ std::shared_ptr<impeller::Texture> SpiGpuTextureGetImpeller(
+     FlutterSpiGpuTexture* texture);
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
+index 4851f5cb7bb..96ab9b81ffc 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
+@@ -12,6 +12,7 @@
+ #include "flutter/runtime_spi/gpu/spi_gpu_surface.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_test_fixture.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_texture.h"
++#include "flutter/runtime_spi/image/spi_image.h"
+ 
+ #include <cstdlib>
+ #include <memory>
+@@ -24,12 +25,15 @@
+ #include "flutter/runtime_spi/spi_runtime_backend.h"
+ #include "flutter/shell/common/display.h"
+ #include "flutter/testing/testing.h"
++#include "flutter/display_list/image/dl_image_skia.h"
+ #include "gmock/gmock.h"
+ #include "gtest/gtest.h"
+ #include "impeller/renderer/sampler_library.h"
+ #include "impeller/renderer/shader_library.h"
+ #include "impeller/renderer/testing/mocks.h"
+ #include "impeller/shader_bundle/shader_bundle_flatbuffers.h"
++#include "third_party/skia/include/core/SkBitmap.h"
++#include "third_party/skia/include/core/SkImage.h"
+ 
+ namespace flutter::testing {
+ namespace {
+@@ -93,6 +97,38 @@ FlutterSpiGpuTextureDescriptor MakeTextureDescriptor() {
+   };
+ }
+ 
++std::shared_ptr<NiceMock<impeller::testing::MockTexture>> MakeTestTexture() {
++  impeller::TextureDescriptor descriptor;
++  descriptor.storage_mode = impeller::StorageMode::kDevicePrivate;
++  descriptor.format = impeller::PixelFormat::kR8G8B8A8UNormInt;
++  descriptor.size = {64, 32};
++  descriptor.sample_count = impeller::SampleCount::kCount1;
++  descriptor.type = impeller::TextureType::kTexture2D;
++  descriptor.usage = impeller::TextureUsage::kRenderTarget |
++                     impeller::TextureUsage::kShaderRead |
++                     impeller::TextureUsage::kShaderWrite;
++  descriptor.mip_count = 3;
++  descriptor.array_layer_count = 2;
++  auto texture =
++      std::make_shared<NiceMock<impeller::testing::MockTexture>>(descriptor);
++  ON_CALL(*texture, GetSize()).WillByDefault(Return(descriptor.size));
++  return texture;
++}
++
++void ExpectTextureDescriptorsEqual(
++    const FlutterSpiGpuTextureDescriptor& left,
++    const FlutterSpiGpuTextureDescriptor& right) {
++  EXPECT_EQ(left.storage_mode, right.storage_mode);
++  EXPECT_EQ(left.format, right.format);
++  EXPECT_EQ(left.width, right.width);
++  EXPECT_EQ(left.height, right.height);
++  EXPECT_EQ(left.sample_count, right.sample_count);
++  EXPECT_EQ(left.texture_type, right.texture_type);
++  EXPECT_EQ(left.usage, right.usage);
++  EXPECT_EQ(left.mip_level_count, right.mip_level_count);
++  EXPECT_EQ(left.layer_count, right.layer_count);
++}
++
+ std::shared_ptr<std::vector<uint8_t>> BuildShaderBundle(
+     const std::string& uniform_name,
+     uint8_t code_marker) {
+@@ -814,6 +850,173 @@ TEST_F(SpiGpuContextTest, TextureCallsRejectNullAndReleasedHandles) {
+   EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
+ }
+ 
++TEST_F(SpiGpuContextTest, TextureAsImageMatchesTextureSize) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  auto context = CreateMockContext(&capabilities);
++  auto allocator =
++      std::make_shared<NiceMock<impeller::testing::MockAllocator>>();
++  auto texture = MakeTestTexture();
++  AllowTextureDimensions(*allocator);
++  ON_CALL(*allocator, OnCreateTexture(::testing::_, true))
++      .WillByDefault(Return(texture));
++  ON_CALL(*context, GetResourceAllocator()).WillByDefault(Return(allocator));
++  SpiGpuSetDefaultContextOverride(context);
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());
++  FlutterSpiGpuTexture* gpu_texture = nullptr;
++  auto texture_descriptor = MakeTextureDescriptor();
++  ASSERT_EQ(SpiGpuTextureCreate(gpu_context, &texture_descriptor, &gpu_texture),
++            kFlutterSpiOk);
++
++  FlutterSpiImage* image = nullptr;
++  ASSERT_EQ(SpiGpuTextureAsImage(gpu_texture, &image), kFlutterSpiOk);
++  ASSERT_NE(image, nullptr);
++  int32_t width = 0;
++  int32_t height = 0;
++  EXPECT_EQ(SpiImageGetSize(image, &width, &height), kFlutterSpiOk);
++  EXPECT_EQ(width, 64);
++  EXPECT_EQ(height, 32);
++
++  EXPECT_EQ(SpiImageRelease(image), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuTextureRelease(gpu_texture), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, TextureAsImageOutlivesTextureHandle) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  auto context = CreateMockContext(&capabilities);
++  auto allocator =
++      std::make_shared<NiceMock<impeller::testing::MockAllocator>>();
++  auto texture = MakeTestTexture();
++  AllowTextureDimensions(*allocator);
++  ON_CALL(*allocator, OnCreateTexture(::testing::_, true))
++      .WillByDefault(Return(texture));
++  ON_CALL(*context, GetResourceAllocator()).WillByDefault(Return(allocator));
++  SpiGpuSetDefaultContextOverride(context);
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());
++  FlutterSpiGpuTexture* gpu_texture = nullptr;
++  auto texture_descriptor = MakeTextureDescriptor();
++  ASSERT_EQ(SpiGpuTextureCreate(gpu_context, &texture_descriptor, &gpu_texture),
++            kFlutterSpiOk);
++
++  FlutterSpiImage* image = nullptr;
++  ASSERT_EQ(SpiGpuTextureAsImage(gpu_texture, &image), kFlutterSpiOk);
++  ASSERT_EQ(SpiGpuTextureRelease(gpu_texture), kFlutterSpiOk);
++
++  int32_t width = 0;
++  int32_t height = 0;
++  EXPECT_EQ(SpiImageGetSize(image, &width, &height), kFlutterSpiOk);
++  EXPECT_EQ(width, 64);
++  EXPECT_EQ(height, 32);
++
++  EXPECT_EQ(SpiImageRelease(image), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, TextureFromImageRoundTripsTheTexture) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  auto context = CreateMockContext(&capabilities);
++  auto allocator =
++      std::make_shared<NiceMock<impeller::testing::MockAllocator>>();
++  auto texture = MakeTestTexture();
++  AllowTextureDimensions(*allocator);
++  ON_CALL(*allocator, OnCreateTexture(::testing::_, true))
++      .WillByDefault(Return(texture));
++  ON_CALL(*context, GetResourceAllocator()).WillByDefault(Return(allocator));
++  SpiGpuSetDefaultContextOverride(context);
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());
++  FlutterSpiGpuTexture* original_texture = nullptr;
++  auto texture_descriptor = MakeTextureDescriptor();
++  ASSERT_EQ(
++      SpiGpuTextureCreate(gpu_context, &texture_descriptor, &original_texture),
++      kFlutterSpiOk);
++
++  FlutterSpiGpuTextureDescriptor original_descriptor = {
++      .struct_size = sizeof(FlutterSpiGpuTextureDescriptor)};
++  ASSERT_EQ(SpiGpuTextureGetDescriptor(original_texture, &original_descriptor),
++            kFlutterSpiOk);
++  FlutterSpiImage* image = nullptr;
++  ASSERT_EQ(SpiGpuTextureAsImage(original_texture, &image), kFlutterSpiOk);
++  ASSERT_EQ(SpiGpuTextureRelease(original_texture), kFlutterSpiOk);
++
++  FlutterSpiGpuTexture* round_trip_texture = nullptr;
++  ASSERT_EQ(SpiGpuTextureFromImage(gpu_context, image, &round_trip_texture),
++            kFlutterSpiOk);
++  FlutterSpiGpuTextureDescriptor round_trip_descriptor = {
++      .struct_size = sizeof(FlutterSpiGpuTextureDescriptor)};
++  ASSERT_EQ(
++      SpiGpuTextureGetDescriptor(round_trip_texture, &round_trip_descriptor),
++      kFlutterSpiOk);
++  ExpectTextureDescriptorsEqual(original_descriptor, round_trip_descriptor);
++
++  EXPECT_EQ(SpiGpuTextureRelease(round_trip_texture), kFlutterSpiOk);
++  EXPECT_EQ(SpiImageRelease(image), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, TextureFromImageRejectsRasterImage) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  SpiGpuSetDefaultContextOverride(CreateMockContext(&capabilities));
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());
++
++  SkBitmap bitmap;
++  ASSERT_TRUE(bitmap.tryAllocPixels(SkImageInfo::MakeN32Premul(4, 3)));
++  bitmap.eraseColor(SK_ColorBLUE);
++  bitmap.setImmutable();
++  FlutterSpiImage* image = nullptr;
++  ASSERT_EQ(SpiImageWrap(DlImageSkia::Make(SkImages::RasterFromBitmap(bitmap)),
++                         &image),
++            kFlutterSpiOk);
++
++  FlutterSpiGpuTexture* texture = nullptr;
++  EXPECT_EQ(SpiGpuTextureFromImage(gpu_context, image, &texture),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(texture, nullptr);
++
++  EXPECT_EQ(SpiImageRelease(image), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, TextureGetDescriptorHonorsSmallStructSize) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  auto context = CreateMockContext(&capabilities);
++  auto allocator =
++      std::make_shared<NiceMock<impeller::testing::MockAllocator>>();
++  auto texture = MakeTestTexture();
++  AllowTextureDimensions(*allocator);
++  ON_CALL(*allocator, OnCreateTexture(::testing::_, true))
++      .WillByDefault(Return(texture));
++  ON_CALL(*context, GetResourceAllocator()).WillByDefault(Return(allocator));
++  SpiGpuSetDefaultContextOverride(context);
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());
++  FlutterSpiGpuTexture* gpu_texture = nullptr;
++  auto texture_descriptor = MakeTextureDescriptor();
++  ASSERT_EQ(SpiGpuTextureCreate(gpu_context, &texture_descriptor, &gpu_texture),
++            kFlutterSpiOk);
++
++  FlutterSpiGpuTextureDescriptor descriptor = {
++      .struct_size = offsetof(FlutterSpiGpuTextureDescriptor, width) +
++                     sizeof(descriptor.width),
++      .storage_mode = -1,
++      .format = -1,
++      .width = -1,
++      .height = -1,
++  };
++  EXPECT_EQ(SpiGpuTextureGetDescriptor(gpu_texture, &descriptor),
++            kFlutterSpiOk);
++  EXPECT_EQ(descriptor.storage_mode, kFlutterSpiGpuStorageModeDevicePrivate);
++  EXPECT_EQ(descriptor.format, kFlutterSpiGpuPixelFormatR8G8B8A8UNormInt);
++  EXPECT_EQ(descriptor.width, 64);
++  EXPECT_EQ(descriptor.height, -1);
++
++  EXPECT_EQ(SpiGpuTextureRelease(gpu_texture), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
++}
++
+ TEST_F(SpiGpuContextTest, ShaderLibraryCreateRejectsUnsupportedFormat) {
+   std::shared_ptr<const impeller::Capabilities> capabilities;
+   SpiGpuSetDefaultContextOverride(CreateMockContext(&capabilities));
+@@ -898,7 +1101,38 @@ TEST_F(SpiGpuContextTest, ShaderLibraryReloadKeepsShaderHandles) {
+   EXPECT_EQ(SpiGpuShaderGetUniformStructIndex(shader, "Old", &index),
+             kFlutterSpiOk);
+   EXPECT_EQ(index, -1);
+-  EXPECT_TRUE(SpiGpuShaderIsDirtyForTesting(shader));
++  bool is_dirty = false;
++  EXPECT_EQ(SpiGpuShaderIsDirty(shader, &is_dirty), kFlutterSpiOk);
++  EXPECT_TRUE(is_dirty);
++
++  EXPECT_EQ(SpiGpuShaderRelease(shader), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuShaderLibraryRelease(library), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuContextRelease(context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, ShaderIsDirtyAfterReload) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  SpiGpuSetDefaultContextOverride(CreateMockContext(&capabilities));
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* context = GetDefaultContext(backend.get());
++  auto initial_bundle = BuildShaderBundle("Old", 1);
++  auto initial_descriptor = MakeShaderLibraryDescriptor(initial_bundle);
++  FlutterSpiGpuShaderLibrary* library = nullptr;
++  ASSERT_EQ(SpiGpuShaderLibraryCreate(context, &initial_descriptor, &library,
++                                      nullptr),
++            kFlutterSpiOk);
++  FlutterSpiGpuShader* shader = nullptr;
++  ASSERT_EQ(SpiGpuShaderLibraryGetShader(library, "test", &shader),
++            kFlutterSpiOk);
++
++  auto reload_bundle = BuildShaderBundle("New", 2);
++  auto reload_descriptor = MakeShaderLibraryDescriptor(reload_bundle);
++  ASSERT_EQ(SpiGpuShaderLibraryReload(library, &reload_descriptor, nullptr),
++            kFlutterSpiOk);
++
++  bool is_dirty = false;
++  EXPECT_EQ(SpiGpuShaderIsDirty(shader, &is_dirty), kFlutterSpiOk);
++  EXPECT_TRUE(is_dirty);
+ 
+   EXPECT_EQ(SpiGpuShaderRelease(shader), kFlutterSpiOk);
+   EXPECT_EQ(SpiGpuShaderLibraryRelease(library), kFlutterSpiOk);
+@@ -1992,6 +2226,25 @@ TEST_F(SpiGpuContextTest, ImageSurfaceResizeKeepsFrameCountRules) {
+   EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
+ }
+ 
++TEST_F(SpiGpuContextTest, ImageSurfaceGetCurrentImageIsNullBeforePresent) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  SpiGpuSetDefaultContextOverride(CreateMockContext(&capabilities));
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());
++  FlutterSpiGpuImageSurface* surface = nullptr;
++  ASSERT_EQ(SpiGpuImageSurfaceCreate(gpu_context, 64, 32,
++                                     kFlutterSpiGpuPixelFormatR8G8B8A8UNormInt,
++                                     &surface, nullptr),
++            kFlutterSpiOk);
++
++  FlutterSpiImage* image = reinterpret_cast<FlutterSpiImage*>(1);
++  EXPECT_EQ(SpiGpuImageSurfaceGetCurrentImage(surface, &image), kFlutterSpiOk);
++  EXPECT_EQ(image, nullptr);
++
++  EXPECT_EQ(SpiGpuImageSurfaceRelease(surface), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
++}
++
+ TEST_F(SpiGpuContextTest, ImageSurfaceCallsRejectNullAndReleasedHandles) {
+   FlutterSpiGpuImageSurface* surface = nullptr;
+   FlutterSpiGpuTexture* texture = nullptr;
+@@ -2036,5 +2289,77 @@ TEST_F(SpiGpuContextTest, ImageSurfaceCallsRejectNullAndReleasedHandles) {
+   EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
+ }
+ 
++TEST_F(SpiGpuContextTest, ImageCrossingCallsRejectNullAndReleasedHandles) {
++  FlutterSpiGpuTextureDescriptor descriptor = MakeTextureDescriptor();
++  FlutterSpiGpuTexture* texture = nullptr;
++  FlutterSpiImage* image = nullptr;
++  FlutterSpiGpuTextureDescriptor output_descriptor = {
++      .struct_size = sizeof(FlutterSpiGpuTextureDescriptor)};
++  FlutterSpiGpuImageSurface* surface = nullptr;
++  bool is_dirty = false;
++
++  EXPECT_EQ(SpiGpuTextureAsImage(nullptr, &image), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuTextureAsImage(nullptr, nullptr), kFlutterSpiInvalidArgument);
++  EXPECT_EQ(SpiGpuTextureGetDescriptor(nullptr, &output_descriptor),
++            kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuTextureGetDescriptor(nullptr, nullptr),
++            kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuImageSurfaceGetCurrentImage(nullptr, &image),
++            kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuImageSurfaceGetCurrentImage(nullptr, nullptr),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(SpiGpuShaderIsDirty(nullptr, &is_dirty), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuShaderIsDirty(nullptr, nullptr), kFlutterSpiInvalidArgument);
++
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  auto context = CreateMockContext(&capabilities);
++  auto allocator =
++      std::make_shared<NiceMock<impeller::testing::MockAllocator>>();
++  auto impeller_texture = MakeTestTexture();
++  AllowTextureDimensions(*allocator);
++  ON_CALL(*allocator, OnCreateTexture(::testing::_, true))
++      .WillByDefault(Return(impeller_texture));
++  ON_CALL(*context, GetResourceAllocator()).WillByDefault(Return(allocator));
++  SpiGpuSetDefaultContextOverride(context);
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());
++  ASSERT_EQ(SpiGpuTextureCreate(gpu_context, &descriptor, &texture),
++            kFlutterSpiOk);
++  ASSERT_EQ(SpiGpuTextureAsImage(texture, &image), kFlutterSpiOk);
++  ASSERT_EQ(SpiGpuTextureRelease(texture), kFlutterSpiOk);
++  FlutterSpiImage* failed_image = nullptr;
++  EXPECT_EQ(SpiGpuTextureAsImage(texture, &failed_image),
++            kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuTextureFromImage(gpu_context, nullptr, &texture),
++            kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuTextureFromImage(gpu_context, image, nullptr),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(SpiGpuTextureGetDescriptor(texture, &output_descriptor),
++            kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiImageRelease(image), kFlutterSpiOk);
++
++  ASSERT_EQ(SpiGpuImageSurfaceCreate(gpu_context, 64, 32,
++                                     kFlutterSpiGpuPixelFormatR8G8B8A8UNormInt,
++                                     &surface, nullptr),
++            kFlutterSpiOk);
++  ASSERT_EQ(SpiGpuImageSurfaceRelease(surface), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuImageSurfaceGetCurrentImage(surface, &image),
++            kFlutterSpiInvalidHandle);
++
++  auto bundle = BuildShaderBundle("Frame", 1);
++  auto shader_descriptor = MakeShaderLibraryDescriptor(bundle);
++  FlutterSpiGpuShaderLibrary* library = nullptr;
++  ASSERT_EQ(SpiGpuShaderLibraryCreate(gpu_context, &shader_descriptor, &library,
++                                      nullptr),
++            kFlutterSpiOk);
++  FlutterSpiGpuShader* shader = nullptr;
++  ASSERT_EQ(SpiGpuShaderLibraryGetShader(library, "test", &shader),
++            kFlutterSpiOk);
++  ASSERT_EQ(SpiGpuShaderRelease(shader), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuShaderIsDirty(shader, &is_dirty), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuShaderLibraryRelease(library), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
++}
++
+ }  // namespace
+ }  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_gpu.h b/engine/src/flutter/runtime_spi/include/flutter_gpu.h
+index d7d96753b2c..bf980118783 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_gpu.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_gpu.h
+@@ -9,6 +9,7 @@
+ #include <stddef.h>
+ #include <stdint.h>
+ 
++#include "flutter_image.h"
+ #include "flutter_scene.h"
+ 
+ #ifdef __cplusplus
+@@ -640,6 +641,18 @@ typedef struct FlutterSpiGpuApi {
+       int32_t* out_count);
+   FlutterSpiResult (*image_surface_retain)(FlutterSpiGpuImageSurface* surface);
+   FlutterSpiResult (*image_surface_release)(FlutterSpiGpuImageSurface* surface);
++  FlutterSpiResult (*texture_as_image)(FlutterSpiGpuTexture* texture,
++                                       FlutterSpiImage** out_image);
++  FlutterSpiResult (*texture_from_image)(FlutterSpiGpuContext* context,
++                                         FlutterSpiImage* image,
++                                         FlutterSpiGpuTexture** out_texture);
++  FlutterSpiResult (*texture_get_descriptor)(
++      FlutterSpiGpuTexture* texture,
++      FlutterSpiGpuTextureDescriptor* out_descriptor);
++  FlutterSpiResult (*image_surface_get_current_image)(
++      FlutterSpiGpuImageSurface* surface,
++      FlutterSpiImage** out_image);
++  FlutterSpiResult (*shader_is_dirty)(FlutterSpiGpuShader* shader, bool* out);
+ } FlutterSpiGpuApi;
+ 
+ #ifdef __cplusplus
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index 8c9d255c871..5b4d126297d 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 27
++#define FLUTTER_SPI_VERSION_MINOR 28
+ 
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index 7df3811d39a..c54bba49b99 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -97,7 +97,7 @@ TEST(SpiAbi, ImageEnumValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawUnmodified, 2);
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawExtendedRGBA128, 3);
+   EXPECT_EQ(kFlutterSpiImageByteFormatPNG, 4);
+-  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 27);
++  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 28);
+ }
+ 
+ TEST(SpiAbi, GpuContextInfoLayoutIsFrozen) {
+@@ -210,7 +210,13 @@ TEST(SpiAbi, GpuApiLayoutIsFrozen) {
+                     image_surface_get_backing_texture_count, 608, 304);
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi, image_surface_retain, 616, 308);
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi, image_surface_release, 624, 312);
+-  EXPECT_EQ(sizeof(FlutterSpiGpuApi), sizeof(void*) == 8 ? 632u : 316u);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, texture_as_image, 632, 316);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, texture_from_image, 640, 320);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, texture_get_descriptor, 648, 324);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, image_surface_get_current_image, 656,
++                    328);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, shader_is_dirty, 664, 332);
++  EXPECT_EQ(sizeof(FlutterSpiGpuApi), sizeof(void*) == 8 ? 672u : 336u);
+ }
+ 
+ TEST(SpiAbi, GpuBufferDescriptorLayoutIsFrozen) {
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index 16474330f88..d21598fbdbe 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -246,6 +246,11 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+           SpiGpuImageSurfaceGetBackingTextureCount,
+       .image_surface_retain = SpiGpuImageSurfaceRetain,
+       .image_surface_release = SpiGpuImageSurfaceRelease,
++      .texture_as_image = SpiGpuTextureAsImage,
++      .texture_from_image = SpiGpuTextureFromImage,
++      .texture_get_descriptor = SpiGpuTextureGetDescriptor,
++      .image_surface_get_current_image = SpiGpuImageSurfaceGetCurrentImage,
++      .shader_is_dirty = SpiGpuShaderIsDirty,
+   };
+   static const FlutterSpiImageApi image_api = {
+       .struct_size = sizeof(FlutterSpiImageApi),

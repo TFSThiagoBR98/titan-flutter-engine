@@ -1,0 +1,201 @@
+# Why: S7d; remove ui_gpu_bridge and guard flutter_gpu with assert_no_deps.
+diff --git a/engine/src/flutter/lib/gpu/BUILD.gn b/engine/src/flutter/lib/gpu/BUILD.gn
+index ee1a46560c4..1d754b680e3 100644
+--- a/engine/src/flutter/lib/gpu/BUILD.gn
++++ b/engine/src/flutter/lib/gpu/BUILD.gn
+@@ -64,6 +64,25 @@ source_set("gpu") {
+     "//third_party/abseil-cpp/absl/strings",
+   ]
+ 
++  assert_no_deps = [
++    "//flutter/flow/*",
++    "//flutter/display_list/*",
++    "//flutter/txt/*",
++    "//flutter/skia/modules/skparagraph/*",
++    "//flutter/shell/common:common",
++    "//flutter/runtime_spi:spi_backend",
++    "//flutter/runtime_spi:scene",
++    "//flutter/runtime_spi:image",
++    "//flutter/runtime_spi:effects",
++    "//flutter/lib/ui:ui_image_decoding",
++    "//flutter/lib/ui:ui_image_output",
++    "//flutter/lib/ui:ui_text_core",
++    # //flutter/impeller/* is not listed: dart:ui depends on
++    # //flutter/impeller/runtime_stage, so the path //flutter/lib/gpu:gpu ->
++    # //flutter/lib/ui:ui reaches it. lib/gpu itself includes nothing from
++    # impeller/.
++  ]
++
+   if (is_win) {
+     # Required for M_PI and others.
+     defines += [ "_USE_MATH_DEFINES" ]
+diff --git a/engine/src/flutter/lib/gpu/shader_library.cc b/engine/src/flutter/lib/gpu/shader_library.cc
+index 060fba32081..686022609de 100644
+--- a/engine/src/flutter/lib/gpu/shader_library.cc
++++ b/engine/src/flutter/lib/gpu/shader_library.cc
+@@ -230,12 +230,6 @@ fml::RefPtr<Shader> ShaderLibrary::GetShader(const std::string& shader_name,
+   return it->second;
+ }
+ 
+-fml::RefPtr<Shader> ShaderLibrary::FindShaderForTesting(
+-    const std::string& shader_name) const {
+-  auto it = shaders_.find(shader_name);
+-  return it == shaders_.end() ? nullptr : it->second;
+-}
+-
+ ShaderLibrary::ShaderLibrary(FlutterSpiGpuShaderLibrary* library)
+     : spi_library_(library) {}
+ 
+diff --git a/engine/src/flutter/lib/gpu/shader_library.h b/engine/src/flutter/lib/gpu/shader_library.h
+index 1dea04a4a9a..f2ca0fa7c69 100644
+--- a/engine/src/flutter/lib/gpu/shader_library.h
++++ b/engine/src/flutter/lib/gpu/shader_library.h
+@@ -43,9 +43,6 @@ class ShaderLibrary : public RefCountedDartWrappable<ShaderLibrary> {
+   fml::RefPtr<Shader> GetShader(const std::string& shader_name,
+                                 Dart_Handle shader_wrapper);
+ 
+-  fml::RefPtr<Shader> FindShaderForTesting(
+-      const std::string& shader_name) const;
+-
+   explicit ShaderLibrary(FlutterSpiGpuShaderLibrary* library);
+ 
+   ~ShaderLibrary() override;
+diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
+index 7d93d7b98bb..671ea2dce10 100644
+--- a/engine/src/flutter/lib/ui/BUILD.gn
++++ b/engine/src/flutter/lib/ui/BUILD.gn
+@@ -344,7 +344,7 @@ source_set("ui") {
+     "//third_party/zlib",
+   ]
+ 
+-  # O alvo Dart do dart:ui só vê o core pela ABI C do SPI (S4i). Exceções até a S7: ui_gpu_bridge fica fora deste alvo.
++  # O alvo Dart do dart:ui só vê o core pela ABI C do SPI (S4i).
+   assert_no_deps = [
+     "//flutter/flow/*",
+     "//flutter/display_list/*",
+@@ -358,7 +358,6 @@ source_set("ui") {
+     "//flutter/lib/ui:ui_image_decoding",
+     "//flutter/lib/ui:ui_image_output",
+     "//flutter/lib/ui:ui_text_core",
+-    "//flutter/lib/ui:ui_gpu_bridge",
+   ]
+ 
+   if (!defined(defines)) {
+@@ -370,22 +369,6 @@ source_set("ui") {
+   }
+ }
+ 
+-source_set("ui_gpu_bridge") {
+-  public = [ "painting/image_gpu_bridge.h" ]
+-  sources = [
+-    "painting/image_gpu_bridge.cc",
+-    "painting/image_gpu_bridge.h",
+-  ]
+-
+-  public_configs = [ "//flutter:config" ]
+-
+-  deps = [
+-    ":ui",
+-    "//flutter/runtime_spi:image",
+-    "//flutter/third_party/tonic",
+-  ]
+-}
+-
+ if (enable_unittests) {
+   test_fixtures("ui_unittests_fixtures") {
+     deps = [ "fixtures/shaders" ]
+diff --git a/engine/src/flutter/lib/ui/painting/image_gpu_bridge.cc b/engine/src/flutter/lib/ui/painting/image_gpu_bridge.cc
+deleted file mode 100644
+index 4888487ff5a..00000000000
+--- a/engine/src/flutter/lib/ui/painting/image_gpu_bridge.cc
++++ /dev/null
+@@ -1,27 +0,0 @@
+-// Copyright 2026 The Flutter Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style license that can be
+-// found in the LICENSE file.
+-
+-#include "flutter/lib/ui/painting/image_gpu_bridge.h"
+-
+-#include <utility>
+-
+-#include "flutter/lib/ui/painting/image.h"
+-#include "flutter/runtime_spi/image/spi_image.h"
+-
+-namespace flutter {
+-
+-// Ponte do flutter_gpu até a S7 (API C de GPU no SPI).
+-fml::RefPtr<CanvasImage> CanvasImageFromDlImageForGpu(sk_sp<DlImage> image) {
+-  FlutterSpiImage* spi_image = nullptr;
+-  if (SpiImageWrap(std::move(image), &spi_image) != kFlutterSpiOk) {
+-    return nullptr;
+-  }
+-  return CanvasImage::Create(spi_image);
+-}
+-
+-sk_sp<DlImage> DlImageFromCanvasImageForGpu(const CanvasImage& image) {
+-  return SpiImageGet(image.spi_handle());
+-}
+-
+-}  // namespace flutter
+diff --git a/engine/src/flutter/lib/ui/painting/image_gpu_bridge.h b/engine/src/flutter/lib/ui/painting/image_gpu_bridge.h
+deleted file mode 100644
+index d7476fd8820..00000000000
+--- a/engine/src/flutter/lib/ui/painting/image_gpu_bridge.h
++++ /dev/null
+@@ -1,20 +0,0 @@
+-// Copyright 2026 The Flutter Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style license that can be
+-// found in the LICENSE file.
+-
+-#ifndef FLUTTER_LIB_UI_PAINTING_IMAGE_GPU_BRIDGE_H_
+-#define FLUTTER_LIB_UI_PAINTING_IMAGE_GPU_BRIDGE_H_
+-
+-#include "flutter/display_list/image/dl_image.h"
+-#include "flutter/fml/memory/ref_ptr.h"
+-
+-namespace flutter {
+-
+-class CanvasImage;
+-
+-fml::RefPtr<CanvasImage> CanvasImageFromDlImageForGpu(sk_sp<DlImage> image);
+-sk_sp<DlImage> DlImageFromCanvasImageForGpu(const CanvasImage& image);
+-
+-}  // namespace flutter
+-
+-#endif  // FLUTTER_LIB_UI_PAINTING_IMAGE_GPU_BRIDGE_H_
+diff --git a/engine/src/flutter/shell/platform/embedder/BUILD.gn b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+index adf48d31010..4fdf1be0dcb 100644
+--- a/engine/src/flutter/shell/platform/embedder/BUILD.gn
++++ b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+@@ -448,7 +448,7 @@ if (enable_unittests && titan_flutter_runtime_dart) {
+     deps = [
+       ":embedder_unittests_library",
+       "//flutter/runtime_spi:c_test_runtime",
+-      "//flutter/lib/ui:ui_gpu_bridge",
++      "//flutter/runtime_spi:image",
+     ]
+ 
+     if (test_enable_gl) {
+diff --git a/engine/src/flutter/shell/platform/embedder/tests/embedder_gl_unittests.cc b/engine/src/flutter/shell/platform/embedder/tests/embedder_gl_unittests.cc
+index b93fafc8ff6..bad6f7ed6cd 100644
+--- a/engine/src/flutter/shell/platform/embedder/tests/embedder_gl_unittests.cc
++++ b/engine/src/flutter/shell/platform/embedder/tests/embedder_gl_unittests.cc
+@@ -24,8 +24,8 @@
+ #include "flutter/fml/task_source.h"
+ #include "flutter/fml/thread.h"
+ #include "flutter/lib/ui/painting/image.h"
+-#include "flutter/lib/ui/painting/image_gpu_bridge.h"
+ #include "flutter/runtime/dart_vm.h"
++#include "flutter/runtime_spi/image/spi_image.h"
+ #include "flutter/shell/platform/embedder/embedder_surface_gl_impeller.h"
+ #include "flutter/shell/platform/embedder/tests/embedder_assertions.h"
+ #include "flutter/shell/platform/embedder/tests/embedder_config_builder.h"
+@@ -4278,7 +4278,7 @@ TEST_F(EmbedderTest, SnapshotRenderTargetScalesDownToDriverMax) {
+         CanvasImage* small_image = get_arg(small_handle);
+         ASSERT_TRUE(ImageMatchesFixture(
+             "snapshot_large_scene.png",
+-            DlImageFromCanvasImageForGpu(*small_image)
++            SpiImageGet(small_image->spi_handle())
+                 ->asSkiaImage()
+                 ->skia_image()));
+ 
