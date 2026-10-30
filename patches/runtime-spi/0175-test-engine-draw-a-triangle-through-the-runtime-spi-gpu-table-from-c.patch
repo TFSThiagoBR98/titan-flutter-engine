@@ -1,0 +1,1000 @@
+# Why: S7e; the C program links only the core and draws a triangle through
+# FlutterSpiGpuApi on lavapipe.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 6ebe0ed52c9..29054717f66 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -335,8 +335,14 @@ if (enable_unittests) {
+ 
+   source_set("c_test_runtime") {
+     testonly = true
+-    public = [ "testing/c_test_runtime.h" ]
+-    sources = [ "testing/c_test_runtime.c" ]
++    public = [
++      "testing/c_test_gpu_triangle.h",
++      "testing/c_test_runtime.h",
++    ]
++    sources = [
++      "testing/c_test_gpu_triangle.c",
++      "testing/c_test_runtime.c",
++    ]
+     deps = [ ":runtime_spi_c_api" ]
+   }
+ 
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_gpu_triangle.c b/engine/src/flutter/runtime_spi/testing/c_test_gpu_triangle.c
+new file mode 100644
+index 00000000000..09fff9c5ab9
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/c_test_gpu_triangle.c
+@@ -0,0 +1,469 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/testing/c_test_gpu_triangle.h"
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "flutter/runtime_spi/include/flutter_gpu.h"
++#include "flutter/runtime_spi/include/flutter_image.h"
++#include "flutter/runtime_spi/testing/c_test_runtime.h"
++
++typedef struct {
++  float mvp[16];
++  float color[4];
++} VertInfo;
++
++typedef struct {
++  CTestRuntime* runtime;
++  const FlutterSpiEngineApi* engine_api;
++  FlutterSpiGpuContext* context;
++  FlutterSpiGpuShaderLibrary* shader_library;
++  FlutterSpiGpuShader* vertex_shader;
++  FlutterSpiGpuShader* fragment_shader;
++  FlutterSpiGpuRenderPipeline* pipeline;
++  FlutterSpiGpuTexture* texture;
++  FlutterSpiGpuBuffer* buffer;
++  FlutterSpiGpuRenderPass* render_pass;
++  FlutterSpiGpuCommandBuffer* command_buffer;
++  FlutterSpiImage* image;
++  size_t uniform_offset;
++  int32_t uniform_size;
++} TriangleState;
++
++static void SetFailure(CTestRuntime* runtime,
++                       FlutterSpiResult result,
++                       const char* call) {
++  if (runtime->gpu_triangle_message[0] != '\0') {
++    return;
++  }
++  runtime->gpu_triangle_result = result;
++  snprintf(runtime->gpu_triangle_message,
++           sizeof(runtime->gpu_triangle_message), "%s failed (%d)", call,
++           (int)result);
++}
++
++static void SetFailureWithMessage(CTestRuntime* runtime,
++                                  FlutterSpiResult result,
++                                  const char* message) {
++  if (runtime->gpu_triangle_message[0] != '\0') {
++    return;
++  }
++  runtime->gpu_triangle_result = result;
++  snprintf(runtime->gpu_triangle_message,
++           sizeof(runtime->gpu_triangle_message), "%s (%d)", message,
++           (int)result);
++}
++
++static bool IsResultOk(CTestRuntime* runtime,
++                       FlutterSpiResult result,
++                       const char* call) {
++  if (result == kFlutterSpiOk) {
++    return true;
++  }
++  SetFailure(runtime, result, call);
++  return false;
++}
++
++static void ReleaseResources(TriangleState* state) {
++  const FlutterSpiGpuApi* gpu = state->engine_api->gpu;
++  CTestRuntime* runtime = state->runtime;
++  FlutterSpiResult result;
++
++  if (state->image != NULL) {
++    result = state->engine_api->image->image_release(state->image);
++    if (result != kFlutterSpiOk) {
++      SetFailure(runtime, result, "image_release");
++    }
++  }
++  if (state->command_buffer != NULL) {
++    result = gpu->command_buffer_release(state->command_buffer);
++    if (result != kFlutterSpiOk) {
++      SetFailure(runtime, result, "command_buffer_release");
++    }
++  }
++  if (state->render_pass != NULL) {
++    result = gpu->render_pass_release(state->render_pass);
++    if (result != kFlutterSpiOk) {
++      SetFailure(runtime, result, "render_pass_release");
++    }
++  }
++  if (state->texture != NULL) {
++    result = gpu->texture_release(state->texture);
++    if (result != kFlutterSpiOk) {
++      SetFailure(runtime, result, "texture_release");
++    }
++  }
++  if (state->buffer != NULL) {
++    result = gpu->buffer_release(state->buffer);
++    if (result != kFlutterSpiOk) {
++      SetFailure(runtime, result, "buffer_release");
++    }
++  }
++  if (state->pipeline != NULL) {
++    result = gpu->render_pipeline_release(state->pipeline);
++    if (result != kFlutterSpiOk) {
++      SetFailure(runtime, result, "render_pipeline_release");
++    }
++  }
++  if (state->vertex_shader != NULL) {
++    result = gpu->shader_release(state->vertex_shader);
++    if (result != kFlutterSpiOk) {
++      SetFailure(runtime, result, "shader_release vertex");
++    }
++  }
++  if (state->fragment_shader != NULL) {
++    result = gpu->shader_release(state->fragment_shader);
++    if (result != kFlutterSpiOk) {
++      SetFailure(runtime, result, "shader_release fragment");
++    }
++  }
++  if (state->shader_library != NULL) {
++    result = gpu->shader_library_release(state->shader_library);
++    if (result != kFlutterSpiOk) {
++      SetFailure(runtime, result, "shader_library_release");
++    }
++  }
++  if (state->context != NULL) {
++    result = gpu->context_release(state->context);
++    if (result != kFlutterSpiOk) {
++      SetFailure(runtime, result, "context_release");
++    }
++  }
++}
++
++static void Finish(TriangleState* state) {
++  CTestRuntime* runtime = state->runtime;
++
++  ReleaseResources(state);
++  if (runtime->gpu_triangle_message[0] == '\0') {
++    runtime->gpu_triangle_result = kFlutterSpiOk;
++  }
++  __atomic_store_n(&runtime->gpu_triangle_ready, true, __ATOMIC_RELEASE);
++  free(state);
++}
++
++static void OnImageBytes(void* user_data,
++                         FlutterSpiResult result,
++                         const uint8_t* bytes,
++                         size_t size) {
++  TriangleState* state = (TriangleState*)user_data;
++  CTestRuntime* runtime = state->runtime;
++  const size_t expected_size = 64u * 64u * 4u;
++  const size_t center_offset = (32u * 64u + 32u) * 4u;
++  const size_t corner_offset = (1u * 64u + 1u) * 4u;
++
++  if (!IsResultOk(runtime, result, "image_to_bytes")) {
++    Finish(state);
++    return;
++  }
++  if (bytes == NULL || size < expected_size) {
++    SetFailureWithMessage(runtime, kFlutterSpiInternalError,
++                          "image_to_bytes returned too few pixels");
++    Finish(state);
++    return;
++  }
++  if (abs((int)bytes[center_offset] - 255) > 1 ||
++      abs((int)bytes[center_offset + 1]) > 1 ||
++      abs((int)bytes[center_offset + 2]) > 1 ||
++      abs((int)bytes[center_offset + 3] - 255) > 1) {
++    SetFailureWithMessage(runtime, kFlutterSpiInternalError,
++                          "image_to_bytes center pixel mismatch");
++    Finish(state);
++    return;
++  }
++  if (abs((int)bytes[corner_offset]) > 1 ||
++      abs((int)bytes[corner_offset + 1]) > 1 ||
++      abs((int)bytes[corner_offset + 2]) > 1 ||
++      abs((int)bytes[corner_offset + 3]) > 1) {
++    SetFailureWithMessage(runtime, kFlutterSpiInternalError,
++                          "image_to_bytes clear pixel mismatch");
++    Finish(state);
++    return;
++  }
++  Finish(state);
++}
++
++static void OnCommandSubmitted(void* user_data, FlutterSpiResult result) {
++  TriangleState* state = (TriangleState*)user_data;
++  CTestRuntime* runtime = state->runtime;
++  const FlutterSpiGpuApi* gpu = state->engine_api->gpu;
++
++  if (!IsResultOk(runtime, result, "command_buffer_submit")) {
++    Finish(state);
++    return;
++  }
++  if (!IsResultOk(runtime,
++                  gpu->texture_as_image(state->texture, &state->image),
++                  "texture_as_image")) {
++    Finish(state);
++    return;
++  }
++  if (state->image == NULL) {
++    SetFailureWithMessage(runtime, kFlutterSpiInternalError,
++                          "texture_as_image returned no image");
++    Finish(state);
++    return;
++  }
++  result = state->engine_api->image->image_to_bytes(
++      state->runtime->engine, state->image, kFlutterSpiImageByteFormatRawRGBA,
++      OnImageBytes, state);
++  if (!IsResultOk(runtime, result, "image_to_bytes")) {
++    Finish(state);
++  }
++}
++
++static bool CreateShaderResources(TriangleState* state) {
++  const FlutterSpiGpuApi* gpu = state->engine_api->gpu;
++  const FlutterSpiGpuShaderLibraryDescriptor shader_descriptor = {
++      .struct_size = sizeof(FlutterSpiGpuShaderLibraryDescriptor),
++      .format = kFlutterSpiGpuShaderFormatImpellerBundle,
++      .data = state->runtime->gpu_triangle_shader_bundle_data,
++      .size = state->runtime->gpu_triangle_shader_bundle_size,
++      .library_id = "runtime_spi_c_triangle",
++  };
++  char* error = NULL;
++  FlutterSpiResult result = gpu->shader_library_create(
++      state->context, &shader_descriptor, &state->shader_library, &error);
++  if (!IsResultOk(state->runtime, result, "shader_library_create")) {
++    if (error != NULL && state->engine_api->free_string != NULL) {
++      state->engine_api->free_string(state->runtime->engine, error);
++    }
++    return false;
++  }
++  if (error != NULL && state->engine_api->free_string != NULL) {
++    state->engine_api->free_string(state->runtime->engine, error);
++  }
++  if (!IsResultOk(state->runtime,
++                  gpu->shader_library_get_shader(state->shader_library,
++                                                 "UnlitVertex",
++                                                 &state->vertex_shader),
++                  "shader_library_get_shader UnlitVertex")) {
++    return false;
++  }
++  if (!IsResultOk(state->runtime,
++                  gpu->shader_library_get_shader(state->shader_library,
++                                                 "UnlitFragment",
++                                                 &state->fragment_shader),
++                  "shader_library_get_shader UnlitFragment")) {
++    return false;
++  }
++
++  const FlutterSpiGpuRenderPipelineDescriptor pipeline_descriptor = {
++      .struct_size = sizeof(FlutterSpiGpuRenderPipelineDescriptor),
++      .vertex_shader = state->vertex_shader,
++      .fragment_shader = state->fragment_shader,
++      .buffer_layouts = NULL,
++      .buffer_layout_count = 0,
++  };
++  error = NULL;
++  result = gpu->render_pipeline_create(state->context, &pipeline_descriptor,
++                                       &state->pipeline, &error);
++  if (!IsResultOk(state->runtime, result, "render_pipeline_create")) {
++    if (error != NULL && state->engine_api->free_string != NULL) {
++      state->engine_api->free_string(state->runtime->engine, error);
++    }
++    return false;
++  }
++  if (error != NULL && state->engine_api->free_string != NULL) {
++    state->engine_api->free_string(state->runtime->engine, error);
++  }
++  return true;
++}
++
++static bool CreateRenderResources(TriangleState* state,
++                                  const FlutterSpiGpuContextInfo* context_info) {
++  const FlutterSpiGpuApi* gpu = state->engine_api->gpu;
++  const FlutterSpiGpuTextureDescriptor texture_descriptor = {
++      .struct_size = sizeof(FlutterSpiGpuTextureDescriptor),
++      .storage_mode = kFlutterSpiGpuStorageModeDevicePrivate,
++      .format = kFlutterSpiGpuPixelFormatR8G8B8A8UNormInt,
++      .width = 64,
++      .height = 64,
++      .sample_count = 1,
++      .texture_type = kFlutterSpiGpuTextureType2D,
++      .usage = kFlutterSpiGpuTextureUsageRenderTarget |
++               kFlutterSpiGpuTextureUsageShaderRead,
++      .mip_level_count = 1,
++      .layer_count = 1,
++  };
++  if (!IsResultOk(state->runtime,
++                  gpu->texture_create(state->context, &texture_descriptor,
++                                      &state->texture),
++                  "texture_create")) {
++    return false;
++  }
++
++  int32_t uniform_index = -1;
++  if (!IsResultOk(state->runtime,
++                  gpu->shader_get_uniform_struct_index(
++                      state->vertex_shader, "VertInfo", &uniform_index),
++                  "shader_get_uniform_struct_index")) {
++    return false;
++  }
++  if (!IsResultOk(state->runtime,
++                  gpu->shader_get_uniform_struct_size(
++                      state->vertex_shader, "VertInfo", &state->uniform_size),
++                  "shader_get_uniform_struct_size")) {
++    return false;
++  }
++  if (context_info->minimum_uniform_alignment <= 0 ||
++      state->uniform_size < (int32_t)sizeof(VertInfo)) {
++    SetFailureWithMessage(state->runtime, kFlutterSpiInternalError,
++                          "context_get_info returned invalid uniform layout");
++    return false;
++  }
++
++  const size_t vertex_data_size = 24;
++  const size_t alignment = (size_t)context_info->minimum_uniform_alignment;
++  state->uniform_offset =
++      (vertex_data_size + alignment - 1) / alignment * alignment;
++  const size_t buffer_size = state->uniform_offset + (size_t)state->uniform_size;
++  uint8_t* buffer_data = (uint8_t*)calloc(1, buffer_size);
++  if (buffer_data == NULL) {
++    SetFailureWithMessage(state->runtime, kFlutterSpiInternalError,
++                          "host buffer allocation");
++    return false;
++  }
++  const float vertices[] = {
++      -0.5f, -0.5f, 0.5f, -0.5f, 0.0f, 0.5f,
++  };
++  const VertInfo uniform = {
++      .mvp = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
++              0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f},
++      .color = {1.0f, 0.0f, 0.0f, 1.0f},
++  };
++  memcpy(buffer_data, vertices, sizeof(vertices));
++  memcpy(buffer_data + state->uniform_offset, &uniform,
++         sizeof(uniform) < (size_t)state->uniform_size
++             ? sizeof(uniform)
++             : (size_t)state->uniform_size);
++
++  const FlutterSpiGpuBufferDescriptor buffer_descriptor = {
++      .struct_size = sizeof(FlutterSpiGpuBufferDescriptor),
++      .storage_mode = kFlutterSpiGpuStorageModeHostVisible,
++      .size = buffer_size,
++  };
++  FlutterSpiResult result = gpu->buffer_create(
++      state->context, &buffer_descriptor, &state->buffer);
++  if (!IsResultOk(state->runtime, result, "buffer_create")) {
++    free(buffer_data);
++    return false;
++  }
++  result = gpu->buffer_overwrite(state->buffer, (const uint8_t*)buffer_data,
++                                 buffer_size, 0);
++  free(buffer_data);
++  if (!IsResultOk(state->runtime, result, "buffer_overwrite")) {
++    return false;
++  }
++  if (!IsResultOk(state->runtime,
++                  gpu->buffer_flush(state->buffer, 0, buffer_size),
++                  "buffer_flush")) {
++    return false;
++  }
++  if (!IsResultOk(state->runtime,
++                  gpu->command_buffer_create(state->context,
++                                              &state->command_buffer),
++                  "command_buffer_create")) {
++    return false;
++  }
++  if (!IsResultOk(state->runtime, gpu->render_pass_create(&state->render_pass),
++                  "render_pass_create")) {
++    return false;
++  }
++
++  const FlutterSpiGpuColorAttachment color_attachment = {
++      .struct_size = sizeof(FlutterSpiGpuColorAttachment),
++      .load_action = kFlutterSpiGpuLoadActionClear,
++      .store_action = kFlutterSpiGpuStoreActionStore,
++      .clear_color = {0.0f, 0.0f, 0.0f, 0.0f},
++      .texture = state->texture,
++      .resolve_texture = NULL,
++      .mip_level = 0,
++      .slice = 0,
++  };
++  if (!IsResultOk(
++          state->runtime,
++          gpu->render_pass_set_color_attachment(state->render_pass,
++                                                state->context, 0,
++                                                &color_attachment),
++          "render_pass_set_color_attachment")) {
++    return false;
++  }
++  if (!IsResultOk(state->runtime,
++                  gpu->render_pass_begin(state->render_pass,
++                                         state->command_buffer),
++                  "render_pass_begin") ||
++      !IsResultOk(state->runtime,
++                  gpu->render_pass_bind_pipeline(state->render_pass,
++                                                 state->pipeline),
++                  "render_pass_bind_pipeline") ||
++      !IsResultOk(state->runtime,
++                  gpu->render_pass_bind_vertex_buffer(
++                      state->render_pass, state->buffer, 0, 24, 0),
++                  "render_pass_bind_vertex_buffer") ||
++      !IsResultOk(state->runtime,
++                  gpu->render_pass_bind_uniform(
++                      state->render_pass, state->vertex_shader, uniform_index,
++                      state->buffer, state->uniform_offset,
++                      (size_t)state->uniform_size),
++                  "render_pass_bind_uniform") ||
++      !IsResultOk(state->runtime,
++                  gpu->render_pass_draw(state->render_pass, 3, 1),
++                  "render_pass_draw")) {
++    return false;
++  }
++  return true;
++}
++
++void c_test_gpu_triangle_on_start(CTestRuntime* runtime) {
++  TriangleState* state = (TriangleState*)calloc(1, sizeof(TriangleState));
++  FlutterSpiGpuContextInfo context_info = {
++      .struct_size = sizeof(FlutterSpiGpuContextInfo),
++  };
++  int32_t unavailable_reason = kFlutterSpiGpuUnavailableNone;
++
++  if (state == NULL) {
++    SetFailureWithMessage(runtime, kFlutterSpiInternalError,
++                          "triangle state allocation");
++    __atomic_store_n(&runtime->gpu_triangle_ready, true, __ATOMIC_RELEASE);
++    return;
++  }
++  state->runtime = runtime;
++  state->engine_api = runtime->engine_api;
++  if (state->engine_api == NULL || state->engine_api->gpu == NULL) {
++    SetFailureWithMessage(runtime, kFlutterSpiUnsupported,
++                          "engine_api->gpu unavailable");
++    free(state);
++    __atomic_store_n(&runtime->gpu_triangle_ready, true, __ATOMIC_RELEASE);
++    return;
++  }
++
++  const FlutterSpiGpuApi* gpu = state->engine_api->gpu;
++  if (!IsResultOk(runtime,
++                  gpu->context_get_default(runtime->engine, &state->context,
++                                            &unavailable_reason),
++                  "context_get_default")) {
++    free(state);
++    __atomic_store_n(&runtime->gpu_triangle_ready, true, __ATOMIC_RELEASE);
++    return;
++  }
++  if (!IsResultOk(runtime, gpu->context_get_info(state->context, &context_info),
++                  "context_get_info")) {
++    Finish(state);
++    return;
++  }
++  if (!CreateShaderResources(state) ||
++      !CreateRenderResources(state, &context_info)) {
++    Finish(state);
++    return;
++  }
++  const FlutterSpiResult submit_result = gpu->command_buffer_submit(
++      state->command_buffer, OnCommandSubmitted, state);
++  if (!IsResultOk(runtime, submit_result, "command_buffer_submit")) {
++    Finish(state);
++  }
++}
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_gpu_triangle.h b/engine/src/flutter/runtime_spi/testing/c_test_gpu_triangle.h
+new file mode 100644
+index 00000000000..37c8f80616a
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/c_test_gpu_triangle.h
+@@ -0,0 +1,16 @@
++#ifndef FLUTTER_RUNTIME_SPI_TESTING_C_TEST_GPU_TRIANGLE_H_
++#define FLUTTER_RUNTIME_SPI_TESTING_C_TEST_GPU_TRIANGLE_H_
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef struct CTestRuntime CTestRuntime;
++
++void c_test_gpu_triangle_on_start(CTestRuntime* runtime);
++
++#ifdef __cplusplus
++}  // extern "C"
++#endif
++
++#endif  // FLUTTER_RUNTIME_SPI_TESTING_C_TEST_GPU_TRIANGLE_H_
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.c b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+index 6c9819aa95c..eabd110947d 100644
+--- a/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.c
+@@ -7,6 +7,8 @@
+ #include <stdlib.h>
+ #include <string.h>
+ 
++#include "flutter/runtime_spi/testing/c_test_gpu_triangle.h"
++
+ static char* copy_string(const char* value) {
+   size_t length;
+   char* copy;
+@@ -326,6 +328,9 @@ static FlutterSpiResult test_runtime_start(void* user_data,
+   runtime->start_count++;
+   runtime->engine_api = api;
+   runtime->engine = engine;
++  if (runtime->gpu_triangle_on_start) {
++    c_test_gpu_triangle_on_start(runtime);
++  }
+   return runtime->fail_start ? kFlutterSpiInternalError : kFlutterSpiOk;
+ }
+ 
+@@ -1242,6 +1247,8 @@ CTestRuntime* c_test_runtime_create(void) {
+   if (runtime != NULL) {
+     runtime->image_callback_result = kFlutterSpiInternalError;
+     runtime->semantics_update_result = kFlutterSpiInternalError;
++    runtime->gpu_triangle_ready = false;
++    runtime->gpu_triangle_result = kFlutterSpiInternalError;
+     test_runtime_initialize_extensions(runtime);
+   }
+   return runtime;
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_runtime.h b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+index 6a993c7a513..3863696a11f 100644
+--- a/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
++++ b/engine/src/flutter/runtime_spi/testing/c_test_runtime.h
+@@ -75,6 +75,12 @@ typedef struct CTestRuntime {
+   bool draw_image_on_begin_frame;
+   const uint8_t* draw_image_png_data;
+   size_t draw_image_png_size;
++  const uint8_t* gpu_triangle_shader_bundle_data;
++  size_t gpu_triangle_shader_bundle_size;
++  bool gpu_triangle_on_start;
++  volatile bool gpu_triangle_ready;
++  FlutterSpiResult gpu_triangle_result;
++  char gpu_triangle_message[256];
+   bool snapshot_on_begin_frame;
+   bool snapshot_requested;
+   size_t snapshot_callback_count;
+diff --git a/engine/src/flutter/shell/platform/embedder/BUILD.gn b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+index 4fdf1be0dcb..cb0fd3b8f81 100644
+--- a/engine/src/flutter/shell/platform/embedder/BUILD.gn
++++ b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+@@ -561,6 +561,15 @@ shared_library("flutter_engine_core_library") {
+ }
+ 
+ if (enable_unittests) {
++  copy("copy_core_gpu_triangle_shaderbundle") {
++    testonly = true
++    sources = [
++      "$root_gen_dir/flutter/impeller/fixtures/playground.shaderbundle",
++    ]
++    outputs = [ "$root_out_dir/{{source_file_part}}" ]
++    deps = [ "//flutter/impeller/fixtures:flutter_gpu_shaders" ]
++  }
++
+   executable("flutter_engine_core_smoke") {
+     testonly = true
+     sources = [ "tests/core_library_smoke.c" ]
+@@ -570,6 +579,19 @@ if (enable_unittests) {
+       "//flutter/runtime_spi:c_test_runtime",
+     ]
+   }
++
++  executable("flutter_engine_core_gpu_triangle") {
++    testonly = true
++    sources = [ "tests/core_gpu_triangle.c" ]
++    deps = [
++      ":embedder_headers",
++      ":flutter_engine_core_library",
++      "//flutter/runtime_spi:c_test_runtime",
++      "//flutter/third_party/vulkan-deps/vulkan-headers/src:vulkan_headers",
++    ]
++    data_deps = [ ":copy_core_gpu_triangle_shaderbundle" ]
++    libs = [ "dl" ]
++  }
+ }
+ 
+ if (titan_flutter_runtime_dart) {
+diff --git a/engine/src/flutter/shell/platform/embedder/tests/core_gpu_triangle.c b/engine/src/flutter/shell/platform/embedder/tests/core_gpu_triangle.c
+new file mode 100644
+index 00000000000..8be1bc7b481
+--- /dev/null
++++ b/engine/src/flutter/shell/platform/embedder/tests/core_gpu_triangle.c
+@@ -0,0 +1,385 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#define VK_NO_PROTOTYPES
++
++#include <dlfcn.h>
++#include <errno.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <time.h>
++
++#include <vulkan/vulkan.h>
++
++#include "flutter/runtime_spi/testing/c_test_runtime.h"
++#include "flutter/shell/platform/embedder/flutter_core_host.h"
++
++static const int kTriangleWaitSeconds = 10;
++
++typedef struct {
++  void* loader;
++  PFN_vkGetInstanceProcAddr get_instance_proc_address;
++  PFN_vkCreateInstance create_instance;
++  PFN_vkEnumeratePhysicalDevices enumerate_physical_devices;
++  PFN_vkGetPhysicalDeviceQueueFamilyProperties
++      get_physical_device_queue_family_properties;
++  PFN_vkCreateDevice create_device;
++  PFN_vkGetDeviceQueue get_device_queue;
++  PFN_vkDestroyDevice destroy_device;
++  PFN_vkDestroyInstance destroy_instance;
++  VkInstance instance;
++  VkPhysicalDevice physical_device;
++  VkDevice device;
++  VkQueue queue;
++  uint32_t queue_family_index;
++} VulkanState;
++
++static bool IsAfter(const struct timespec* left, const struct timespec* right) {
++  return left->tv_sec > right->tv_sec ||
++         (left->tv_sec == right->tv_sec && left->tv_nsec >= right->tv_nsec);
++}
++
++static int Fail(const char* message) {
++  fprintf(stderr, "core gpu triangle: %s\n", message);
++  return 1;
++}
++
++static bool WaitForTriangle(CTestRuntime* runtime) {
++  struct timespec deadline;
++  if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) {
++    return false;
++  }
++  deadline.tv_sec += kTriangleWaitSeconds;
++
++  while (!__atomic_load_n(&runtime->gpu_triangle_ready, __ATOMIC_ACQUIRE)) {
++    struct timespec current_time;
++    if (clock_gettime(CLOCK_MONOTONIC, &current_time) != 0 ||
++        IsAfter(&current_time, &deadline)) {
++      return false;
++    }
++    const struct timespec sleep_duration = {.tv_sec = 0, .tv_nsec = 1000000};
++    if (nanosleep(&sleep_duration, NULL) != 0 && errno != EINTR) {
++      return false;
++    }
++  }
++  return true;
++}
++
++static void* GetInstanceProcAddress(void* user_data,
++                                    FlutterVulkanInstanceHandle instance,
++                                    const char* name) {
++  VulkanState* state = (VulkanState*)user_data;
++  if (state == NULL || state->get_instance_proc_address == NULL) {
++    return NULL;
++  }
++  return (void*)state->get_instance_proc_address((VkInstance)instance, name);
++}
++
++static FlutterVulkanImage GetNextImage(void* user_data,
++                                       const FlutterFrameInfo* frame_info) {
++  (void)user_data;
++  (void)frame_info;
++  return (FlutterVulkanImage){
++      .struct_size = sizeof(FlutterVulkanImage),
++      .image = 0,
++      .format = 0,
++  };
++}
++
++static bool PresentImage(void* user_data, const FlutterVulkanImage* image) {
++  (void)user_data;
++  (void)image;
++  return false;
++}
++
++static void DestroyVulkan(VulkanState* state) {
++  if (state->device != VK_NULL_HANDLE && state->destroy_device != NULL) {
++    state->destroy_device(state->device, NULL);
++  }
++  if (state->instance != VK_NULL_HANDLE && state->destroy_instance != NULL) {
++    state->destroy_instance(state->instance, NULL);
++  }
++  if (state->loader != NULL) {
++    dlclose(state->loader);
++  }
++}
++
++static bool LoadVulkanFunctions(VulkanState* state) {
++  union {
++    void* object;
++    PFN_vkGetInstanceProcAddr function;
++  } symbol = {.object = dlsym(state->loader, "vkGetInstanceProcAddr")};
++  state->get_instance_proc_address = symbol.function;
++  if (state->get_instance_proc_address == NULL) {
++    return false;
++  }
++
++  state->create_instance = (PFN_vkCreateInstance)state->get_instance_proc_address(
++      VK_NULL_HANDLE, "vkCreateInstance");
++  if (state->create_instance == NULL) {
++    return false;
++  }
++  return true;
++}
++
++static bool LoadInstanceFunctions(VulkanState* state) {
++  state->enumerate_physical_devices =
++      (PFN_vkEnumeratePhysicalDevices)state->get_instance_proc_address(
++          state->instance, "vkEnumeratePhysicalDevices");
++  state->get_physical_device_queue_family_properties =
++      (PFN_vkGetPhysicalDeviceQueueFamilyProperties)
++          state->get_instance_proc_address(
++              state->instance, "vkGetPhysicalDeviceQueueFamilyProperties");
++  state->create_device = (PFN_vkCreateDevice)state->get_instance_proc_address(
++      state->instance, "vkCreateDevice");
++  state->get_device_queue = (PFN_vkGetDeviceQueue)state->get_instance_proc_address(
++      state->instance, "vkGetDeviceQueue");
++  state->destroy_device = (PFN_vkDestroyDevice)state->get_instance_proc_address(
++      state->instance, "vkDestroyDevice");
++  state->destroy_instance =
++      (PFN_vkDestroyInstance)state->get_instance_proc_address(
++          state->instance, "vkDestroyInstance");
++  return state->enumerate_physical_devices != NULL &&
++         state->get_physical_device_queue_family_properties != NULL &&
++         state->create_device != NULL && state->get_device_queue != NULL &&
++         state->destroy_device != NULL && state->destroy_instance != NULL;
++}
++
++static bool CreateVulkanInstance(VulkanState* state) {
++  const char* enabled_extensions[] = {VK_KHR_SURFACE_EXTENSION_NAME,
++                                      VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME};
++  const VkApplicationInfo application_info = {
++      .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
++      .pApplicationName = "Flutter runtime SPI C GPU triangle",
++      .applicationVersion = 1,
++      .pEngineName = "Flutter",
++      .engineVersion = 1,
++      .apiVersion = VK_API_VERSION_1_1,
++  };
++  const VkInstanceCreateInfo instance_info = {
++      .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
++      .pApplicationInfo = &application_info,
++      .enabledExtensionCount = 1,
++      .ppEnabledExtensionNames = enabled_extensions,
++  };
++  return state->create_instance(&instance_info, NULL, &state->instance) ==
++         VK_SUCCESS;
++}
++
++static bool SelectGraphicsDevice(VulkanState* state) {
++  uint32_t device_count = 0;
++  if (state->enumerate_physical_devices(state->instance, &device_count, NULL) !=
++          VK_SUCCESS ||
++      device_count == 0) {
++    return false;
++  }
++  VkPhysicalDevice* devices =
++      (VkPhysicalDevice*)calloc(device_count, sizeof(VkPhysicalDevice));
++  if (devices == NULL) {
++    return false;
++  }
++  if (state->enumerate_physical_devices(state->instance, &device_count,
++                                        devices) != VK_SUCCESS) {
++    free(devices);
++    return false;
++  }
++
++  bool found = false;
++  for (uint32_t device_index = 0; device_index < device_count && !found;
++       device_index++) {
++    uint32_t family_count = 0;
++    state->get_physical_device_queue_family_properties(
++        devices[device_index], &family_count, NULL);
++    VkQueueFamilyProperties* families =
++        (VkQueueFamilyProperties*)calloc(family_count,
++                                         sizeof(VkQueueFamilyProperties));
++    if (families == NULL) {
++      continue;
++    }
++    state->get_physical_device_queue_family_properties(
++        devices[device_index], &family_count, families);
++    for (uint32_t family_index = 0; family_index < family_count;
++         family_index++) {
++      if ((families[family_index].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0) {
++        state->physical_device = devices[device_index];
++        state->queue_family_index = family_index;
++        found = true;
++        break;
++      }
++    }
++    free(families);
++  }
++  free(devices);
++  return found;
++}
++
++static bool CreateVulkanDevice(VulkanState* state) {
++  const float queue_priority = 1.0f;
++  const char* enabled_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
++  const VkDeviceQueueCreateInfo queue_info = {
++      .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
++      .queueFamilyIndex = state->queue_family_index,
++      .queueCount = 1,
++      .pQueuePriorities = &queue_priority,
++  };
++  const VkDeviceCreateInfo device_info = {
++      .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
++      .queueCreateInfoCount = 1,
++      .pQueueCreateInfos = &queue_info,
++      .enabledExtensionCount = 1,
++      .ppEnabledExtensionNames = enabled_extensions,
++  };
++  if (state->create_device(state->physical_device, &device_info, NULL,
++                           &state->device) != VK_SUCCESS) {
++    return false;
++  }
++  state->get_device_queue(state->device, state->queue_family_index, 0,
++                          &state->queue);
++  return state->queue != VK_NULL_HANDLE;
++}
++
++static bool InitializeVulkan(VulkanState* state) {
++  state->loader = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
++  if (state->loader == NULL || !LoadVulkanFunctions(state) ||
++      !CreateVulkanInstance(state) || !LoadInstanceFunctions(state) ||
++      !SelectGraphicsDevice(state) || !CreateVulkanDevice(state)) {
++    DestroyVulkan(state);
++    return false;
++  }
++  return true;
++}
++
++static bool ReadFile(const char* path, uint8_t** data, size_t* size) {
++  FILE* file = fopen(path, "rb");
++  long file_size;
++  uint8_t* file_data;
++
++  if (file == NULL || fseek(file, 0, SEEK_END) != 0 ||
++      (file_size = ftell(file)) < 0 || fseek(file, 0, SEEK_SET) != 0) {
++    if (file != NULL) {
++      fclose(file);
++    }
++    return false;
++  }
++  file_data = (uint8_t*)malloc((size_t)file_size);
++  if (file_data == NULL ||
++      fread(file_data, 1, (size_t)file_size, file) != (size_t)file_size) {
++    free(file_data);
++    fclose(file);
++    return false;
++  }
++  fclose(file);
++  *data = file_data;
++  *size = (size_t)file_size;
++  return true;
++}
++
++int main(int argc, char** argv) {
++  if (argc != 4) {
++    fprintf(stderr, "usage: %s <icu-data-path> <assets-path> <shaderbundle>\n",
++            argv[0]);
++    return 2;
++  }
++
++  uint8_t* shader_bundle_data = NULL;
++  size_t shader_bundle_size = 0;
++  if (!ReadFile(argv[3], &shader_bundle_data, &shader_bundle_size)) {
++    return Fail("could not read the shader bundle");
++  }
++
++  VulkanState vulkan = {0};
++  if (!InitializeVulkan(&vulkan)) {
++    free(shader_bundle_data);
++    return Fail("could not initialize Vulkan 1.1");
++  }
++
++  CTestRuntime* runtime = c_test_runtime_create();
++  if (runtime == NULL) {
++    DestroyVulkan(&vulkan);
++    free(shader_bundle_data);
++    return Fail("could not create the test runtime");
++  }
++  runtime->gpu_triangle_on_start = true;
++  runtime->gpu_triangle_shader_bundle_data = shader_bundle_data;
++  runtime->gpu_triangle_shader_bundle_size = shader_bundle_size;
++
++  const char* command_line_argv[] = {
++      argv[0], "--enable-impeller", "--enable-flutter-gpu",
++  };
++  FlutterRendererConfig renderer_config = {0};
++  renderer_config.type = kVulkan;
++  renderer_config.vulkan.struct_size = sizeof(FlutterVulkanRendererConfig);
++  renderer_config.vulkan.version = VK_API_VERSION_1_1;
++  renderer_config.vulkan.instance = (FlutterVulkanInstanceHandle)vulkan.instance;
++  renderer_config.vulkan.physical_device =
++      (FlutterVulkanPhysicalDeviceHandle)vulkan.physical_device;
++  renderer_config.vulkan.device = (FlutterVulkanDeviceHandle)vulkan.device;
++  renderer_config.vulkan.queue_family_index = vulkan.queue_family_index;
++  renderer_config.vulkan.queue = (FlutterVulkanQueueHandle)vulkan.queue;
++  const char* enabled_instance_extensions[] = {
++      VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME};
++  renderer_config.vulkan.enabled_instance_extension_count = 2;
++  renderer_config.vulkan.enabled_instance_extensions =
++      enabled_instance_extensions;
++  const char* enabled_device_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
++  renderer_config.vulkan.enabled_device_extension_count = 1;
++  renderer_config.vulkan.enabled_device_extensions = enabled_device_extensions;
++  renderer_config.vulkan.get_instance_proc_address_callback =
++      GetInstanceProcAddress;
++  renderer_config.vulkan.get_next_image_callback = GetNextImage;
++  renderer_config.vulkan.present_image_callback = PresentImage;
++
++  FlutterCoreHostArgs host_args = {0};
++  host_args.struct_size = sizeof(FlutterCoreHostArgs);
++  host_args.assets_path = argv[2];
++  host_args.icu_data_path = argv[1];
++  host_args.command_line_argc = 3;
++  host_args.command_line_argv = command_line_argv;
++
++  const FlutterSpiRuntimeTable runtime_table = c_test_runtime_table(runtime);
++  FlutterCoreEngine engine = NULL;
++  const FlutterEngineResult run_result = FlutterCoreEngineRun(
++      FLUTTER_ENGINE_VERSION, &renderer_config, &host_args, &runtime_table,
++      &vulkan, &engine);
++  if (run_result != kSuccess || engine == NULL) {
++    c_test_runtime_free(runtime);
++    DestroyVulkan(&vulkan);
++    free(shader_bundle_data);
++    return Fail("could not start the core engine");
++  }
++
++  const bool ready = WaitForTriangle(runtime);
++  const FlutterSpiResult triangle_result =
++      ready ? runtime->gpu_triangle_result : kFlutterSpiInternalError;
++  char triangle_message[sizeof(runtime->gpu_triangle_message)];
++  if (ready) {
++    memcpy(triangle_message, runtime->gpu_triangle_message,
++           sizeof(triangle_message));
++  } else {
++    snprintf(triangle_message, sizeof(triangle_message),
++             "triangle was not ready within 10 seconds");
++  }
++  const FlutterEngineResult shutdown_result =
++      FlutterCoreEngineShutdown(engine);
++  c_test_runtime_free(runtime);
++  DestroyVulkan(&vulkan);
++  free(shader_bundle_data);
++
++  if (!ready) {
++    return Fail(triangle_message);
++  }
++  if (shutdown_result != kSuccess) {
++    return Fail("could not shut down the core engine");
++  }
++  if (triangle_result != kFlutterSpiOk) {
++    return Fail(triangle_message[0] == '\0' ? "triangle failed"
++                                           : triangle_message);
++  }
++
++  printf("core gpu triangle: ok\n");
++  return 0;
++}
