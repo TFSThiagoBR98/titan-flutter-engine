@@ -1,0 +1,138 @@
+# Why: S7a; the 32-bit FlutterSpiEngineApi size was wrong and the gpu structs
+# had no 32-bit layout check.
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 68ed1a84739..b56ba1d5459 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -514,7 +514,97 @@ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, platform_message_sender_send,
+                   sizeof(void*) == 8 ? 304 : 164);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, platform_message_sender_release,
+                   sizeof(void*) == 8 ? 312 : 168);
+-SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 328 : 180);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, gpu,
++                  sizeof(void*) == 8 ? 320 : 172);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 328 : 176);
++
++SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo, backend,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo, default_color_format,
++                  sizeof(void*) == 8 ? 12 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo, default_stencil_format,
++                  sizeof(void*) == 8 ? 16 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo, default_depth_stencil_format,
++                  sizeof(void*) == 8 ? 20 : 16);
++SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo, minimum_uniform_alignment,
++                  sizeof(void*) == 8 ? 24 : 20);
++SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo, max_sampler_anisotropy,
++                  sizeof(void*) == 8 ? 28 : 24);
++SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo, supports_offscreen_msaa,
++                  sizeof(void*) == 8 ? 32 : 28);
++SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo,
++                  supports_framebuffer_render_mipmap,
++                  sizeof(void*) == 8 ? 33 : 29);
++SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo, supports_manually_mipped_textures,
++                  sizeof(void*) == 8 ? 34 : 30);
++SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo, supports_texture_arrays,
++                  sizeof(void*) == 8 ? 35 : 31);
++SPI_EXPECT_SIZE(FlutterSpiGpuContextInfo, sizeof(void*) == 8 ? 40 : 32);
++
++SPI_EXPECT_OFFSET(FlutterSpiGpuBufferDescriptor, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiGpuBufferDescriptor, storage_mode,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiGpuBufferDescriptor, size,
++                  sizeof(void*) == 8 ? 16 : 8);
++SPI_EXPECT_SIZE(FlutterSpiGpuBufferDescriptor, sizeof(void*) == 8 ? 24 : 12);
++
++SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor, storage_mode,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor, format,
++                  sizeof(void*) == 8 ? 12 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor, width,
++                  sizeof(void*) == 8 ? 16 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor, height,
++                  sizeof(void*) == 8 ? 20 : 16);
++SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor, sample_count,
++                  sizeof(void*) == 8 ? 24 : 20);
++SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor, texture_type,
++                  sizeof(void*) == 8 ? 28 : 24);
++SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor, usage,
++                  sizeof(void*) == 8 ? 32 : 28);
++SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor, mip_level_count,
++                  sizeof(void*) == 8 ? 36 : 32);
++SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor, layer_count,
++                  sizeof(void*) == 8 ? 40 : 36);
++SPI_EXPECT_SIZE(FlutterSpiGpuTextureDescriptor,
++                sizeof(void*) == 8 ? 48 : 40);
++
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, context_get_default,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, context_retain,
++                  sizeof(void*) == 8 ? 16 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, context_release,
++                  sizeof(void*) == 8 ? 24 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, context_get_info,
++                  sizeof(void*) == 8 ? 32 : 16);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, context_supports_texture_compression,
++                  sizeof(void*) == 8 ? 40 : 20);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, context_supports_texture_format,
++                  sizeof(void*) == 8 ? 48 : 24);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, buffer_create,
++                  sizeof(void*) == 8 ? 56 : 28);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, buffer_create_with_data,
++                  sizeof(void*) == 8 ? 64 : 32);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, buffer_overwrite,
++                  sizeof(void*) == 8 ? 72 : 36);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, buffer_flush,
++                  sizeof(void*) == 8 ? 80 : 40);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, buffer_retain,
++                  sizeof(void*) == 8 ? 88 : 44);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, buffer_release,
++                  sizeof(void*) == 8 ? 96 : 48);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, texture_create,
++                  sizeof(void*) == 8 ? 104 : 52);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, texture_overwrite,
++                  sizeof(void*) == 8 ? 112 : 56);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, texture_retain,
++                  sizeof(void*) == 8 ? 120 : 60);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, texture_release,
++                  sizeof(void*) == 8 ? 128 : 64);
++SPI_EXPECT_SIZE(FlutterSpiGpuApi, sizeof(void*) == 8 ? 136 : 68);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, color, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, offset, 20);
+@@ -753,7 +843,7 @@ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, fragment,
+                   sizeof(void*) == 8 ? 144 : 84);
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, semantics,
+                   sizeof(void*) == 8 ? 152 : 88);
+-SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 328 : 180);
++SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 328 : 176);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, name,
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index d90c0b19b22..c8e03d18d1a 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -142,7 +142,7 @@ TEST(SpiAbi, GpuBufferDescriptorLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiGpuBufferDescriptor, storage_mode, 8, 4);
+   EXPECT_SPI_OFFSET(FlutterSpiGpuBufferDescriptor, size, 16, 8);
+   EXPECT_EQ(sizeof(FlutterSpiGpuBufferDescriptor),
+-            sizeof(void*) == 8 ? 24u : 16u);
++            sizeof(void*) == 8 ? 24u : 12u);
+ }
+ 
+ TEST(SpiAbi, GpuTextureDescriptorLayoutIsFrozen) {
+@@ -668,8 +668,8 @@ TEST(SpiAbi, EngineApiLayoutIsFrozen) {
+                     164);
+   EXPECT_SPI_OFFSET(FlutterSpiEngineApi, platform_message_sender_release, 312,
+                     168);
+-  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, gpu, 320, 176);
+-  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 328u : 180u);
++  EXPECT_SPI_OFFSET(FlutterSpiEngineApi, gpu, 320, 172);
++  EXPECT_EQ(sizeof(FlutterSpiEngineApi), sizeof(void*) == 8 ? 328u : 176u);
+ }
+ 
+ TEST(SpiAbi, FragmentUniformInfoLayoutIsFrozen) {
