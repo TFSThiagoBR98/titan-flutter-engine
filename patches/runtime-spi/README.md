@@ -176,6 +176,10 @@ idêntica à anterior. A série antiga está no worktree do engine no branch
 | `0159-feat-engine-add-runtime-spi-gpu-textures.patch` | S7a: textures are created and overwritten through the table. | |
 | `0160-refactor-engine-back-flutter-gpu-contexts-buffers-and-textures-with-the-spi-table.patch` | S7a: lib/gpu contexts, buffers and textures hold SPI handles; the rest reaches Impeller through internal bridges until S7c/S7d. | |
 | `0161-fix-engine-check-the-runtime-spi-gpu-abi-on-32-bit-targets.patch` | S7a: the 32-bit size of FlutterSpiEngineApi was wrong and the gpu structs had no layout check on 32-bit targets. | |
+| `0162-feat-engine-add-runtime-spi-gpu-shader-libraries.patch` | S7b: shader bundles are parsed and reflected in the core and reached through the table (SPI ABI 0.26). | |
+| `0163-feat-engine-add-runtime-spi-gpu-render-pipelines.patch` | S7b: render pipelines, stage validation, shader registration and vertex layouts as C structs live in the core. | |
+| `0164-feat-engine-add-runtime-spi-gpu-binding-sets.patch` | S7b: binding sets resolve uniforms, textures and samplers in the core. | |
+| `0165-refactor-engine-back-flutter-gpu-shaders-pipelines-and-binding-sets-with-the-spi-table.patch` | S7b: lib/gpu shaders, libraries, pipelines and binding sets hold SPI handles; the render pass reaches the core classes through internal bridges until S7c. | |
 
 O fluxo é:
 

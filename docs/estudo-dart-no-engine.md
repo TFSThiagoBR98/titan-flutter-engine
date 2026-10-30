@@ -1167,6 +1167,32 @@ a versão 0.25 e `kFlutterSpiCapGpu` dizem se `gpu` existe.
 
 O resultado está em [runtime-spi-s7a.md](medidas/runtime-spi-s7a.md).
 
+## S7b: Shaders, pipelines e binding sets pela tabela C
+
+A S7b leva para o core a parte do `flutter_gpu` que fala com a reflexão dos
+shaders: o parse do `.shaderbundle` (com verificação do flatbuffer e da versão),
+a recarga no lugar que preserva os shaders já entregues, o registro das funções
+no Impeller, a validação de estágios, o layout de vértices e a resolução de
+bindings e samplers. As classes saíram do `lib/gpu` quase inteiras, sem o
+embrulho Dart, e os 16 testes delas foram junto para o `runtime_spi_unittests`
+com os mesmos nomes. A biblioteca recebe um formato (enum) e bytes; só o bundle
+do `impellerc` é aceito, e WGSL, SPIR-V e GLSL devolvem `kFlutterSpiUnsupported`.
+
+O layout de vértices virou structs C (`FlutterSpiGpuVertexBufferLayout` e
+`FlutterSpiGpuVertexAttribute`) no lugar dos blobs de inteiros que o Dart
+empacota: o `lib/gpu` desempacota e mantém as mensagens de erro do formato
+dele, e o core valida a semântica com as mensagens de antes, em `out_error`. A
+identidade dos objetos Dart sobrevive à recarga porque o `lib/gpu` guarda um
+wrapper por shader do core, e o core altera o shader no lugar.
+
+O render pass ainda é do `lib/gpu` (S7c): ele chega às classes do core por
+pontes internas `SpiGpu*GetCore`. Dois erros só apareceram nos testes novos:
+um descritor montado sobre um buffer temporário (o ponteiro do descritor não
+tem posse) e o `MockImpellerContext` sem shader library, que derrubava o
+registro; o core passou a tratar contexto sem library sem cair.
+
+O resultado está em [runtime-spi-s7b.md](medidas/runtime-spi-s7b.md).
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos
