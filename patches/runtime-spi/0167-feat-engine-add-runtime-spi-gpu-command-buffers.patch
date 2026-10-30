@@ -1,0 +1,3606 @@
+# Why: S7c-1; FlutterSpiGpuApi now owns command buffer creation, copies,
+# submission and completion callbacks.
+diff --git a/engine/src/flutter/lib/gpu/BUILD.gn b/engine/src/flutter/lib/gpu/BUILD.gn
+index fe0a8219d0c..2c2779d6ba3 100644
+--- a/engine/src/flutter/lib/gpu/BUILD.gn
++++ b/engine/src/flutter/lib/gpu/BUILD.gn
+@@ -91,7 +91,6 @@ if (enable_unittests && !is_fuchsia) {
+     testonly = true
+ 
+     sources = [
+-      "command_buffer_unittests.cc",
+       "render_pass_unittests.cc",
+     ]
+ 
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 2a234e8d576..20facc067d0 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -36,6 +36,7 @@ source_set("spi_backend") {
+     "gpu/spi_gpu_shader_library.h",
+     "gpu/spi_gpu_render_pipeline.h",
+     "gpu/spi_gpu_binding_set.h",
++    "gpu/spi_gpu_command_buffer.h",
+     "spi_engine_api.h",
+     "spi_scene.h",
+   ]
+@@ -66,6 +67,8 @@ source_set("spi_backend") {
+     "gpu/spi_gpu_render_pipeline.h",
+     "gpu/spi_gpu_binding_set.cc",
+     "gpu/spi_gpu_binding_set.h",
++    "gpu/spi_gpu_command_buffer.cc",
++    "gpu/spi_gpu_command_buffer.h",
+     "spi_scene.cc",
+     "spi_scene.h",
+   ]
+@@ -260,6 +263,7 @@ if (enable_unittests) {
+     testonly = true
+     sources = [
+       "spi_abi_frozen_unittests.cc",
++      "gpu/spi_gpu_command_buffer_unittests.cc",
+       "gpu/spi_gpu_unittests.cc",
+       "gpu/spi_gpu_binding_set_unittests.cc",
+       "gpu/spi_gpu_render_pipeline_unittests.cc",
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 4614f000a43..a0a34a82605 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -4,14 +4,15 @@
+ 
+ #include <stddef.h>
+ 
+-#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
+-#include "flutter/runtime_spi/include/flutter_image.h"
+-#include "flutter/runtime_spi/include/flutter_gpu.h"
+ #include "flutter/runtime_spi/include/flutter_fragment.h"
++#include "flutter/runtime_spi/include/flutter_gpu.h"
++#include "flutter/runtime_spi/include/flutter_image.h"
+ #include "flutter/runtime_spi/include/flutter_paint_effects.h"
++#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
+ #include "flutter/runtime_spi/include/flutter_text.h"
+ 
+-_Static_assert(sizeof(FlutterSpiResult) == 4, "FlutterSpiResult must be 4 bytes");
++_Static_assert(sizeof(FlutterSpiResult) == 4,
++               "FlutterSpiResult must be 4 bytes");
+ 
+ #if UINTPTR_MAX > UINT32_MAX
+ #define SPI_EXPECT_OFFSET(type, member, offset) \
+@@ -27,47 +28,68 @@ _Static_assert(sizeof(FlutterSpiResult) == 4, "FlutterSpiResult must be 4 bytes"
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, view_id, sizeof(void*) == 8 ? 8 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, device_pixel_ratio,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  device_pixel_ratio,
+                   sizeof(void*) == 8 ? 16 : 16);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_width,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  physical_width,
+                   sizeof(void*) == 8 ? 24 : 24);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_height,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  physical_height,
+                   sizeof(void*) == 8 ? 32 : 32);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_padding_top,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  physical_padding_top,
+                   sizeof(void*) == 8 ? 40 : 40);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_padding_right,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  physical_padding_right,
+                   sizeof(void*) == 8 ? 48 : 48);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_padding_bottom,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  physical_padding_bottom,
+                   sizeof(void*) == 8 ? 56 : 56);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_padding_left,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  physical_padding_left,
+                   sizeof(void*) == 8 ? 64 : 64);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_view_inset_top,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  physical_view_inset_top,
+                   sizeof(void*) == 8 ? 72 : 72);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_view_inset_right,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  physical_view_inset_right,
+                   sizeof(void*) == 8 ? 80 : 80);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_view_inset_bottom,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  physical_view_inset_bottom,
+                   sizeof(void*) == 8 ? 88 : 88);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_view_inset_left,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  physical_view_inset_left,
+                   sizeof(void*) == 8 ? 96 : 96);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_min_width_constraint,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  physical_min_width_constraint,
+                   sizeof(void*) == 8 ? 104 : 104);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_max_width_constraint,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  physical_max_width_constraint,
+                   sizeof(void*) == 8 ? 112 : 112);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_min_height_constraint,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  physical_min_height_constraint,
+                   sizeof(void*) == 8 ? 120 : 120);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_max_height_constraint,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  physical_max_height_constraint,
+                   sizeof(void*) == 8 ? 128 : 128);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_system_gesture_inset_top,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  physical_system_gesture_inset_top,
+                   sizeof(void*) == 8 ? 136 : 136);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_system_gesture_inset_right,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  physical_system_gesture_inset_right,
+                   sizeof(void*) == 8 ? 144 : 144);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_system_gesture_inset_bottom,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  physical_system_gesture_inset_bottom,
+                   sizeof(void*) == 8 ? 152 : 152);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_system_gesture_inset_left,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  physical_system_gesture_inset_left,
+                   sizeof(void*) == 8 ? 160 : 160);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, physical_touch_slop,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  physical_touch_slop,
+                   sizeof(void*) == 8 ? 168 : 168);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, display_id,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  display_id,
+                   sizeof(void*) == 8 ? 176 : 176);
+ SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
+                   physical_display_corner_radius_top_left,
+@@ -81,100 +103,115 @@ SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
+ SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
+                   physical_display_corner_radius_bottom_left,
+                   sizeof(void*) == 8 ? 208 : 208);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, display_features_bounds,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  display_features_bounds,
+                   sizeof(void*) == 8 ? 216 : 216);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, display_features_type,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  display_features_type,
+                   sizeof(void*) == 8 ? 224 : 220);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, display_features_state,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  display_features_state,
+                   sizeof(void*) == 8 ? 232 : 224);
+-SPI_EXPECT_OFFSET(FlutterSpiViewMetrics, display_features_count,
++SPI_EXPECT_OFFSET(FlutterSpiViewMetrics,
++                  display_features_count,
+                   sizeof(void*) == 8 ? 240 : 228);
+ SPI_EXPECT_SIZE(FlutterSpiViewMetrics, sizeof(void*) == 8 ? 248 : 232);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiFrameInfo, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiFrameInfo, frame_token, sizeof(void*) == 8 ? 8 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiFrameInfo, frame_number,
++SPI_EXPECT_OFFSET(FlutterSpiFrameInfo,
++                  frame_number,
+                   sizeof(void*) == 8 ? 16 : 16);
+-SPI_EXPECT_OFFSET(FlutterSpiFrameInfo, frame_start_ns,
++SPI_EXPECT_OFFSET(FlutterSpiFrameInfo,
++                  frame_start_ns,
+                   sizeof(void*) == 8 ? 24 : 24);
+-SPI_EXPECT_OFFSET(FlutterSpiFrameInfo, deadline_ns,
++SPI_EXPECT_OFFSET(FlutterSpiFrameInfo,
++                  deadline_ns,
+                   sizeof(void*) == 8 ? 32 : 32);
+ SPI_EXPECT_SIZE(FlutterSpiFrameInfo, sizeof(void*) == 8 ? 40 : 40);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiDisplay, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiDisplay, id,
+-                  sizeof(void*) == 8 ? 8 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiDisplay, width,
+-                  sizeof(void*) == 8 ? 16 : 16);
+-SPI_EXPECT_OFFSET(FlutterSpiDisplay, height,
+-                  sizeof(void*) == 8 ? 24 : 24);
+-SPI_EXPECT_OFFSET(FlutterSpiDisplay, pixel_ratio,
+-                  sizeof(void*) == 8 ? 32 : 32);
+-SPI_EXPECT_OFFSET(FlutterSpiDisplay, refresh_rate,
++SPI_EXPECT_OFFSET(FlutterSpiDisplay, id, sizeof(void*) == 8 ? 8 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiDisplay, width, sizeof(void*) == 8 ? 16 : 16);
++SPI_EXPECT_OFFSET(FlutterSpiDisplay, height, sizeof(void*) == 8 ? 24 : 24);
++SPI_EXPECT_OFFSET(FlutterSpiDisplay, pixel_ratio, sizeof(void*) == 8 ? 32 : 32);
++SPI_EXPECT_OFFSET(FlutterSpiDisplay,
++                  refresh_rate,
+                   sizeof(void*) == 8 ? 40 : 40);
+ SPI_EXPECT_SIZE(FlutterSpiDisplay, sizeof(void*) == 8 ? 48 : 48);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, view_id, sizeof(void*) == 8 ? 8 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, timestamp_us,
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent,
++                  timestamp_us,
+                   sizeof(void*) == 8 ? 16 : 16);
+-SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, change,
+-                  sizeof(void*) == 8 ? 24 : 24);
+-SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, device_kind,
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, change, sizeof(void*) == 8 ? 24 : 24);
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent,
++                  device_kind,
+                   sizeof(void*) == 8 ? 28 : 28);
+-SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, device,
+-                  sizeof(void*) == 8 ? 32 : 32);
+-SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, pointer_id,
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, device, sizeof(void*) == 8 ? 32 : 32);
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent,
++                  pointer_id,
+                   sizeof(void*) == 8 ? 40 : 40);
+-SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, physical_x,
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent,
++                  physical_x,
+                   sizeof(void*) == 8 ? 48 : 48);
+-SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, physical_y,
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent,
++                  physical_y,
+                   sizeof(void*) == 8 ? 56 : 56);
+-SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, buttons,
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent,
++                  buttons,
+                   sizeof(void*) == 8 ? 64 : 64);
+-SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, scroll_delta_x,
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent,
++                  scroll_delta_x,
+                   sizeof(void*) == 8 ? 72 : 72);
+-SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, scroll_delta_y,
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent,
++                  scroll_delta_y,
+                   sizeof(void*) == 8 ? 80 : 80);
+-SPI_EXPECT_OFFSET(FlutterSpiPointerEvent, pressure,
++SPI_EXPECT_OFFSET(FlutterSpiPointerEvent,
++                  pressure,
+                   sizeof(void*) == 8 ? 88 : 88);
+ SPI_EXPECT_SIZE(FlutterSpiPointerEvent, sizeof(void*) == 8 ? 96 : 96);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, timestamp_us,
+-                  sizeof(void*) == 8 ? 8 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, timestamp_us, sizeof(void*) == 8 ? 8 : 8);
+ SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, type, sizeof(void*) == 8 ? 16 : 16);
+-SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, device_type,
++SPI_EXPECT_OFFSET(FlutterSpiKeyEvent,
++                  device_type,
+                   sizeof(void*) == 8 ? 20 : 20);
+-SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, physical,
+-                  sizeof(void*) == 8 ? 24 : 24);
+-SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, logical,
+-                  sizeof(void*) == 8 ? 32 : 32);
+-SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, character,
+-                  sizeof(void*) == 8 ? 40 : 40);
+-SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, synthesized,
++SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, physical, sizeof(void*) == 8 ? 24 : 24);
++SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, logical, sizeof(void*) == 8 ? 32 : 32);
++SPI_EXPECT_OFFSET(FlutterSpiKeyEvent, character, sizeof(void*) == 8 ? 40 : 40);
++SPI_EXPECT_OFFSET(FlutterSpiKeyEvent,
++                  synthesized,
+                   sizeof(void*) == 8 ? 48 : 44);
+ SPI_EXPECT_SIZE(FlutterSpiKeyEvent, sizeof(void*) == 8 ? 56 : 48);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiPlatformMessage, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiPlatformMessage, channel,
++SPI_EXPECT_OFFSET(FlutterSpiPlatformMessage,
++                  channel,
+                   sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiPlatformMessage, data,
+-                  sizeof(void*) == 8 ? 16 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiPlatformMessage, data_size,
++SPI_EXPECT_OFFSET(FlutterSpiPlatformMessage, data, sizeof(void*) == 8 ? 16 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiPlatformMessage,
++                  data_size,
+                   sizeof(void*) == 8 ? 24 : 12);
+-SPI_EXPECT_OFFSET(FlutterSpiPlatformMessage, response,
++SPI_EXPECT_OFFSET(FlutterSpiPlatformMessage,
++                  response,
+                   sizeof(void*) == 8 ? 32 : 16);
+ SPI_EXPECT_SIZE(FlutterSpiPlatformMessage, sizeof(void*) == 8 ? 40 : 20);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiSemanticsFlags, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsFlags, is_checked,
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsFlags,
++                  is_checked,
+                   sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsFlags, is_selected,
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsFlags,
++                  is_selected,
+                   sizeof(void*) == 8 ? 12 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsFlags, is_focused,
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsFlags,
++                  is_focused,
+                   sizeof(void*) == 8 ? 32 : 28);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsFlags, is_button,
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsFlags,
++                  is_button,
+                   sizeof(void*) == 8 ? 36 : 32);
+ SPI_EXPECT_OFFSET(FlutterSpiSemanticsFlags,
+                   is_accessibility_focus_blocked,
+@@ -184,195 +221,257 @@ SPI_EXPECT_SIZE(FlutterSpiSemanticsFlags, sizeof(void*) == 8 ? 56 : 52);
+ SPI_EXPECT_OFFSET(FlutterSpiStringAttribute, start, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiStringAttribute, end, 4);
+ SPI_EXPECT_OFFSET(FlutterSpiStringAttribute, type, 8);
+-SPI_EXPECT_OFFSET(FlutterSpiStringAttribute, locale,
++SPI_EXPECT_OFFSET(FlutterSpiStringAttribute,
++                  locale,
+                   sizeof(void*) == 8 ? 16 : 12);
+ SPI_EXPECT_SIZE(FlutterSpiStringAttribute, sizeof(void*) == 8 ? 24 : 16);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiAttributedString, text, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiAttributedString, attributes,
++SPI_EXPECT_OFFSET(FlutterSpiAttributedString,
++                  attributes,
+                   sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiAttributedString, attribute_count,
++SPI_EXPECT_OFFSET(FlutterSpiAttributedString,
++                  attribute_count,
+                   sizeof(void*) == 8 ? 16 : 8);
+-SPI_EXPECT_SIZE(FlutterSpiAttributedString,
+-                sizeof(void*) == 8 ? 24 : 12);
++SPI_EXPECT_SIZE(FlutterSpiAttributedString, sizeof(void*) == 8 ? 24 : 12);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, id,
+-                  sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, flags,
+-                  sizeof(void*) == 8 ? 16 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, actions,
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, id, sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, flags, sizeof(void*) == 8 ? 16 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode,
++                  actions,
+                   sizeof(void*) == 8 ? 72 : 60);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, scroll_position,
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode,
++                  scroll_position,
+                   sizeof(void*) == 8 ? 112 : 96);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, rect,
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode,
++                  rect,
+                   sizeof(void*) == 8 ? 136 : 120);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, label,
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode,
++                  label,
+                   sizeof(void*) == 8 ? 160 : 140);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, transform,
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode,
++                  transform,
+                   sizeof(void*) == 8 ? 292 : 208);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, children_in_traversal_order,
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode,
++                  children_in_traversal_order,
+                   sizeof(void*) == 8 ? 424 : 336);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, heading_level,
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode,
++                  heading_level,
+                   sizeof(void*) == 8 ? 472 : 360);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, locale,
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode,
++                  locale,
+                   sizeof(void*) == 8 ? 496 : 376);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode, max_value,
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsNode,
++                  max_value,
+                   sizeof(void*) == 8 ? 512 : 384);
+-SPI_EXPECT_SIZE(FlutterSpiSemanticsNode,
+-                sizeof(void*) == 8 ? 520 : 392);
++SPI_EXPECT_SIZE(FlutterSpiSemanticsNode, sizeof(void*) == 8 ? 520 : 392);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiSemanticsCustomAction, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsCustomAction, id,
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsCustomAction,
++                  id,
+                   sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsCustomAction, override_id,
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsCustomAction,
++                  override_id,
+                   sizeof(void*) == 8 ? 12 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsCustomAction, label,
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsCustomAction,
++                  label,
+                   sizeof(void*) == 8 ? 16 : 12);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsCustomAction, hint,
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsCustomAction,
++                  hint,
+                   sizeof(void*) == 8 ? 24 : 16);
+-SPI_EXPECT_SIZE(FlutterSpiSemanticsCustomAction,
+-                sizeof(void*) == 8 ? 32 : 20);
++SPI_EXPECT_SIZE(FlutterSpiSemanticsCustomAction, sizeof(void*) == 8 ? 32 : 20);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiSemanticsApi, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsApi, update_builder_create,
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsApi,
++                  update_builder_create,
+                   sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsApi, update_node,
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsApi,
++                  update_node,
+                   sizeof(void*) == 8 ? 16 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsApi, update_custom_action,
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsApi,
++                  update_custom_action,
+                   sizeof(void*) == 8 ? 24 : 12);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsApi, update_submit,
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsApi,
++                  update_submit,
+                   sizeof(void*) == 8 ? 32 : 16);
+-SPI_EXPECT_OFFSET(FlutterSpiSemanticsApi, update_builder_release,
++SPI_EXPECT_OFFSET(FlutterSpiSemanticsApi,
++                  update_builder_release,
+                   sizeof(void*) == 8 ? 40 : 20);
+ SPI_EXPECT_SIZE(FlutterSpiSemanticsApi, sizeof(void*) == 8 ? 48 : 24);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiMapping, data, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiMapping, size, sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiMapping, release_user_data,
++SPI_EXPECT_OFFSET(FlutterSpiMapping,
++                  release_user_data,
+                   sizeof(void*) == 8 ? 16 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiMapping, release,
+-                  sizeof(void*) == 8 ? 24 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiMapping, release, sizeof(void*) == 8 ? 24 : 12);
+ SPI_EXPECT_SIZE(FlutterSpiMapping, sizeof(void*) == 8 ? 32 : 16);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiServiceHandler, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiServiceHandler, user_data,
++SPI_EXPECT_OFFSET(FlutterSpiServiceHandler,
++                  user_data,
+                   sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiServiceHandler, methods,
++SPI_EXPECT_OFFSET(FlutterSpiServiceHandler,
++                  methods,
+                   sizeof(void*) == 8 ? 16 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiServiceHandler, method_count,
++SPI_EXPECT_OFFSET(FlutterSpiServiceHandler,
++                  method_count,
+                   sizeof(void*) == 8 ? 24 : 12);
+-SPI_EXPECT_OFFSET(FlutterSpiServiceHandler, handle,
++SPI_EXPECT_OFFSET(FlutterSpiServiceHandler,
++                  handle,
+                   sizeof(void*) == 8 ? 32 : 16);
+-SPI_EXPECT_OFFSET(FlutterSpiServiceHandler, free_json,
++SPI_EXPECT_OFFSET(FlutterSpiServiceHandler,
++                  free_json,
+                   sizeof(void*) == 8 ? 40 : 20);
+-SPI_EXPECT_SIZE(FlutterSpiServiceHandler,
+-                sizeof(void*) == 8 ? 48 : 24);
++SPI_EXPECT_SIZE(FlutterSpiServiceHandler, sizeof(void*) == 8 ? 48 : 24);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, user_data,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions,
++                  user_data,
+                   sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, free_string,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions,
++                  free_string,
+                   sizeof(void*) == 8 ? 16 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, get_main_port,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions,
++                  get_main_port,
+                   sizeof(void*) == 8 ? 24 : 12);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, get_root_isolate_service_id,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions,
++                  get_root_isolate_service_id,
+                   sizeof(void*) == 8 ? 32 : 16);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, get_root_isolate_return_code,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions,
++                  get_root_isolate_return_code,
+                   sizeof(void*) == 8 ? 40 : 20);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, get_isolate_name,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions,
++                  get_isolate_name,
+                   sizeof(void*) == 8 ? 48 : 24);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, get_last_error,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions,
++                  get_last_error,
+                   sizeof(void*) == 8 ? 56 : 28);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, has_live_ports,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions,
++                  has_live_ports,
+                   sizeof(void*) == 8 ? 64 : 32);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, has_pending_microtasks,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions,
++                  has_pending_microtasks,
+                   sizeof(void*) == 8 ? 72 : 36);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, flush_microtask_queue,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions,
++                  flush_microtask_queue,
+                   sizeof(void*) == 8 ? 80 : 40);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, load_deferred_library,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions,
++                  load_deferred_library,
+                   sizeof(void*) == 8 ? 88 : 44);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, load_deferred_library_error,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions,
++                  load_deferred_library_error,
+                   sizeof(void*) == 8 ? 96 : 48);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, shutdown_platform_isolates,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions,
++                  shutdown_platform_isolates,
+                   sizeof(void*) == 8 ? 104 : 52);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions,
+                   set_root_isolate_owner_to_current_thread,
+                   sizeof(void*) == 8 ? 112 : 56);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, register_service_handler,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions,
++                  register_service_handler,
+                   sizeof(void*) == 8 ? 120 : 60);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, unregister_service_handler,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions,
++                  unregister_service_handler,
+                   sizeof(void*) == 8 ? 128 : 64);
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions,
+                   refresh_service_handler_description,
+                   sizeof(void*) == 8 ? 136 : 68);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, notify_low_memory,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions,
++                  notify_low_memory,
+                   sizeof(void*) == 8 ? 144 : 72);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, is_running_runtime_code,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions,
++                  is_running_runtime_code,
+                   sizeof(void*) == 8 ? 152 : 76);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions, launch_root_isolate,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeExtensions,
++                  launch_root_isolate,
+                   sizeof(void*) == 8 ? 160 : 80);
+-SPI_EXPECT_SIZE(FlutterSpiRuntimeExtensions,
+-                sizeof(void*) == 8 ? 168 : 84);
++SPI_EXPECT_SIZE(FlutterSpiRuntimeExtensions, sizeof(void*) == 8 ? 168 : 84);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, version_major,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  version_major,
+                   sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, version_minor,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  version_minor,
+                   sizeof(void*) == 8 ? 12 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, required_capabilities,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  required_capabilities,
+                   sizeof(void*) == 8 ? 16 : 16);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, user_data,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  user_data,
+                   sizeof(void*) == 8 ? 24 : 24);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, start,
+-                  sizeof(void*) == 8 ? 32 : 28);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, stop,
+-                  sizeof(void*) == 8 ? 40 : 32);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, destroy,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, start, sizeof(void*) == 8 ? 32 : 28);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, stop, sizeof(void*) == 8 ? 40 : 32);
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  destroy,
+                   sizeof(void*) == 8 ? 48 : 36);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, add_view,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  add_view,
+                   sizeof(void*) == 8 ? 56 : 40);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, remove_view,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  remove_view,
+                   sizeof(void*) == 8 ? 64 : 44);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, set_view_metrics,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  set_view_metrics,
+                   sizeof(void*) == 8 ? 72 : 48);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, begin_frame,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  begin_frame,
+                   sizeof(void*) == 8 ? 80 : 52);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, pointer_events,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  pointer_events,
+                   sizeof(void*) == 8 ? 88 : 56);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, key_event,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  key_event,
+                   sizeof(void*) == 8 ? 96 : 60);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, platform_message,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  platform_message,
+                   sizeof(void*) == 8 ? 104 : 64);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, set_semantics_enabled,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  set_semantics_enabled,
+                   sizeof(void*) == 8 ? 112 : 68);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, semantics_action,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  semantics_action,
+                   sizeof(void*) == 8 ? 120 : 72);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, set_accessibility_features,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  set_accessibility_features,
+                   sizeof(void*) == 8 ? 128 : 76);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, set_locales,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  set_locales,
+                   sizeof(void*) == 8 ? 136 : 80);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, set_user_settings,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  set_user_settings,
+                   sizeof(void*) == 8 ? 144 : 84);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, set_lifecycle_state,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  set_lifecycle_state,
+                   sizeof(void*) == 8 ? 152 : 88);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, view_focus,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  view_focus,
+                   sizeof(void*) == 8 ? 160 : 92);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, notify_idle,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  notify_idle,
+                   sizeof(void*) == 8 ? 168 : 96);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, extensions,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  extensions,
+                   sizeof(void*) == 8 ? 176 : 100);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, set_displays,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  set_displays,
+                   sizeof(void*) == 8 ? 184 : 104);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, report_timings,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  report_timings,
+                   sizeof(void*) == 8 ? 192 : 108);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, hit_test,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  hit_test,
+                   sizeof(void*) == 8 ? 200 : 112);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, add_view_with_result,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  add_view_with_result,
+                   sizeof(void*) == 8 ? 208 : 116);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, remove_view_with_result,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  remove_view_with_result,
+                   sizeof(void*) == 8 ? 216 : 120);
+-SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable, is_running,
++SPI_EXPECT_OFFSET(FlutterSpiRuntimeTable,
++                  is_running,
+                   sizeof(void*) == 8 ? 224 : 124);
+ SPI_EXPECT_SIZE(FlutterSpiRuntimeTable, sizeof(void*) == 8 ? 232 : 128);
+ 
+@@ -402,311 +501,424 @@ SPI_EXPECT_SIZE(FlutterSpiMatrix, 64);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiPaint, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiPaint, color, sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiPaint, blend_mode,
+-                  sizeof(void*) == 8 ? 28 : 24);
++SPI_EXPECT_OFFSET(FlutterSpiPaint, blend_mode, sizeof(void*) == 8 ? 28 : 24);
+ SPI_EXPECT_OFFSET(FlutterSpiPaint, style, sizeof(void*) == 8 ? 32 : 28);
+-SPI_EXPECT_OFFSET(FlutterSpiPaint, stroke_width,
+-                  sizeof(void*) == 8 ? 36 : 32);
+-SPI_EXPECT_OFFSET(FlutterSpiPaint, stroke_cap,
+-                  sizeof(void*) == 8 ? 40 : 36);
+-SPI_EXPECT_OFFSET(FlutterSpiPaint, stroke_join,
+-                  sizeof(void*) == 8 ? 44 : 40);
+-SPI_EXPECT_OFFSET(FlutterSpiPaint, stroke_miter,
+-                  sizeof(void*) == 8 ? 48 : 44);
+-SPI_EXPECT_OFFSET(FlutterSpiPaint, anti_alias,
+-                  sizeof(void*) == 8 ? 52 : 48);
+-SPI_EXPECT_OFFSET(FlutterSpiPaint, invert_colors,
+-                  sizeof(void*) == 8 ? 53 : 49);
+-SPI_EXPECT_OFFSET(FlutterSpiPaint, shader,
+-                  sizeof(void*) == 8 ? 56 : 52);
+-SPI_EXPECT_OFFSET(FlutterSpiPaint, color_filter,
+-                  sizeof(void*) == 8 ? 64 : 56);
+-SPI_EXPECT_OFFSET(FlutterSpiPaint, image_filter,
+-                  sizeof(void*) == 8 ? 72 : 60);
+-SPI_EXPECT_OFFSET(FlutterSpiPaint, filter_quality,
++SPI_EXPECT_OFFSET(FlutterSpiPaint, stroke_width, sizeof(void*) == 8 ? 36 : 32);
++SPI_EXPECT_OFFSET(FlutterSpiPaint, stroke_cap, sizeof(void*) == 8 ? 40 : 36);
++SPI_EXPECT_OFFSET(FlutterSpiPaint, stroke_join, sizeof(void*) == 8 ? 44 : 40);
++SPI_EXPECT_OFFSET(FlutterSpiPaint, stroke_miter, sizeof(void*) == 8 ? 48 : 44);
++SPI_EXPECT_OFFSET(FlutterSpiPaint, anti_alias, sizeof(void*) == 8 ? 52 : 48);
++SPI_EXPECT_OFFSET(FlutterSpiPaint, invert_colors, sizeof(void*) == 8 ? 53 : 49);
++SPI_EXPECT_OFFSET(FlutterSpiPaint, shader, sizeof(void*) == 8 ? 56 : 52);
++SPI_EXPECT_OFFSET(FlutterSpiPaint, color_filter, sizeof(void*) == 8 ? 64 : 56);
++SPI_EXPECT_OFFSET(FlutterSpiPaint, image_filter, sizeof(void*) == 8 ? 72 : 60);
++SPI_EXPECT_OFFSET(FlutterSpiPaint,
++                  filter_quality,
+                   sizeof(void*) == 8 ? 80 : 64);
+-SPI_EXPECT_OFFSET(FlutterSpiPaint, has_mask_blur,
+-                  sizeof(void*) == 8 ? 84 : 68);
+-SPI_EXPECT_OFFSET(FlutterSpiPaint, mask_blur_style,
++SPI_EXPECT_OFFSET(FlutterSpiPaint, has_mask_blur, sizeof(void*) == 8 ? 84 : 68);
++SPI_EXPECT_OFFSET(FlutterSpiPaint,
++                  mask_blur_style,
+                   sizeof(void*) == 8 ? 88 : 72);
+-SPI_EXPECT_OFFSET(FlutterSpiPaint, mask_blur_sigma,
++SPI_EXPECT_OFFSET(FlutterSpiPaint,
++                  mask_blur_sigma,
+                   sizeof(void*) == 8 ? 92 : 76);
+ SPI_EXPECT_SIZE(FlutterSpiPaint, sizeof(void*) == 8 ? 96 : 80);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiEngineApi, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, version_major,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  version_major,
+                   sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, version_minor,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  version_minor,
+                   sizeof(void*) == 8 ? 12 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, capabilities,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  capabilities,
+                   sizeof(void*) == 8 ? 16 : 16);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, request_frame,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  request_frame,
+                   sizeof(void*) == 8 ? 24 : 24);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, scene_create_empty,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  scene_create_empty,
+                   sizeof(void*) == 8 ? 32 : 28);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, scene_release,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  scene_release,
+                   sizeof(void*) == 8 ? 40 : 32);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, submit_frame,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  submit_frame,
+                   sizeof(void*) == 8 ? 48 : 36);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, frames_done,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  frames_done,
+                   sizeof(void*) == 8 ? 56 : 40);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, send_platform_message,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  send_platform_message,
+                   sizeof(void*) == 8 ? 64 : 44);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, respond,
+-                  sizeof(void*) == 8 ? 72 : 48);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, post_task,
+-                  sizeof(void*) == 8 ? 80 : 52);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, now_ns,
+-                  sizeof(void*) == 8 ? 88 : 56);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, log,
+-                  sizeof(void*) == 8 ? 96 : 60);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, report_error,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, respond, sizeof(void*) == 8 ? 72 : 48);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, post_task, sizeof(void*) == 8 ? 80 : 52);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, now_ns, sizeof(void*) == 8 ? 88 : 56);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, log, sizeof(void*) == 8 ? 96 : 60);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  report_error,
+                   sizeof(void*) == 8 ? 104 : 64);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, scene,
+-                  sizeof(void*) == 8 ? 112 : 68);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, text,
+-                  sizeof(void*) == 8 ? 120 : 72);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, image,
+-                  sizeof(void*) == 8 ? 128 : 76);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, paint_effects,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, scene, sizeof(void*) == 8 ? 112 : 68);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, text, sizeof(void*) == 8 ? 120 : 72);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, image, sizeof(void*) == 8 ? 128 : 76);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  paint_effects,
+                   sizeof(void*) == 8 ? 136 : 80);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, fragment,
+-                  sizeof(void*) == 8 ? 144 : 84);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, semantics,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, fragment, sizeof(void*) == 8 ? 144 : 84);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  semantics,
+                   sizeof(void*) == 8 ? 152 : 88);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, default_route_name,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  default_route_name,
+                   sizeof(void*) == 8 ? 160 : 92);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, free_string,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  free_string,
+                   sizeof(void*) == 8 ? 168 : 96);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, set_application_locale,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  set_application_locale,
+                   sizeof(void*) == 8 ? 176 : 100);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, set_semantics_tree_enabled,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  set_semantics_tree_enabled,
+                   sizeof(void*) == 8 ? 184 : 104);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, on_root_isolate_created,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  on_root_isolate_created,
+                   sizeof(void*) == 8 ? 192 : 108);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, update_isolate_description,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  update_isolate_description,
+                   sizeof(void*) == 8 ? 200 : 112);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, set_needs_report_timings,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  set_needs_report_timings,
+                   sizeof(void*) == 8 ? 208 : 116);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, compute_platform_resolved_locale,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  compute_platform_resolved_locale,
+                   sizeof(void*) == 8 ? 216 : 120);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, free_string_list,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  free_string_list,
+                   sizeof(void*) == 8 ? 224 : 124);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, request_deferred_library,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  request_deferred_library,
+                   sizeof(void*) == 8 ? 232 : 128);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, send_channel_update,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  send_channel_update,
+                   sizeof(void*) == 8 ? 240 : 132);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, get_scaled_font_size,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  get_scaled_font_size,
+                   sizeof(void*) == 8 ? 248 : 136);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, request_view_focus_change,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  request_view_focus_change,
+                   sizeof(void*) == 8 ? 256 : 140);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, reset_internal_state,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  reset_internal_state,
+                   sizeof(void*) == 8 ? 264 : 144);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, asset_get,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  asset_get,
+                   sizeof(void*) == 8 ? 272 : 148);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, complete_add_view,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  complete_add_view,
+                   sizeof(void*) == 8 ? 280 : 152);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, asset_read,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  asset_read,
+                   sizeof(void*) == 8 ? 288 : 156);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, platform_message_sender_create,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  platform_message_sender_create,
+                   sizeof(void*) == 8 ? 296 : 160);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, platform_message_sender_send,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  platform_message_sender_send,
+                   sizeof(void*) == 8 ? 304 : 164);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, platform_message_sender_release,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  platform_message_sender_release,
+                   sizeof(void*) == 8 ? 312 : 168);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, gpu,
+-                  sizeof(void*) == 8 ? 320 : 172);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, gpu, sizeof(void*) == 8 ? 320 : 172);
+ SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 328 : 176);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo, backend,
++SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo,
++                  backend,
+                   sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo, default_color_format,
++SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo,
++                  default_color_format,
+                   sizeof(void*) == 8 ? 12 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo, default_stencil_format,
++SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo,
++                  default_stencil_format,
+                   sizeof(void*) == 8 ? 16 : 12);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo, default_depth_stencil_format,
++SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo,
++                  default_depth_stencil_format,
+                   sizeof(void*) == 8 ? 20 : 16);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo, minimum_uniform_alignment,
++SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo,
++                  minimum_uniform_alignment,
+                   sizeof(void*) == 8 ? 24 : 20);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo, max_sampler_anisotropy,
++SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo,
++                  max_sampler_anisotropy,
+                   sizeof(void*) == 8 ? 28 : 24);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo, supports_offscreen_msaa,
++SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo,
++                  supports_offscreen_msaa,
+                   sizeof(void*) == 8 ? 32 : 28);
+ SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo,
+                   supports_framebuffer_render_mipmap,
+                   sizeof(void*) == 8 ? 33 : 29);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo, supports_manually_mipped_textures,
++SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo,
++                  supports_manually_mipped_textures,
+                   sizeof(void*) == 8 ? 34 : 30);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo, supports_texture_arrays,
++SPI_EXPECT_OFFSET(FlutterSpiGpuContextInfo,
++                  supports_texture_arrays,
+                   sizeof(void*) == 8 ? 35 : 31);
+ SPI_EXPECT_SIZE(FlutterSpiGpuContextInfo, sizeof(void*) == 8 ? 40 : 32);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiGpuBufferDescriptor, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuBufferDescriptor, storage_mode,
++SPI_EXPECT_OFFSET(FlutterSpiGpuBufferDescriptor,
++                  storage_mode,
+                   sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuBufferDescriptor, size,
++SPI_EXPECT_OFFSET(FlutterSpiGpuBufferDescriptor,
++                  size,
+                   sizeof(void*) == 8 ? 16 : 8);
+ SPI_EXPECT_SIZE(FlutterSpiGpuBufferDescriptor, sizeof(void*) == 8 ? 24 : 12);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor, storage_mode,
++SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor,
++                  storage_mode,
+                   sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor, format,
++SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor,
++                  format,
+                   sizeof(void*) == 8 ? 12 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor, width,
++SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor,
++                  width,
+                   sizeof(void*) == 8 ? 16 : 12);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor, height,
++SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor,
++                  height,
+                   sizeof(void*) == 8 ? 20 : 16);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor, sample_count,
++SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor,
++                  sample_count,
+                   sizeof(void*) == 8 ? 24 : 20);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor, texture_type,
++SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor,
++                  texture_type,
+                   sizeof(void*) == 8 ? 28 : 24);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor, usage,
++SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor,
++                  usage,
+                   sizeof(void*) == 8 ? 32 : 28);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor, mip_level_count,
++SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor,
++                  mip_level_count,
+                   sizeof(void*) == 8 ? 36 : 32);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor, layer_count,
++SPI_EXPECT_OFFSET(FlutterSpiGpuTextureDescriptor,
++                  layer_count,
+                   sizeof(void*) == 8 ? 40 : 36);
+-SPI_EXPECT_SIZE(FlutterSpiGpuTextureDescriptor,
+-                sizeof(void*) == 8 ? 48 : 40);
++SPI_EXPECT_SIZE(FlutterSpiGpuTextureDescriptor, sizeof(void*) == 8 ? 48 : 40);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiGpuApi, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, context_get_default,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  context_get_default,
+                   sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, context_retain,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  context_retain,
+                   sizeof(void*) == 8 ? 16 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, context_release,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  context_release,
+                   sizeof(void*) == 8 ? 24 : 12);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, context_get_info,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  context_get_info,
+                   sizeof(void*) == 8 ? 32 : 16);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, context_supports_texture_compression,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  context_supports_texture_compression,
+                   sizeof(void*) == 8 ? 40 : 20);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, context_supports_texture_format,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  context_supports_texture_format,
+                   sizeof(void*) == 8 ? 48 : 24);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, buffer_create,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  buffer_create,
+                   sizeof(void*) == 8 ? 56 : 28);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, buffer_create_with_data,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  buffer_create_with_data,
+                   sizeof(void*) == 8 ? 64 : 32);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, buffer_overwrite,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  buffer_overwrite,
+                   sizeof(void*) == 8 ? 72 : 36);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, buffer_flush,
+-                  sizeof(void*) == 8 ? 80 : 40);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, buffer_retain,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, buffer_flush, sizeof(void*) == 8 ? 80 : 40);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  buffer_retain,
+                   sizeof(void*) == 8 ? 88 : 44);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, buffer_release,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  buffer_release,
+                   sizeof(void*) == 8 ? 96 : 48);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, texture_create,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  texture_create,
+                   sizeof(void*) == 8 ? 104 : 52);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, texture_overwrite,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  texture_overwrite,
+                   sizeof(void*) == 8 ? 112 : 56);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, texture_retain,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  texture_retain,
+                   sizeof(void*) == 8 ? 120 : 60);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, texture_release,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  texture_release,
+                   sizeof(void*) == 8 ? 128 : 64);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_library_create,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  shader_library_create,
+                   sizeof(void*) == 8 ? 136 : 68);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_library_reload,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  shader_library_reload,
+                   sizeof(void*) == 8 ? 144 : 72);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_library_get_shader,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  shader_library_get_shader,
+                   sizeof(void*) == 8 ? 152 : 76);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_library_retain,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  shader_library_retain,
+                   sizeof(void*) == 8 ? 160 : 80);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_library_release,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  shader_library_release,
+                   sizeof(void*) == 8 ? 168 : 84);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_get_uniform_struct_index,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  shader_get_uniform_struct_index,
+                   sizeof(void*) == 8 ? 176 : 88);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_get_uniform_texture_index,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  shader_get_uniform_texture_index,
+                   sizeof(void*) == 8 ? 184 : 92);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_get_uniform_struct_size,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  shader_get_uniform_struct_size,
+                   sizeof(void*) == 8 ? 192 : 96);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_get_uniform_member_offset,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  shader_get_uniform_member_offset,
+                   sizeof(void*) == 8 ? 200 : 100);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_retain,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  shader_retain,
+                   sizeof(void*) == 8 ? 208 : 104);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_release,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  shader_release,
+                   sizeof(void*) == 8 ? 216 : 108);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, render_pipeline_create,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  render_pipeline_create,
+                   sizeof(void*) == 8 ? 224 : 112);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, render_pipeline_retain,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  render_pipeline_retain,
+                   sizeof(void*) == 8 ? 232 : 116);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, render_pipeline_release,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  render_pipeline_release,
+                   sizeof(void*) == 8 ? 240 : 120);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, binding_set_create,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  binding_set_create,
+                   sizeof(void*) == 8 ? 248 : 124);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, binding_set_add_uniform,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  binding_set_add_uniform,
+                   sizeof(void*) == 8 ? 256 : 128);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, binding_set_add_texture,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  binding_set_add_texture,
+                   sizeof(void*) == 8 ? 264 : 132);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, binding_set_clear,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  binding_set_clear,
+                   sizeof(void*) == 8 ? 272 : 136);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, binding_set_retain,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  binding_set_retain,
+                   sizeof(void*) == 8 ? 280 : 140);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuApi, binding_set_release,
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  binding_set_release,
+                   sizeof(void*) == 8 ? 288 : 144);
+-SPI_EXPECT_SIZE(FlutterSpiGpuApi, sizeof(void*) == 8 ? 296 : 148);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  command_buffer_create,
++                  sizeof(void*) == 8 ? 296 : 148);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  command_buffer_copy_buffer_to_texture,
++                  sizeof(void*) == 8 ? 304 : 152);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  command_buffer_copy_texture_to_buffer,
++                  sizeof(void*) == 8 ? 312 : 156);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  command_buffer_copy_texture_to_texture,
++                  sizeof(void*) == 8 ? 320 : 160);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  command_buffer_submit,
++                  sizeof(void*) == 8 ? 328 : 164);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  command_buffer_retain,
++                  sizeof(void*) == 8 ? 336 : 168);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  command_buffer_release,
++                  sizeof(void*) == 8 ? 344 : 172);
++SPI_EXPECT_SIZE(FlutterSpiGpuApi, sizeof(void*) == 8 ? 352 : 176);
++
++SPI_EXPECT_OFFSET(FlutterSpiGpuRegion, x, 0);
++SPI_EXPECT_OFFSET(FlutterSpiGpuRegion, y, 4);
++SPI_EXPECT_OFFSET(FlutterSpiGpuRegion, width, 8);
++SPI_EXPECT_OFFSET(FlutterSpiGpuRegion, height, 12);
++SPI_EXPECT_SIZE(FlutterSpiGpuRegion, 16);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiGpuShaderLibraryDescriptor, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuShaderLibraryDescriptor, format,
++SPI_EXPECT_OFFSET(FlutterSpiGpuShaderLibraryDescriptor,
++                  format,
+                   sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuShaderLibraryDescriptor, data,
++SPI_EXPECT_OFFSET(FlutterSpiGpuShaderLibraryDescriptor,
++                  data,
+                   sizeof(void*) == 8 ? 16 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuShaderLibraryDescriptor, size,
++SPI_EXPECT_OFFSET(FlutterSpiGpuShaderLibraryDescriptor,
++                  size,
+                   sizeof(void*) == 8 ? 24 : 12);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuShaderLibraryDescriptor, library_id,
++SPI_EXPECT_OFFSET(FlutterSpiGpuShaderLibraryDescriptor,
++                  library_id,
+                   sizeof(void*) == 8 ? 32 : 16);
+ SPI_EXPECT_SIZE(FlutterSpiGpuShaderLibraryDescriptor,
+                 sizeof(void*) == 8 ? 40 : 20);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiGpuVertexAttribute, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuVertexAttribute, name,
++SPI_EXPECT_OFFSET(FlutterSpiGpuVertexAttribute,
++                  name,
+                   sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuVertexAttribute, format,
++SPI_EXPECT_OFFSET(FlutterSpiGpuVertexAttribute,
++                  format,
+                   sizeof(void*) == 8 ? 16 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuVertexAttribute, offset,
++SPI_EXPECT_OFFSET(FlutterSpiGpuVertexAttribute,
++                  offset,
+                   sizeof(void*) == 8 ? 20 : 12);
+-SPI_EXPECT_SIZE(FlutterSpiGpuVertexAttribute,
+-                sizeof(void*) == 8 ? 24 : 16);
++SPI_EXPECT_SIZE(FlutterSpiGpuVertexAttribute, sizeof(void*) == 8 ? 24 : 16);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiGpuVertexBufferLayout, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuVertexBufferLayout, stride,
++SPI_EXPECT_OFFSET(FlutterSpiGpuVertexBufferLayout,
++                  stride,
+                   sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuVertexBufferLayout, step_mode,
++SPI_EXPECT_OFFSET(FlutterSpiGpuVertexBufferLayout,
++                  step_mode,
+                   sizeof(void*) == 8 ? 12 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuVertexBufferLayout, attributes,
++SPI_EXPECT_OFFSET(FlutterSpiGpuVertexBufferLayout,
++                  attributes,
+                   sizeof(void*) == 8 ? 16 : 12);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuVertexBufferLayout, attribute_count,
++SPI_EXPECT_OFFSET(FlutterSpiGpuVertexBufferLayout,
++                  attribute_count,
+                   sizeof(void*) == 8 ? 24 : 16);
+-SPI_EXPECT_SIZE(FlutterSpiGpuVertexBufferLayout,
+-                sizeof(void*) == 8 ? 32 : 20);
++SPI_EXPECT_SIZE(FlutterSpiGpuVertexBufferLayout, sizeof(void*) == 8 ? 32 : 20);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiGpuRenderPipelineDescriptor, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuRenderPipelineDescriptor, vertex_shader,
++SPI_EXPECT_OFFSET(FlutterSpiGpuRenderPipelineDescriptor,
++                  vertex_shader,
+                   sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuRenderPipelineDescriptor, fragment_shader,
++SPI_EXPECT_OFFSET(FlutterSpiGpuRenderPipelineDescriptor,
++                  fragment_shader,
+                   sizeof(void*) == 8 ? 16 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuRenderPipelineDescriptor, buffer_layouts,
++SPI_EXPECT_OFFSET(FlutterSpiGpuRenderPipelineDescriptor,
++                  buffer_layouts,
+                   sizeof(void*) == 8 ? 24 : 12);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuRenderPipelineDescriptor, buffer_layout_count,
++SPI_EXPECT_OFFSET(FlutterSpiGpuRenderPipelineDescriptor,
++                  buffer_layout_count,
+                   sizeof(void*) == 8 ? 32 : 16);
+ SPI_EXPECT_SIZE(FlutterSpiGpuRenderPipelineDescriptor,
+                 sizeof(void*) == 8 ? 40 : 20);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiGpuSamplerDescriptor, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuSamplerDescriptor, min_filter,
++SPI_EXPECT_OFFSET(FlutterSpiGpuSamplerDescriptor,
++                  min_filter,
+                   sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuSamplerDescriptor, mag_filter,
++SPI_EXPECT_OFFSET(FlutterSpiGpuSamplerDescriptor,
++                  mag_filter,
+                   sizeof(void*) == 8 ? 12 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuSamplerDescriptor, mip_filter,
++SPI_EXPECT_OFFSET(FlutterSpiGpuSamplerDescriptor,
++                  mip_filter,
+                   sizeof(void*) == 8 ? 16 : 12);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuSamplerDescriptor, width_address_mode,
++SPI_EXPECT_OFFSET(FlutterSpiGpuSamplerDescriptor,
++                  width_address_mode,
+                   sizeof(void*) == 8 ? 20 : 16);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuSamplerDescriptor, height_address_mode,
++SPI_EXPECT_OFFSET(FlutterSpiGpuSamplerDescriptor,
++                  height_address_mode,
+                   sizeof(void*) == 8 ? 24 : 20);
+-SPI_EXPECT_OFFSET(FlutterSpiGpuSamplerDescriptor, max_anisotropy,
++SPI_EXPECT_OFFSET(FlutterSpiGpuSamplerDescriptor,
++                  max_anisotropy,
+                   sizeof(void*) == 8 ? 28 : 24);
+-SPI_EXPECT_SIZE(FlutterSpiGpuSamplerDescriptor,
+-                sizeof(void*) == 8 ? 32 : 28);
++SPI_EXPECT_SIZE(FlutterSpiGpuSamplerDescriptor, sizeof(void*) == 8 ? 32 : 28);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, color, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, offset, 20);
+@@ -722,110 +934,151 @@ SPI_EXPECT_OFFSET(FlutterSpiFontVariation, value, 4);
+ SPI_EXPECT_SIZE(FlutterSpiFontVariation, 8);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiTextStyle, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, color,
+-                  sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, decoration,
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, color, sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle,
++                  decoration,
+                   sizeof(void*) == 8 ? 28 : 24);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, decoration_color,
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle,
++                  decoration_color,
+                   sizeof(void*) == 8 ? 32 : 28);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, decoration_style,
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle,
++                  decoration_style,
+                   sizeof(void*) == 8 ? 52 : 48);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, decoration_thickness,
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle,
++                  decoration_thickness,
+                   sizeof(void*) == 8 ? 56 : 52);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, font_weight,
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle,
++                  font_weight,
+                   sizeof(void*) == 8 ? 60 : 56);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, font_style,
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle,
++                  font_style,
+                   sizeof(void*) == 8 ? 64 : 60);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, text_baseline,
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle,
++                  text_baseline,
+                   sizeof(void*) == 8 ? 68 : 64);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, half_leading,
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle,
++                  half_leading,
+                   sizeof(void*) == 8 ? 72 : 68);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, font_families,
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle,
++                  font_families,
+                   sizeof(void*) == 8 ? 80 : 72);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, font_family_count,
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle,
++                  font_family_count,
+                   sizeof(void*) == 8 ? 88 : 76);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, font_size,
+-                  sizeof(void*) == 8 ? 96 : 80);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, letter_spacing,
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, font_size, sizeof(void*) == 8 ? 96 : 80);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle,
++                  letter_spacing,
+                   sizeof(void*) == 8 ? 100 : 84);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, word_spacing,
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle,
++                  word_spacing,
+                   sizeof(void*) == 8 ? 104 : 88);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, height,
+-                  sizeof(void*) == 8 ? 108 : 92);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, locale,
+-                  sizeof(void*) == 8 ? 112 : 96);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, foreground,
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, height, sizeof(void*) == 8 ? 108 : 92);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, locale, sizeof(void*) == 8 ? 112 : 96);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle,
++                  foreground,
+                   sizeof(void*) == 8 ? 120 : 100);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, background,
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle,
++                  background,
+                   sizeof(void*) == 8 ? 128 : 104);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, shadows,
+-                  sizeof(void*) == 8 ? 136 : 108);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, shadow_count,
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle, shadows, sizeof(void*) == 8 ? 136 : 108);
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle,
++                  shadow_count,
+                   sizeof(void*) == 8 ? 144 : 112);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, features,
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle,
++                  features,
+                   sizeof(void*) == 8 ? 152 : 116);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, feature_count,
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle,
++                  feature_count,
+                   sizeof(void*) == 8 ? 160 : 120);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, variations,
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle,
++                  variations,
+                   sizeof(void*) == 8 ? 168 : 124);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, variation_count,
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle,
++                  variation_count,
+                   sizeof(void*) == 8 ? 176 : 128);
+-SPI_EXPECT_OFFSET(FlutterSpiTextStyle, set_fields,
++SPI_EXPECT_OFFSET(FlutterSpiTextStyle,
++                  set_fields,
+                   sizeof(void*) == 8 ? 184 : 132);
+ SPI_EXPECT_SIZE(FlutterSpiTextStyle, sizeof(void*) == 8 ? 192 : 136);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, text_align,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  text_align,
+                   sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, text_direction,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  text_direction,
+                   sizeof(void*) == 8 ? 12 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, max_lines,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  max_lines,
+                   sizeof(void*) == 8 ? 16 : 12);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, font_family,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  font_family,
+                   sizeof(void*) == 8 ? 24 : 16);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, font_size,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  font_size,
+                   sizeof(void*) == 8 ? 32 : 20);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, height,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  height,
+                   sizeof(void*) == 8 ? 36 : 24);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, text_height_behavior,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  text_height_behavior,
+                   sizeof(void*) == 8 ? 40 : 28);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, font_weight,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  font_weight,
+                   sizeof(void*) == 8 ? 44 : 32);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, font_style,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  font_style,
+                   sizeof(void*) == 8 ? 48 : 36);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, strut_enabled,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  strut_enabled,
+                   sizeof(void*) == 8 ? 52 : 40);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, strut_font_families,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  strut_font_families,
+                   sizeof(void*) == 8 ? 56 : 44);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, strut_font_family_count,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  strut_font_family_count,
+                   sizeof(void*) == 8 ? 64 : 48);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, strut_font_size,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  strut_font_size,
+                   sizeof(void*) == 8 ? 72 : 52);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, strut_height,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  strut_height,
+                   sizeof(void*) == 8 ? 76 : 56);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, strut_leading,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  strut_leading,
+                   sizeof(void*) == 8 ? 80 : 60);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, strut_force_height,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  strut_force_height,
+                   sizeof(void*) == 8 ? 84 : 64);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, ellipsis,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  ellipsis,
+                   sizeof(void*) == 8 ? 88 : 68);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, locale,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  locale,
+                   sizeof(void*) == 8 ? 96 : 72);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, set_fields,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  set_fields,
+                   sizeof(void*) == 8 ? 104 : 76);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, render_soft_hyphens,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  render_soft_hyphens,
+                   sizeof(void*) == 8 ? 108 : 80);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, strut_set_fields,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  strut_set_fields,
+                   sizeof(void*) == 8 ? 112 : 84);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, strut_font_weight,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  strut_font_weight,
+                   sizeof(void*) == 8 ? 116 : 88);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, strut_font_style,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  strut_font_style,
+                   sizeof(void*) == 8 ? 120 : 92);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, strut_half_leading,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  strut_half_leading,
+                   sizeof(void*) == 8 ? 124 : 96);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, ellipsis_utf16,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  ellipsis_utf16,
+                   sizeof(void*) == 8 ? 128 : 100);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle, ellipsis_utf16_length,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphStyle,
++                  ellipsis_utf16_length,
+                   sizeof(void*) == 8 ? 136 : 104);
+ SPI_EXPECT_SIZE(FlutterSpiParagraphStyle, sizeof(void*) == 8 ? 144 : 108);
+ 
+@@ -838,7 +1091,8 @@ SPI_EXPECT_OFFSET(FlutterSpiParagraphMetrics, max_intrinsic_width, 40);
+ SPI_EXPECT_OFFSET(FlutterSpiParagraphMetrics, alphabetic_baseline, 48);
+ SPI_EXPECT_OFFSET(FlutterSpiParagraphMetrics, ideographic_baseline, 56);
+ SPI_EXPECT_OFFSET(FlutterSpiParagraphMetrics, did_exceed_max_lines, 64);
+-SPI_EXPECT_OFFSET(FlutterSpiParagraphMetrics, line_count,
++SPI_EXPECT_OFFSET(FlutterSpiParagraphMetrics,
++                  line_count,
+                   sizeof(void*) == 8 ? 72 : 68);
+ SPI_EXPECT_SIZE(FlutterSpiParagraphMetrics, sizeof(void*) == 8 ? 80 : 72);
+ 
+@@ -847,160 +1101,201 @@ SPI_EXPECT_OFFSET(FlutterSpiTextBox, direction, 16);
+ SPI_EXPECT_SIZE(FlutterSpiTextBox, 20);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiGlyphInfo, grapheme_bounds, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiGlyphInfo, range_start,
++SPI_EXPECT_OFFSET(FlutterSpiGlyphInfo,
++                  range_start,
+                   sizeof(void*) == 8 ? 16 : 16);
+-SPI_EXPECT_OFFSET(FlutterSpiGlyphInfo, range_end,
+-                  sizeof(void*) == 8 ? 24 : 20);
+-SPI_EXPECT_OFFSET(FlutterSpiGlyphInfo, is_ltr,
+-                  sizeof(void*) == 8 ? 32 : 24);
++SPI_EXPECT_OFFSET(FlutterSpiGlyphInfo, range_end, sizeof(void*) == 8 ? 24 : 20);
++SPI_EXPECT_OFFSET(FlutterSpiGlyphInfo, is_ltr, sizeof(void*) == 8 ? 32 : 24);
+ SPI_EXPECT_SIZE(FlutterSpiGlyphInfo, sizeof(void*) == 8 ? 40 : 28);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, start_index, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, end_index,
+-                  sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, end_excluding_whitespace,
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, end_index, sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics,
++                  end_excluding_whitespace,
+                   sizeof(void*) == 8 ? 16 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, end_including_newline,
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics,
++                  end_including_newline,
+                   sizeof(void*) == 8 ? 24 : 12);
+-SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, hard_break,
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics,
++                  hard_break,
+                   sizeof(void*) == 8 ? 32 : 16);
+-SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, ascent,
+-                  sizeof(void*) == 8 ? 40 : 24);
+-SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, descent,
+-                  sizeof(void*) == 8 ? 48 : 32);
+-SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, unscaled_ascent,
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, ascent, sizeof(void*) == 8 ? 40 : 24);
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, descent, sizeof(void*) == 8 ? 48 : 32);
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics,
++                  unscaled_ascent,
+                   sizeof(void*) == 8 ? 56 : 40);
+-SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, height,
+-                  sizeof(void*) == 8 ? 64 : 48);
+-SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, width,
+-                  sizeof(void*) == 8 ? 72 : 56);
+-SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, left,
+-                  sizeof(void*) == 8 ? 80 : 64);
+-SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, baseline,
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, height, sizeof(void*) == 8 ? 64 : 48);
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, width, sizeof(void*) == 8 ? 72 : 56);
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, left, sizeof(void*) == 8 ? 80 : 64);
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics,
++                  baseline,
+                   sizeof(void*) == 8 ? 88 : 72);
+-SPI_EXPECT_OFFSET(FlutterSpiLineMetrics, line_number,
++SPI_EXPECT_OFFSET(FlutterSpiLineMetrics,
++                  line_number,
+                   sizeof(void*) == 8 ? 96 : 80);
+ SPI_EXPECT_SIZE(FlutterSpiLineMetrics, sizeof(void*) == 8 ? 104 : 88);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiTextApi, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, font_load,
+-                  sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_builder_create,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi, font_load, sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  paragraph_builder_create,
+                   sizeof(void*) == 8 ? 16 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_builder_push_style,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  paragraph_builder_push_style,
+                   sizeof(void*) == 8 ? 24 : 12);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_builder_pop,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  paragraph_builder_pop,
+                   sizeof(void*) == 8 ? 32 : 16);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_builder_add_text,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  paragraph_builder_add_text,
+                   sizeof(void*) == 8 ? 40 : 20);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_builder_add_placeholder,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  paragraph_builder_add_placeholder,
+                   sizeof(void*) == 8 ? 48 : 24);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_builder_build,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  paragraph_builder_build,
+                   sizeof(void*) == 8 ? 56 : 28);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_builder_release,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  paragraph_builder_release,
+                   sizeof(void*) == 8 ? 64 : 32);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_layout,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  paragraph_layout,
+                   sizeof(void*) == 8 ? 72 : 36);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_metrics,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  paragraph_get_metrics,
+                   sizeof(void*) == 8 ? 80 : 40);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_rects_for_range,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  paragraph_get_rects_for_range,
+                   sizeof(void*) == 8 ? 88 : 44);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_rects_for_placeholders,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  paragraph_get_rects_for_placeholders,
+                   sizeof(void*) == 8 ? 96 : 48);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_glyph_position_at,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  paragraph_get_glyph_position_at,
+                   sizeof(void*) == 8 ? 104 : 52);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_word_boundary,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  paragraph_get_word_boundary,
+                   sizeof(void*) == 8 ? 112 : 56);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_line_metrics,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  paragraph_get_line_metrics,
+                   sizeof(void*) == 8 ? 120 : 60);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_glyph_info_at,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  paragraph_get_glyph_info_at,
+                   sizeof(void*) == 8 ? 128 : 64);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_closest_glyph_info,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  paragraph_get_closest_glyph_info,
+                   sizeof(void*) == 8 ? 136 : 68);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_line_boundary,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  paragraph_get_line_boundary,
+                   sizeof(void*) == 8 ? 144 : 72);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_line_metrics_at,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  paragraph_get_line_metrics_at,
+                   sizeof(void*) == 8 ? 152 : 76);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_line_count,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  paragraph_get_line_count,
+                   sizeof(void*) == 8 ? 160 : 80);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_get_line_number_at,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  paragraph_get_line_number_at,
+                   sizeof(void*) == 8 ? 168 : 84);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_retain,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  paragraph_retain,
+                   sizeof(void*) == 8 ? 176 : 88);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_release,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  paragraph_release,
+                   sizeof(void*) == 8 ? 184 : 92);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, canvas_draw_paragraph,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  canvas_draw_paragraph,
+                   sizeof(void*) == 8 ? 192 : 96);
+-SPI_EXPECT_OFFSET(FlutterSpiTextApi, paragraph_builder_add_text_utf16,
++SPI_EXPECT_OFFSET(FlutterSpiTextApi,
++                  paragraph_builder_add_text_utf16,
+                   sizeof(void*) == 8 ? 200 : 100);
+ SPI_EXPECT_SIZE(FlutterSpiTextApi, sizeof(void*) == 8 ? 208 : 104);
+ 
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, text,
+-                  sizeof(void*) == 8 ? 120 : 72);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, image,
+-                  sizeof(void*) == 8 ? 128 : 76);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, paint_effects,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, text, sizeof(void*) == 8 ? 120 : 72);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, image, sizeof(void*) == 8 ? 128 : 76);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  paint_effects,
+                   sizeof(void*) == 8 ? 136 : 80);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, fragment,
+-                  sizeof(void*) == 8 ? 144 : 84);
+-SPI_EXPECT_OFFSET(FlutterSpiEngineApi, semantics,
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi, fragment, sizeof(void*) == 8 ? 144 : 84);
++SPI_EXPECT_OFFSET(FlutterSpiEngineApi,
++                  semantics,
+                   sizeof(void*) == 8 ? 152 : 88);
+ SPI_EXPECT_SIZE(FlutterSpiEngineApi, sizeof(void*) == 8 ? 328 : 176);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, name,
+-                  sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, type,
+-                  sizeof(void*) == 8 ? 16 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, size_bytes,
++SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, name, sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiUniformInfo, type, sizeof(void*) == 8 ? 16 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiUniformInfo,
++                  size_bytes,
+                   sizeof(void*) == 8 ? 24 : 12);
+ SPI_EXPECT_SIZE(FlutterSpiUniformInfo, sizeof(void*) == 8 ? 32 : 16);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, program_from_asset,
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi,
++                  program_from_asset,
+                   sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, program_from_bytes,
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi,
++                  program_from_bytes,
+                   sizeof(void*) == 8 ? 16 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, program_get_counts,
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi,
++                  program_get_counts,
+                   sizeof(void*) == 8 ? 24 : 12);
+-SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, program_get_uniform,
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi,
++                  program_get_uniform,
+                   sizeof(void*) == 8 ? 32 : 16);
+-SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, program_release,
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi,
++                  program_release,
+                   sizeof(void*) == 8 ? 40 : 20);
+-SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, shader_create,
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi,
++                  shader_create,
+                   sizeof(void*) == 8 ? 48 : 24);
+-SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, shader_set_float,
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi,
++                  shader_set_float,
+                   sizeof(void*) == 8 ? 56 : 28);
+-SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, shader_set_image_sampler,
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi,
++                  shader_set_image_sampler,
+                   sizeof(void*) == 8 ? 64 : 32);
+-SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, shader_to_shader,
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi,
++                  shader_to_shader,
+                   sizeof(void*) == 8 ? 72 : 36);
+-SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, shader_to_image_filter,
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi,
++                  shader_to_image_filter,
+                   sizeof(void*) == 8 ? 80 : 40);
+-SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, shader_release,
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi,
++                  shader_release,
+                   sizeof(void*) == 8 ? 88 : 44);
+-SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, shader_validate_samplers,
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi,
++                  shader_validate_samplers,
+                   sizeof(void*) == 8 ? 96 : 48);
+-SPI_EXPECT_OFFSET(FlutterSpiFragmentApi, shader_validate_image_filter,
++SPI_EXPECT_OFFSET(FlutterSpiFragmentApi,
++                  shader_validate_image_filter,
+                   sizeof(void*) == 8 ? 104 : 52);
+ SPI_EXPECT_SIZE(FlutterSpiFragmentApi, sizeof(void*) == 8 ? 112 : 56);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, shader_linear_gradient,
++SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
++                  shader_linear_gradient,
+                   sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, shader_radial_gradient,
++SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
++                  shader_radial_gradient,
+                   sizeof(void*) == 8 ? 16 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, shader_conical_gradient,
++SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
++                  shader_conical_gradient,
+                   sizeof(void*) == 8 ? 24 : 12);
+-SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, shader_sweep_gradient,
++SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
++                  shader_sweep_gradient,
+                   sizeof(void*) == 8 ? 32 : 16);
+-SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, shader_image,
++SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
++                  shader_image,
+                   sizeof(void*) == 8 ? 40 : 20);
+-SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, shader_release,
++SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
++                  shader_release,
+                   sizeof(void*) == 8 ? 48 : 24);
+-SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, color_filter_mode,
++SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
++                  color_filter_mode,
+                   sizeof(void*) == 8 ? 56 : 28);
+-SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, color_filter_matrix,
++SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
++                  color_filter_matrix,
+                   sizeof(void*) == 8 ? 64 : 32);
+ SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
+                   color_filter_linear_to_srgb_gamma,
+@@ -1008,163 +1303,218 @@ SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
+ SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
+                   color_filter_srgb_to_linear_gamma,
+                   sizeof(void*) == 8 ? 80 : 40);
+-SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, color_filter_release,
++SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
++                  color_filter_release,
+                   sizeof(void*) == 8 ? 88 : 44);
+-SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, image_filter_blur,
++SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
++                  image_filter_blur,
+                   sizeof(void*) == 8 ? 96 : 48);
+-SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, image_filter_dilate,
++SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
++                  image_filter_dilate,
+                   sizeof(void*) == 8 ? 104 : 52);
+-SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, image_filter_erode,
++SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
++                  image_filter_erode,
+                   sizeof(void*) == 8 ? 112 : 56);
+-SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, image_filter_matrix,
++SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
++                  image_filter_matrix,
+                   sizeof(void*) == 8 ? 120 : 60);
+ SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
+                   image_filter_from_color_filter,
+                   sizeof(void*) == 8 ? 128 : 64);
+-SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, image_filter_compose,
++SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
++                  image_filter_compose,
+                   sizeof(void*) == 8 ? 136 : 68);
+-SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, image_filter_release,
++SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
++                  image_filter_release,
+                   sizeof(void*) == 8 ? 144 : 72);
+-SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, vertices_create,
++SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
++                  vertices_create,
+                   sizeof(void*) == 8 ? 152 : 76);
+-SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, vertices_release,
++SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
++                  vertices_release,
+                   sizeof(void*) == 8 ? 160 : 80);
+-SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, canvas_draw_vertices,
++SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
++                  canvas_draw_vertices,
+                   sizeof(void*) == 8 ? 168 : 84);
+-SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, image_filter_blur_bounded,
++SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
++                  image_filter_blur_bounded,
+                   sizeof(void*) == 8 ? 176 : 88);
+-SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi, image_filter_equals,
++SPI_EXPECT_OFFSET(FlutterSpiPaintEffectsApi,
++                  image_filter_equals,
+                   sizeof(void*) == 8 ? 184 : 92);
+-SPI_EXPECT_SIZE(FlutterSpiPaintEffectsApi,
+-                sizeof(void*) == 8 ? 192 : 96);
++SPI_EXPECT_SIZE(FlutterSpiPaintEffectsApi, sizeof(void*) == 8 ? 192 : 96);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiSceneApi, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_push_clip_rsuperellipse,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  scene_push_clip_rsuperellipse,
+                   sizeof(void*) == 8 ? 464 : 232);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_push_color_filter,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  scene_push_color_filter,
+                   sizeof(void*) == 8 ? 472 : 236);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_push_image_filter,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  scene_push_image_filter,
+                   sizeof(void*) == 8 ? 480 : 240);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_push_backdrop_filter,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  scene_push_backdrop_filter,
+                   sizeof(void*) == 8 ? 488 : 244);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_push_shader_mask,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  scene_push_shader_mask,
+                   sizeof(void*) == 8 ? 496 : 248);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_add_texture,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  scene_add_texture,
+                   sizeof(void*) == 8 ? 504 : 252);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_add_platform_view,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  scene_add_platform_view,
+                   sizeof(void*) == 8 ? 512 : 256);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_add_performance_overlay,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  scene_add_performance_overlay,
+                   sizeof(void*) == 8 ? 520 : 260);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_take_last_layer,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  scene_take_last_layer,
+                   sizeof(void*) == 8 ? 528 : 264);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_assign_old_layer,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  scene_assign_old_layer,
+                   sizeof(void*) == 8 ? 536 : 268);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_add_retained,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  scene_add_retained,
+                   sizeof(void*) == 8 ? 544 : 272);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, engine_layer_release,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  engine_layer_release,
+                   sizeof(void*) == 8 ? 552 : 276);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, canvas_draw_rsuperellipse,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  canvas_draw_rsuperellipse,
+                   sizeof(void*) == 8 ? 560 : 280);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, canvas_clip_rsuperellipse,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  canvas_clip_rsuperellipse,
+                   sizeof(void*) == 8 ? 568 : 284);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, canvas_get_transform,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  canvas_get_transform,
+                   sizeof(void*) == 8 ? 576 : 288);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, canvas_get_local_clip_bounds,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  canvas_get_local_clip_bounds,
+                   sizeof(void*) == 8 ? 584 : 292);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, canvas_get_destination_clip_bounds,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  canvas_get_destination_clip_bounds,
+                   sizeof(void*) == 8 ? 592 : 296);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_relative_move_to,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_relative_move_to,
+                   sizeof(void*) == 8 ? 600 : 300);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_relative_line_to,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_relative_line_to,
+                   sizeof(void*) == 8 ? 608 : 304);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_relative_quad_to,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_relative_quad_to,
+                   sizeof(void*) == 8 ? 616 : 308);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_relative_conic_to,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_relative_conic_to,
+                   sizeof(void*) == 8 ? 624 : 312);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_relative_cubic_to,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_relative_cubic_to,
+                   sizeof(void*) == 8 ? 632 : 316);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_arc_to,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_arc_to,
+                   sizeof(void*) == 8 ? 640 : 320);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_arc_to_point,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_arc_to_point,
+                   sizeof(void*) == 8 ? 648 : 324);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_relative_arc_to_point,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_relative_arc_to_point,
+                   sizeof(void*) == 8 ? 656 : 328);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_add_arc,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_add_arc,
+                   sizeof(void*) == 8 ? 664 : 332);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_add_polygon,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_add_polygon,
+                   sizeof(void*) == 8 ? 672 : 336);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_add_rsuperellipse,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_add_rsuperellipse,
+                   sizeof(void*) == 8 ? 680 : 340);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_add_path,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_add_path,
+                   sizeof(void*) == 8 ? 688 : 344);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_reset,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_reset,
+                   sizeof(void*) == 8 ? 696 : 348);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_get_fill_type,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_get_fill_type,
+                   sizeof(void*) == 8 ? 704 : 352);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_contains,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_contains,
+                   sizeof(void*) == 8 ? 712 : 356);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_get_bounds,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_get_bounds,
+                   sizeof(void*) == 8 ? 720 : 360);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_copy,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_copy,
+                   sizeof(void*) == 8 ? 728 : 364);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_shift,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_shift,
+                   sizeof(void*) == 8 ? 736 : 368);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_transform,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_transform,
+                   sizeof(void*) == 8 ? 744 : 372);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_op,
+-                  sizeof(void*) == 8 ? 752 : 376);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_measure_create,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_op, sizeof(void*) == 8 ? 752 : 376);
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_measure_create,
+                   sizeof(void*) == 8 ? 760 : 380);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_measure_set_path,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_measure_set_path,
+                   sizeof(void*) == 8 ? 768 : 384);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_measure_get_length,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_measure_get_length,
+                   sizeof(void*) == 8 ? 776 : 388);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_measure_get_pos_tan,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_measure_get_pos_tan,
+                   sizeof(void*) == 8 ? 784 : 392);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_measure_get_segment,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_measure_get_segment,
+                   sizeof(void*) == 8 ? 792 : 396);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_measure_is_closed,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_measure_is_closed,
+                   sizeof(void*) == 8 ? 800 : 400);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_measure_next_contour,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_measure_next_contour,
+                   sizeof(void*) == 8 ? 808 : 404);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_measure_release,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_measure_release,
+                   sizeof(void*) == 8 ? 816 : 408);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_build_root,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  scene_build_root,
+                   sizeof(void*) == 8 ? 824 : 412);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_create_from_root,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  scene_create_from_root,
+                   sizeof(void*) == 8 ? 832 : 416);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, scene_retain_last_layer,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  scene_retain_last_layer,
+                   sizeof(void*) == 8 ? 840 : 420);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, path_set_volatile,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  path_set_volatile,
+                   sizeof(void*) == 8 ? 848 : 424);
+-SPI_EXPECT_OFFSET(FlutterSpiSceneApi, rsuperellipse_contains,
++SPI_EXPECT_OFFSET(FlutterSpiSceneApi,
++                  rsuperellipse_contains,
+                   sizeof(void*) == 8 ? 856 : 428);
+ SPI_EXPECT_SIZE(FlutterSpiSceneApi, sizeof(void*) == 8 ? 864 : 432);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiPixels, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiPixels, pixels,
+-                  sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiPixels, pixels_size,
+-                  sizeof(void*) == 8 ? 16 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiPixels, width,
+-                  sizeof(void*) == 8 ? 24 : 12);
+-SPI_EXPECT_OFFSET(FlutterSpiPixels, height,
+-                  sizeof(void*) == 8 ? 28 : 16);
+-SPI_EXPECT_OFFSET(FlutterSpiPixels, row_bytes,
+-                  sizeof(void*) == 8 ? 32 : 20);
+-SPI_EXPECT_OFFSET(FlutterSpiPixels, pixel_format,
+-                  sizeof(void*) == 8 ? 36 : 24);
++SPI_EXPECT_OFFSET(FlutterSpiPixels, pixels, sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiPixels, pixels_size, sizeof(void*) == 8 ? 16 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiPixels, width, sizeof(void*) == 8 ? 24 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiPixels, height, sizeof(void*) == 8 ? 28 : 16);
++SPI_EXPECT_OFFSET(FlutterSpiPixels, row_bytes, sizeof(void*) == 8 ? 32 : 20);
++SPI_EXPECT_OFFSET(FlutterSpiPixels, pixel_format, sizeof(void*) == 8 ? 36 : 24);
+ SPI_EXPECT_SIZE(FlutterSpiPixels, sizeof(void*) == 8 ? 40 : 28);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiImageDecodeOptions, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiImageDecodeOptions, target_width,
++SPI_EXPECT_OFFSET(FlutterSpiImageDecodeOptions,
++                  target_width,
+                   sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiImageDecodeOptions, target_height,
++SPI_EXPECT_OFFSET(FlutterSpiImageDecodeOptions,
++                  target_height,
+                   sizeof(void*) == 8 ? 12 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiImageDecodeOptions, target_pixel_format,
++SPI_EXPECT_OFFSET(FlutterSpiImageDecodeOptions,
++                  target_pixel_format,
+                   sizeof(void*) == 8 ? 16 : 12);
+-SPI_EXPECT_SIZE(FlutterSpiImageDecodeOptions,
+-                sizeof(void*) == 8 ? 24 : 16);
++SPI_EXPECT_SIZE(FlutterSpiImageDecodeOptions, sizeof(void*) == 8 ? 24 : 16);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiRSTransform, scos, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiRSTransform, ssin, 4);
+@@ -1173,56 +1523,80 @@ SPI_EXPECT_OFFSET(FlutterSpiRSTransform, ty, 12);
+ SPI_EXPECT_SIZE(FlutterSpiRSTransform, 16);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiImageApi, struct_size, 0);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, image_decode,
+-                  sizeof(void*) == 8 ? 8 : 4);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, image_create_from_pixels,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi, image_decode, sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  image_create_from_pixels,
+                   sizeof(void*) == 8 ? 16 : 8);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, image_get_size,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  image_get_size,
+                   sizeof(void*) == 8 ? 24 : 12);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, image_retain,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  image_retain,
+                   sizeof(void*) == 8 ? 32 : 16);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, image_release,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  image_release,
+                   sizeof(void*) == 8 ? 40 : 20);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, canvas_draw_image,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  canvas_draw_image,
+                   sizeof(void*) == 8 ? 48 : 24);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, canvas_draw_image_rect,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  canvas_draw_image_rect,
+                   sizeof(void*) == 8 ? 56 : 28);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, canvas_draw_image_nine,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  canvas_draw_image_nine,
+                   sizeof(void*) == 8 ? 64 : 32);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, canvas_draw_atlas,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  canvas_draw_atlas,
+                   sizeof(void*) == 8 ? 72 : 36);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, picture_to_image,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  picture_to_image,
+                   sizeof(void*) == 8 ? 80 : 40);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, picture_to_image_sync,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  picture_to_image_sync,
+                   sizeof(void*) == 8 ? 88 : 44);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, scene_to_image,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  scene_to_image,
+                   sizeof(void*) == 8 ? 96 : 48);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, scene_to_image_sync,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  scene_to_image_sync,
+                   sizeof(void*) == 8 ? 104 : 52);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, image_to_bytes,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  image_to_bytes,
+                   sizeof(void*) == 8 ? 112 : 56);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, codec_create,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  codec_create,
+                   sizeof(void*) == 8 ? 120 : 60);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, codec_get_info,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  codec_get_info,
+                   sizeof(void*) == 8 ? 128 : 64);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, codec_get_next_frame,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  codec_get_next_frame,
+                   sizeof(void*) == 8 ? 136 : 68);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, codec_release,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  codec_release,
+                   sizeof(void*) == 8 ? 144 : 72);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, image_create_from_pixels_sync,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  image_create_from_pixels_sync,
+                   sizeof(void*) == 8 ? 152 : 76);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, image_get_color_space,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  image_get_color_space,
+                   sizeof(void*) == 8 ? 160 : 80);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, picture_to_image_sync_with_format,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  picture_to_image_sync_with_format,
+                   sizeof(void*) == 8 ? 168 : 84);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, image_descriptor_create_encoded,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  image_descriptor_create_encoded,
+                   sizeof(void*) == 8 ? 176 : 88);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, image_descriptor_create_raw,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  image_descriptor_create_raw,
+                   sizeof(void*) == 8 ? 184 : 92);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, image_descriptor_get_info,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  image_descriptor_get_info,
+                   sizeof(void*) == 8 ? 192 : 96);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, image_descriptor_instantiate_codec,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  image_descriptor_instantiate_codec,
+                   sizeof(void*) == 8 ? 200 : 100);
+-SPI_EXPECT_OFFSET(FlutterSpiImageApi, image_descriptor_release,
++SPI_EXPECT_OFFSET(FlutterSpiImageApi,
++                  image_descriptor_release,
+                   sizeof(void*) == 8 ? 208 : 104);
+ SPI_EXPECT_SIZE(FlutterSpiImageApi, sizeof(void*) == 8 ? 216 : 108);
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer.cc
+new file mode 100644
+index 00000000000..8c7ba28b172
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer.cc
+@@ -0,0 +1,482 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/gpu/spi_gpu_command_buffer.h"
++
++#include <algorithm>
++#include <atomic>
++#include <limits>
++#include <utility>
++
++#include "flutter/fml/make_copyable.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_buffer.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_context.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_texture.h"
++#include "flutter/runtime_spi/scene/spi_handle_table.h"
++#include "impeller/core/buffer_view.h"
++#include "impeller/core/device_buffer.h"
++#include "impeller/core/texture.h"
++#include "impeller/renderer/command_queue.h"
++
++namespace flutter {
++namespace {
++
++SpiHandleTable<SpiGpuCommandBuffer>& CommandBuffers() {
++  return LeakedHandleTable<SpiGpuCommandBuffer>();
++}
++
++uintptr_t HandleValue(FlutterSpiGpuCommandBuffer* command_buffer) {
++  return reinterpret_cast<uintptr_t>(command_buffer);
++}
++
++FlutterSpiGpuCommandBuffer* MakeHandle(uintptr_t value) {
++  return reinterpret_cast<FlutterSpiGpuCommandBuffer*>(value);
++}
++
++SpiGpuCommandBuffer* FindCommandBuffer(
++    FlutterSpiGpuCommandBuffer* command_buffer) {
++  return CommandBuffers().FindRaw(HandleValue(command_buffer));
++}
++
++int32_t MipDimension(int32_t dimension, int32_t mip_level) {
++  const uint32_t shift = static_cast<uint32_t>(mip_level);
++  if (shift >= std::numeric_limits<int32_t>::digits) {
++    return 1;
++  }
++  return std::max(1, dimension >> shift);
++}
++
++bool IsRegionInsideTexture(const impeller::Texture& texture,
++                           const FlutterSpiGpuRegion& region,
++                           int32_t mip_level) {
++  if (mip_level < 0 || region.x < 0 || region.y < 0 || region.width <= 0 ||
++      region.height <= 0) {
++    return false;
++  }
++  const auto& descriptor = texture.GetTextureDescriptor();
++  if (static_cast<size_t>(mip_level) >= descriptor.mip_count) {
++    return false;
++  }
++  const int32_t width = MipDimension(texture.GetSize().width, mip_level);
++  const int32_t height = MipDimension(texture.GetSize().height, mip_level);
++  return region.x <= width && region.y <= height &&
++         region.width <= width - region.x && region.height <= height - region.y;
++}
++
++impeller::IRect ToImpellerRegion(const FlutterSpiGpuRegion& region) {
++  return impeller::IRect::MakeXYWH(region.x, region.y, region.width,
++                                   region.height);
++}
++
++FlutterSpiResult StatusToResult(impeller::CommandBuffer::Status status) {
++  return status == impeller::CommandBuffer::Status::kCompleted
++             ? kFlutterSpiOk
++             : kFlutterSpiInternalError;
++}
++
++}  // namespace
++
++SpiGpuCommandBuffer::SpiGpuCommandBuffer(
++    std::shared_ptr<impeller::Context> context,
++    std::shared_ptr<impeller::CommandBuffer> command_buffer,
++    fml::RefPtr<fml::TaskRunner> raster_task_runner,
++    fml::RefPtr<fml::TaskRunner> ui_task_runner)
++    : context_(std::move(context)),
++      command_buffer_(std::move(command_buffer)),
++      raster_task_runner_(std::move(raster_task_runner)),
++      ui_task_runner_(std::move(ui_task_runner)) {}
++
++SpiGpuCommandBuffer::~SpiGpuCommandBuffer() = default;
++
++bool SpiGpuCommandBuffer::Encodable::EncodeCommands() const {
++  if (render_pass != nullptr) {
++    return render_pass->EncodeCommands();
++  }
++  if (blit_pass != nullptr) {
++    return blit_pass->EncodeCommands();
++  }
++  return false;
++}
++
++std::shared_ptr<impeller::CommandBuffer>
++SpiGpuCommandBuffer::GetCommandBuffer() {
++  return command_buffer_;
++}
++
++void SpiGpuCommandBuffer::AddRenderPass(
++    std::shared_ptr<impeller::RenderPass> render_pass) {
++  encodables_.push_back({.render_pass = std::move(render_pass)});
++}
++
++bool SpiGpuCommandBuffer::AddCompletionCallback(
++    CompletionCallback completion_callback) {
++  if (submitted_) {
++    return false;
++  }
++  if (completion_callback) {
++    completion_callbacks_.push_back(std::move(completion_callback));
++  }
++  return true;
++}
++
++std::shared_ptr<impeller::BlitPass> SpiGpuCommandBuffer::GetOrCreateBlitPass() {
++  if (!encodables_.empty() && encodables_.back().blit_pass != nullptr) {
++    return encodables_.back().blit_pass;
++  }
++  auto blit_pass = command_buffer_->CreateBlitPass();
++  if (blit_pass == nullptr) {
++    return nullptr;
++  }
++  encodables_.push_back({.blit_pass = blit_pass});
++  return blit_pass;
++}
++
++bool SpiGpuCommandBuffer::CopyBufferToTexture(
++    std::shared_ptr<impeller::DeviceBuffer> source,
++    size_t source_offset,
++    size_t source_length,
++    std::shared_ptr<impeller::Texture> destination,
++    impeller::IRect destination_region,
++    uint32_t mip_level,
++    uint32_t slice) {
++  auto blit_pass = GetOrCreateBlitPass();
++  if (blit_pass == nullptr) {
++    return false;
++  }
++  buffers_.push_back(source);
++  textures_.push_back(destination);
++  impeller::BufferView source_view(
++      source, impeller::Range(source_offset, source_length));
++  return blit_pass->AddCopy(
++      std::move(source_view), destination, destination_region,
++      "CommandBuffer.copyBufferToTexture", mip_level, slice);
++}
++
++bool SpiGpuCommandBuffer::CopyTextureToBuffer(
++    std::shared_ptr<impeller::Texture> source,
++    impeller::IRect source_region,
++    std::shared_ptr<impeller::DeviceBuffer> destination,
++    size_t destination_offset) {
++  auto blit_pass = GetOrCreateBlitPass();
++  if (blit_pass == nullptr) {
++    return false;
++  }
++  textures_.push_back(source);
++  buffers_.push_back(destination);
++  return blit_pass->AddCopy(source, destination, source_region,
++                            destination_offset,
++                            "CommandBuffer.copyTextureToBuffer");
++}
++
++bool SpiGpuCommandBuffer::CopyTextureToTexture(
++    std::shared_ptr<impeller::Texture> source,
++    std::shared_ptr<impeller::Texture> destination,
++    impeller::IRect source_region,
++    impeller::IPoint destination_origin) {
++  auto blit_pass = GetOrCreateBlitPass();
++  if (blit_pass == nullptr) {
++    return false;
++  }
++  textures_.push_back(source);
++  textures_.push_back(destination);
++  return blit_pass->AddCopy(source, destination, source_region,
++                            destination_origin,
++                            "CommandBuffer.copyTextureToTexture");
++}
++
++void SpiGpuCommandBuffer::DispatchCompletion(
++    const CompletionCallback& callback,
++    impeller::CommandBuffer::Status status) const {
++  if (!callback) {
++    return;
++  }
++  auto deliver = [callback, status]() { callback(status); };
++  if (!ui_task_runner_ || ui_task_runner_->RunsTasksOnCurrentThread()) {
++    deliver();
++    return;
++  }
++  ui_task_runner_->PostTask(deliver);
++}
++
++bool SpiGpuCommandBuffer::Submit() {
++  return Submit({});
++}
++
++bool SpiGpuCommandBuffer::Submit(
++    const CompletionCallback& completion_callback) {
++  if (submitted_) {
++    DispatchCompletion(completion_callback,
++                       impeller::CommandBuffer::Status::kError);
++    return false;
++  }
++  submitted_ = true;
++
++  std::vector<CompletionCallback> callbacks = std::move(completion_callbacks_);
++  if (completion_callback) {
++    callbacks.push_back(completion_callback);
++  }
++
++  std::shared_ptr<std::atomic_bool> callback_called =
++      std::make_shared<std::atomic_bool>(false);
++  CompletionCallback combined_completion_callback;
++  if (!callbacks.empty()) {
++    combined_completion_callback =
++        [callbacks = std::move(callbacks), callback_called,
++         this](impeller::CommandBuffer::Status status) mutable {
++          if (callback_called->exchange(true)) {
++            return;
++          }
++          for (const auto& callback : callbacks) {
++            DispatchCompletion(callback, status);
++          }
++        };
++  }
++
++  if (context_->GetBackendType() == impeller::Context::BackendType::kOpenGLES) {
++    if (!raster_task_runner_) {
++      if (combined_completion_callback) {
++        combined_completion_callback(impeller::CommandBuffer::Status::kError);
++      }
++      return false;
++    }
++    raster_task_runner_->PostTask(
++        fml::MakeCopyable([context = context_, command_buffer = command_buffer_,
++                           completion_callback = combined_completion_callback,
++                           encodables = encodables_]() mutable {
++          for (const auto& encodable : encodables) {
++            if (!encodable.EncodeCommands()) {
++              if (completion_callback) {
++                completion_callback(impeller::CommandBuffer::Status::kError);
++              }
++              context->DisposeThreadLocalCachedResources();
++              return;
++            }
++          }
++          auto command_queue = context->GetCommandQueue();
++          if (command_queue == nullptr) {
++            if (completion_callback) {
++              completion_callback(impeller::CommandBuffer::Status::kError);
++            }
++            context->DisposeThreadLocalCachedResources();
++            return;
++          }
++          const auto status =
++              command_queue->Submit({command_buffer}, completion_callback);
++          if (!status.ok() && completion_callback) {
++            completion_callback(impeller::CommandBuffer::Status::kError);
++          }
++          context->DisposeThreadLocalCachedResources();
++        }));
++    return true;
++  }
++
++  for (const auto& encodable : encodables_) {
++    if (!encodable.EncodeCommands()) {
++      if (combined_completion_callback) {
++        combined_completion_callback(impeller::CommandBuffer::Status::kError);
++      }
++      return false;
++    }
++  }
++
++  auto command_queue = context_->GetCommandQueue();
++  if (command_queue == nullptr) {
++    if (combined_completion_callback) {
++      combined_completion_callback(impeller::CommandBuffer::Status::kError);
++    }
++    context_->DisposeThreadLocalCachedResources();
++    return false;
++  }
++  const auto status =
++      command_queue->Submit({command_buffer_}, combined_completion_callback);
++  if (!status.ok() && combined_completion_callback) {
++    combined_completion_callback(impeller::CommandBuffer::Status::kError);
++  }
++  context_->DisposeThreadLocalCachedResources();
++  return status.ok();
++}
++
++FlutterSpiResult SpiGpuCommandBuffer::Submit(
++    FlutterSpiGpuSubmitCallback callback,
++    void* user_data) {
++  if (submitted_) {
++    if (callback != nullptr) {
++      DispatchCompletion(
++          [callback, user_data](impeller::CommandBuffer::Status status) {
++            callback(user_data, StatusToResult(status));
++          },
++          impeller::CommandBuffer::Status::kError);
++    }
++    return kFlutterSpiInvalidArgument;
++  }
++  CompletionCallback completion_callback;
++  if (callback != nullptr) {
++    completion_callback = [callback,
++                           user_data](impeller::CommandBuffer::Status status) {
++      callback(user_data, StatusToResult(status));
++    };
++  }
++  return Submit(completion_callback) ? kFlutterSpiOk : kFlutterSpiInternalError;
++}
++
++FlutterSpiResult SpiGpuCommandBufferCreate(
++    FlutterSpiGpuContext* context,
++    FlutterSpiGpuCommandBuffer** out_command_buffer) {
++  if (out_command_buffer == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out_command_buffer = nullptr;
++  auto context_value = SpiGpuContextGetImpeller(context);
++  if (context_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  auto command_buffer = context_value->CreateCommandBuffer();
++  if (command_buffer == nullptr) {
++    return kFlutterSpiInternalError;
++  }
++  auto core = std::make_shared<SpiGpuCommandBuffer>(
++      context_value, std::move(command_buffer),
++      SpiGpuContextGetRasterTaskRunner(context),
++      SpiGpuContextGetUiTaskRunner(context));
++  const uintptr_t handle = CommandBuffers().Insert(std::move(core));
++  if (handle == 0) {
++    return kFlutterSpiInternalError;
++  }
++  *out_command_buffer = MakeHandle(handle);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiGpuCommandBufferCopyBufferToTexture(
++    FlutterSpiGpuCommandBuffer* command_buffer,
++    FlutterSpiGpuBuffer* source,
++    size_t source_offset,
++    size_t source_length,
++    FlutterSpiGpuTexture* destination,
++    const FlutterSpiGpuRegion* destination_region,
++    int32_t mip_level,
++    int32_t slice) {
++  auto* command_buffer_value = FindCommandBuffer(command_buffer);
++  if (command_buffer_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (destination_region == nullptr || mip_level < 0 || slice < 0) {
++    return kFlutterSpiInvalidArgument;
++  }
++  auto source_value = SpiGpuBufferGetImpeller(source);
++  auto destination_value = SpiGpuTextureGetImpeller(destination);
++  if (source_value == nullptr || destination_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  const size_t source_size = source_value->GetDeviceBufferDescriptor().size;
++  if (source_offset > source_size ||
++      source_length > source_size - source_offset ||
++      !IsRegionInsideTexture(*destination_value, *destination_region,
++                             mip_level) ||
++      !destination_value->IsSliceValid(static_cast<size_t>(slice))) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return command_buffer_value->CopyBufferToTexture(
++             std::move(source_value), source_offset, source_length,
++             std::move(destination_value),
++             ToImpellerRegion(*destination_region),
++             static_cast<uint32_t>(mip_level), static_cast<uint32_t>(slice))
++             ? kFlutterSpiOk
++             : kFlutterSpiInternalError;
++}
++
++FlutterSpiResult SpiGpuCommandBufferCopyTextureToBuffer(
++    FlutterSpiGpuCommandBuffer* command_buffer,
++    FlutterSpiGpuTexture* source,
++    const FlutterSpiGpuRegion* source_region,
++    FlutterSpiGpuBuffer* destination,
++    size_t destination_offset) {
++  auto* command_buffer_value = FindCommandBuffer(command_buffer);
++  if (command_buffer_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (source_region == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  auto source_value = SpiGpuTextureGetImpeller(source);
++  auto destination_value = SpiGpuBufferGetImpeller(destination);
++  if (source_value == nullptr || destination_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (destination_offset >
++          destination_value->GetDeviceBufferDescriptor().size ||
++      !IsRegionInsideTexture(*source_value, *source_region, 0)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return command_buffer_value->CopyTextureToBuffer(
++             std::move(source_value), ToImpellerRegion(*source_region),
++             std::move(destination_value), destination_offset)
++             ? kFlutterSpiOk
++             : kFlutterSpiInternalError;
++}
++
++FlutterSpiResult SpiGpuCommandBufferCopyTextureToTexture(
++    FlutterSpiGpuCommandBuffer* command_buffer,
++    FlutterSpiGpuTexture* source,
++    FlutterSpiGpuTexture* destination,
++    const FlutterSpiGpuRegion* source_region,
++    int32_t destination_x,
++    int32_t destination_y) {
++  auto* command_buffer_value = FindCommandBuffer(command_buffer);
++  if (command_buffer_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (source_region == nullptr || destination_x < 0 || destination_y < 0) {
++    return kFlutterSpiInvalidArgument;
++  }
++  auto source_value = SpiGpuTextureGetImpeller(source);
++  auto destination_value = SpiGpuTextureGetImpeller(destination);
++  if (source_value == nullptr || destination_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!IsRegionInsideTexture(*source_value, *source_region, 0) ||
++      source_region->width >
++          destination_value->GetSize().width - destination_x ||
++      source_region->height >
++          destination_value->GetSize().height - destination_y) {
++    return kFlutterSpiInvalidArgument;
++  }
++  return command_buffer_value->CopyTextureToTexture(
++             std::move(source_value), std::move(destination_value),
++             ToImpellerRegion(*source_region),
++             impeller::IPoint(destination_x, destination_y))
++             ? kFlutterSpiOk
++             : kFlutterSpiInternalError;
++}
++
++FlutterSpiResult SpiGpuCommandBufferSubmit(
++    FlutterSpiGpuCommandBuffer* command_buffer,
++    FlutterSpiGpuSubmitCallback callback,
++    void* user_data) {
++  auto* command_buffer_value = FindCommandBuffer(command_buffer);
++  if (command_buffer_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  return command_buffer_value->Submit(callback, user_data);
++}
++
++FlutterSpiResult SpiGpuCommandBufferRetain(
++    FlutterSpiGpuCommandBuffer* command_buffer) {
++  return CommandBuffers().Retain(HandleValue(command_buffer))
++             ? kFlutterSpiOk
++             : kFlutterSpiInvalidHandle;
++}
++
++FlutterSpiResult SpiGpuCommandBufferRelease(
++    FlutterSpiGpuCommandBuffer* command_buffer) {
++  return CommandBuffers().Release(HandleValue(command_buffer))
++             ? kFlutterSpiOk
++             : kFlutterSpiInvalidHandle;
++}
++
++SpiGpuCommandBuffer* SpiGpuCommandBufferGetCore(
++    FlutterSpiGpuCommandBuffer* command_buffer) {
++  return FindCommandBuffer(command_buffer);
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer.h b/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer.h
+new file mode 100644
+index 00000000000..36e88ac1698
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer.h
+@@ -0,0 +1,129 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_COMMAND_BUFFER_H_
++#define FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_COMMAND_BUFFER_H_
++
++#include <memory>
++#include <vector>
++
++#include "flutter/fml/memory/ref_ptr.h"
++#include "flutter/fml/task_runner.h"
++#include "flutter/runtime_spi/include/flutter_gpu.h"
++#include "impeller/geometry/point.h"
++#include "impeller/geometry/rect.h"
++#include "impeller/renderer/blit_pass.h"
++#include "impeller/renderer/command_buffer.h"
++#include "impeller/renderer/context.h"
++#include "impeller/renderer/render_pass.h"
++
++namespace impeller {
++class DeviceBuffer;
++class Texture;
++}  // namespace impeller
++
++namespace flutter {
++
++class SpiGpuCommandBuffer final {
++ public:
++  using CompletionCallback = impeller::CommandBuffer::CompletionCallback;
++
++  SpiGpuCommandBuffer(std::shared_ptr<impeller::Context> context,
++                      std::shared_ptr<impeller::CommandBuffer> command_buffer,
++                      fml::RefPtr<fml::TaskRunner> raster_task_runner = nullptr,
++                      fml::RefPtr<fml::TaskRunner> ui_task_runner = nullptr);
++
++  ~SpiGpuCommandBuffer();
++
++  std::shared_ptr<impeller::CommandBuffer> GetCommandBuffer();
++
++  void AddRenderPass(std::shared_ptr<impeller::RenderPass> render_pass);
++
++  bool AddCompletionCallback(CompletionCallback completion_callback);
++
++  bool CopyBufferToTexture(std::shared_ptr<impeller::DeviceBuffer> source,
++                           size_t source_offset,
++                           size_t source_length,
++                           std::shared_ptr<impeller::Texture> destination,
++                           impeller::IRect destination_region,
++                           uint32_t mip_level,
++                           uint32_t slice);
++
++  bool CopyTextureToBuffer(std::shared_ptr<impeller::Texture> source,
++                           impeller::IRect source_region,
++                           std::shared_ptr<impeller::DeviceBuffer> destination,
++                           size_t destination_offset);
++
++  bool CopyTextureToTexture(std::shared_ptr<impeller::Texture> source,
++                            std::shared_ptr<impeller::Texture> destination,
++                            impeller::IRect source_region,
++                            impeller::IPoint destination_origin);
++
++  bool Submit();
++  bool Submit(const CompletionCallback& completion_callback);
++  FlutterSpiResult Submit(FlutterSpiGpuSubmitCallback callback,
++                          void* user_data);
++
++ private:
++  struct Encodable {
++    std::shared_ptr<impeller::RenderPass> render_pass;
++    std::shared_ptr<impeller::BlitPass> blit_pass;
++
++    bool EncodeCommands() const;
++  };
++
++  std::shared_ptr<impeller::BlitPass> GetOrCreateBlitPass();
++  void DispatchCompletion(const CompletionCallback& callback,
++                          impeller::CommandBuffer::Status status) const;
++
++  std::shared_ptr<impeller::Context> context_;
++  std::shared_ptr<impeller::CommandBuffer> command_buffer_;
++  fml::RefPtr<fml::TaskRunner> raster_task_runner_;
++  fml::RefPtr<fml::TaskRunner> ui_task_runner_;
++  std::vector<Encodable> encodables_;
++  std::vector<CompletionCallback> completion_callbacks_;
++  std::vector<std::shared_ptr<impeller::DeviceBuffer>> buffers_;
++  std::vector<std::shared_ptr<impeller::Texture>> textures_;
++  bool submitted_ = false;
++};
++
++FlutterSpiResult SpiGpuCommandBufferCreate(
++    FlutterSpiGpuContext* context,
++    FlutterSpiGpuCommandBuffer** out_command_buffer);
++FlutterSpiResult SpiGpuCommandBufferCopyBufferToTexture(
++    FlutterSpiGpuCommandBuffer* command_buffer,
++    FlutterSpiGpuBuffer* source,
++    size_t source_offset,
++    size_t source_length,
++    FlutterSpiGpuTexture* destination,
++    const FlutterSpiGpuRegion* destination_region,
++    int32_t mip_level,
++    int32_t slice);
++FlutterSpiResult SpiGpuCommandBufferCopyTextureToBuffer(
++    FlutterSpiGpuCommandBuffer* command_buffer,
++    FlutterSpiGpuTexture* source,
++    const FlutterSpiGpuRegion* source_region,
++    FlutterSpiGpuBuffer* destination,
++    size_t destination_offset);
++FlutterSpiResult SpiGpuCommandBufferCopyTextureToTexture(
++    FlutterSpiGpuCommandBuffer* command_buffer,
++    FlutterSpiGpuTexture* source,
++    FlutterSpiGpuTexture* destination,
++    const FlutterSpiGpuRegion* source_region,
++    int32_t destination_x,
++    int32_t destination_y);
++FlutterSpiResult SpiGpuCommandBufferSubmit(
++    FlutterSpiGpuCommandBuffer* command_buffer,
++    FlutterSpiGpuSubmitCallback callback,
++    void* user_data);
++FlutterSpiResult SpiGpuCommandBufferRetain(
++    FlutterSpiGpuCommandBuffer* command_buffer);
++FlutterSpiResult SpiGpuCommandBufferRelease(
++    FlutterSpiGpuCommandBuffer* command_buffer);
++SpiGpuCommandBuffer* SpiGpuCommandBufferGetCore(
++    FlutterSpiGpuCommandBuffer* command_buffer);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_COMMAND_BUFFER_H_
+diff --git a/engine/src/flutter/lib/gpu/command_buffer_unittests.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer_unittests.cc
+similarity index 91%
+rename from engine/src/flutter/lib/gpu/command_buffer_unittests.cc
+rename to engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer_unittests.cc
+index b5924d1257f..40d6bd2ae09 100644
+--- a/engine/src/flutter/lib/gpu/command_buffer_unittests.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer_unittests.cc
+@@ -1,8 +1,8 @@
+-// Copyright 2013 The Flutter Authors. All rights reserved.
++// Copyright 2026 The Flutter Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+-#include "flutter/lib/gpu/command_buffer.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_command_buffer.h"
+ 
+ #include <memory>
+ #include <vector>
+@@ -12,7 +12,7 @@
+ #include "gtest/gtest.h"
+ #include "impeller/renderer/testing/mocks.h"
+ 
+-namespace flutter::gpu {
++namespace flutter {
+ namespace {
+ 
+ using ::impeller::testing::MockCommandBuffer;
+@@ -27,7 +27,7 @@ TEST(FlutterGpuCommandBufferTest,
+   auto context = std::make_shared<MockImpellerContext>();
+   auto impeller_command_buffer = std::make_shared<MockCommandBuffer>(context);
+   auto command_queue = std::make_shared<MockCommandQueue>();
+-  CommandBuffer command_buffer(context, impeller_command_buffer);
++  SpiGpuCommandBuffer command_buffer(context, impeller_command_buffer);
+ 
+   std::vector<impeller::CommandBuffer::Status> statuses;
+ 
+@@ -67,7 +67,7 @@ TEST(FlutterGpuCommandBufferTest, RejectsCompletionCallbacksAfterSubmit) {
+   auto context = std::make_shared<MockImpellerContext>();
+   auto impeller_command_buffer = std::make_shared<MockCommandBuffer>(context);
+   auto command_queue = std::make_shared<MockCommandQueue>();
+-  CommandBuffer command_buffer(context, impeller_command_buffer);
++  SpiGpuCommandBuffer command_buffer(context, impeller_command_buffer);
+ 
+   EXPECT_CALL(*context, GetBackendType)
+       .WillOnce(Return(impeller::Context::BackendType::kMetal));
+@@ -85,7 +85,7 @@ TEST(FlutterGpuCommandBufferTest,
+   auto context = std::make_shared<MockImpellerContext>();
+   auto impeller_command_buffer = std::make_shared<MockCommandBuffer>(context);
+   auto command_queue = std::make_shared<MockCommandQueue>();
+-  CommandBuffer command_buffer(context, impeller_command_buffer);
++  SpiGpuCommandBuffer command_buffer(context, impeller_command_buffer);
+ 
+   std::vector<impeller::CommandBuffer::Status> statuses;
+ 
+@@ -107,4 +107,4 @@ TEST(FlutterGpuCommandBufferTest,
+ }
+ 
+ }  // namespace
+-}  // namespace flutter::gpu
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_context.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_context.cc
+index 88b9e92ce82..52e48d6c8ad 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_context.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_context.cc
+@@ -21,9 +21,11 @@ namespace {
+ class SpiGpuContext final {
+  public:
+   SpiGpuContext(std::shared_ptr<impeller::Context> context,
+-                fml::RefPtr<fml::TaskRunner> raster_task_runner)
++                fml::RefPtr<fml::TaskRunner> raster_task_runner,
++                fml::RefPtr<fml::TaskRunner> ui_task_runner)
+       : context_(std::move(context)),
+-        raster_task_runner_(std::move(raster_task_runner)) {}
++        raster_task_runner_(std::move(raster_task_runner)),
++        ui_task_runner_(std::move(ui_task_runner)) {}
+ 
+   const std::shared_ptr<impeller::Context>& context() const { return context_; }
+ 
+@@ -31,9 +33,14 @@ class SpiGpuContext final {
+     return raster_task_runner_;
+   }
+ 
++  const fml::RefPtr<fml::TaskRunner>& ui_task_runner() const {
++    return ui_task_runner_;
++  }
++
+  private:
+   std::shared_ptr<impeller::Context> context_;
+   fml::RefPtr<fml::TaskRunner> raster_task_runner_;
++  fml::RefPtr<fml::TaskRunner> ui_task_runner_;
+ };
+ 
+ SpiHandleTable<SpiGpuContext>& Contexts() {
+@@ -119,7 +126,8 @@ FlutterSpiResult SpiGpuContextGetDefault(FlutterSpiEngine* engine,
+   }
+ 
+   const uintptr_t handle = Contexts().Insert(std::make_shared<SpiGpuContext>(
+-      std::move(context), backend->task_runners_.GetRasterTaskRunner()));
++      std::move(context), backend->task_runners_.GetRasterTaskRunner(),
++      backend->task_runners_.GetUITaskRunner()));
+   if (handle == 0) {
+     return kFlutterSpiInternalError;
+   }
+@@ -273,4 +281,10 @@ fml::RefPtr<fml::TaskRunner> SpiGpuContextGetRasterTaskRunner(
+                                   : context_value->raster_task_runner();
+ }
+ 
++fml::RefPtr<fml::TaskRunner> SpiGpuContextGetUiTaskRunner(
++    FlutterSpiGpuContext* context) {
++  SpiGpuContext* context_value = FindContext(context);
++  return context_value == nullptr ? nullptr : context_value->ui_task_runner();
++}
++
+ }  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_context.h b/engine/src/flutter/runtime_spi/gpu/spi_gpu_context.h
+index ec6a573a9b6..e73f2cbcf7d 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_context.h
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_context.h
+@@ -41,6 +41,8 @@ std::shared_ptr<impeller::Context> SpiGpuContextGetImpeller(
+     FlutterSpiGpuContext* context);
+ fml::RefPtr<fml::TaskRunner> SpiGpuContextGetRasterTaskRunner(
+     FlutterSpiGpuContext* context);
++fml::RefPtr<fml::TaskRunner> SpiGpuContextGetUiTaskRunner(
++    FlutterSpiGpuContext* context);
+ void SpiGpuSetDefaultContextOverride(
+     std::shared_ptr<impeller::Context> context);
+ std::shared_ptr<impeller::Context> SpiGpuGetDefaultContextOverride();
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
+index f22793a5064..47fee5205b6 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
+@@ -3,6 +3,7 @@
+ // found in the LICENSE file.
+ 
+ #include "flutter/runtime_spi/gpu/spi_gpu_buffer.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_command_buffer.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_context.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_render_pipeline.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_shader.h"
+@@ -24,8 +25,8 @@
+ #include "flutter/testing/testing.h"
+ #include "gmock/gmock.h"
+ #include "gtest/gtest.h"
+-#include "impeller/renderer/shader_library.h"
+ #include "impeller/renderer/sampler_library.h"
++#include "impeller/renderer/shader_library.h"
+ #include "impeller/renderer/testing/mocks.h"
+ #include "impeller/shader_bundle/shader_bundle_flatbuffers.h"
+ 
+@@ -33,6 +34,7 @@ namespace flutter::testing {
+ namespace {
+ 
+ using ::testing::NiceMock;
++using ::testing::DoAll;
+ using ::testing::Return;
+ using ::testing::ReturnRef;
+ 
+@@ -71,7 +73,8 @@ class FakeShaderLibrary final : public impeller::ShaderLibrary {
+   bool IsValid() const override { return true; }
+ 
+   std::shared_ptr<const impeller::ShaderFunction> GetFunction(
+-      std::string_view, impeller::ShaderStage) override {
++      std::string_view,
++      impeller::ShaderStage) override {
+     return nullptr;
+   }
+ 
+@@ -325,8 +328,8 @@ PipelineShaderHandles MakePipelineShaderHandles(FlutterSpiGpuContext* context) {
+                                 nullptr) != kFlutterSpiOk) {
+     return {};
+   }
+-  if (SpiGpuShaderLibraryGetShader(handles.library, "vertex", &handles.vertex) !=
+-      kFlutterSpiOk) {
++  if (SpiGpuShaderLibraryGetShader(handles.library, "vertex",
++                                   &handles.vertex) != kFlutterSpiOk) {
+     return {};
+   }
+   if (SpiGpuShaderLibraryGetShader(handles.library, "fragment",
+@@ -406,6 +409,20 @@ void AllowTextureDimensions(impeller::testing::MockAllocator& allocator) {
+       .WillByDefault(Return(impeller::ISize(1024, 1024)));
+ }
+ 
++struct SubmitCallbackState {
++  size_t call_count = 0;
++  bool called_on_ui_thread = false;
++  FlutterSpiResult result = kFlutterSpiInternalError;
++  fml::RefPtr<fml::TaskRunner> ui_task_runner;
++};
++
++void CaptureSubmitResult(void* user_data, FlutterSpiResult result) {
++  auto& state = *static_cast<SubmitCallbackState*>(user_data);
++  ++state.call_count;
++  state.called_on_ui_thread = state.ui_task_runner->RunsTasksOnCurrentThread();
++  state.result = result;
++}
++
+ TEST_F(SpiGpuContextTest, ContextGetDefaultUsesOverride) {
+   std::shared_ptr<const impeller::Capabilities> capabilities;
+   auto context = CreateMockContext(&capabilities);
+@@ -1084,15 +1101,16 @@ TEST_F(SpiGpuContextTest, RenderPipelineCreateUsesDefaultLayout) {
+   auto descriptor =
+       MakeRenderPipelineDescriptor(handles.vertex, handles.fragment);
+   FlutterSpiGpuRenderPipeline* pipeline = nullptr;
+-  EXPECT_EQ(SpiGpuRenderPipelineCreate(context, &descriptor, &pipeline, nullptr),
+-            kFlutterSpiOk);
++  EXPECT_EQ(
++      SpiGpuRenderPipelineCreate(context, &descriptor, &pipeline, nullptr),
++      kFlutterSpiOk);
+   ASSERT_NE(pipeline, nullptr);
+   EXPECT_NE(SpiGpuRenderPipelineGetCore(pipeline), nullptr);
+   ASSERT_NE(shader_library, nullptr);
+-  EXPECT_TRUE(shader_library->HasFunction(
+-      "fg:test_bundle:vertex_main", impeller::ShaderStage::kVertex));
+-  EXPECT_TRUE(shader_library->HasFunction(
+-      "fg:test_bundle:fragment_main", impeller::ShaderStage::kFragment));
++  EXPECT_TRUE(shader_library->HasFunction("fg:test_bundle:vertex_main",
++                                          impeller::ShaderStage::kVertex));
++  EXPECT_TRUE(shader_library->HasFunction("fg:test_bundle:fragment_main",
++                                          impeller::ShaderStage::kFragment));
+ 
+   EXPECT_EQ(SpiGpuRenderPipelineRelease(pipeline), kFlutterSpiOk);
+   ReleasePipelineShaderHandles(&handles);
+@@ -1103,8 +1121,7 @@ TEST_F(SpiGpuContextTest,
+        RenderPipelineCreateSurvivesContextWithoutShaderLibrary) {
+   std::shared_ptr<const impeller::Capabilities> capabilities;
+   auto impeller_context = CreateMockContext(&capabilities);
+-  ON_CALL(*impeller_context, GetShaderLibrary())
+-      .WillByDefault(Return(nullptr));
++  ON_CALL(*impeller_context, GetShaderLibrary()).WillByDefault(Return(nullptr));
+   SpiGpuSetDefaultContextOverride(impeller_context);
+   auto backend = CreateBackend(true, true);
+   FlutterSpiGpuContext* context = GetDefaultContext(backend.get());
+@@ -1115,8 +1132,9 @@ TEST_F(SpiGpuContextTest,
+   auto descriptor =
+       MakeRenderPipelineDescriptor(handles.vertex, handles.fragment);
+   FlutterSpiGpuRenderPipeline* pipeline = nullptr;
+-  EXPECT_EQ(SpiGpuRenderPipelineCreate(context, &descriptor, &pipeline, nullptr),
+-            kFlutterSpiOk);
++  EXPECT_EQ(
++      SpiGpuRenderPipelineCreate(context, &descriptor, &pipeline, nullptr),
++      kFlutterSpiOk);
+   ASSERT_NE(pipeline, nullptr);
+ 
+   EXPECT_EQ(SpiGpuRenderPipelineRelease(pipeline), kFlutterSpiOk);
+@@ -1261,11 +1279,12 @@ TEST_F(SpiGpuContextTest, RenderPipelineCreateRejectsSmallStruct) {
+ 
+   auto descriptor =
+       MakeRenderPipelineDescriptor(handles.vertex, handles.fragment);
+-  descriptor.struct_size = offsetof(FlutterSpiGpuRenderPipelineDescriptor,
+-                                   buffer_layouts);
++  descriptor.struct_size =
++      offsetof(FlutterSpiGpuRenderPipelineDescriptor, buffer_layouts);
+   FlutterSpiGpuRenderPipeline* pipeline = nullptr;
+-  EXPECT_EQ(SpiGpuRenderPipelineCreate(context, &descriptor, &pipeline, nullptr),
+-            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(
++      SpiGpuRenderPipelineCreate(context, &descriptor, &pipeline, nullptr),
++      kFlutterSpiInvalidArgument);
+   EXPECT_EQ(pipeline, nullptr);
+ 
+   ReleasePipelineShaderHandles(&handles);
+@@ -1284,8 +1303,9 @@ TEST_F(SpiGpuContextTest, RenderPipelineOutlivesShaderHandles) {
+   auto descriptor =
+       MakeRenderPipelineDescriptor(handles.vertex, handles.fragment);
+   FlutterSpiGpuRenderPipeline* pipeline = nullptr;
+-  ASSERT_EQ(SpiGpuRenderPipelineCreate(context, &descriptor, &pipeline, nullptr),
+-            kFlutterSpiOk);
++  ASSERT_EQ(
++      SpiGpuRenderPipelineCreate(context, &descriptor, &pipeline, nullptr),
++      kFlutterSpiOk);
+   EXPECT_EQ(SpiGpuShaderRelease(handles.vertex), kFlutterSpiOk);
+   handles.vertex = nullptr;
+   EXPECT_EQ(SpiGpuShaderRelease(handles.fragment), kFlutterSpiOk);
+@@ -1329,9 +1349,11 @@ TEST_F(SpiGpuContextTest, BindingSetAddUniformRejectsOutOfRangeView) {
+   auto context = CreateMockContext(&capabilities);
+   auto allocator =
+       std::make_shared<NiceMock<impeller::testing::MockAllocator>>();
+-  auto device_buffer = std::make_shared<NiceMock<impeller::testing::MockDeviceBuffer>>(
+-      impeller::DeviceBufferDescriptor{.size = 64});
+-  ON_CALL(*allocator, OnCreateBuffer(::testing::_)).WillByDefault(Return(device_buffer));
++  auto device_buffer =
++      std::make_shared<NiceMock<impeller::testing::MockDeviceBuffer>>(
++          impeller::DeviceBufferDescriptor{.size = 64});
++  ON_CALL(*allocator, OnCreateBuffer(::testing::_))
++      .WillByDefault(Return(device_buffer));
+   ON_CALL(*context, GetResourceAllocator()).WillByDefault(Return(allocator));
+   SpiGpuSetDefaultContextOverride(context);
+   auto backend = CreateBackend(true, true);
+@@ -1350,9 +1372,9 @@ TEST_F(SpiGpuContextTest, BindingSetAddUniformRejectsOutOfRangeView) {
+   ASSERT_EQ(SpiGpuBufferCreate(gpu_context, &buffer_descriptor, &buffer),
+             kFlutterSpiOk);
+ 
+-  EXPECT_EQ(SpiGpuBindingSetAddUniform(set, shader_handles.shader, 0, buffer,
+-                                       32, 64),
+-            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(
++      SpiGpuBindingSetAddUniform(set, shader_handles.shader, 0, buffer, 32, 64),
++      kFlutterSpiInvalidArgument);
+   EXPECT_TRUE(SpiGpuBindingSetGetCore(set)->GetBufferBindings().empty());
+ 
+   EXPECT_EQ(SpiGpuBindingSetRelease(set), kFlutterSpiOk);
+@@ -1400,10 +1422,8 @@ TEST_F(SpiGpuContextTest, BindingSetAddTextureUsesSamplerDescriptor) {
+   EXPECT_EQ(SpiGpuBindingSetAddTexture(set, gpu_context, shader_handles.shader,
+                                        0, gpu_texture, &sampler_descriptor),
+             kFlutterSpiOk);
+-  EXPECT_EQ(received_descriptor.min_filter,
+-            impeller::MinMagFilter::kLinear);
+-  EXPECT_EQ(received_descriptor.mag_filter,
+-            impeller::MinMagFilter::kNearest);
++  EXPECT_EQ(received_descriptor.min_filter, impeller::MinMagFilter::kLinear);
++  EXPECT_EQ(received_descriptor.mag_filter, impeller::MinMagFilter::kNearest);
+   EXPECT_EQ(received_descriptor.mip_filter, impeller::MipFilter::kLinear);
+   EXPECT_EQ(received_descriptor.width_address_mode,
+             impeller::SamplerAddressMode::kRepeat);
+@@ -1430,7 +1450,8 @@ TEST_F(SpiGpuContextTest, BindingSetRejectsSmallSamplerStruct) {
+       .WillByDefault(Return(texture));
+   ON_CALL(*context, GetResourceAllocator()).WillByDefault(Return(allocator));
+   ON_CALL(*context, GetSamplerLibrary())
+-      .WillByDefault(Return(std::make_shared<NiceMock<impeller::testing::MockSamplerLibrary>>()));
++      .WillByDefault(Return(
++          std::make_shared<NiceMock<impeller::testing::MockSamplerLibrary>>()));
+   SpiGpuSetDefaultContextOverride(context);
+   auto backend = CreateBackend(true, true);
+   FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());
+@@ -1462,12 +1483,14 @@ TEST_F(SpiGpuContextTest, BindingSetOutlivesResourceHandles) {
+   auto context = CreateMockContext(&capabilities);
+   auto allocator =
+       std::make_shared<NiceMock<impeller::testing::MockAllocator>>();
+-  auto device_buffer = std::make_shared<NiceMock<impeller::testing::MockDeviceBuffer>>(
+-      impeller::DeviceBufferDescriptor{.size = 128});
++  auto device_buffer =
++      std::make_shared<NiceMock<impeller::testing::MockDeviceBuffer>>(
++          impeller::DeviceBufferDescriptor{.size = 128});
+   auto texture = std::make_shared<NiceMock<impeller::testing::MockTexture>>(
+       impeller::TextureDescriptor{});
+   AllowTextureDimensions(*allocator);
+-  ON_CALL(*allocator, OnCreateBuffer(::testing::_)).WillByDefault(Return(device_buffer));
++  ON_CALL(*allocator, OnCreateBuffer(::testing::_))
++      .WillByDefault(Return(device_buffer));
+   ON_CALL(*allocator, OnCreateTexture(::testing::_, true))
+       .WillByDefault(Return(texture));
+   auto sampler_library =
+@@ -1476,7 +1499,8 @@ TEST_F(SpiGpuContextTest, BindingSetOutlivesResourceHandles) {
+       std::make_shared<impeller::testing::MockSampler>(
+           impeller::SamplerDescriptor{});
+   ON_CALL(*sampler_library, GetSampler(::testing::_))
+-      .WillByDefault(Return(impeller::raw_ptr<const impeller::Sampler>(sampler)));
++      .WillByDefault(
++          Return(impeller::raw_ptr<const impeller::Sampler>(sampler)));
+   ON_CALL(*context, GetResourceAllocator()).WillByDefault(Return(allocator));
+   ON_CALL(*context, GetSamplerLibrary()).WillByDefault(Return(sampler_library));
+   SpiGpuSetDefaultContextOverride(context);
+@@ -1500,9 +1524,9 @@ TEST_F(SpiGpuContextTest, BindingSetOutlivesResourceHandles) {
+   ASSERT_EQ(SpiGpuTextureCreate(gpu_context, &texture_descriptor, &gpu_texture),
+             kFlutterSpiOk);
+   auto sampler_descriptor = MakeSamplerDescriptor();
+-  ASSERT_EQ(SpiGpuBindingSetAddUniform(set, shader_handles.shader, 0, buffer,
+-                                       0, 64),
+-            kFlutterSpiOk);
++  ASSERT_EQ(
++      SpiGpuBindingSetAddUniform(set, shader_handles.shader, 0, buffer, 0, 64),
++      kFlutterSpiOk);
+   ASSERT_EQ(SpiGpuBindingSetAddTexture(set, gpu_context, shader_handles.shader,
+                                        0, gpu_texture, &sampler_descriptor),
+             kFlutterSpiOk);
+@@ -1538,5 +1562,214 @@ TEST_F(SpiGpuContextTest, BindingSetCallsRejectNullAndReleasedHandles) {
+   EXPECT_EQ(SpiGpuBindingSetClear(set), kFlutterSpiInvalidHandle);
+ }
+ 
++TEST_F(SpiGpuContextTest, CommandBufferSubmitCallsBackOnceOnUiThread) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  auto context = CreateMockContext(&capabilities);
++  auto command_buffer =
++      std::make_shared<NiceMock<impeller::testing::MockCommandBuffer>>(context);
++  auto command_queue =
++      std::make_shared<NiceMock<impeller::testing::MockCommandQueue>>();
++  ON_CALL(*context, CreateCommandBuffer())
++      .WillByDefault(Return(command_buffer));
++  ON_CALL(*context, GetCommandQueue()).WillByDefault(Return(command_queue));
++  ON_CALL(*command_queue, Submit(::testing::_, ::testing::_))
++      .WillByDefault(DoAll(
++          [](const std::vector<std::shared_ptr<impeller::CommandBuffer>>&,
++             const impeller::CommandQueue::CompletionCallback& callback) {
++            callback(impeller::CommandBuffer::Status::kCompleted);
++          },
++          Return(fml::Status())));
++  SpiGpuSetDefaultContextOverride(context);
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());
++  FlutterSpiGpuCommandBuffer* gpu_command_buffer = nullptr;
++  ASSERT_EQ(SpiGpuCommandBufferCreate(gpu_context, &gpu_command_buffer),
++            kFlutterSpiOk);
++
++  SubmitCallbackState state;
++  state.ui_task_runner = task_runners_->GetUITaskRunner();
++  EXPECT_EQ(SpiGpuCommandBufferSubmit(gpu_command_buffer, CaptureSubmitResult,
++                                      &state),
++            kFlutterSpiOk);
++  EXPECT_EQ(state.call_count, 1u);
++  EXPECT_TRUE(state.called_on_ui_thread);
++  EXPECT_EQ(state.result, kFlutterSpiOk);
++
++  EXPECT_EQ(SpiGpuCommandBufferRelease(gpu_command_buffer), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, CommandBufferSubmitTwiceFails) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  auto context = CreateMockContext(&capabilities);
++  auto command_buffer =
++      std::make_shared<NiceMock<impeller::testing::MockCommandBuffer>>(context);
++  auto command_queue =
++      std::make_shared<NiceMock<impeller::testing::MockCommandQueue>>();
++  ON_CALL(*context, CreateCommandBuffer())
++      .WillByDefault(Return(command_buffer));
++  ON_CALL(*context, GetCommandQueue()).WillByDefault(Return(command_queue));
++  ON_CALL(*command_queue, Submit(::testing::_, ::testing::_))
++      .WillByDefault(Return(fml::Status()));
++  SpiGpuSetDefaultContextOverride(context);
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());
++  FlutterSpiGpuCommandBuffer* gpu_command_buffer = nullptr;
++  ASSERT_EQ(SpiGpuCommandBufferCreate(gpu_context, &gpu_command_buffer),
++            kFlutterSpiOk);
++
++  EXPECT_EQ(SpiGpuCommandBufferSubmit(gpu_command_buffer, nullptr, nullptr),
++            kFlutterSpiOk);
++  SubmitCallbackState state;
++  state.ui_task_runner = task_runners_->GetUITaskRunner();
++  EXPECT_EQ(SpiGpuCommandBufferSubmit(gpu_command_buffer, CaptureSubmitResult,
++                                      &state),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(state.call_count, 1u);
++  EXPECT_EQ(state.result, kFlutterSpiInternalError);
++
++  EXPECT_EQ(SpiGpuCommandBufferRelease(gpu_command_buffer), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, CommandBufferCopyRejectsOutOfRangeRegion) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  auto context = CreateMockContext(&capabilities);
++  auto command_buffer =
++      std::make_shared<NiceMock<impeller::testing::MockCommandBuffer>>(context);
++  auto allocator =
++      std::make_shared<NiceMock<impeller::testing::MockAllocator>>();
++  AllowTextureDimensions(*allocator);
++  auto texture = std::make_shared<NiceMock<impeller::testing::MockTexture>>(
++      impeller::TextureDescriptor{.size = impeller::ISize(64, 32),
++                                  .mip_count = 1,
++                                  .array_layer_count = 1});
++  auto device_buffer =
++      std::make_shared<NiceMock<impeller::testing::MockDeviceBuffer>>(
++          impeller::DeviceBufferDescriptor{.size = 1024});
++  ON_CALL(*context, CreateCommandBuffer())
++      .WillByDefault(Return(command_buffer));
++  ON_CALL(*context, GetResourceAllocator()).WillByDefault(Return(allocator));
++  ON_CALL(*allocator, OnCreateTexture(::testing::_, true))
++      .WillByDefault(Return(texture));
++  ON_CALL(*allocator, OnCreateBuffer(::testing::_))
++      .WillByDefault(Return(device_buffer));
++  ON_CALL(*texture, GetSize()).WillByDefault(Return(impeller::ISize(64, 32)));
++  SpiGpuSetDefaultContextOverride(context);
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());
++  FlutterSpiGpuCommandBuffer* gpu_command_buffer = nullptr;
++  ASSERT_EQ(SpiGpuCommandBufferCreate(gpu_context, &gpu_command_buffer),
++            kFlutterSpiOk);
++  auto texture_descriptor = MakeTextureDescriptor();
++  FlutterSpiGpuTexture* gpu_texture = nullptr;
++  ASSERT_EQ(SpiGpuTextureCreate(gpu_context, &texture_descriptor, &gpu_texture),
++            kFlutterSpiOk);
++  FlutterSpiGpuBufferDescriptor buffer_descriptor = {
++      .struct_size = sizeof(buffer_descriptor),
++      .storage_mode = kFlutterSpiGpuStorageModeHostVisible,
++      .size = 1024,
++  };
++  FlutterSpiGpuBuffer* gpu_buffer = nullptr;
++  ASSERT_EQ(SpiGpuBufferCreate(gpu_context, &buffer_descriptor, &gpu_buffer),
++            kFlutterSpiOk);
++  const FlutterSpiGpuRegion region = {.x = 60, .y = 0, .width = 8, .height = 1};
++
++  EXPECT_EQ(SpiGpuCommandBufferCopyTextureToBuffer(
++                gpu_command_buffer, gpu_texture, &region, gpu_buffer, 0),
++            kFlutterSpiInvalidArgument);
++
++  EXPECT_EQ(SpiGpuBufferRelease(gpu_buffer), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuTextureRelease(gpu_texture), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuCommandBufferRelease(gpu_command_buffer), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, CommandBufferCopyRejectsOffsetPastBuffer) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  auto context = CreateMockContext(&capabilities);
++  auto command_buffer =
++      std::make_shared<NiceMock<impeller::testing::MockCommandBuffer>>(context);
++  auto allocator =
++      std::make_shared<NiceMock<impeller::testing::MockAllocator>>();
++  AllowTextureDimensions(*allocator);
++  auto texture = std::make_shared<NiceMock<impeller::testing::MockTexture>>(
++      impeller::TextureDescriptor{.size = impeller::ISize(64, 32),
++                                  .mip_count = 1,
++                                  .array_layer_count = 1});
++  auto device_buffer =
++      std::make_shared<NiceMock<impeller::testing::MockDeviceBuffer>>(
++          impeller::DeviceBufferDescriptor{.size = 8});
++  ON_CALL(*context, CreateCommandBuffer())
++      .WillByDefault(Return(command_buffer));
++  ON_CALL(*context, GetResourceAllocator()).WillByDefault(Return(allocator));
++  ON_CALL(*allocator, OnCreateTexture(::testing::_, true))
++      .WillByDefault(Return(texture));
++  ON_CALL(*allocator, OnCreateBuffer(::testing::_))
++      .WillByDefault(Return(device_buffer));
++  ON_CALL(*texture, GetSize()).WillByDefault(Return(impeller::ISize(64, 32)));
++  SpiGpuSetDefaultContextOverride(context);
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());
++  FlutterSpiGpuCommandBuffer* gpu_command_buffer = nullptr;
++  ASSERT_EQ(SpiGpuCommandBufferCreate(gpu_context, &gpu_command_buffer),
++            kFlutterSpiOk);
++  auto texture_descriptor = MakeTextureDescriptor();
++  FlutterSpiGpuTexture* gpu_texture = nullptr;
++  ASSERT_EQ(SpiGpuTextureCreate(gpu_context, &texture_descriptor, &gpu_texture),
++            kFlutterSpiOk);
++  FlutterSpiGpuBufferDescriptor buffer_descriptor = {
++      .struct_size = sizeof(buffer_descriptor),
++      .storage_mode = kFlutterSpiGpuStorageModeHostVisible,
++      .size = 8,
++  };
++  FlutterSpiGpuBuffer* gpu_buffer = nullptr;
++  ASSERT_EQ(SpiGpuBufferCreate(gpu_context, &buffer_descriptor, &gpu_buffer),
++            kFlutterSpiOk);
++  const FlutterSpiGpuRegion region = {.x = 0, .y = 0, .width = 1, .height = 1};
++
++  EXPECT_EQ(SpiGpuCommandBufferCopyTextureToBuffer(
++                gpu_command_buffer, gpu_texture, &region, gpu_buffer, 9),
++            kFlutterSpiInvalidArgument);
++
++  EXPECT_EQ(SpiGpuBufferRelease(gpu_buffer), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuTextureRelease(gpu_texture), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuCommandBufferRelease(gpu_command_buffer), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, CommandBufferCallsRejectNullAndReleasedHandles) {
++  FlutterSpiGpuCommandBuffer* command_buffer = nullptr;
++  EXPECT_EQ(SpiGpuCommandBufferCreate(nullptr, &command_buffer),
++            kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuCommandBufferCreate(nullptr, nullptr),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(SpiGpuCommandBufferRetain(nullptr), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuCommandBufferRelease(nullptr), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuCommandBufferSubmit(nullptr, nullptr, nullptr),
++            kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuCommandBufferCopyTextureToBuffer(nullptr, nullptr, nullptr,
++                                                   nullptr, 0),
++            kFlutterSpiInvalidHandle);
++
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  auto context = CreateMockContext(&capabilities);
++  auto command_buffer_core =
++      std::make_shared<NiceMock<impeller::testing::MockCommandBuffer>>(context);
++  ON_CALL(*context, CreateCommandBuffer())
++      .WillByDefault(Return(command_buffer_core));
++  SpiGpuSetDefaultContextOverride(context);
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());
++  ASSERT_EQ(SpiGpuCommandBufferCreate(gpu_context, &command_buffer),
++            kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuCommandBufferRelease(command_buffer), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuCommandBufferRetain(command_buffer),
++            kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuCommandBufferSubmit(command_buffer, nullptr, nullptr),
++            kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
++}
++
+ }  // namespace
+ }  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_gpu.h b/engine/src/flutter/runtime_spi/include/flutter_gpu.h
+index 4217df43094..da78d6dc834 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_gpu.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_gpu.h
+@@ -22,6 +22,19 @@ typedef struct FlutterSpiGpuShaderLibrary FlutterSpiGpuShaderLibrary;
+ typedef struct FlutterSpiGpuShader FlutterSpiGpuShader;
+ typedef struct FlutterSpiGpuRenderPipeline FlutterSpiGpuRenderPipeline;
+ typedef struct FlutterSpiGpuBindingSet FlutterSpiGpuBindingSet;
++typedef struct FlutterSpiGpuCommandBuffer FlutterSpiGpuCommandBuffer;
++typedef struct FlutterSpiGpuRenderPass FlutterSpiGpuRenderPass;
++typedef struct FlutterSpiGpuImageSurface FlutterSpiGpuImageSurface;
++
++typedef void (*FlutterSpiGpuSubmitCallback)(void* user_data,
++                                            FlutterSpiResult result);
++
++typedef struct {
++  int32_t x;
++  int32_t y;
++  int32_t width;
++  int32_t height;
++} FlutterSpiGpuRegion;
+ 
+ // These values are kept in the same order as the corresponding Flutter GPU
+ // enums in lib/gpu/formats.h.
+@@ -280,8 +293,10 @@ typedef struct FlutterSpiGpuApi {
+       FlutterSpiGpuShaderLibrary* library,
+       const char* name,
+       FlutterSpiGpuShader** out_shader);
+-  FlutterSpiResult (*shader_library_retain)(FlutterSpiGpuShaderLibrary* library);
+-  FlutterSpiResult (*shader_library_release)(FlutterSpiGpuShaderLibrary* library);
++  FlutterSpiResult (*shader_library_retain)(
++      FlutterSpiGpuShaderLibrary* library);
++  FlutterSpiResult (*shader_library_release)(
++      FlutterSpiGpuShaderLibrary* library);
+   FlutterSpiResult (*shader_get_uniform_struct_index)(
+       FlutterSpiGpuShader* shader,
+       const char* name,
+@@ -311,13 +326,12 @@ typedef struct FlutterSpiGpuApi {
+   FlutterSpiResult (*render_pipeline_release)(
+       FlutterSpiGpuRenderPipeline* pipeline);
+   FlutterSpiResult (*binding_set_create)(FlutterSpiGpuBindingSet** out_set);
+-  FlutterSpiResult (*binding_set_add_uniform)(
+-      FlutterSpiGpuBindingSet* set,
+-      FlutterSpiGpuShader* shader,
+-      int32_t uniform_struct_index,
+-      FlutterSpiGpuBuffer* buffer,
+-      size_t offset,
+-      size_t length);
++  FlutterSpiResult (*binding_set_add_uniform)(FlutterSpiGpuBindingSet* set,
++                                              FlutterSpiGpuShader* shader,
++                                              int32_t uniform_struct_index,
++                                              FlutterSpiGpuBuffer* buffer,
++                                              size_t offset,
++                                              size_t length);
+   FlutterSpiResult (*binding_set_add_texture)(
+       FlutterSpiGpuBindingSet* set,
+       FlutterSpiGpuContext* context,
+@@ -328,6 +342,39 @@ typedef struct FlutterSpiGpuApi {
+   FlutterSpiResult (*binding_set_clear)(FlutterSpiGpuBindingSet* set);
+   FlutterSpiResult (*binding_set_retain)(FlutterSpiGpuBindingSet* set);
+   FlutterSpiResult (*binding_set_release)(FlutterSpiGpuBindingSet* set);
++  FlutterSpiResult (*command_buffer_create)(
++      FlutterSpiGpuContext* context,
++      FlutterSpiGpuCommandBuffer** out_command_buffer);
++  FlutterSpiResult (*command_buffer_copy_buffer_to_texture)(
++      FlutterSpiGpuCommandBuffer* command_buffer,
++      FlutterSpiGpuBuffer* source,
++      size_t source_offset,
++      size_t source_length,
++      FlutterSpiGpuTexture* destination,
++      const FlutterSpiGpuRegion* destination_region,
++      int32_t mip_level,
++      int32_t slice);
++  FlutterSpiResult (*command_buffer_copy_texture_to_buffer)(
++      FlutterSpiGpuCommandBuffer* command_buffer,
++      FlutterSpiGpuTexture* source,
++      const FlutterSpiGpuRegion* source_region,
++      FlutterSpiGpuBuffer* destination,
++      size_t destination_offset);
++  FlutterSpiResult (*command_buffer_copy_texture_to_texture)(
++      FlutterSpiGpuCommandBuffer* command_buffer,
++      FlutterSpiGpuTexture* source,
++      FlutterSpiGpuTexture* destination,
++      const FlutterSpiGpuRegion* source_region,
++      int32_t destination_x,
++      int32_t destination_y);
++  FlutterSpiResult (*command_buffer_submit)(
++      FlutterSpiGpuCommandBuffer* command_buffer,
++      FlutterSpiGpuSubmitCallback callback,
++      void* user_data);
++  FlutterSpiResult (*command_buffer_retain)(
++      FlutterSpiGpuCommandBuffer* command_buffer);
++  FlutterSpiResult (*command_buffer_release)(
++      FlutterSpiGpuCommandBuffer* command_buffer);
+ } FlutterSpiGpuApi;
+ 
+ #ifdef __cplusplus
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index 76b4fd6f6af..8c9d255c871 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 26
++#define FLUTTER_SPI_VERSION_MINOR 27
+ 
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+@@ -287,7 +287,7 @@ struct FlutterSpiEngineApi {
+   FlutterSpiResult (*set_application_locale)(FlutterSpiEngine* engine,
+                                              const char* locale);
+   FlutterSpiResult (*set_semantics_tree_enabled)(FlutterSpiEngine* engine,
+-                                                  bool enabled);
++                                                 bool enabled);
+   FlutterSpiResult (*on_root_isolate_created)(FlutterSpiEngine* engine);
+   FlutterSpiResult (*update_isolate_description)(FlutterSpiEngine* engine,
+                                                  const char* name,
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index 6ef2733399f..3090c69ca68 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -97,7 +97,7 @@ TEST(SpiAbi, ImageEnumValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawUnmodified, 2);
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawExtendedRGBA128, 3);
+   EXPECT_EQ(kFlutterSpiImageByteFormatPNG, 4);
+-  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 26);
++  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 27);
+ }
+ 
+ TEST(SpiAbi, GpuContextInfoLayoutIsFrozen) {
+@@ -156,7 +156,17 @@ TEST(SpiAbi, GpuApiLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi, binding_set_clear, 272, 136);
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi, binding_set_retain, 280, 140);
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi, binding_set_release, 288, 144);
+-  EXPECT_EQ(sizeof(FlutterSpiGpuApi), sizeof(void*) == 8 ? 296u : 148u);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, command_buffer_create, 296, 148);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, command_buffer_copy_buffer_to_texture,
++                    304, 152);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, command_buffer_copy_texture_to_buffer,
++                    312, 156);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, command_buffer_copy_texture_to_texture,
++                    320, 160);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, command_buffer_submit, 328, 164);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, command_buffer_retain, 336, 168);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, command_buffer_release, 344, 172);
++  EXPECT_EQ(sizeof(FlutterSpiGpuApi), sizeof(void*) == 8 ? 352u : 176u);
+ }
+ 
+ TEST(SpiAbi, GpuBufferDescriptorLayoutIsFrozen) {
+@@ -187,7 +197,15 @@ TEST(SpiAbi, GpuTextureApiLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi, texture_overwrite, 112, 56);
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi, texture_retain, 120, 60);
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi, texture_release, 128, 64);
+-  EXPECT_EQ(sizeof(FlutterSpiGpuApi), sizeof(void*) == 8 ? 296u : 148u);
++  EXPECT_EQ(sizeof(FlutterSpiGpuApi), sizeof(void*) == 8 ? 352u : 176u);
++}
++
++TEST(SpiAbi, GpuRegionLayoutIsFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiGpuRegion, x, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuRegion, y, 4, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuRegion, width, 8, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuRegion, height, 12, 12);
++  EXPECT_EQ(sizeof(FlutterSpiGpuRegion), 16u);
+ }
+ 
+ TEST(SpiAbi, GpuShaderLibraryDescriptorLayoutIsFrozen) {
+@@ -221,14 +239,13 @@ TEST(SpiAbi, GpuVertexBufferLayoutIsFrozen) {
+ 
+ TEST(SpiAbi, GpuRenderPipelineDescriptorLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiGpuRenderPipelineDescriptor, struct_size, 0, 0);
+-  EXPECT_SPI_OFFSET(FlutterSpiGpuRenderPipelineDescriptor, vertex_shader, 8,
+-                    4);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuRenderPipelineDescriptor, vertex_shader, 8, 4);
+   EXPECT_SPI_OFFSET(FlutterSpiGpuRenderPipelineDescriptor, fragment_shader, 16,
+                     8);
+   EXPECT_SPI_OFFSET(FlutterSpiGpuRenderPipelineDescriptor, buffer_layouts, 24,
+                     12);
+-  EXPECT_SPI_OFFSET(FlutterSpiGpuRenderPipelineDescriptor,
+-                    buffer_layout_count, 32, 16);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuRenderPipelineDescriptor, buffer_layout_count,
++                    32, 16);
+   EXPECT_EQ(sizeof(FlutterSpiGpuRenderPipelineDescriptor),
+             sizeof(void*) == 8 ? 40u : 20u);
+ }
+@@ -238,8 +255,7 @@ TEST(SpiAbi, GpuSamplerDescriptorLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiGpuSamplerDescriptor, min_filter, 8, 4);
+   EXPECT_SPI_OFFSET(FlutterSpiGpuSamplerDescriptor, mag_filter, 12, 8);
+   EXPECT_SPI_OFFSET(FlutterSpiGpuSamplerDescriptor, mip_filter, 16, 12);
+-  EXPECT_SPI_OFFSET(FlutterSpiGpuSamplerDescriptor, width_address_mode, 20,
+-                    16);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuSamplerDescriptor, width_address_mode, 20, 16);
+   EXPECT_SPI_OFFSET(FlutterSpiGpuSamplerDescriptor, height_address_mode, 24,
+                     20);
+   EXPECT_SPI_OFFSET(FlutterSpiGpuSamplerDescriptor, max_anisotropy, 28, 24);
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index 0b55d7764a8..b1316242ff3 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -20,12 +20,13 @@
+ #include "flutter/runtime_spi/effects/spi_image_filter.h"
+ #include "flutter/runtime_spi/effects/spi_shader.h"
+ #include "flutter/runtime_spi/effects/spi_vertices.h"
+-#include "flutter/runtime_spi/gpu/spi_gpu_buffer.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_binding_set.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_buffer.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_command_buffer.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_context.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_render_pipeline.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_shader.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_shader_library.h"
+-#include "flutter/runtime_spi/gpu/spi_gpu_render_pipeline.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_texture.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
+ #include "flutter/runtime_spi/image/spi_image_canvas.h"
+@@ -194,6 +195,16 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+       .binding_set_clear = SpiGpuBindingSetClear,
+       .binding_set_retain = SpiGpuBindingSetRetain,
+       .binding_set_release = SpiGpuBindingSetRelease,
++      .command_buffer_create = SpiGpuCommandBufferCreate,
++      .command_buffer_copy_buffer_to_texture =
++          SpiGpuCommandBufferCopyBufferToTexture,
++      .command_buffer_copy_texture_to_buffer =
++          SpiGpuCommandBufferCopyTextureToBuffer,
++      .command_buffer_copy_texture_to_texture =
++          SpiGpuCommandBufferCopyTextureToTexture,
++      .command_buffer_submit = SpiGpuCommandBufferSubmit,
++      .command_buffer_retain = SpiGpuCommandBufferRetain,
++      .command_buffer_release = SpiGpuCommandBufferRelease,
+   };
+   static const FlutterSpiImageApi image_api = {
+       .struct_size = sizeof(FlutterSpiImageApi),

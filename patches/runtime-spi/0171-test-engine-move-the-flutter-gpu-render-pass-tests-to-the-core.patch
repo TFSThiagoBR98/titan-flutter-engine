@@ -1,0 +1,919 @@
+# Why: keep the four render-pass regression tests attached to the SPI core
+# after the lib/gpu target is removed.
+diff --git a/engine/src/flutter/lib/gpu/render_pass_unittests.cc b/engine/src/flutter/lib/gpu/render_pass_unittests.cc
+deleted file mode 100644
+index 82a8453584a..00000000000
+--- a/engine/src/flutter/lib/gpu/render_pass_unittests.cc
++++ /dev/null
+@@ -1,133 +0,0 @@
+-// Copyright 2013 The Flutter Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style license that can be
+-// found in the LICENSE file.
+-
+-#include "flutter/lib/gpu/render_pass.h"
+-
+-#include "gtest/gtest.h"
+-
+-#include "flutter/lib/gpu/binding_set.h"
+-#include "flutter/lib/gpu/render_pipeline.h"
+-#include "flutter/lib/gpu/shader.h"
+-#include "fml/memory/ref_ptr.h"
+-
+-namespace flutter::gpu {
+-namespace {
+-
+-fml::RefPtr<RenderPipeline> MakeRenderPipeline() {
+-  return fml::MakeRefCounted<RenderPipeline>(nullptr);
+-}
+-
+-// Regression test for https://github.com/flutter/flutter/issues/188712:
+-// SetDepthWriteEnable must honor its argument. It previously ignored the
+-// argument and always enabled depth writes, so disabling depth writes (for
+-// example to keep overlapping translucent draws from self-occluding) had no
+-// effect.
+-TEST(FlutterGpuRenderPassTest, SetDepthWriteEnableHonorsArgument) {
+-  auto render_pass = fml::MakeRefCounted<RenderPass>();
+-
+-  InternalFlutterGpu_RenderPass_SetDepthWriteEnable(render_pass.get(), true);
+-  EXPECT_TRUE(render_pass->GetDepthAttachmentDescriptor().depth_write_enabled);
+-
+-  InternalFlutterGpu_RenderPass_SetDepthWriteEnable(render_pass.get(), false);
+-  EXPECT_FALSE(render_pass->GetDepthAttachmentDescriptor().depth_write_enabled);
+-}
+-
+-// Draws memoize the built pipeline until the pipeline-affecting state
+-// changes, so every state mutation must mark the state dirty (a missed
+-// mutation would silently draw with a stale pipeline).
+-TEST(FlutterGpuRenderPassTest, PipelineStateMutationsMarkStateDirty) {
+-  auto render_pass = fml::MakeRefCounted<RenderPass>();
+-
+-  // A fresh pass must build a pipeline on first draw.
+-  EXPECT_TRUE(render_pass->IsPipelineStateDirtyForTesting());
+-
+-  render_pass->ClearPipelineStateDirtyForTesting();
+-  InternalFlutterGpu_RenderPass_SetDepthWriteEnable(render_pass.get(), true);
+-  EXPECT_TRUE(render_pass->IsPipelineStateDirtyForTesting());
+-
+-  render_pass->ClearPipelineStateDirtyForTesting();
+-  InternalFlutterGpu_RenderPass_SetColorBlendEnable(render_pass.get(), 0, true);
+-  EXPECT_TRUE(render_pass->IsPipelineStateDirtyForTesting());
+-
+-  render_pass->ClearPipelineStateDirtyForTesting();
+-  InternalFlutterGpu_RenderPass_SetDepthCompareOperation(render_pass.get(), 0);
+-  EXPECT_TRUE(render_pass->IsPipelineStateDirtyForTesting());
+-
+-  render_pass->ClearPipelineStateDirtyForTesting();
+-  render_pass->SetCullMode(impeller::CullMode::kBackFace);
+-  EXPECT_TRUE(render_pass->IsPipelineStateDirtyForTesting());
+-
+-  render_pass->ClearPipelineStateDirtyForTesting();
+-  render_pass->SetWindingOrder(impeller::WindingOrder::kCounterClockwise);
+-  EXPECT_TRUE(render_pass->IsPipelineStateDirtyForTesting());
+-
+-  render_pass->ClearPipelineStateDirtyForTesting();
+-  render_pass->SetPrimitiveType(impeller::PrimitiveType::kTriangleStrip);
+-  EXPECT_TRUE(render_pass->IsPipelineStateDirtyForTesting());
+-
+-  render_pass->ClearPipelineStateDirtyForTesting();
+-  render_pass->SetPolygonMode(impeller::PolygonMode::kLine);
+-  EXPECT_TRUE(render_pass->IsPipelineStateDirtyForTesting());
+-
+-  render_pass->ClearPipelineStateDirtyForTesting();
+-  render_pass->SetPipeline(MakeRenderPipeline());
+-  EXPECT_TRUE(render_pass->IsPipelineStateDirtyForTesting());
+-}
+-
+-// Callers re-send the same fixed-function state and rebind the same pipeline
+-// ahead of most draws. Dirtying on those redundant assignments would rebuild
+-// the pipeline for every draw and leave the memoization doing nothing.
+-TEST(FlutterGpuRenderPassTest, RedundantPipelineStateAssignmentsAreIgnored) {
+-  auto render_pass = fml::MakeRefCounted<RenderPass>();
+-  auto pipeline = MakeRenderPipeline();
+-
+-  render_pass->SetCullMode(impeller::CullMode::kBackFace);
+-  render_pass->SetWindingOrder(impeller::WindingOrder::kCounterClockwise);
+-  render_pass->SetPrimitiveType(impeller::PrimitiveType::kTriangleStrip);
+-  render_pass->SetPolygonMode(impeller::PolygonMode::kLine);
+-  render_pass->SetPipeline(pipeline);
+-
+-  render_pass->ClearPipelineStateDirtyForTesting();
+-  render_pass->SetCullMode(impeller::CullMode::kBackFace);
+-  render_pass->SetWindingOrder(impeller::WindingOrder::kCounterClockwise);
+-  render_pass->SetPrimitiveType(impeller::PrimitiveType::kTriangleStrip);
+-  render_pass->SetPolygonMode(impeller::PolygonMode::kLine);
+-  render_pass->SetPipeline(pipeline);
+-  EXPECT_FALSE(render_pass->IsPipelineStateDirtyForTesting());
+-
+-  // A real change still dirties.
+-  render_pass->SetCullMode(impeller::CullMode::kFrontFace);
+-  EXPECT_TRUE(render_pass->IsPipelineStateDirtyForTesting());
+-}
+-
+-// A set goes into a slot rather than onto a list, so rebinding it once per
+-// draw (the expected usage) must not accumulate bindings on the pass.
+-TEST(FlutterGpuRenderPassTest, BindSetReplacesTheSlotContents) {
+-  auto render_pass = fml::MakeRefCounted<RenderPass>();
+-  auto first = fml::MakeRefCounted<BindingSet>();
+-  auto second = fml::MakeRefCounted<BindingSet>();
+-
+-  render_pass->BindSet(0, first);
+-  render_pass->BindSet(0, first);
+-  EXPECT_EQ(render_pass->binding_sets[0].get(), first.get());
+-
+-  render_pass->BindSet(0, second);
+-  EXPECT_EQ(render_pass->binding_sets[0].get(), second.get());
+-
+-  render_pass->BindSet(1, first);
+-  EXPECT_EQ(render_pass->binding_sets[0].get(), second.get());
+-  EXPECT_EQ(render_pass->binding_sets[1].get(), first.get());
+-
+-  // An out of range slot is dropped rather than corrupting a valid one.
+-  render_pass->BindSet(RenderPass::kMaxBindingSets, first);
+-  EXPECT_EQ(render_pass->binding_sets[0].get(), second.get());
+-
+-  render_pass->ClearBindings();
+-  for (const auto& set : render_pass->binding_sets) {
+-    EXPECT_EQ(set.get(), nullptr);
+-  }
+-}
+-
+-}  // namespace
+-}  // namespace flutter::gpu
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 1eff6d94aa8..1915015a754 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -270,8 +270,10 @@ if (enable_unittests) {
+     sources = [
+       "spi_abi_frozen_unittests.cc",
+       "gpu/spi_gpu_command_buffer_unittests.cc",
++      "gpu/spi_gpu_test_fixture.cc",
+       "gpu/spi_gpu_unittests.cc",
+       "gpu/spi_gpu_binding_set_unittests.cc",
++      "gpu/spi_gpu_render_pass_unittests.cc",
+       "gpu/spi_gpu_render_pipeline_unittests.cc",
+       "gpu/spi_gpu_shader_library_unittests.cc",
+       "spi_conformance_unittests.cc",
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pass.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pass.cc
+index 682882d5764..43770eea757 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pass.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pass.cc
+@@ -558,25 +558,41 @@ FlutterSpiResult SpiGpuRenderPass::SetViewport(
+ }
+ 
+ FlutterSpiResult SpiGpuRenderPass::SetCullMode(int32_t mode) {
+-  pipeline_descriptor_.SetCullMode(SpiGpuToImpellerCullMode(mode));
++  const auto cull_mode = SpiGpuToImpellerCullMode(mode);
++  if (pipeline_descriptor_.GetCullMode() == cull_mode) {
++    return kFlutterSpiOk;
++  }
++  pipeline_descriptor_.SetCullMode(cull_mode);
+   pipeline_state_dirty_ = true;
+   return kFlutterSpiOk;
+ }
+ 
+ FlutterSpiResult SpiGpuRenderPass::SetPrimitiveType(int32_t type) {
+-  pipeline_descriptor_.SetPrimitiveType(SpiGpuToImpellerPrimitiveType(type));
++  const auto primitive_type = SpiGpuToImpellerPrimitiveType(type);
++  if (pipeline_descriptor_.GetPrimitiveType() == primitive_type) {
++    return kFlutterSpiOk;
++  }
++  pipeline_descriptor_.SetPrimitiveType(primitive_type);
+   pipeline_state_dirty_ = true;
+   return kFlutterSpiOk;
+ }
+ 
+ FlutterSpiResult SpiGpuRenderPass::SetWindingOrder(int32_t order) {
+-  pipeline_descriptor_.SetWindingOrder(SpiGpuToImpellerWindingOrder(order));
++  const auto winding_order = SpiGpuToImpellerWindingOrder(order);
++  if (pipeline_descriptor_.GetWindingOrder() == winding_order) {
++    return kFlutterSpiOk;
++  }
++  pipeline_descriptor_.SetWindingOrder(winding_order);
+   pipeline_state_dirty_ = true;
+   return kFlutterSpiOk;
+ }
+ 
+ FlutterSpiResult SpiGpuRenderPass::SetPolygonMode(int32_t mode) {
+-  pipeline_descriptor_.SetPolygonMode(SpiGpuToImpellerPolygonMode(mode));
++  const auto polygon_mode = SpiGpuToImpellerPolygonMode(mode);
++  if (pipeline_descriptor_.GetPolygonMode() == polygon_mode) {
++    return kFlutterSpiOk;
++  }
++  pipeline_descriptor_.SetPolygonMode(polygon_mode);
+   pipeline_state_dirty_ = true;
+   return kFlutterSpiOk;
+ }
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pass.h b/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pass.h
+index c655c9a2e44..9f7c94a75b9 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pass.h
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pass.h
+@@ -30,6 +30,8 @@ class Pipeline;
+ 
+ namespace flutter {
+ 
++class SpiGpuRenderPassTestPeer;
++
+ class SpiGpuRenderPass final {
+  public:
+   static constexpr size_t kMaxBindingSets = 4;
+@@ -88,6 +90,8 @@ class SpiGpuRenderPass final {
+   void ClearPipelineStateDirtyForTesting();
+ 
+  private:
++  friend class SpiGpuRenderPassTestPeer;
++
+   struct BufferAndUniformSlot {
+     impeller::ShaderUniformSlot slot;
+     impeller::BufferResource view;
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pass_unittests.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pass_unittests.cc
+new file mode 100644
+index 00000000000..3318a2f2100
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pass_unittests.cc
+@@ -0,0 +1,327 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/gpu/spi_gpu_render_pass.h"
++
++#include <future>
++#include <memory>
++#include <string>
++#include <utility>
++#include <vector>
++
++#include "flutter/fml/message_loop.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_binding_set.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_context.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_render_pipeline.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_shader_library.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_test_fixture.h"
++#include "flutter/runtime_spi/spi_runtime_backend.h"
++#include "flutter/shell/common/display.h"
++#include "gmock/gmock.h"
++#include "gtest/gtest.h"
++#include "impeller/renderer/shader_library.h"
++#include "impeller/renderer/testing/mocks.h"
++#include "impeller/shader_bundle/shader_bundle_flatbuffers.h"
++
++namespace flutter {
++
++using ::flutter::testing::CreateMockContext;
++using ::flutter::testing::TestRuntimeDelegate;
++
++class SpiGpuRenderPassTestPeer {
++ public:
++  static const impeller::DepthAttachmentDescriptor& GetDepthDescriptor(
++      const SpiGpuRenderPass& render_pass) {
++    return render_pass.depth_descriptor_;
++  }
++
++  static const auto& GetBindingSetHandles(const SpiGpuRenderPass& render_pass) {
++    return render_pass.binding_set_handles_;
++  }
++};
++
++namespace {
++
++
++std::shared_ptr<std::vector<uint8_t>> BuildPipelineShaderBundle() {
++  namespace fbs = impeller::fb::shaderbundle;
++  auto vertex_backend = std::make_unique<fbs::BackendShaderT>();
++  vertex_backend->stage = fbs::ShaderStage::kVertex;
++  vertex_backend->entrypoint = "vertex_main";
++  vertex_backend->shader = {1};
++  auto vertex_input = std::make_unique<fbs::ShaderInputT>();
++  vertex_input->name = "position";
++  vertex_input->location = 0;
++  vertex_input->type = fbs::InputDataType::kFloat;
++  vertex_input->bit_width = 32;
++  vertex_input->vec_size = 3;
++  vertex_input->columns = 1;
++  vertex_backend->inputs.push_back(std::move(vertex_input));
++
++  auto fragment_backend = std::make_unique<fbs::BackendShaderT>();
++  fragment_backend->stage = fbs::ShaderStage::kFragment;
++  fragment_backend->entrypoint = "fragment_main";
++  fragment_backend->shader = {2};
++
++  auto vertex = std::make_unique<fbs::ShaderT>();
++  vertex->name = "vertex";
++  vertex->vulkan = std::move(vertex_backend);
++  auto fragment = std::make_unique<fbs::ShaderT>();
++  fragment->name = "fragment";
++  fragment->vulkan = std::move(fragment_backend);
++
++  fbs::ShaderBundleT bundle;
++  bundle.format_version =
++      static_cast<uint32_t>(fbs::ShaderBundleFormatVersion::kVersion);
++  bundle.shaders.push_back(std::move(vertex));
++  bundle.shaders.push_back(std::move(fragment));
++  flatbuffers::FlatBufferBuilder builder;
++  builder.Finish(fbs::ShaderBundle::Pack(builder, &bundle),
++                 fbs::ShaderBundleIdentifier());
++  return std::make_shared<std::vector<uint8_t>>(
++      builder.GetBufferPointer(),
++      builder.GetBufferPointer() + builder.GetSize());
++}
++
++FlutterSpiGpuShaderLibraryDescriptor MakeShaderLibraryDescriptor(
++    const std::shared_ptr<std::vector<uint8_t>>& bundle) {
++  return {
++      .struct_size = sizeof(FlutterSpiGpuShaderLibraryDescriptor),
++      .format = kFlutterSpiGpuShaderFormatImpellerBundle,
++      .data = bundle->data(),
++      .size = bundle->size(),
++      .library_id = "render_pass_test_bundle",
++  };
++}
++
++class GpuTestEnvironment final {
++ public:
++  GpuTestEnvironment() {
++    fml::MessageLoop::EnsureInitializedForCurrentThread();
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wdeprecated-declarations"
++    auto task_runner = fml::MessageLoop::GetCurrent().GetTaskRunner();
++#pragma clang diagnostic pop
++    task_runners_ =
++        std::make_unique<TaskRunners>("spi-render-pass-test", task_runner,
++                                      task_runner, task_runner, task_runner);
++
++    FlutterSpiRuntimeTable table = {};
++    SpiGpuSetDefaultContextOverride(CreateMockContext(&capabilities_));
++    backend_ = std::unique_ptr<SpiRuntimeBackend>(new SpiRuntimeBackend(
++        delegate_, *task_runners_, table, fml::WeakPtr<IOManager>(), {}, {}, {},
++        nullptr, true, std::shared_future<impeller::RuntimeStageBackend>{},
++        nullptr, true));
++
++    FlutterSpiGpuContext* context = nullptr;
++    int32_t reason = kFlutterSpiGpuUnavailableNone;
++    if (SpiGpuContextGetDefault(backend_->engine_handle(), &context, &reason) !=
++        kFlutterSpiOk) {
++      return;
++    }
++    context_ = context;
++
++    auto bundle = BuildPipelineShaderBundle();
++    auto library_descriptor = MakeShaderLibraryDescriptor(bundle);
++    if (SpiGpuShaderLibraryCreate(context_, &library_descriptor, &library_,
++                                  nullptr) != kFlutterSpiOk) {
++      return;
++    }
++    if (SpiGpuShaderLibraryGetShader(library_, "vertex", &vertex_shader_) !=
++            kFlutterSpiOk ||
++        SpiGpuShaderLibraryGetShader(library_, "fragment", &fragment_shader_) !=
++            kFlutterSpiOk) {
++      return;
++    }
++
++    FlutterSpiGpuRenderPipelineDescriptor pipeline_descriptor = {
++        .struct_size = sizeof(FlutterSpiGpuRenderPipelineDescriptor),
++        .vertex_shader = vertex_shader_,
++        .fragment_shader = fragment_shader_,
++        .buffer_layouts = nullptr,
++        .buffer_layout_count = 0,
++    };
++    SpiGpuRenderPipelineCreate(context_, &pipeline_descriptor, &pipeline_,
++                               nullptr);
++  }
++
++  ~GpuTestEnvironment() {
++    if (pipeline_ != nullptr) {
++      SpiGpuRenderPipelineRelease(pipeline_);
++    }
++    if (vertex_shader_ != nullptr) {
++      SpiGpuShaderRelease(vertex_shader_);
++    }
++    if (fragment_shader_ != nullptr) {
++      SpiGpuShaderRelease(fragment_shader_);
++    }
++    if (library_ != nullptr) {
++      SpiGpuShaderLibraryRelease(library_);
++    }
++    if (context_ != nullptr) {
++      SpiGpuContextRelease(context_);
++    }
++    SpiGpuSetDefaultContextOverride(nullptr);
++  }
++
++  FlutterSpiGpuRenderPipeline* pipeline() const { return pipeline_; }
++
++ private:
++  TestRuntimeDelegate delegate_;
++  std::unique_ptr<TaskRunners> task_runners_;
++  std::unique_ptr<SpiRuntimeBackend> backend_;
++  std::shared_ptr<const impeller::Capabilities> capabilities_;
++  FlutterSpiGpuContext* context_ = nullptr;
++  FlutterSpiGpuShaderLibrary* library_ = nullptr;
++  FlutterSpiGpuShader* vertex_shader_ = nullptr;
++  FlutterSpiGpuShader* fragment_shader_ = nullptr;
++  FlutterSpiGpuRenderPipeline* pipeline_ = nullptr;
++};
++
++FlutterSpiGpuBindingSet* MakeBindingSet() {
++  FlutterSpiGpuBindingSet* binding_set = nullptr;
++  EXPECT_EQ(SpiGpuBindingSetCreate(&binding_set), kFlutterSpiOk);
++  return binding_set;
++}
++
++TEST(FlutterGpuRenderPassTest, SetDepthWriteEnableHonorsArgument) {
++  SpiGpuRenderPass render_pass;
++
++  EXPECT_EQ(render_pass.SetDepthWriteEnable(true), kFlutterSpiOk);
++  EXPECT_TRUE(SpiGpuRenderPassTestPeer::GetDepthDescriptor(render_pass)
++                  .depth_write_enabled);
++
++  EXPECT_EQ(render_pass.SetDepthWriteEnable(false), kFlutterSpiOk);
++  EXPECT_FALSE(SpiGpuRenderPassTestPeer::GetDepthDescriptor(render_pass)
++                   .depth_write_enabled);
++}
++
++TEST(FlutterGpuRenderPassTest, PipelineStateMutationsMarkStateDirty) {
++  GpuTestEnvironment environment;
++  SpiGpuRenderPass render_pass;
++
++  EXPECT_TRUE(render_pass.IsPipelineStateDirtyForTesting());
++
++  render_pass.ClearPipelineStateDirtyForTesting();
++  EXPECT_EQ(render_pass.SetDepthWriteEnable(true), kFlutterSpiOk);
++  EXPECT_TRUE(render_pass.IsPipelineStateDirtyForTesting());
++
++  render_pass.ClearPipelineStateDirtyForTesting();
++  EXPECT_EQ(render_pass.SetColorBlendEnable(0, true), kFlutterSpiOk);
++  EXPECT_TRUE(render_pass.IsPipelineStateDirtyForTesting());
++
++  render_pass.ClearPipelineStateDirtyForTesting();
++  EXPECT_EQ(render_pass.SetDepthCompare(0), kFlutterSpiOk);
++  EXPECT_TRUE(render_pass.IsPipelineStateDirtyForTesting());
++
++  render_pass.ClearPipelineStateDirtyForTesting();
++  EXPECT_EQ(render_pass.SetCullMode(
++                static_cast<int32_t>(impeller::CullMode::kBackFace)),
++            kFlutterSpiOk);
++  EXPECT_TRUE(render_pass.IsPipelineStateDirtyForTesting());
++
++  render_pass.ClearPipelineStateDirtyForTesting();
++  EXPECT_EQ(render_pass.SetWindingOrder(static_cast<int32_t>(
++                impeller::WindingOrder::kCounterClockwise)),
++            kFlutterSpiOk);
++  EXPECT_TRUE(render_pass.IsPipelineStateDirtyForTesting());
++
++  render_pass.ClearPipelineStateDirtyForTesting();
++  EXPECT_EQ(render_pass.SetPrimitiveType(
++                static_cast<int32_t>(impeller::PrimitiveType::kTriangleStrip)),
++            kFlutterSpiOk);
++  EXPECT_TRUE(render_pass.IsPipelineStateDirtyForTesting());
++
++  render_pass.ClearPipelineStateDirtyForTesting();
++  EXPECT_EQ(render_pass.SetPolygonMode(
++                static_cast<int32_t>(impeller::PolygonMode::kLine)),
++            kFlutterSpiOk);
++  EXPECT_TRUE(render_pass.IsPipelineStateDirtyForTesting());
++
++  ASSERT_NE(environment.pipeline(), nullptr);
++  render_pass.ClearPipelineStateDirtyForTesting();
++  EXPECT_EQ(render_pass.BindPipeline(environment.pipeline()), kFlutterSpiOk);
++  EXPECT_TRUE(render_pass.IsPipelineStateDirtyForTesting());
++}
++
++TEST(FlutterGpuRenderPassTest, RedundantPipelineStateAssignmentsAreIgnored) {
++  GpuTestEnvironment environment;
++  SpiGpuRenderPass render_pass;
++  ASSERT_NE(environment.pipeline(), nullptr);
++
++  EXPECT_EQ(render_pass.SetCullMode(
++                static_cast<int32_t>(impeller::CullMode::kBackFace)),
++            kFlutterSpiOk);
++  EXPECT_EQ(render_pass.SetWindingOrder(static_cast<int32_t>(
++                impeller::WindingOrder::kCounterClockwise)),
++            kFlutterSpiOk);
++  EXPECT_EQ(render_pass.SetPrimitiveType(
++                static_cast<int32_t>(impeller::PrimitiveType::kTriangleStrip)),
++            kFlutterSpiOk);
++  EXPECT_EQ(render_pass.SetPolygonMode(
++                static_cast<int32_t>(impeller::PolygonMode::kLine)),
++            kFlutterSpiOk);
++  EXPECT_EQ(render_pass.BindPipeline(environment.pipeline()), kFlutterSpiOk);
++
++  render_pass.ClearPipelineStateDirtyForTesting();
++  EXPECT_EQ(render_pass.SetCullMode(
++                static_cast<int32_t>(impeller::CullMode::kBackFace)),
++            kFlutterSpiOk);
++  EXPECT_EQ(render_pass.SetWindingOrder(static_cast<int32_t>(
++                impeller::WindingOrder::kCounterClockwise)),
++            kFlutterSpiOk);
++  EXPECT_EQ(render_pass.SetPrimitiveType(
++                static_cast<int32_t>(impeller::PrimitiveType::kTriangleStrip)),
++            kFlutterSpiOk);
++  EXPECT_EQ(render_pass.SetPolygonMode(
++                static_cast<int32_t>(impeller::PolygonMode::kLine)),
++            kFlutterSpiOk);
++  EXPECT_EQ(render_pass.BindPipeline(environment.pipeline()), kFlutterSpiOk);
++  EXPECT_FALSE(render_pass.IsPipelineStateDirtyForTesting());
++
++  EXPECT_EQ(render_pass.SetCullMode(
++                static_cast<int32_t>(impeller::CullMode::kFrontFace)),
++            kFlutterSpiOk);
++  EXPECT_TRUE(render_pass.IsPipelineStateDirtyForTesting());
++}
++
++TEST(FlutterGpuRenderPassTest, BindSetReplacesTheSlotContents) {
++  FlutterSpiGpuBindingSet* first = MakeBindingSet();
++  FlutterSpiGpuBindingSet* second = MakeBindingSet();
++  ASSERT_NE(first, nullptr);
++  ASSERT_NE(second, nullptr);
++  SpiGpuRenderPass render_pass;
++
++  EXPECT_EQ(render_pass.BindSet(first, 0), kFlutterSpiOk);
++  EXPECT_EQ(render_pass.BindSet(first, 0), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuRenderPassTestPeer::GetBindingSetHandles(render_pass)[0],
++            first);
++
++  EXPECT_EQ(render_pass.BindSet(second, 0), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuRenderPassTestPeer::GetBindingSetHandles(render_pass)[0],
++            second);
++
++  EXPECT_EQ(render_pass.BindSet(first, 1), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuRenderPassTestPeer::GetBindingSetHandles(render_pass)[0],
++            second);
++  EXPECT_EQ(SpiGpuRenderPassTestPeer::GetBindingSetHandles(render_pass)[1],
++            first);
++
++  EXPECT_EQ(render_pass.BindSet(first, SpiGpuRenderPass::kMaxBindingSets),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(SpiGpuRenderPassTestPeer::GetBindingSetHandles(render_pass)[0],
++            second);
++
++  EXPECT_EQ(render_pass.ClearBindings(), kFlutterSpiOk);
++  for (const auto& set :
++       SpiGpuRenderPassTestPeer::GetBindingSetHandles(render_pass)) {
++    EXPECT_EQ(set, nullptr);
++  }
++
++  EXPECT_EQ(SpiGpuBindingSetRelease(first), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuBindingSetRelease(second), kFlutterSpiOk);
++}
++
++}  // namespace
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_test_fixture.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_test_fixture.cc
+new file mode 100644
+index 00000000000..a2ba5b23cd9
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_test_fixture.cc
+@@ -0,0 +1,135 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/gpu/spi_gpu_test_fixture.h"
++
++#include <algorithm>
++
++#include "impeller/renderer/testing/mocks.h"
++
++namespace flutter::testing {
++
++std::string TestRuntimeDelegate::DefaultRouteName() {
++  return "/";
++}
++
++void TestRuntimeDelegate::ScheduleFrame(bool) {}
++
++void TestRuntimeDelegate::OnAllViewsRendered() {}
++
++void TestRuntimeDelegate::RenderScene(int64_t, FlutterSpiScene*, float) {}
++
++void TestRuntimeDelegate::UpdateSemantics(int64_t,
++                                          FlutterSpiSemanticsUpdateBuilder*) {}
++
++void TestRuntimeDelegate::SetApplicationLocale(std::string) {}
++
++void TestRuntimeDelegate::SetSemanticsTreeEnabled(bool) {}
++
++void TestRuntimeDelegate::HandlePlatformMessage(
++    std::unique_ptr<PlatformMessage>) {}
++
++FlutterSpiEngine* TestRuntimeDelegate::GetSpiEngine() {
++  return nullptr;
++}
++
++std::shared_ptr<AssetManager> TestRuntimeDelegate::GetAssetManager() {
++  return nullptr;
++}
++
++void TestRuntimeDelegate::OnRootIsolateCreated() {}
++
++void TestRuntimeDelegate::UpdateIsolateDescription(std::string, int64_t) {}
++
++void TestRuntimeDelegate::SetNeedsReportTimings(bool) {}
++
++std::unique_ptr<std::vector<std::string>>
++TestRuntimeDelegate::ComputePlatformResolvedLocale(
++    const std::vector<std::string>&) {
++  return std::make_unique<std::vector<std::string>>();
++}
++
++void TestRuntimeDelegate::RequestDartDeferredLibrary(intptr_t) {}
++
++std::weak_ptr<PlatformMessageHandler>
++TestRuntimeDelegate::GetPlatformMessageHandler() const {
++  return {};
++}
++
++void TestRuntimeDelegate::SendChannelUpdate(std::string, bool) {}
++
++double TestRuntimeDelegate::GetScaledFontSize(double value, int) const {
++  return value;
++}
++
++void TestRuntimeDelegate::RequestViewFocusChange(
++    const ViewFocusChangeRequest&) {}
++
++void TestRuntimeDelegate::ResetInternalState() {}
++
++bool FakeShaderLibrary::IsValid() const {
++  return true;
++}
++
++std::shared_ptr<const impeller::ShaderFunction> FakeShaderLibrary::GetFunction(
++    std::string_view,
++    impeller::ShaderStage) {
++  return nullptr;
++}
++
++void FakeShaderLibrary::RegisterFunction(std::string name,
++                                         impeller::ShaderStage stage,
++                                         std::shared_ptr<fml::Mapping>,
++                                         RegistrationCallback callback) {
++  registered_functions_.emplace_back(std::move(name), stage);
++  if (callback) {
++    callback(true);
++  }
++}
++
++void FakeShaderLibrary::UnregisterFunction(std::string name,
++                                           impeller::ShaderStage stage) {
++  const auto iterator =
++      std::find_if(registered_functions_.begin(), registered_functions_.end(),
++                   [&name, stage](const auto& function) {
++                     return function.first == name && function.second == stage;
++                   });
++  if (iterator != registered_functions_.end()) {
++    registered_functions_.erase(iterator);
++  }
++}
++
++bool FakeShaderLibrary::HasFunction(std::string_view name,
++                                    impeller::ShaderStage stage) const {
++  return std::any_of(registered_functions_.begin(), registered_functions_.end(),
++                     [name, stage](const auto& function) {
++                       return function.first == name &&
++                              function.second == stage;
++                     });
++}
++
++std::shared_ptr<::testing::NiceMock<impeller::testing::MockImpellerContext>>
++CreateMockContext(
++    std::shared_ptr<const impeller::Capabilities>* capabilities_out,
++    std::shared_ptr<FakeShaderLibrary>* shader_library_out) {
++  auto context = std::make_shared<
++      ::testing::NiceMock<impeller::testing::MockImpellerContext>>();
++  auto capabilities = std::make_shared<
++      ::testing::NiceMock<impeller::testing::MockCapabilities>>();
++  auto shader_library = std::make_shared<FakeShaderLibrary>();
++  *capabilities_out = capabilities;
++  ON_CALL(*context, GetBackendType())
++      .WillByDefault(
++          ::testing::Return(impeller::Context::BackendType::kVulkan));
++  ON_CALL(*context, GetCapabilities())
++      .WillByDefault(::testing::ReturnRef(*capabilities_out));
++  ON_CALL(*context, GetShaderLibrary())
++      .WillByDefault(::testing::Return(shader_library));
++  if (shader_library_out != nullptr) {
++    *shader_library_out = std::move(shader_library);
++  }
++  return context;
++}
++
++}  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_test_fixture.h b/engine/src/flutter/runtime_spi/gpu/spi_gpu_test_fixture.h
+new file mode 100644
+index 00000000000..11ed85130e5
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_test_fixture.h
+@@ -0,0 +1,77 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_TEST_FIXTURE_H_
++#define FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_TEST_FIXTURE_H_
++
++#include <memory>
++#include <string>
++#include <string_view>
++#include <utility>
++#include <vector>
++
++#include "flutter/runtime/runtime_delegate.h"
++#include "gmock/gmock.h"
++#include "impeller/renderer/shader_library.h"
++#include "impeller/renderer/testing/mocks.h"
++
++namespace flutter::testing {
++
++class TestRuntimeDelegate final : public RuntimeDelegate {
++ public:
++  std::string DefaultRouteName() override;
++  void ScheduleFrame(bool) override;
++  void OnAllViewsRendered() override;
++  void RenderScene(int64_t, FlutterSpiScene*, float) override;
++  void UpdateSemantics(int64_t, FlutterSpiSemanticsUpdateBuilder*) override;
++  void SetApplicationLocale(std::string) override;
++  void SetSemanticsTreeEnabled(bool) override;
++  void HandlePlatformMessage(std::unique_ptr<PlatformMessage>) override;
++  FlutterSpiEngine* GetSpiEngine() override;
++  std::shared_ptr<AssetManager> GetAssetManager() override;
++  void OnRootIsolateCreated() override;
++  void UpdateIsolateDescription(std::string, int64_t) override;
++  void SetNeedsReportTimings(bool) override;
++  std::unique_ptr<std::vector<std::string>> ComputePlatformResolvedLocale(
++      const std::vector<std::string>&) override;
++  void RequestDartDeferredLibrary(intptr_t) override;
++  std::weak_ptr<PlatformMessageHandler> GetPlatformMessageHandler()
++      const override;
++  void SendChannelUpdate(std::string, bool) override;
++  double GetScaledFontSize(double, int) const override;
++  void RequestViewFocusChange(const ViewFocusChangeRequest&) override;
++  void ResetInternalState() override;
++};
++
++class FakeShaderLibrary final : public impeller::ShaderLibrary {
++ public:
++  bool IsValid() const override;
++
++  std::shared_ptr<const impeller::ShaderFunction> GetFunction(
++      std::string_view name,
++      impeller::ShaderStage stage) override;
++
++  void RegisterFunction(std::string name,
++                        impeller::ShaderStage stage,
++                        std::shared_ptr<fml::Mapping> mapping,
++                        RegistrationCallback callback) override;
++
++  void UnregisterFunction(std::string name,
++                          impeller::ShaderStage stage) override;
++
++  bool HasFunction(std::string_view name, impeller::ShaderStage stage) const;
++
++ private:
++  std::vector<std::pair<std::string, impeller::ShaderStage>>
++      registered_functions_;
++};
++
++std::shared_ptr<::testing::NiceMock<impeller::testing::MockImpellerContext>>
++CreateMockContext(
++    std::shared_ptr<const impeller::Capabilities>* capabilities_out,
++    std::shared_ptr<FakeShaderLibrary>* shader_library_out = nullptr);
++
++}  // namespace flutter::testing
++
++#endif  // FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_TEST_FIXTURE_H_
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
+index 43ee893406d..4851f5cb7bb 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
+@@ -10,17 +10,16 @@
+ #include "flutter/runtime_spi/gpu/spi_gpu_shader.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_shader_library.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_surface.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_test_fixture.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_texture.h"
+ 
+ #include <cstdlib>
+ #include <memory>
+ #include <string>
+-#include <string_view>
+ #include <utility>
+ #include <vector>
+ 
+ #include "flutter/fml/message_loop.h"
+-#include "flutter/runtime/runtime_delegate.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_binding_set.h"
+ #include "flutter/runtime_spi/spi_runtime_backend.h"
+ #include "flutter/shell/common/display.h"
+@@ -38,82 +37,6 @@ namespace {
+ using ::testing::NiceMock;
+ using ::testing::DoAll;
+ using ::testing::Return;
+-using ::testing::ReturnRef;
+-
+-class TestRuntimeDelegate final : public RuntimeDelegate {
+- public:
+-  std::string DefaultRouteName() override { return "/"; }
+-  void ScheduleFrame(bool) override {}
+-  void OnAllViewsRendered() override {}
+-  void RenderScene(int64_t, FlutterSpiScene*, float) override {}
+-  void UpdateSemantics(int64_t, FlutterSpiSemanticsUpdateBuilder*) override {}
+-  void SetApplicationLocale(std::string) override {}
+-  void SetSemanticsTreeEnabled(bool) override {}
+-  void HandlePlatformMessage(std::unique_ptr<PlatformMessage>) override {}
+-  FlutterSpiEngine* GetSpiEngine() override { return nullptr; }
+-  std::shared_ptr<AssetManager> GetAssetManager() override { return nullptr; }
+-  void OnRootIsolateCreated() override {}
+-  void UpdateIsolateDescription(const std::string, int64_t) override {}
+-  void SetNeedsReportTimings(bool) override {}
+-  std::unique_ptr<std::vector<std::string>> ComputePlatformResolvedLocale(
+-      const std::vector<std::string>&) override {
+-    return std::make_unique<std::vector<std::string>>();
+-  }
+-  void RequestDartDeferredLibrary(intptr_t) override {}
+-  std::weak_ptr<PlatformMessageHandler> GetPlatformMessageHandler()
+-      const override {
+-    return {};
+-  }
+-  void SendChannelUpdate(std::string, bool) override {}
+-  double GetScaledFontSize(double value, int) const override { return value; }
+-  void RequestViewFocusChange(const ViewFocusChangeRequest&) override {}
+-  void ResetInternalState() override {}
+-};
+-
+-class FakeShaderLibrary final : public impeller::ShaderLibrary {
+- public:
+-  bool IsValid() const override { return true; }
+-
+-  std::shared_ptr<const impeller::ShaderFunction> GetFunction(
+-      std::string_view,
+-      impeller::ShaderStage) override {
+-    return nullptr;
+-  }
+-
+-  void RegisterFunction(std::string name,
+-                        impeller::ShaderStage stage,
+-                        std::shared_ptr<fml::Mapping>,
+-                        RegistrationCallback callback) override {
+-    registered_functions_.emplace_back(std::move(name), stage);
+-    if (callback) {
+-      callback(true);
+-    }
+-  }
+-
+-  void UnregisterFunction(std::string name,
+-                          impeller::ShaderStage stage) override {
+-    const auto iterator = std::find_if(
+-        registered_functions_.begin(), registered_functions_.end(),
+-        [&name, stage](const auto& function) {
+-          return function.first == name && function.second == stage;
+-        });
+-    if (iterator != registered_functions_.end()) {
+-      registered_functions_.erase(iterator);
+-    }
+-  }
+-
+-  bool HasFunction(std::string_view name, impeller::ShaderStage stage) const {
+-    return std::any_of(
+-        registered_functions_.begin(), registered_functions_.end(),
+-        [name, stage](const auto& function) {
+-          return function.first == name && function.second == stage;
+-        });
+-  }
+-
+- private:
+-  std::vector<std::pair<std::string, impeller::ShaderStage>>
+-      registered_functions_;
+-};
+ 
+ class SpiGpuContextTest : public ::testing::Test {
+  protected:
+@@ -143,27 +66,6 @@ class SpiGpuContextTest : public ::testing::Test {
+   std::unique_ptr<TaskRunners> task_runners_;
+ };
+ 
+-std::shared_ptr<NiceMock<impeller::testing::MockImpellerContext>>
+-CreateMockContext(
+-    std::shared_ptr<const impeller::Capabilities>* capabilities_out,
+-    std::shared_ptr<FakeShaderLibrary>* shader_library_out = nullptr) {
+-  auto context =
+-      std::make_shared<NiceMock<impeller::testing::MockImpellerContext>>();
+-  auto capabilities =
+-      std::make_shared<NiceMock<impeller::testing::MockCapabilities>>();
+-  auto shader_library = std::make_shared<FakeShaderLibrary>();
+-  *capabilities_out = capabilities;
+-  ON_CALL(*context, GetBackendType())
+-      .WillByDefault(Return(impeller::Context::BackendType::kVulkan));
+-  ON_CALL(*context, GetCapabilities())
+-      .WillByDefault(ReturnRef(*capabilities_out));
+-  ON_CALL(*context, GetShaderLibrary()).WillByDefault(Return(shader_library));
+-  if (shader_library_out != nullptr) {
+-    *shader_library_out = std::move(shader_library);
+-  }
+-  return context;
+-}
+-
+ FlutterSpiGpuContext* GetDefaultContext(SpiRuntimeBackend* backend) {
+   FlutterSpiGpuContext* context = nullptr;
+   int32_t reason = kFlutterSpiGpuUnavailableNone;
