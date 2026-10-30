@@ -224,8 +224,8 @@ run_conformance_rust() {
 
   local passed_count
   local skipped_count
-  passed_count=$(sed -nE 's/^\[  PASSED  \] ([0-9]+) tests?\.?$/\1/p' "$conformance_log" | tail -n 1)
-  skipped_count=$(sed -nE 's/^\[  SKIPPED \] ([0-9]+) tests?\.?$/\1/p' "$conformance_log" | tail -n 1)
+  passed_count=$(sed -nE 's/^\[  PASSED  \] ([0-9]+) tests?.*$/\1/p' "$conformance_log" | tail -n 1)
+  skipped_count=$(sed -nE 's/^\[  SKIPPED \] ([0-9]+) tests?.*$/\1/p' "$conformance_log" | tail -n 1)
   [[ -n "$passed_count" ]] || die 'spi conformance rust pass count is missing'
   [[ -n "$skipped_count" ]] || die 'spi conformance rust skip count is missing'
   printf 'spi conformance rust: %s passed, %s skipped\n' \

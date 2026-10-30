@@ -106,7 +106,7 @@ if ((FAKE_RUST_CONFORMANCE_FAILED != 0)); then
   printf '[  FAILED  ] SpiConformance.ExternalFailure\n'
 fi
 printf '[  PASSED  ] 24 tests.\n'
-printf '[  SKIPPED ] 13 tests.\n'
+printf '[  SKIPPED ] 13 tests, listed below:\n'
 exit "${FAKE_RUST_CONFORMANCE_STATUS:-0}"
 RUNTIME_SPI_EOF
 chmod +x "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/runtime_spi_unittests"
