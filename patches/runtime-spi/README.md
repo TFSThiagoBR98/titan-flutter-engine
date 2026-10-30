@@ -180,6 +180,7 @@ idêntica à anterior. A série antiga está no worktree do engine no branch
 | `0163-feat-engine-add-runtime-spi-gpu-render-pipelines.patch` | S7b: render pipelines, stage validation, shader registration and vertex layouts as C structs live in the core. | |
 | `0164-feat-engine-add-runtime-spi-gpu-binding-sets.patch` | S7b: binding sets resolve uniforms, textures and samplers in the core. | |
 | `0165-refactor-engine-back-flutter-gpu-shaders-pipelines-and-binding-sets-with-the-spi-table.patch` | S7b: lib/gpu shaders, libraries, pipelines and binding sets hold SPI handles; the render pass reaches the core classes through internal bridges until S7c. | |
+| `0166-fix-engine-convert-spi-display-ids-explicitly-on-32-bit-targets.patch` | The ARM 32-bit engine builds failed on narrowings from 64-bit ids and shader-bundle fields to size_t (display ids since the view-results patch, reflection fields since S7b). | |
 
 O fluxo é:
 
