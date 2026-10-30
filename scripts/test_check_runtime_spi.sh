@@ -158,6 +158,12 @@ if [[ "${@: -1}" == *flutter_engine_core_smoke ||
   printf ' 0x0000000000000001 (NEEDED)             %s: [libflutter_engine_core.so]\n' \
     "$dynamic_label"
 fi
+if [[ "${@: -1}" == *core-static-link ]]; then
+  if ((FAKE_RUST_UNEXPECTED != 0)); then
+    printf ' 0x0000000000000001 (NEEDED)             %s: [libflutter_engine_core.so]\n' \
+      "$dynamic_label"
+  fi
+fi
 if [[ "${@: -1}" == *flutter_engine_core_gpu_triangle &&
       "${FAKE_GPU_UNEXPECTED:-0}" == 1 ]]; then
   printf ' 0x0000000000000001 (NEEDED)             %s: [libflutter_engine.so]\n' \
@@ -184,6 +190,23 @@ fi
 EOF
 chmod +x "$fake_bin/nm"
 
+cat > "$fake_bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+mkdir -p "$CARGO_TARGET_DIR/debug"
+cat > "$CARGO_TARGET_DIR/debug/core-static-link" <<'RUST_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf 'rust\n' >> "$ORDER_LOG"
+exit "${FAKE_RUST_RUN_STATUS:-0}"
+RUST_EOF
+chmod +x "$CARGO_TARGET_DIR/debug/core-static-link"
+exit "${FAKE_RUST_BUILD_STATUS:-0}"
+EOF
+chmod +x "$fake_bin/cargo"
+
 cat > "$fake_bin/strings" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -209,6 +232,9 @@ run_check() {
   FAKE_TRIANGLE_STATUS="${FAKE_TRIANGLE_STATUS:-0}" \
   FAKE_GPU_UNEXPECTED="${FAKE_GPU_UNEXPECTED:-0}" \
   FAKE_STATIC_EXTRA="${FAKE_STATIC_EXTRA:-0}" \
+  FAKE_RUST_BUILD_STATUS="${FAKE_RUST_BUILD_STATUS:-0}" \
+  FAKE_RUST_RUN_STATUS="${FAKE_RUST_RUN_STATUS:-0}" \
+  FAKE_RUST_UNEXPECTED="${FAKE_RUST_UNEXPECTED:-0}" \
   FAKE_NO_UNIT_BUILD_STATUS="${FAKE_NO_UNIT_BUILD_STATUS:-0}" \
   FAKE_ARGS_GN="${FAKE_ARGS_GN:-enable_unittests = true}" \
   FAKE_NINJA_STATUS="${FAKE_NINJA_STATUS:-0}" \
@@ -245,7 +271,7 @@ else
   fail 'the complete fake check should pass'
 fi
 
-[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner smoke triangle ' ]] || \
+[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner smoke rust triangle ' ]] || \
   fail 'steps did not run in build, ninja, runner order'
 assert_contains "$build_log" '--unittests' 'build arguments'
 assert_contains "$build_log" '--gn-only' 'build arguments'
@@ -274,6 +300,7 @@ assert_contains "$output_log" 'ninja: ok' 'stage summary'
 assert_contains "$output_log" 'tests: ok' 'stage summary'
 assert_contains "$output_log" 'core artifact: ok' 'core artifact summary'
 assert_contains "$output_log" 'core static symbols: ok' 'core static symbols summary'
+assert_contains "$output_log" 'core static rust: ok' 'core static rust summary'
 assert_contains "$output_log" 'core gpu triangle: ok' 'core gpu triangle summary'
 cp "$output_log" "$baseline_output_log"
 
@@ -286,6 +313,26 @@ fi
 [[ "$status" -eq 2 ]] || fail "unexpected static symbol returned $status instead of 2"
 assert_contains "$output_log" 'core static archive has symbols different' \
   'core static symbols diagnostic'
+
+rm -f "$runner_log" "$dart_runner_log" "$order_log"
+if FAKE_RUST_RUN_STATUS=17 run_check >"$output_log" 2>&1; then
+  fail 'core static rust failure should fail the check'
+else
+  status=$?
+fi
+[[ "$status" -eq 2 ]] || fail "core static rust failure returned $status instead of 2"
+assert_contains "$output_log" 'core static rust executable failed' \
+  'core static rust failure diagnostic'
+
+rm -f "$runner_log" "$dart_runner_log" "$order_log"
+if FAKE_RUST_UNEXPECTED=1 run_check >"$output_log" 2>&1; then
+  fail 'unexpected Rust engine dependency should fail the check'
+else
+  status=$?
+fi
+[[ "$status" -eq 2 ]] || fail "unexpected Rust engine dependency returned $status instead of 2"
+assert_contains "$output_log" 'core static rust executable links an unexpected engine library' \
+  'core static rust dependency diagnostic'
 
 rm -f "$runner_log" "$dart_runner_log" "$order_log"
 if FAKE_TRIANGLE_STATUS=17 run_check >"$output_log" 2>&1; then
@@ -363,7 +410,7 @@ assert_contains "$output_log" 'unit tests are disabled in' 'disabled unit test d
 
 rm -f "$runner_log" "$dart_runner_log" "$order_log"
 FAKE_ARGS_GN='# default is enabled' run_check >"$output_log" 2>&1
-[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner smoke triangle ' ]] || \
+[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner smoke rust triangle ' ]] || \
   fail 'steps did not continue when enable_unittests is absent'
 assert_contains "$output_log" 'tests: ok' 'missing unit test setting summary'
 

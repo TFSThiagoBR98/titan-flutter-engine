@@ -211,6 +211,45 @@ run_core_smoke() {
   check_core_engine_dependencies "$core_smoke"
 }
 
+run_core_static_rust() {
+  if ! command -v cargo >/dev/null 2>&1; then
+    printf 'core static rust: skipped (cargo not installed)\n'
+    return 0
+  fi
+
+  local rust_target_directory="$output_directory/rust-static-link"
+  local rust_binary="$rust_target_directory/debug/core-static-link"
+  local rust_dynamic_output
+  if ! (
+    cd "$repository_root"
+    FLUTTER_CORE_OUT_DIR="$output_directory" \
+      CARGO_TARGET_DIR="$rust_target_directory" \
+      cargo build --offline --manifest-path tests/rust-static-link/Cargo.toml
+  ); then
+    die "core static rust build failed"
+  fi
+  [[ -x "$rust_binary" ]] || die "core static rust executable is missing: $rust_binary"
+
+  if ! "$rust_binary" "$icu_data" "$assets_directory"; then
+    die "core static rust executable failed"
+  fi
+
+  rust_dynamic_output=$(mktemp)
+  if ! readelf -d "$rust_binary" >"$rust_dynamic_output"; then
+    rm -f "$rust_dynamic_output"
+    die "readelf failed for $rust_binary"
+  fi
+  while IFS= read -r dependency; do
+    [[ -n "$dependency" ]] || continue
+    if [[ "$dependency" == libflutter_engine* ]]; then
+      rm -f "$rust_dynamic_output"
+      die "core static rust executable links an unexpected engine library: $dependency"
+    fi
+  done < <(sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p' "$rust_dynamic_output")
+  rm -f "$rust_dynamic_output"
+  printf 'core static rust: ok\n'
+}
+
 run_core_gpu_triangle() {
   [[ -x "$core_gpu_triangle" ]] ||
     die "core gpu triangle executable is missing: $core_gpu_triangle"
@@ -307,6 +346,7 @@ run_build_without_unittests
 run_ninja
 run_tests
 run_core_smoke
+run_core_static_rust
 run_core_static_symbols
 run_core_gpu_triangle
 "$check_core_artifact" "$core_library"
