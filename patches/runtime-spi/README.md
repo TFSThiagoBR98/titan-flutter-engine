@@ -169,6 +169,8 @@ idêntica à anterior. A série antiga está no worktree do engine no branch
 | `0152-build-engine-add-the-titan-flutter-runtime-dart-gn-arg.patch` | allow the Flutter embedder graph to omit Dart-backed targets while retaining the core runtime. | |
 | `0153-test-engine-smoke-test-the-core-library-from-c.patch` | exercise the core runtime through a C executable and keep the smoke test linked only to the core library and its C test runtime. | |
 | `0154-perf-engine-hand-decoded-images-to-spi-codecs-without-a-handle.patch` | the static codec frame wrapped, read and released a FlutterSpiImage handle between two core classes. | |
+| `0155-fix-engine-build-flutter_tester-over-the-runtime-spi-split.patch` | tester_main.cc relied on runtime and tonic headers that came transitively before the Dart runtime moved out of the shell. | |
+| `0156-test-engine-add-a-flutter-gpu-frame-benchmark.patch` | S7 needs a gate on a frame that exercises buffers, textures, a pipeline and a render pass. | |
 
 O fluxo é:
 

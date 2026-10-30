@@ -1111,6 +1111,27 @@ VM, sem ganho definido).
 
 O resultado está em [runtime-spi-s55e.md](medidas/runtime-spi-s55e.md).
 
+## S7-0: Linha de base do flutter_gpu
+
+A S7 leva o `flutter_gpu` para uma tabela C do SPI (design em
+`docs/superpowers/specs/2026-10-29-runtime-spi-s7-gpu-design.md` do
+superprojeto). Antes de mudar código, os testes dele entraram no check: o
+`gpu_unittests` (23 testes sobre mocks do Impeller) e o `gpu_test.dart` sob o
+`flutter_tester`, com Impeller em Vulkan, nas duas variantes que o upstream roda
+(com Flutter GPU: +104 ~1; sem: +5 ~100). O `flutter_tester` não compilava sobre
+a série: o `tester_main.cc` dependia de headers de `runtime/` e do `tonic` que
+chegavam por include transitivo antes de o runtime Dart sair do shell; bastaram
+os includes e o `deps`. O runner novo (`scripts/run-dart-tests.sh`) conta como
+falha um tester que sai sem a linha de resumo, uma suíte que passa a pular
+testes abaixo do mínimo e falhas com exit 0.
+
+O benchmark `BM_DartGpuFrame` mede um quadro com textura, buffers, pipeline e
+render pass: 440 µs de mediana na base. Ele mantém uma `RawReceivePort` aberta,
+porque o `flutter_tester` encerra o isolate quando não há porta viva e os
+callbacks de conclusão da GPU não seguram nenhuma.
+
+O resultado está em [runtime-spi-s70.md](medidas/runtime-spi-s70.md).
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos
