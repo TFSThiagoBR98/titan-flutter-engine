@@ -64,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime SPI S5.5d: série `runtime-spi` reorganizada (270 → 153 patches; correções, testes vermelhos e otimizações juntados ao commit de origem; árvore final idêntica).
 - Runtime SPI S5.5e: diagnóstico com símbolos (texto: pressão de cache de instruções, não a camada SPI; codecs: tabela de tipos canônicos da VM) e codec estático sem handle de imagem intermediário.
 - Runtime SPI S7-0: `flutter_tester` volta a compilar sobre o SPI; `gpu_unittests` e `gpu_test.dart` (Impeller em Vulkan) no check; benchmark `BM_DartGpuFrame`.
+- Runtime SPI S7a: tabela `FlutterSpiGpuApi` (ABI do SPI 0.25) para contexto, buffers e texturas do `flutter_gpu`; o `lib/gpu` guarda handles do SPI nesses três objetos.
 
 ### Fixed
 

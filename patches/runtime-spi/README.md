@@ -171,6 +171,11 @@ idêntica à anterior. A série antiga está no worktree do engine no branch
 | `0154-perf-engine-hand-decoded-images-to-spi-codecs-without-a-handle.patch` | the static codec frame wrapped, read and released a FlutterSpiImage handle between two core classes. | |
 | `0155-fix-engine-build-flutter_tester-over-the-runtime-spi-split.patch` | tester_main.cc relied on runtime and tonic headers that came transitively before the Dart runtime moved out of the shell. | |
 | `0156-test-engine-add-a-flutter-gpu-frame-benchmark.patch` | S7 needs a gate on a frame that exercises buffers, textures, a pipeline and a render pass. | |
+| `0157-feat-engine-add-the-runtime-spi-gpu-context-table.patch` | S7a: flutter_gpu needs a C table for the default context and its capabilities (SPI ABI 0.25, `kFlutterSpiCapGpu`). | |
+| `0158-feat-engine-add-runtime-spi-gpu-buffers.patch` | S7a: device buffers are created, written and flushed through the table. | |
+| `0159-feat-engine-add-runtime-spi-gpu-textures.patch` | S7a: textures are created and overwritten through the table. | |
+| `0160-refactor-engine-back-flutter-gpu-contexts-buffers-and-textures-with-the-spi-table.patch` | S7a: lib/gpu contexts, buffers and textures hold SPI handles; the rest reaches Impeller through internal bridges until S7c/S7d. | |
+| `0161-fix-engine-check-the-runtime-spi-gpu-abi-on-32-bit-targets.patch` | S7a: the 32-bit size of FlutterSpiEngineApi was wrong and the gpu structs had no layout check on 32-bit targets. | |
 
 O fluxo é:
 

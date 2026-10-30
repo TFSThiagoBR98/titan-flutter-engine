@@ -1132,6 +1132,41 @@ callbacks de conclusão da GPU não seguram nenhuma.
 
 O resultado está em [runtime-spi-s70.md](medidas/runtime-spi-s70.md).
 
+## S7a: Contexto, buffers e texturas do flutter_gpu pela tabela C
+
+A S7a abre a tabela `FlutterSpiGpuApi` (`runtime_spi/include/flutter_gpu.h`, ABI
+do SPI 0.25, capacidade `kFlutterSpiCapGpu`) com os três objetos que não
+dependem de shaders: contexto, buffer e textura. O contexto devolve as
+capacidades numa chamada só (`FlutterSpiGpuContextInfo`, com `struct_size`), no
+lugar das dez consultas de hoje, e diz por que não há GPU com uma razão
+(`ImpellerDisabled`, `FlutterGpuDisabled`, `NoContext`) que o `lib/gpu` traduz
+nas mesmas mensagens de antes. Buffers e texturas seguram o próprio contexto,
+então liberar o handle do contexto não invalida os recursos. Os enums do
+cabeçalho têm valores explícitos iguais aos índices de `lib/gpu/formats.h`; o
+do backend segue a ordem de `impeller::Context::BackendType`, presa por
+`static_assert`.
+
+Shaders, pipelines, binding sets, command buffers e render passes ainda usam o
+Impeller direto, e `Texture.asImage`/`fromImage` também: o `lib/gpu` chega ao
+objeto Impeller por trás de um handle por pontes internas (`SpiGpu*Impeller`,
+em `runtime_spi/internal/`), que saem na S7c e na S7d.
+
+Um erro só apareceu quando o `lib/gpu` passou a ler o flag do backend: a fábrica
+`DartRuntimeBackendFactory` constrói o `SpiRuntimeBackend` no `Create` e no
+`Spawn`, e o parâmetro novo, com padrão `false`, chegou só a um deles. O
+`UIDartState` continuava certo, então os testes de Dart só falharam na troca da
+fonte do flag.
+
+O checkpoint em cópia limpa achou dois tamanhos errados em 32 bits, que só o
+`abi_layout_check.c` compilado para ARM confere: o `FlutterSpiEngineApi`
+continua com 176 bytes, porque é alinhado em 8 (pelo `capabilities` de 64 bits)
+e o ponteiro `gpu` ocupou o preenchimento de cauda; e o
+`FlutterSpiGpuBufferDescriptor` tem 12 bytes. As structs da GPU passaram a ter
+offsets e tamanhos conferidos nesse arquivo (patch 0161). Com o tamanho igual, só
+a versão 0.25 e `kFlutterSpiCapGpu` dizem se `gpu` existe.
+
+O resultado está em [runtime-spi-s7a.md](medidas/runtime-spi-s7a.md).
+
 ## Tabelas de handles entre threads
 
 O modelo original de `dart:ui` não tinha esta corrida porque o acesso aos
