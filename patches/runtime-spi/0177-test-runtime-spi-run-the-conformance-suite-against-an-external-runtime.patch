@@ -1,0 +1,122 @@
+# Why: flutter-rs R0; a Rust runtime must pass the same suite as the C test
+# runtime.
+diff --git a/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+index 64a92d6c970..27927668f0e 100644
+--- a/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_conformance_unittests.cc
+@@ -8,6 +8,7 @@
+ #include <chrono>
+ #include <cstdlib>
+ #include <cstring>
++#include <dlfcn.h>
+ #include <memory>
+ #include <string>
+ #include <thread>
+@@ -45,6 +46,50 @@ constexpr int64_t kImplicitViewId = 0;
+ constexpr char kPlatformChannel[] = "spi/test";
+ constexpr char kPlatformPayload[] = "payload";
+ 
++using ExternalRuntimeTableFunction = FlutterSpiRuntimeTable (*)(CTestRuntime*);
++using ExternalRuntimeSupportsFunction = bool (*)(const char*);
++
++struct ExternalRuntime {
++  bool configured = false;
++  void* library = nullptr;
++  ExternalRuntimeTableFunction table = nullptr;
++  ExternalRuntimeSupportsFunction supports = nullptr;
++  std::string error;
++};
++
++ExternalRuntime& GetExternalRuntime() {
++  static ExternalRuntime runtime = [] {
++    ExternalRuntime result;
++    const char* path = std::getenv("FLUTTER_SPI_CONFORMANCE_RUNTIME");
++    if (path == nullptr || path[0] == '\0') {
++      return result;
++    }
++    result.configured = true;
++    result.library = ::dlopen(path, RTLD_NOW | RTLD_LOCAL);
++    if (result.library == nullptr) {
++      const char* error = ::dlerror();
++      result.error = error == nullptr ? "dlopen failed" : error;
++      return result;
++    }
++    result.table = reinterpret_cast<ExternalRuntimeTableFunction>(
++        ::dlsym(result.library, "flutter_spi_conformance_runtime_table"));
++    const char* table_error = ::dlerror();
++    if (result.table == nullptr) {
++      result.error = table_error == nullptr ? "symbol not found" : table_error;
++      return result;
++    }
++    result.supports = reinterpret_cast<ExternalRuntimeSupportsFunction>(
++        ::dlsym(result.library, "flutter_spi_conformance_supports"));
++    const char* supports_error = ::dlerror();
++    if (result.supports == nullptr) {
++      result.error =
++          supports_error == nullptr ? "symbol not found" : supports_error;
++    }
++    return result;
++  }();
++  return runtime;
++}
++
+ sk_sp<SkData> MakeTestPng() {
+   SkBitmap bitmap;
+   if (!bitmap.tryAllocPixels(SkImageInfo::MakeN32Premul(3, 2))) {
+@@ -221,7 +266,20 @@ class SpiConformance : public ShellTest {
+  protected:
+   void SetUp() override {
+     InitializeIcuForTesting();
++    const ExternalRuntime& external_runtime = GetExternalRuntime();
++    if (external_runtime.configured && !external_runtime.error.empty()) {
++      GTEST_FAIL() << external_runtime.error;
++      return;
++    }
+     runtime_ = c_test_runtime_create();
++    if (external_runtime.configured) {
++      const char* test_name =
++          ::testing::UnitTest::GetInstance()->current_test_info()->name();
++      if (!external_runtime.supports(test_name)) {
++        GTEST_SKIP() << "not implemented by the external runtime";
++        return;
++      }
++    }
+     task_runners_ = std::make_unique<TaskRunners>(GetTaskRunnersForFixture());
+   }
+ 
+@@ -235,8 +293,7 @@ class SpiConformance : public ShellTest {
+   void StartShell(const char* initial_route = nullptr) {
+     auto settings = CreateSettingsForFixture();
+     settings.icu_data_path = IcuDataPathForTesting();
+-    auto factory = std::make_shared<SpiRuntimeBackendFactory>(
+-        c_test_runtime_table(runtime_));
++    auto factory = std::make_shared<SpiRuntimeBackendFactory>(RuntimeTable());
+     shell_ = Shell::Create(
+         PlatformData(), *task_runners_, settings,
+         ShellTestPlatformViewBuilder({}),
+@@ -266,8 +323,7 @@ class SpiConformance : public ShellTest {
+       const std::shared_ptr<SemanticsCapture>& semantics_capture = nullptr) {
+     auto settings = CreateSettingsForFixture();
+     settings.icu_data_path = IcuDataPathForTesting();
+-    auto factory = std::make_shared<SpiRuntimeBackendFactory>(
+-        c_test_runtime_table(runtime_));
++    auto factory = std::make_shared<SpiRuntimeBackendFactory>(RuntimeTable());
+     shell_ = Shell::Create(
+         PlatformData(), *task_runners_, settings,
+         [handler, semantics_capture](Shell& shell) {
+@@ -319,6 +375,15 @@ class SpiConformance : public ShellTest {
+   CTestRuntime* runtime_ = nullptr;
+   std::unique_ptr<TaskRunners> task_runners_;
+   std::unique_ptr<Shell> shell_;
++
++ private:
++  FlutterSpiRuntimeTable RuntimeTable() const {
++    const ExternalRuntime& external_runtime = GetExternalRuntime();
++    if (external_runtime.configured) {
++      return external_runtime.table(runtime_);
++    }
++    return c_test_runtime_table(runtime_);
++  }
+ };
+ 
+ TEST_F(SpiConformance, HandshakeStartsRuntimeWithoutDartVM) {
