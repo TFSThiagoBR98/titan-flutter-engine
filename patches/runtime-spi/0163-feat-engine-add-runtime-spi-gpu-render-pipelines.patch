@@ -1,0 +1,1295 @@
+# Why: S7b; render pipelines and vertex layouts now go through
+# FlutterSpiGpuApi.
+diff --git a/engine/src/flutter/lib/gpu/BUILD.gn b/engine/src/flutter/lib/gpu/BUILD.gn
+index 36ea67278bd..be4ba598bb6 100644
+--- a/engine/src/flutter/lib/gpu/BUILD.gn
++++ b/engine/src/flutter/lib/gpu/BUILD.gn
+@@ -95,7 +95,6 @@ if (enable_unittests && !is_fuchsia) {
+       "binding_set_unittests.cc",
+       "command_buffer_unittests.cc",
+       "render_pass_unittests.cc",
+-      "render_pipeline_unittests.cc",
+     ]
+ 
+     deps = [
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index ae8caacafd2..808562a4482 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -60,6 +60,8 @@ source_set("spi_backend") {
+     "gpu/spi_gpu_shader.h",
+     "gpu/spi_gpu_shader_library.cc",
+     "gpu/spi_gpu_shader_library.h",
++    "gpu/spi_gpu_render_pipeline.cc",
++    "gpu/spi_gpu_render_pipeline.h",
+     "spi_scene.cc",
+     "spi_scene.h",
+   ]
+@@ -255,6 +257,7 @@ if (enable_unittests) {
+     sources = [
+       "spi_abi_frozen_unittests.cc",
+       "gpu/spi_gpu_unittests.cc",
++      "gpu/spi_gpu_render_pipeline_unittests.cc",
+       "gpu/spi_gpu_shader_library_unittests.cc",
+       "spi_conformance_unittests.cc",
+       "scene/spi_handle_table_unittests.cc",
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 0f0c40bdbe9..096179a5864 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -626,7 +626,13 @@ SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_retain,
+                   sizeof(void*) == 8 ? 208 : 104);
+ SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_release,
+                   sizeof(void*) == 8 ? 216 : 108);
+-SPI_EXPECT_SIZE(FlutterSpiGpuApi, sizeof(void*) == 8 ? 224 : 112);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, render_pipeline_create,
++                  sizeof(void*) == 8 ? 224 : 112);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, render_pipeline_retain,
++                  sizeof(void*) == 8 ? 232 : 116);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, render_pipeline_release,
++                  sizeof(void*) == 8 ? 240 : 120);
++SPI_EXPECT_SIZE(FlutterSpiGpuApi, sizeof(void*) == 8 ? 248 : 124);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiGpuShaderLibraryDescriptor, struct_size, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiGpuShaderLibraryDescriptor, format,
+@@ -640,6 +646,40 @@ SPI_EXPECT_OFFSET(FlutterSpiGpuShaderLibraryDescriptor, library_id,
+ SPI_EXPECT_SIZE(FlutterSpiGpuShaderLibraryDescriptor,
+                 sizeof(void*) == 8 ? 40 : 20);
+ 
++SPI_EXPECT_OFFSET(FlutterSpiGpuVertexAttribute, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiGpuVertexAttribute, name,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiGpuVertexAttribute, format,
++                  sizeof(void*) == 8 ? 16 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiGpuVertexAttribute, offset,
++                  sizeof(void*) == 8 ? 20 : 12);
++SPI_EXPECT_SIZE(FlutterSpiGpuVertexAttribute,
++                sizeof(void*) == 8 ? 24 : 16);
++
++SPI_EXPECT_OFFSET(FlutterSpiGpuVertexBufferLayout, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiGpuVertexBufferLayout, stride,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiGpuVertexBufferLayout, step_mode,
++                  sizeof(void*) == 8 ? 12 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiGpuVertexBufferLayout, attributes,
++                  sizeof(void*) == 8 ? 16 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiGpuVertexBufferLayout, attribute_count,
++                  sizeof(void*) == 8 ? 24 : 16);
++SPI_EXPECT_SIZE(FlutterSpiGpuVertexBufferLayout,
++                sizeof(void*) == 8 ? 32 : 20);
++
++SPI_EXPECT_OFFSET(FlutterSpiGpuRenderPipelineDescriptor, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiGpuRenderPipelineDescriptor, vertex_shader,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiGpuRenderPipelineDescriptor, fragment_shader,
++                  sizeof(void*) == 8 ? 16 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiGpuRenderPipelineDescriptor, buffer_layouts,
++                  sizeof(void*) == 8 ? 24 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiGpuRenderPipelineDescriptor, buffer_layout_count,
++                  sizeof(void*) == 8 ? 32 : 16);
++SPI_EXPECT_SIZE(FlutterSpiGpuRenderPipelineDescriptor,
++                sizeof(void*) == 8 ? 40 : 20);
++
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, color, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, offset, 20);
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, blur_sigma, 28);
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pipeline.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pipeline.cc
+new file mode 100644
+index 00000000000..e4880e19999
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pipeline.cc
+@@ -0,0 +1,381 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/gpu/spi_gpu_render_pipeline.h"
++
++#include <array>
++#include <cstdlib>
++#include <cstdint>
++#include <cstring>
++#include <string>
++#include <utility>
++#include <vector>
++
++#include "flutter/runtime_spi/gpu/spi_gpu_context.h"
++#include "flutter/runtime_spi/scene/spi_handle_table.h"
++#include "impeller/base/validation.h"
++#include "impeller/core/shader_types.h"
++#include "impeller/renderer/shader_library.h"
++#include "third_party/abseil-cpp/absl/strings/str_cat.h"
++
++namespace flutter {
++namespace {
++
++SpiHandleTable<SpiGpuRenderPipeline>& Pipelines() {
++  return LeakedHandleTable<SpiGpuRenderPipeline>();
++}
++
++uintptr_t HandleValue(FlutterSpiGpuRenderPipeline* pipeline) {
++  return reinterpret_cast<uintptr_t>(pipeline);
++}
++
++FlutterSpiGpuRenderPipeline* MakeHandle(uintptr_t value) {
++  return reinterpret_cast<FlutterSpiGpuRenderPipeline*>(value);
++}
++
++SpiGpuRenderPipeline* FindPipeline(FlutterSpiGpuRenderPipeline* pipeline) {
++  return Pipelines().FindRaw(HandleValue(pipeline));
++}
++
++char* AllocateError(const std::string& error) {
++  char* result = static_cast<char*>(std::malloc(error.size() + 1));
++  if (result == nullptr) {
++    return nullptr;
++  }
++  std::memcpy(result, error.c_str(), error.size() + 1);
++  return result;
++}
++
++void SetError(char** out_error, const std::string& error) {
++  if (out_error != nullptr) {
++    *out_error = AllocateError(error);
++  }
++}
++
++struct VertexFormatInfo {
++  impeller::ShaderType type;
++  size_t bit_width;
++  size_t vec_size;
++  size_t bytes_per_element;
++};
++
++// The order must remain synchronized with lib/src/vertex_layout.dart and the
++// FlutterSpiGpuVertexFormat values in flutter_gpu.h.
++constexpr std::array<VertexFormatInfo, 12> kVertexFormatTable = {{
++    {impeller::ShaderType::kFloat, 32, 1, 4},
++    {impeller::ShaderType::kFloat, 32, 2, 8},
++    {impeller::ShaderType::kFloat, 32, 3, 12},
++    {impeller::ShaderType::kFloat, 32, 4, 16},
++    {impeller::ShaderType::kUnsignedInt, 32, 1, 4},
++    {impeller::ShaderType::kUnsignedInt, 32, 2, 8},
++    {impeller::ShaderType::kUnsignedInt, 32, 3, 12},
++    {impeller::ShaderType::kUnsignedInt, 32, 4, 16},
++    {impeller::ShaderType::kSignedInt, 32, 1, 4},
++    {impeller::ShaderType::kSignedInt, 32, 2, 8},
++    {impeller::ShaderType::kSignedInt, 32, 3, 12},
++    {impeller::ShaderType::kSignedInt, 32, 4, 16},
++}};
++
++bool HasFullStruct(const FlutterSpiGpuVertexAttribute& attribute) {
++  return attribute.struct_size >= sizeof(FlutterSpiGpuVertexAttribute);
++}
++
++bool HasFullStruct(const FlutterSpiGpuVertexBufferLayout& layout) {
++  return layout.struct_size >= sizeof(FlutterSpiGpuVertexBufferLayout);
++}
++
++std::shared_ptr<impeller::VertexDescriptor> BuildDefaultVertexDescriptor(
++    const SpiGpuShader& vertex_shader) {
++  return vertex_shader.CreateVertexDescriptor();
++}
++
++std::shared_ptr<impeller::VertexDescriptor> BuildCustomVertexDescriptor(
++    const SpiGpuShader& vertex_shader,
++    const FlutterSpiGpuVertexBufferLayout* buffer_layouts,
++    size_t buffer_layout_count,
++    std::string* error) {
++  std::vector<impeller::ShaderStageBufferLayout> stage_layouts;
++  std::vector<impeller::ShaderStageIOSlot> stage_inputs;
++
++  size_t total_attribute_count = 0;
++  for (size_t buffer_index = 0; buffer_index < buffer_layout_count;
++       ++buffer_index) {
++    const auto& layout = buffer_layouts[buffer_index];
++    if (!HasFullStruct(layout)) {
++      *error = "VertexBufferLayout descriptor is smaller than expected.";
++      return nullptr;
++    }
++    if (layout.attributes == nullptr && layout.attribute_count != 0) {
++      *error = "VertexBufferLayout.attributes must not be null.";
++      return nullptr;
++    }
++    total_attribute_count += layout.attribute_count;
++  }
++  stage_inputs.reserve(total_attribute_count);
++  stage_layouts.reserve(buffer_layout_count);
++
++  for (size_t buffer_index = 0; buffer_index < buffer_layout_count;
++       ++buffer_index) {
++    const auto& layout = buffer_layouts[buffer_index];
++    if (layout.stride <= 0) {
++      *error = absl::StrCat(
++          "VertexBuffer.strideInBytes must be positive (got ", layout.stride,
++          ") on buffer at index ", buffer_index, ".");
++      return nullptr;
++    }
++    if (layout.step_mode < kFlutterSpiGpuVertexStepModeVertex ||
++        layout.step_mode > kFlutterSpiGpuVertexStepModeInstance) {
++      *error = absl::StrCat(
++          "VertexBuffer.stepMode is out of range (got ", layout.step_mode,
++          ") on buffer at index ", buffer_index, ".");
++      return nullptr;
++    }
++    stage_layouts.push_back(
++        {.stride = static_cast<size_t>(layout.stride),
++         .binding = static_cast<uint32_t>(buffer_index),
++         .input_rate = layout.step_mode == kFlutterSpiGpuVertexStepModeVertex
++                           ? impeller::VertexInputRate::kVertex
++                           : impeller::VertexInputRate::kInstance});
++
++    struct AttributeRange {
++      std::string name;
++      size_t begin;
++      size_t end;
++    };
++    std::vector<AttributeRange> ranges;
++    ranges.reserve(layout.attribute_count);
++
++    for (size_t local_index = 0; local_index < layout.attribute_count;
++         ++local_index) {
++      const auto& attribute = layout.attributes[local_index];
++      if (!HasFullStruct(attribute)) {
++        *error = "VertexAttribute descriptor is smaller than expected.";
++        return nullptr;
++      }
++      if (attribute.name == nullptr) {
++        *error = "VertexAttribute.name must not be null.";
++        return nullptr;
++      }
++      const std::string name(attribute.name);
++      if (attribute.offset < 0) {
++        *error = absl::StrCat(
++            "VertexAttribute '", name,
++            "' offsetInBytes must be non-negative (got ", attribute.offset,
++            ").");
++        return nullptr;
++      }
++      if (attribute.format < 0 ||
++          static_cast<size_t>(attribute.format) >= kVertexFormatTable.size()) {
++        *error = absl::StrCat("VertexAttribute '", name, "' format index ",
++                             attribute.format, " is out of range.");
++        return nullptr;
++      }
++      const VertexFormatInfo& format = kVertexFormatTable[attribute.format];
++      const size_t offset = static_cast<size_t>(attribute.offset);
++      if (offset > static_cast<size_t>(layout.stride) ||
++          format.bytes_per_element >
++              static_cast<size_t>(layout.stride) - offset) {
++        *error = absl::StrCat(
++            "VertexAttribute '", name, "' (offset ", attribute.offset,
++            " + ", format.bytes_per_element, " bytes) overruns stride of ",
++            layout.stride, " on buffer at index ", buffer_index, ".");
++        return nullptr;
++      }
++
++      const size_t end = offset + format.bytes_per_element;
++      for (const auto& range : ranges) {
++        if (offset < range.end && range.begin < end) {
++          *error = absl::StrCat(
++              "VertexAttribute '", name, "' (bytes [", offset, ", ", end,
++              ")) overlaps VertexAttribute '", range.name, "' (bytes [",
++              range.begin, ", ", range.end, ")) on buffer at index ",
++              buffer_index, ".");
++          return nullptr;
++        }
++      }
++      ranges.push_back({name, offset, end});
++
++      const impeller::ShaderStageIOSlot* shader_slot = nullptr;
++      for (const auto& slot : vertex_shader.GetStageInputs()) {
++        if (slot.name != nullptr && name == slot.name) {
++          shader_slot = &slot;
++          break;
++        }
++      }
++      if (shader_slot == nullptr) {
++        *error = absl::StrCat(
++            "VertexAttribute name '", name,
++            "' does not match any input declared by the bound vertex shader.");
++        return nullptr;
++      }
++      if (shader_slot->type != format.type ||
++          shader_slot->bit_width != format.bit_width) {
++        *error = absl::StrCat(
++            "VertexAttribute '", name,
++            "' format does not match the vertex shader's declared input type.");
++        return nullptr;
++      }
++      impeller::ShaderStageIOSlot built = *shader_slot;
++      built.binding = static_cast<uint32_t>(buffer_index);
++      built.offset = offset;
++      stage_inputs.push_back(built);
++    }
++  }
++
++  auto descriptor = std::make_shared<impeller::VertexDescriptor>();
++  descriptor->SetStageInputs(stage_inputs, stage_layouts);
++  return descriptor;
++}
++
++}  // namespace
++
++SpiGpuRenderPipeline::SpiGpuRenderPipeline(
++    FlutterSpiGpuShader* vertex_shader,
++    FlutterSpiGpuShader* fragment_shader,
++    std::shared_ptr<impeller::VertexDescriptor> vertex_descriptor)
++    : vertex_shader_(vertex_shader),
++      fragment_shader_(fragment_shader),
++      vertex_descriptor_(std::move(vertex_descriptor)) {
++  SpiGpuShaderRetain(vertex_shader_);
++  SpiGpuShaderRetain(fragment_shader_);
++  SpiGpuShader* vertex_core = SpiGpuShaderGetCore(vertex_shader_);
++  SpiGpuShader* fragment_core = SpiGpuShaderGetCore(fragment_shader_);
++  vertex_descriptor_->RegisterDescriptorSetLayouts(
++      vertex_core->GetDescriptorSetLayouts().data(),
++      vertex_core->GetDescriptorSetLayouts().size());
++  vertex_descriptor_->RegisterDescriptorSetLayouts(
++      fragment_core->GetDescriptorSetLayouts().data(),
++      fragment_core->GetDescriptorSetLayouts().size());
++}
++
++SpiGpuRenderPipeline::~SpiGpuRenderPipeline() {
++  SpiGpuShaderRelease(vertex_shader_);
++  SpiGpuShaderRelease(fragment_shader_);
++}
++
++bool SpiGpuRenderPipeline::BindToPipelineDescriptor(
++    impeller::ShaderLibrary& library,
++    impeller::PipelineDescriptor& descriptor) {
++  SpiGpuShader* vertex_core = SpiGpuShaderGetCore(vertex_shader_);
++  SpiGpuShader* fragment_core = SpiGpuShaderGetCore(fragment_shader_);
++  if (vertex_core == nullptr || fragment_core == nullptr) {
++    return false;
++  }
++  auto vertex_function = vertex_core->GetFunctionFromLibrary(library);
++  if (!vertex_function) {
++    VALIDATION_LOG << "Unable to resolve the vertex shader function '"
++                   << vertex_core->GetEntrypoint()
++                   << "' from the shader library.";
++    return false;
++  }
++  auto fragment_function = fragment_core->GetFunctionFromLibrary(library);
++  if (!fragment_function) {
++    VALIDATION_LOG << "Unable to resolve the fragment shader function '"
++                   << fragment_core->GetEntrypoint()
++                   << "' from the shader library.";
++    return false;
++  }
++  descriptor.SetVertexDescriptor(vertex_descriptor_);
++  descriptor.AddStageEntrypoint(std::move(vertex_function));
++  descriptor.AddStageEntrypoint(std::move(fragment_function));
++  return true;
++}
++
++const char* ValidateRenderPipelineShaderStages(
++    const SpiGpuShader& vertex_shader,
++    const SpiGpuShader& fragment_shader) {
++  if (vertex_shader.GetShaderStage() != impeller::ShaderStage::kVertex) {
++    return "The shader given for the vertex stage is not a vertex shader.";
++  }
++  if (fragment_shader.GetShaderStage() != impeller::ShaderStage::kFragment) {
++    return "The shader given for the fragment stage is not a fragment shader.";
++  }
++  return nullptr;
++}
++
++FlutterSpiResult SpiGpuRenderPipelineCreate(
++    FlutterSpiGpuContext* context,
++    const FlutterSpiGpuRenderPipelineDescriptor* descriptor,
++    FlutterSpiGpuRenderPipeline** out_pipeline,
++    char** out_error) {
++  if (out_error != nullptr) {
++    *out_error = nullptr;
++  }
++  if (context == nullptr || descriptor == nullptr || out_pipeline == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out_pipeline = nullptr;
++  if (descriptor->struct_size <
++      offsetof(FlutterSpiGpuRenderPipelineDescriptor, buffer_layout_count) +
++          sizeof(descriptor->buffer_layout_count)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if ((descriptor->buffer_layouts == nullptr &&
++       descriptor->buffer_layout_count != 0) ||
++      (descriptor->buffer_layouts != nullptr &&
++       descriptor->buffer_layout_count == 0)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  SpiGpuShader* vertex_shader = SpiGpuShaderGetCore(descriptor->vertex_shader);
++  SpiGpuShader* fragment_shader =
++      SpiGpuShaderGetCore(descriptor->fragment_shader);
++  if (vertex_shader == nullptr || fragment_shader == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (const char* error =
++          ValidateRenderPipelineShaderStages(*vertex_shader, *fragment_shader)) {
++    SetError(out_error, error);
++    return kFlutterSpiInvalidArgument;
++  }
++  std::shared_ptr<impeller::Context> context_value =
++      SpiGpuContextGetImpeller(context);
++  if (context_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  vertex_shader->RegisterSync(*context_value);
++  fragment_shader->RegisterSync(*context_value);
++
++  std::shared_ptr<impeller::VertexDescriptor> vertex_descriptor;
++  if (descriptor->buffer_layouts == nullptr) {
++    vertex_descriptor = BuildDefaultVertexDescriptor(*vertex_shader);
++  } else {
++    std::string error;
++    vertex_descriptor = BuildCustomVertexDescriptor(
++        *vertex_shader, descriptor->buffer_layouts,
++        descriptor->buffer_layout_count, &error);
++    if (vertex_descriptor == nullptr) {
++      SetError(out_error, error);
++      return kFlutterSpiInvalidArgument;
++    }
++  }
++
++  auto pipeline = std::make_shared<SpiGpuRenderPipeline>(
++      descriptor->vertex_shader, descriptor->fragment_shader,
++      std::move(vertex_descriptor));
++  const uintptr_t handle = Pipelines().Insert(std::move(pipeline));
++  if (handle == 0) {
++    return kFlutterSpiInternalError;
++  }
++  *out_pipeline = MakeHandle(handle);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiGpuRenderPipelineRetain(
++    FlutterSpiGpuRenderPipeline* pipeline) {
++  return Pipelines().Retain(HandleValue(pipeline)) ? kFlutterSpiOk
++                                                   : kFlutterSpiInvalidHandle;
++}
++
++FlutterSpiResult SpiGpuRenderPipelineRelease(
++    FlutterSpiGpuRenderPipeline* pipeline) {
++  return Pipelines().Release(HandleValue(pipeline)) ? kFlutterSpiOk
++                                                    : kFlutterSpiInvalidHandle;
++}
++
++SpiGpuRenderPipeline* SpiGpuRenderPipelineGetCore(
++    FlutterSpiGpuRenderPipeline* pipeline) {
++  return FindPipeline(pipeline);
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pipeline.h b/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pipeline.h
+new file mode 100644
+index 00000000000..fae67d2022f
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pipeline.h
+@@ -0,0 +1,54 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_RENDER_PIPELINE_H_
++#define FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_RENDER_PIPELINE_H_
++
++#include <memory>
++
++#include "flutter/runtime_spi/gpu/spi_gpu_shader.h"
++#include "flutter/runtime_spi/include/flutter_gpu.h"
++#include "impeller/renderer/pipeline_descriptor.h"
++#include "impeller/renderer/vertex_descriptor.h"
++
++namespace flutter {
++
++class SpiGpuRenderPipeline final {
++ public:
++  SpiGpuRenderPipeline(
++      FlutterSpiGpuShader* vertex_shader,
++      FlutterSpiGpuShader* fragment_shader,
++      std::shared_ptr<impeller::VertexDescriptor> vertex_descriptor);
++
++  ~SpiGpuRenderPipeline();
++
++  bool BindToPipelineDescriptor(impeller::ShaderLibrary& library,
++                                impeller::PipelineDescriptor& descriptor);
++
++ private:
++  FlutterSpiGpuShader* vertex_shader_;
++  FlutterSpiGpuShader* fragment_shader_;
++  std::shared_ptr<impeller::VertexDescriptor> vertex_descriptor_;
++};
++
++const char* ValidateRenderPipelineShaderStages(
++    const SpiGpuShader& vertex_shader,
++    const SpiGpuShader& fragment_shader);
++
++FlutterSpiResult SpiGpuRenderPipelineCreate(
++    FlutterSpiGpuContext* context,
++    const FlutterSpiGpuRenderPipelineDescriptor* descriptor,
++    FlutterSpiGpuRenderPipeline** out_pipeline,
++    char** out_error);
++FlutterSpiResult SpiGpuRenderPipelineRetain(
++    FlutterSpiGpuRenderPipeline* pipeline);
++FlutterSpiResult SpiGpuRenderPipelineRelease(
++    FlutterSpiGpuRenderPipeline* pipeline);
++
++SpiGpuRenderPipeline* SpiGpuRenderPipelineGetCore(
++    FlutterSpiGpuRenderPipeline* pipeline);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_RENDER_PIPELINE_H_
+diff --git a/engine/src/flutter/lib/gpu/render_pipeline_unittests.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pipeline_unittests.cc
+similarity index 62%
+rename from engine/src/flutter/lib/gpu/render_pipeline_unittests.cc
+rename to engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pipeline_unittests.cc
+index f2b205b7607..43c6f4d4b37 100644
+--- a/engine/src/flutter/lib/gpu/render_pipeline_unittests.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pipeline_unittests.cc
+@@ -1,21 +1,22 @@
+-// Copyright 2013 The Flutter Authors. All rights reserved.
++// Copyright 2026 The Flutter Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+-#include "flutter/lib/gpu/render_pipeline.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_render_pipeline.h"
+ 
+ #include "gtest/gtest.h"
+ 
+-#include "flutter/lib/gpu/shader.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_shader.h"
+ 
+-namespace flutter::gpu {
++namespace flutter {
+ namespace {
+ 
+-fml::RefPtr<Shader> MakeShader(impeller::ShaderStage stage) {
+-  return Shader::Make("library", "Entrypoint", stage,
+-                      /*code_mapping=*/nullptr, /*inputs=*/{}, /*layouts=*/{},
+-                      /*uniform_structs=*/{}, /*uniform_textures=*/{},
+-                      /*descriptor_set_layouts=*/{});
++std::shared_ptr<SpiGpuShader> MakeShader(impeller::ShaderStage stage) {
++  return SpiGpuShader::Make("library", "Entrypoint", stage,
++                            /*code_mapping=*/nullptr, /*inputs=*/{},
++                            /*layouts=*/{}, /*uniform_structs=*/{},
++                            /*uniform_textures=*/{},
++                            /*descriptor_set_layouts=*/{});
+ }
+ 
+ // Pairing shaders of the wrong stages previously constructed a pipeline that
+@@ -37,4 +38,4 @@ TEST(FlutterGpuRenderPipelineTest, ValidatesShaderStages) {
+ }
+ 
+ }  // namespace
+-}  // namespace flutter::gpu
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.cc
+index 06224deaf0f..efcb06218ac 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.cc
+@@ -85,8 +85,12 @@ SpiGpuShader::GetFunctionFromLibrary(impeller::ShaderLibrary& library) {
+ }
+ 
+ bool SpiGpuShader::IsRegistered(impeller::Context& context) {
+-  auto& library = *context.GetShaderLibrary();
+-  return GetFunctionFromLibrary(library) != nullptr;
++  const std::shared_ptr<impeller::ShaderLibrary> library =
++      context.GetShaderLibrary();
++  if (library == nullptr) {
++    return false;
++  }
++  return GetFunctionFromLibrary(*library) != nullptr;
+ }
+ 
+ bool SpiGpuShader::IsDirty() const {
+@@ -120,21 +124,25 @@ void SpiGpuShader::ResetFrom(SpiGpuShader& other) {
+ }
+ 
+ bool SpiGpuShader::RegisterSync(impeller::Context& context) {
+-  auto& library = *context.GetShaderLibrary();
++  const std::shared_ptr<impeller::ShaderLibrary> library =
++      context.GetShaderLibrary();
++  if (library == nullptr) {
++    return false;
++  }
+   const std::string scoped_name = GetScopedName();
+   std::shared_ptr<const impeller::ShaderFunction> existing =
+-      library.GetFunction(scoped_name, stage_);
++      library->GetFunction(scoped_name, stage_);
+   if (existing && !is_dirty_) {
+     return true;
+   }
+   if (existing && is_dirty_) {
+     context.GetPipelineLibrary()->RemovePipelinesWithEntryPoint(existing);
+-    library.UnregisterFunction(scoped_name, stage_);
++    library->UnregisterFunction(scoped_name, stage_);
+   }
+ 
+   std::promise<bool> promise;
+   auto future = promise.get_future();
+-  library.RegisterFunction(
++  library->RegisterFunction(
+       scoped_name, stage_, code_mapping_,
+       fml::MakeCopyable([promise = std::move(promise)](bool result) mutable {
+         promise.set_value(result);
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
+index bd2e56e5b3a..82a20d0ad10 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "flutter/runtime_spi/gpu/spi_gpu_buffer.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_context.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_render_pipeline.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_shader.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_shader_library.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_texture.h"
+@@ -11,6 +12,8 @@
+ #include <cstdlib>
+ #include <memory>
+ #include <string>
++#include <string_view>
++#include <utility>
+ #include <vector>
+ 
+ #include "flutter/fml/message_loop.h"
+@@ -20,6 +23,7 @@
+ #include "flutter/testing/testing.h"
+ #include "gmock/gmock.h"
+ #include "gtest/gtest.h"
++#include "impeller/renderer/shader_library.h"
+ #include "impeller/renderer/testing/mocks.h"
+ #include "impeller/shader_bundle/shader_bundle_flatbuffers.h"
+ 
+@@ -60,6 +64,50 @@ class TestRuntimeDelegate final : public RuntimeDelegate {
+   void ResetInternalState() override {}
+ };
+ 
++class FakeShaderLibrary final : public impeller::ShaderLibrary {
++ public:
++  bool IsValid() const override { return true; }
++
++  std::shared_ptr<const impeller::ShaderFunction> GetFunction(
++      std::string_view, impeller::ShaderStage) override {
++    return nullptr;
++  }
++
++  void RegisterFunction(std::string name,
++                        impeller::ShaderStage stage,
++                        std::shared_ptr<fml::Mapping>,
++                        RegistrationCallback callback) override {
++    registered_functions_.emplace_back(std::move(name), stage);
++    if (callback) {
++      callback(true);
++    }
++  }
++
++  void UnregisterFunction(std::string name,
++                          impeller::ShaderStage stage) override {
++    const auto iterator = std::find_if(
++        registered_functions_.begin(), registered_functions_.end(),
++        [&name, stage](const auto& function) {
++          return function.first == name && function.second == stage;
++        });
++    if (iterator != registered_functions_.end()) {
++      registered_functions_.erase(iterator);
++    }
++  }
++
++  bool HasFunction(std::string_view name, impeller::ShaderStage stage) const {
++    return std::any_of(
++        registered_functions_.begin(), registered_functions_.end(),
++        [name, stage](const auto& function) {
++          return function.first == name && function.second == stage;
++        });
++  }
++
++ private:
++  std::vector<std::pair<std::string, impeller::ShaderStage>>
++      registered_functions_;
++};
++
+ class SpiGpuContextTest : public ::testing::Test {
+  protected:
+   void SetUp() override {
+@@ -90,16 +138,22 @@ class SpiGpuContextTest : public ::testing::Test {
+ 
+ std::shared_ptr<NiceMock<impeller::testing::MockImpellerContext>>
+ CreateMockContext(
+-    std::shared_ptr<const impeller::Capabilities>* capabilities_out) {
++    std::shared_ptr<const impeller::Capabilities>* capabilities_out,
++    std::shared_ptr<FakeShaderLibrary>* shader_library_out = nullptr) {
+   auto context =
+       std::make_shared<NiceMock<impeller::testing::MockImpellerContext>>();
+   auto capabilities =
+       std::make_shared<NiceMock<impeller::testing::MockCapabilities>>();
++  auto shader_library = std::make_shared<FakeShaderLibrary>();
+   *capabilities_out = capabilities;
+   ON_CALL(*context, GetBackendType())
+       .WillByDefault(Return(impeller::Context::BackendType::kVulkan));
+   ON_CALL(*context, GetCapabilities())
+       .WillByDefault(ReturnRef(*capabilities_out));
++  ON_CALL(*context, GetShaderLibrary()).WillByDefault(Return(shader_library));
++  if (shader_library_out != nullptr) {
++    *shader_library_out = std::move(shader_library);
++  }
+   return context;
+ }
+ 
+@@ -180,6 +234,95 @@ FlutterSpiGpuShaderLibraryDescriptor MakeShaderLibraryDescriptor(
+   };
+ }
+ 
++std::shared_ptr<std::vector<uint8_t>> BuildPipelineShaderBundle() {
++  namespace fbs = impeller::fb::shaderbundle;
++  auto vertex_backend = std::make_unique<fbs::BackendShaderT>();
++  vertex_backend->stage = fbs::ShaderStage::kVertex;
++  vertex_backend->entrypoint = "vertex_main";
++  vertex_backend->shader = {1};
++  auto vertex_input = std::make_unique<fbs::ShaderInputT>();
++  vertex_input->name = "position";
++  vertex_input->location = 0;
++  vertex_input->type = fbs::InputDataType::kFloat;
++  vertex_input->bit_width = 32;
++  vertex_input->vec_size = 3;
++  vertex_input->columns = 1;
++  vertex_backend->inputs.push_back(std::move(vertex_input));
++
++  auto fragment_backend = std::make_unique<fbs::BackendShaderT>();
++  fragment_backend->stage = fbs::ShaderStage::kFragment;
++  fragment_backend->entrypoint = "fragment_main";
++  fragment_backend->shader = {2};
++
++  auto vertex = std::make_unique<fbs::ShaderT>();
++  vertex->name = "vertex";
++  vertex->vulkan = std::move(vertex_backend);
++  auto fragment = std::make_unique<fbs::ShaderT>();
++  fragment->name = "fragment";
++  fragment->vulkan = std::move(fragment_backend);
++
++  fbs::ShaderBundleT bundle;
++  bundle.format_version =
++      static_cast<uint32_t>(fbs::ShaderBundleFormatVersion::kVersion);
++  bundle.shaders.push_back(std::move(vertex));
++  bundle.shaders.push_back(std::move(fragment));
++  flatbuffers::FlatBufferBuilder builder;
++  builder.Finish(fbs::ShaderBundle::Pack(builder, &bundle),
++                 fbs::ShaderBundleIdentifier());
++  return std::make_shared<std::vector<uint8_t>>(
++      builder.GetBufferPointer(),
++      builder.GetBufferPointer() + builder.GetSize());
++}
++
++struct PipelineShaderHandles {
++  FlutterSpiGpuShaderLibrary* library = nullptr;
++  FlutterSpiGpuShader* vertex = nullptr;
++  FlutterSpiGpuShader* fragment = nullptr;
++};
++
++PipelineShaderHandles MakePipelineShaderHandles(FlutterSpiGpuContext* context) {
++  auto bundle = BuildPipelineShaderBundle();
++  auto descriptor = MakeShaderLibraryDescriptor(bundle);
++  PipelineShaderHandles handles;
++  if (SpiGpuShaderLibraryCreate(context, &descriptor, &handles.library,
++                                nullptr) != kFlutterSpiOk) {
++    return {};
++  }
++  if (SpiGpuShaderLibraryGetShader(handles.library, "vertex", &handles.vertex) !=
++      kFlutterSpiOk) {
++    return {};
++  }
++  if (SpiGpuShaderLibraryGetShader(handles.library, "fragment",
++                                   &handles.fragment) != kFlutterSpiOk) {
++    return {};
++  }
++  return handles;
++}
++
++void ReleasePipelineShaderHandles(PipelineShaderHandles* handles) {
++  if (handles->vertex != nullptr) {
++    EXPECT_EQ(SpiGpuShaderRelease(handles->vertex), kFlutterSpiOk);
++  }
++  if (handles->fragment != nullptr) {
++    EXPECT_EQ(SpiGpuShaderRelease(handles->fragment), kFlutterSpiOk);
++  }
++  if (handles->library != nullptr) {
++    EXPECT_EQ(SpiGpuShaderLibraryRelease(handles->library), kFlutterSpiOk);
++  }
++}
++
++FlutterSpiGpuRenderPipelineDescriptor MakeRenderPipelineDescriptor(
++    FlutterSpiGpuShader* vertex_shader,
++    FlutterSpiGpuShader* fragment_shader) {
++  return {
++      .struct_size = sizeof(FlutterSpiGpuRenderPipelineDescriptor),
++      .vertex_shader = vertex_shader,
++      .fragment_shader = fragment_shader,
++      .buffer_layouts = nullptr,
++      .buffer_layout_count = 0,
++  };
++}
++
+ void AllowTextureDimensions(impeller::testing::MockAllocator& allocator) {
+   ON_CALL(allocator, GetMaxTextureSizeSupported())
+       .WillByDefault(Return(impeller::ISize(1024, 1024)));
+@@ -824,5 +967,284 @@ TEST_F(SpiGpuContextTest, ShaderCallsRejectNullAndReleasedHandles) {
+   EXPECT_EQ(SpiGpuContextRelease(context), kFlutterSpiOk);
+ }
+ 
++TEST_F(SpiGpuContextTest, RenderPipelineCreateRejectsSwappedStages) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  SpiGpuSetDefaultContextOverride(CreateMockContext(&capabilities));
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* context = GetDefaultContext(backend.get());
++  auto handles = MakePipelineShaderHandles(context);
++  ASSERT_NE(handles.vertex, nullptr);
++  ASSERT_NE(handles.fragment, nullptr);
++
++  auto descriptor =
++      MakeRenderPipelineDescriptor(handles.fragment, handles.vertex);
++  FlutterSpiGpuRenderPipeline* pipeline = nullptr;
++  char* error = nullptr;
++  EXPECT_EQ(SpiGpuRenderPipelineCreate(context, &descriptor, &pipeline, &error),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(pipeline, nullptr);
++  ASSERT_NE(error, nullptr);
++  EXPECT_STREQ(error,
++               "The shader given for the vertex stage is not a vertex shader.");
++  std::free(error);
++
++  ReleasePipelineShaderHandles(&handles);
++  EXPECT_EQ(SpiGpuContextRelease(context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, RenderPipelineCreateUsesDefaultLayout) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  std::shared_ptr<FakeShaderLibrary> shader_library;
++  SpiGpuSetDefaultContextOverride(
++      CreateMockContext(&capabilities, &shader_library));
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* context = GetDefaultContext(backend.get());
++  auto handles = MakePipelineShaderHandles(context);
++  ASSERT_NE(handles.vertex, nullptr);
++  ASSERT_NE(handles.fragment, nullptr);
++
++  auto descriptor =
++      MakeRenderPipelineDescriptor(handles.vertex, handles.fragment);
++  FlutterSpiGpuRenderPipeline* pipeline = nullptr;
++  EXPECT_EQ(SpiGpuRenderPipelineCreate(context, &descriptor, &pipeline, nullptr),
++            kFlutterSpiOk);
++  ASSERT_NE(pipeline, nullptr);
++  EXPECT_NE(SpiGpuRenderPipelineGetCore(pipeline), nullptr);
++  ASSERT_NE(shader_library, nullptr);
++  EXPECT_TRUE(shader_library->HasFunction(
++      "fg:test_bundle:vertex_main", impeller::ShaderStage::kVertex));
++  EXPECT_TRUE(shader_library->HasFunction(
++      "fg:test_bundle:fragment_main", impeller::ShaderStage::kFragment));
++
++  EXPECT_EQ(SpiGpuRenderPipelineRelease(pipeline), kFlutterSpiOk);
++  ReleasePipelineShaderHandles(&handles);
++  EXPECT_EQ(SpiGpuContextRelease(context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest,
++       RenderPipelineCreateSurvivesContextWithoutShaderLibrary) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  auto impeller_context = CreateMockContext(&capabilities);
++  ON_CALL(*impeller_context, GetShaderLibrary())
++      .WillByDefault(Return(nullptr));
++  SpiGpuSetDefaultContextOverride(impeller_context);
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* context = GetDefaultContext(backend.get());
++  auto handles = MakePipelineShaderHandles(context);
++  ASSERT_NE(handles.vertex, nullptr);
++  ASSERT_NE(handles.fragment, nullptr);
++
++  auto descriptor =
++      MakeRenderPipelineDescriptor(handles.vertex, handles.fragment);
++  FlutterSpiGpuRenderPipeline* pipeline = nullptr;
++  EXPECT_EQ(SpiGpuRenderPipelineCreate(context, &descriptor, &pipeline, nullptr),
++            kFlutterSpiOk);
++  ASSERT_NE(pipeline, nullptr);
++
++  EXPECT_EQ(SpiGpuRenderPipelineRelease(pipeline), kFlutterSpiOk);
++  ReleasePipelineShaderHandles(&handles);
++  EXPECT_EQ(SpiGpuContextRelease(context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, RenderPipelineCustomLayoutReportsOverrun) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  SpiGpuSetDefaultContextOverride(CreateMockContext(&capabilities));
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* context = GetDefaultContext(backend.get());
++  auto handles = MakePipelineShaderHandles(context);
++  ASSERT_NE(handles.vertex, nullptr);
++  ASSERT_NE(handles.fragment, nullptr);
++
++  const char attribute_name[] = "position";
++  FlutterSpiGpuVertexAttribute attribute = {
++      .struct_size = sizeof(FlutterSpiGpuVertexAttribute),
++      .name = attribute_name,
++      .format = kFlutterSpiGpuVertexFormatFloat32x2,
++      .offset = 0,
++  };
++  FlutterSpiGpuVertexBufferLayout layout = {
++      .struct_size = sizeof(FlutterSpiGpuVertexBufferLayout),
++      .stride = 4,
++      .step_mode = kFlutterSpiGpuVertexStepModeVertex,
++      .attributes = &attribute,
++      .attribute_count = 1,
++  };
++  auto descriptor =
++      MakeRenderPipelineDescriptor(handles.vertex, handles.fragment);
++  descriptor.buffer_layouts = &layout;
++  descriptor.buffer_layout_count = 1;
++  FlutterSpiGpuRenderPipeline* pipeline = nullptr;
++  char* error = nullptr;
++
++  EXPECT_EQ(SpiGpuRenderPipelineCreate(context, &descriptor, &pipeline, &error),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(pipeline, nullptr);
++  ASSERT_NE(error, nullptr);
++  EXPECT_NE(std::string(error).find("overruns stride"), std::string::npos);
++  std::free(error);
++
++  ReleasePipelineShaderHandles(&handles);
++  EXPECT_EQ(SpiGpuContextRelease(context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, RenderPipelineCustomLayoutReportsOverlap) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  SpiGpuSetDefaultContextOverride(CreateMockContext(&capabilities));
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* context = GetDefaultContext(backend.get());
++  auto handles = MakePipelineShaderHandles(context);
++  ASSERT_NE(handles.vertex, nullptr);
++  ASSERT_NE(handles.fragment, nullptr);
++
++  const char attribute_name[] = "position";
++  FlutterSpiGpuVertexAttribute attributes[] = {
++      {.struct_size = sizeof(FlutterSpiGpuVertexAttribute),
++       .name = attribute_name,
++       .format = kFlutterSpiGpuVertexFormatFloat32,
++       .offset = 0},
++      {.struct_size = sizeof(FlutterSpiGpuVertexAttribute),
++       .name = attribute_name,
++       .format = kFlutterSpiGpuVertexFormatFloat32,
++       .offset = 2},
++  };
++  FlutterSpiGpuVertexBufferLayout layout = {
++      .struct_size = sizeof(FlutterSpiGpuVertexBufferLayout),
++      .stride = 8,
++      .step_mode = kFlutterSpiGpuVertexStepModeVertex,
++      .attributes = attributes,
++      .attribute_count = 2,
++  };
++  auto descriptor =
++      MakeRenderPipelineDescriptor(handles.vertex, handles.fragment);
++  descriptor.buffer_layouts = &layout;
++  descriptor.buffer_layout_count = 1;
++  FlutterSpiGpuRenderPipeline* pipeline = nullptr;
++  char* error = nullptr;
++
++  EXPECT_EQ(SpiGpuRenderPipelineCreate(context, &descriptor, &pipeline, &error),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(pipeline, nullptr);
++  ASSERT_NE(error, nullptr);
++  EXPECT_NE(std::string(error).find("overlaps"), std::string::npos);
++  std::free(error);
++
++  ReleasePipelineShaderHandles(&handles);
++  EXPECT_EQ(SpiGpuContextRelease(context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, RenderPipelineCustomLayoutReportsUnknownAttribute) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  SpiGpuSetDefaultContextOverride(CreateMockContext(&capabilities));
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* context = GetDefaultContext(backend.get());
++  auto handles = MakePipelineShaderHandles(context);
++  ASSERT_NE(handles.vertex, nullptr);
++  ASSERT_NE(handles.fragment, nullptr);
++
++  FlutterSpiGpuVertexAttribute attribute = {
++      .struct_size = sizeof(FlutterSpiGpuVertexAttribute),
++      .name = "missing",
++      .format = kFlutterSpiGpuVertexFormatFloat32,
++      .offset = 0,
++  };
++  FlutterSpiGpuVertexBufferLayout layout = {
++      .struct_size = sizeof(FlutterSpiGpuVertexBufferLayout),
++      .stride = 4,
++      .step_mode = kFlutterSpiGpuVertexStepModeVertex,
++      .attributes = &attribute,
++      .attribute_count = 1,
++  };
++  auto descriptor =
++      MakeRenderPipelineDescriptor(handles.vertex, handles.fragment);
++  descriptor.buffer_layouts = &layout;
++  descriptor.buffer_layout_count = 1;
++  FlutterSpiGpuRenderPipeline* pipeline = nullptr;
++  char* error = nullptr;
++
++  EXPECT_EQ(SpiGpuRenderPipelineCreate(context, &descriptor, &pipeline, &error),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(pipeline, nullptr);
++  ASSERT_NE(error, nullptr);
++  EXPECT_NE(std::string(error).find("does not match"), std::string::npos);
++  std::free(error);
++
++  ReleasePipelineShaderHandles(&handles);
++  EXPECT_EQ(SpiGpuContextRelease(context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, RenderPipelineCreateRejectsSmallStruct) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  SpiGpuSetDefaultContextOverride(CreateMockContext(&capabilities));
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* context = GetDefaultContext(backend.get());
++  auto handles = MakePipelineShaderHandles(context);
++  ASSERT_NE(handles.vertex, nullptr);
++  ASSERT_NE(handles.fragment, nullptr);
++
++  auto descriptor =
++      MakeRenderPipelineDescriptor(handles.vertex, handles.fragment);
++  descriptor.struct_size = offsetof(FlutterSpiGpuRenderPipelineDescriptor,
++                                   buffer_layouts);
++  FlutterSpiGpuRenderPipeline* pipeline = nullptr;
++  EXPECT_EQ(SpiGpuRenderPipelineCreate(context, &descriptor, &pipeline, nullptr),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(pipeline, nullptr);
++
++  ReleasePipelineShaderHandles(&handles);
++  EXPECT_EQ(SpiGpuContextRelease(context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, RenderPipelineOutlivesShaderHandles) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  SpiGpuSetDefaultContextOverride(CreateMockContext(&capabilities));
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* context = GetDefaultContext(backend.get());
++  auto handles = MakePipelineShaderHandles(context);
++  ASSERT_NE(handles.vertex, nullptr);
++  ASSERT_NE(handles.fragment, nullptr);
++
++  auto descriptor =
++      MakeRenderPipelineDescriptor(handles.vertex, handles.fragment);
++  FlutterSpiGpuRenderPipeline* pipeline = nullptr;
++  ASSERT_EQ(SpiGpuRenderPipelineCreate(context, &descriptor, &pipeline, nullptr),
++            kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuShaderRelease(handles.vertex), kFlutterSpiOk);
++  handles.vertex = nullptr;
++  EXPECT_EQ(SpiGpuShaderRelease(handles.fragment), kFlutterSpiOk);
++  handles.fragment = nullptr;
++  EXPECT_EQ(SpiGpuShaderLibraryRelease(handles.library), kFlutterSpiOk);
++  handles.library = nullptr;
++
++  EXPECT_NE(SpiGpuRenderPipelineGetCore(pipeline), nullptr);
++  EXPECT_EQ(SpiGpuRenderPipelineRelease(pipeline), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuContextRelease(context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, RenderPipelineCallsRejectNullAndReleasedHandles) {
++  EXPECT_EQ(SpiGpuRenderPipelineRetain(nullptr), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuRenderPipelineRelease(nullptr), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuRenderPipelineCreate(nullptr, nullptr, nullptr, nullptr),
++            kFlutterSpiInvalidArgument);
++
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  SpiGpuSetDefaultContextOverride(CreateMockContext(&capabilities));
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* context = GetDefaultContext(backend.get());
++  auto handles = MakePipelineShaderHandles(context);
++  ASSERT_NE(handles.vertex, nullptr);
++  ASSERT_NE(handles.fragment, nullptr);
++  auto descriptor =
++      MakeRenderPipelineDescriptor(handles.vertex, handles.fragment);
++  ASSERT_EQ(SpiGpuShaderRelease(handles.vertex), kFlutterSpiOk);
++  handles.vertex = nullptr;
++  EXPECT_EQ(SpiGpuRenderPipelineCreate(context, &descriptor, nullptr, nullptr),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(SpiGpuShaderRelease(handles.fragment), kFlutterSpiOk);
++  handles.fragment = nullptr;
++  EXPECT_EQ(SpiGpuShaderLibraryRelease(handles.library), kFlutterSpiOk);
++  handles.library = nullptr;
++  EXPECT_EQ(SpiGpuContextRelease(context), kFlutterSpiOk);
++}
++
+ }  // namespace
+ }  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_gpu.h b/engine/src/flutter/runtime_spi/include/flutter_gpu.h
+index 10801658293..fa116ffc9c4 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_gpu.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_gpu.h
+@@ -20,6 +20,7 @@ typedef struct FlutterSpiGpuBuffer FlutterSpiGpuBuffer;
+ typedef struct FlutterSpiGpuTexture FlutterSpiGpuTexture;
+ typedef struct FlutterSpiGpuShaderLibrary FlutterSpiGpuShaderLibrary;
+ typedef struct FlutterSpiGpuShader FlutterSpiGpuShader;
++typedef struct FlutterSpiGpuRenderPipeline FlutterSpiGpuRenderPipeline;
+ 
+ // These values are kept in the same order as the corresponding Flutter GPU
+ // enums in lib/gpu/formats.h.
+@@ -105,6 +106,28 @@ typedef enum {
+   kFlutterSpiGpuShaderFormatGlsl = 3,
+ } FlutterSpiGpuShaderFormat;
+ 
++// These values are kept in the same order as the corresponding Flutter GPU
++// enums in lib/src/vertex_layout.dart.
++typedef enum {
++  kFlutterSpiGpuVertexFormatFloat32 = 0,
++  kFlutterSpiGpuVertexFormatFloat32x2 = 1,
++  kFlutterSpiGpuVertexFormatFloat32x3 = 2,
++  kFlutterSpiGpuVertexFormatFloat32x4 = 3,
++  kFlutterSpiGpuVertexFormatUint32 = 4,
++  kFlutterSpiGpuVertexFormatUint32x2 = 5,
++  kFlutterSpiGpuVertexFormatUint32x3 = 6,
++  kFlutterSpiGpuVertexFormatUint32x4 = 7,
++  kFlutterSpiGpuVertexFormatSint32 = 8,
++  kFlutterSpiGpuVertexFormatSint32x2 = 9,
++  kFlutterSpiGpuVertexFormatSint32x3 = 10,
++  kFlutterSpiGpuVertexFormatSint32x4 = 11,
++} FlutterSpiGpuVertexFormat;
++
++typedef enum {
++  kFlutterSpiGpuVertexStepModeVertex = 0,
++  kFlutterSpiGpuVertexStepModeInstance = 1,
++} FlutterSpiGpuVertexStepMode;
++
+ typedef struct {
+   size_t struct_size;
+   int32_t backend;
+@@ -146,6 +169,29 @@ typedef struct {
+   const char* library_id;
+ } FlutterSpiGpuShaderLibraryDescriptor;
+ 
++typedef struct {
++  size_t struct_size;
++  const char* name;
++  int32_t format;
++  int32_t offset;
++} FlutterSpiGpuVertexAttribute;
++
++typedef struct {
++  size_t struct_size;
++  int32_t stride;
++  int32_t step_mode;
++  const FlutterSpiGpuVertexAttribute* attributes;
++  size_t attribute_count;
++} FlutterSpiGpuVertexBufferLayout;
++
++typedef struct {
++  size_t struct_size;
++  FlutterSpiGpuShader* vertex_shader;
++  FlutterSpiGpuShader* fragment_shader;
++  const FlutterSpiGpuVertexBufferLayout* buffer_layouts;
++  size_t buffer_layout_count;
++} FlutterSpiGpuRenderPipelineDescriptor;
++
+ typedef struct FlutterSpiGpuApi {
+   size_t struct_size;
+   FlutterSpiResult (*context_get_default)(FlutterSpiEngine* engine,
+@@ -226,6 +272,15 @@ typedef struct FlutterSpiGpuApi {
+       int32_t* out_offset);
+   FlutterSpiResult (*shader_retain)(FlutterSpiGpuShader* shader);
+   FlutterSpiResult (*shader_release)(FlutterSpiGpuShader* shader);
++  FlutterSpiResult (*render_pipeline_create)(
++      FlutterSpiGpuContext* context,
++      const FlutterSpiGpuRenderPipelineDescriptor* descriptor,
++      FlutterSpiGpuRenderPipeline** out_pipeline,
++      char** out_error);
++  FlutterSpiResult (*render_pipeline_retain)(
++      FlutterSpiGpuRenderPipeline* pipeline);
++  FlutterSpiResult (*render_pipeline_release)(
++      FlutterSpiGpuRenderPipeline* pipeline);
+ } FlutterSpiGpuApi;
+ 
+ #ifdef __cplusplus
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index 0f860ac37de..6b08169ff05 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -147,7 +147,10 @@ TEST(SpiAbi, GpuApiLayoutIsFrozen) {
+                     100);
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi, shader_retain, 208, 104);
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi, shader_release, 216, 108);
+-  EXPECT_EQ(sizeof(FlutterSpiGpuApi), sizeof(void*) == 8 ? 224u : 112u);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, render_pipeline_create, 224, 112);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, render_pipeline_retain, 232, 116);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, render_pipeline_release, 240, 120);
++  EXPECT_EQ(sizeof(FlutterSpiGpuApi), sizeof(void*) == 8 ? 248u : 124u);
+ }
+ 
+ TEST(SpiAbi, GpuBufferDescriptorLayoutIsFrozen) {
+@@ -178,7 +181,7 @@ TEST(SpiAbi, GpuTextureApiLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi, texture_overwrite, 112, 56);
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi, texture_retain, 120, 60);
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi, texture_release, 128, 64);
+-  EXPECT_EQ(sizeof(FlutterSpiGpuApi), sizeof(void*) == 8 ? 224u : 112u);
++  EXPECT_EQ(sizeof(FlutterSpiGpuApi), sizeof(void*) == 8 ? 248u : 124u);
+ }
+ 
+ TEST(SpiAbi, GpuShaderLibraryDescriptorLayoutIsFrozen) {
+@@ -191,6 +194,39 @@ TEST(SpiAbi, GpuShaderLibraryDescriptorLayoutIsFrozen) {
+             sizeof(void*) == 8 ? 40u : 20u);
+ }
+ 
++TEST(SpiAbi, GpuVertexAttributeLayoutIsFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiGpuVertexAttribute, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuVertexAttribute, name, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuVertexAttribute, format, 16, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuVertexAttribute, offset, 20, 12);
++  EXPECT_EQ(sizeof(FlutterSpiGpuVertexAttribute),
++            sizeof(void*) == 8 ? 24u : 16u);
++}
++
++TEST(SpiAbi, GpuVertexBufferLayoutIsFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiGpuVertexBufferLayout, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuVertexBufferLayout, stride, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuVertexBufferLayout, step_mode, 12, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuVertexBufferLayout, attributes, 16, 12);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuVertexBufferLayout, attribute_count, 24, 16);
++  EXPECT_EQ(sizeof(FlutterSpiGpuVertexBufferLayout),
++            sizeof(void*) == 8 ? 32u : 20u);
++}
++
++TEST(SpiAbi, GpuRenderPipelineDescriptorLayoutIsFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiGpuRenderPipelineDescriptor, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuRenderPipelineDescriptor, vertex_shader, 8,
++                    4);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuRenderPipelineDescriptor, fragment_shader, 16,
++                    8);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuRenderPipelineDescriptor, buffer_layouts, 24,
++                    12);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuRenderPipelineDescriptor,
++                    buffer_layout_count, 32, 16);
++  EXPECT_EQ(sizeof(FlutterSpiGpuRenderPipelineDescriptor),
++            sizeof(void*) == 8 ? 40u : 20u);
++}
++
+ TEST(SpiAbi, SemanticsLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiSemanticsFlags, struct_size, 0, 0);
+   EXPECT_SPI_OFFSET(FlutterSpiSemanticsFlags, is_checked, 8, 4);
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index f5bfa0416a8..47cc3dfcc64 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -24,6 +24,7 @@
+ #include "flutter/runtime_spi/gpu/spi_gpu_context.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_shader.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_shader_library.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_render_pipeline.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_texture.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
+ #include "flutter/runtime_spi/image/spi_image_canvas.h"
+@@ -183,6 +184,9 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+       .shader_get_uniform_member_offset = SpiGpuShaderGetUniformMemberOffset,
+       .shader_retain = SpiGpuShaderRetain,
+       .shader_release = SpiGpuShaderRelease,
++      .render_pipeline_create = SpiGpuRenderPipelineCreate,
++      .render_pipeline_retain = SpiGpuRenderPipelineRetain,
++      .render_pipeline_release = SpiGpuRenderPipelineRelease,
+   };
+   static const FlutterSpiImageApi image_api = {
+       .struct_size = sizeof(FlutterSpiImageApi),

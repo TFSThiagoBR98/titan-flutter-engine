@@ -1,0 +1,1953 @@
+# Why: S7b; shader libraries and shaders now load and expose reflection
+# through FlutterSpiGpuApi.
+diff --git a/engine/src/flutter/lib/gpu/BUILD.gn b/engine/src/flutter/lib/gpu/BUILD.gn
+index 8b7af2d1ffe..36ea67278bd 100644
+--- a/engine/src/flutter/lib/gpu/BUILD.gn
++++ b/engine/src/flutter/lib/gpu/BUILD.gn
+@@ -96,7 +96,6 @@ if (enable_unittests && !is_fuchsia) {
+       "command_buffer_unittests.cc",
+       "render_pass_unittests.cc",
+       "render_pipeline_unittests.cc",
+-      "shader_library_unittests.cc",
+     ]
+ 
+     deps = [
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 51b3361d736..ae8caacafd2 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -32,6 +32,8 @@ source_set("spi_backend") {
+     "gpu/spi_gpu_formats.h",
+     "gpu/spi_gpu_buffer.h",
+     "gpu/spi_gpu_texture.h",
++    "gpu/spi_gpu_shader.h",
++    "gpu/spi_gpu_shader_library.h",
+     "spi_engine_api.h",
+     "spi_scene.h",
+   ]
+@@ -54,6 +56,10 @@ source_set("spi_backend") {
+     "gpu/spi_gpu_buffer.h",
+     "gpu/spi_gpu_texture.cc",
+     "gpu/spi_gpu_texture.h",
++    "gpu/spi_gpu_shader.cc",
++    "gpu/spi_gpu_shader.h",
++    "gpu/spi_gpu_shader_library.cc",
++    "gpu/spi_gpu_shader_library.h",
+     "spi_scene.cc",
+     "spi_scene.h",
+   ]
+@@ -69,6 +75,7 @@ source_set("spi_backend") {
+     ":semantics",
+     ":text",
+     "//flutter/lib/ui:ui_text_core",
++    "//flutter/impeller/shader_bundle:shader_bundle_flatbuffers",
+   ]
+ }
+ 
+@@ -248,6 +255,7 @@ if (enable_unittests) {
+     sources = [
+       "spi_abi_frozen_unittests.cc",
+       "gpu/spi_gpu_unittests.cc",
++      "gpu/spi_gpu_shader_library_unittests.cc",
+       "spi_conformance_unittests.cc",
+       "scene/spi_handle_table_unittests.cc",
+       "scene/spi_canvas_parity_unittests.cc",
+@@ -290,6 +298,7 @@ if (enable_unittests) {
+       "//flutter/common",
+       "//flutter/fml",
+       "//flutter/impeller/renderer/testing:mocks",
++      "//flutter/impeller/shader_bundle:shader_bundle_flatbuffers",
+       "//flutter/lib/ui",
+       "//flutter/lib/ui:ui_text_core",
+       "//flutter/lib/ui/fixtures/shaders/general_shaders:compile_general_shaders",
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index b56ba1d5459..0f0c40bdbe9 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -604,7 +604,41 @@ SPI_EXPECT_OFFSET(FlutterSpiGpuApi, texture_retain,
+                   sizeof(void*) == 8 ? 120 : 60);
+ SPI_EXPECT_OFFSET(FlutterSpiGpuApi, texture_release,
+                   sizeof(void*) == 8 ? 128 : 64);
+-SPI_EXPECT_SIZE(FlutterSpiGpuApi, sizeof(void*) == 8 ? 136 : 68);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_library_create,
++                  sizeof(void*) == 8 ? 136 : 68);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_library_reload,
++                  sizeof(void*) == 8 ? 144 : 72);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_library_get_shader,
++                  sizeof(void*) == 8 ? 152 : 76);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_library_retain,
++                  sizeof(void*) == 8 ? 160 : 80);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_library_release,
++                  sizeof(void*) == 8 ? 168 : 84);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_get_uniform_struct_index,
++                  sizeof(void*) == 8 ? 176 : 88);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_get_uniform_texture_index,
++                  sizeof(void*) == 8 ? 184 : 92);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_get_uniform_struct_size,
++                  sizeof(void*) == 8 ? 192 : 96);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_get_uniform_member_offset,
++                  sizeof(void*) == 8 ? 200 : 100);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_retain,
++                  sizeof(void*) == 8 ? 208 : 104);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_release,
++                  sizeof(void*) == 8 ? 216 : 108);
++SPI_EXPECT_SIZE(FlutterSpiGpuApi, sizeof(void*) == 8 ? 224 : 112);
++
++SPI_EXPECT_OFFSET(FlutterSpiGpuShaderLibraryDescriptor, struct_size, 0);
++SPI_EXPECT_OFFSET(FlutterSpiGpuShaderLibraryDescriptor, format,
++                  sizeof(void*) == 8 ? 8 : 4);
++SPI_EXPECT_OFFSET(FlutterSpiGpuShaderLibraryDescriptor, data,
++                  sizeof(void*) == 8 ? 16 : 8);
++SPI_EXPECT_OFFSET(FlutterSpiGpuShaderLibraryDescriptor, size,
++                  sizeof(void*) == 8 ? 24 : 12);
++SPI_EXPECT_OFFSET(FlutterSpiGpuShaderLibraryDescriptor, library_id,
++                  sizeof(void*) == 8 ? 32 : 16);
++SPI_EXPECT_SIZE(FlutterSpiGpuShaderLibraryDescriptor,
++                sizeof(void*) == 8 ? 40 : 20);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, color, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiTextShadow, offset, 20);
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.cc
+new file mode 100644
+index 00000000000..06224deaf0f
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.cc
+@@ -0,0 +1,338 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/gpu/spi_gpu_shader.h"
++
++#include <algorithm>
++#include <cstring>
++#include <future>
++#include <utility>
++
++#include "flutter/runtime_spi/scene/spi_handle_table.h"
++#include "fml/make_copyable.h"
++#include "impeller/renderer/context.h"
++#include "impeller/renderer/pipeline_library.h"
++#include "impeller/renderer/shader_function.h"
++#include "impeller/renderer/shader_key.h"
++#include "impeller/renderer/shader_library.h"
++
++namespace flutter {
++namespace {
++
++SpiHandleTable<SpiGpuShader>& Shaders() {
++  return LeakedHandleTable<SpiGpuShader>();
++}
++
++uintptr_t HandleValue(FlutterSpiGpuShader* shader) {
++  return reinterpret_cast<uintptr_t>(shader);
++}
++
++FlutterSpiGpuShader* MakeHandle(uintptr_t value) {
++  return reinterpret_cast<FlutterSpiGpuShader*>(value);
++}
++
++SpiGpuShader* FindShader(FlutterSpiGpuShader* shader) {
++  return Shaders().FindRaw(HandleValue(shader));
++}
++
++}  // namespace
++
++const impeller::ShaderStructMemberMetadata*
++SpiGpuShader::UniformBinding::GetMemberMetadata(const std::string& name) const {
++  auto result =
++      std::find_if(metadata.members.begin(), metadata.members.end(),
++                   [&name](const impeller::ShaderStructMemberMetadata& member) {
++                     return member.name == name;
++                   });
++  return result == metadata.members.end() ? nullptr : &(*result);
++}
++
++SpiGpuShader::SpiGpuShader() = default;
++
++std::shared_ptr<SpiGpuShader> SpiGpuShader::Make(
++    std::string library_id,
++    std::string entrypoint,
++    impeller::ShaderStage stage,
++    std::shared_ptr<fml::Mapping> code_mapping,
++    std::vector<impeller::ShaderStageIOSlot> inputs,
++    std::vector<impeller::ShaderStageBufferLayout> layouts,
++    std::unordered_map<std::string, UniformBinding> uniform_structs,
++    std::unordered_map<std::string, TextureBinding> uniform_textures,
++    std::vector<impeller::DescriptorSetLayout> descriptor_set_layouts) {
++  auto shader = std::shared_ptr<SpiGpuShader>(new SpiGpuShader());
++  shader->library_id_ = std::move(library_id);
++  shader->entrypoint_ = std::move(entrypoint);
++  shader->stage_ = stage;
++  shader->code_mapping_ = std::move(code_mapping);
++  shader->inputs_ = std::move(inputs);
++  shader->layouts_ = std::move(layouts);
++  shader->uniform_structs_ = std::move(uniform_structs);
++  shader->uniform_textures_ = std::move(uniform_textures);
++  shader->descriptor_set_layouts_ = std::move(descriptor_set_layouts);
++  shader->RebuildBindingOrder();
++  return shader;
++}
++
++std::string SpiGpuShader::GetScopedName() const {
++  return impeller::ShaderKey::MakeUserScopedName(
++      impeller::ShaderKey::kScopeFlutterGPU, library_id_, entrypoint_);
++}
++
++std::shared_ptr<const impeller::ShaderFunction>
++SpiGpuShader::GetFunctionFromLibrary(impeller::ShaderLibrary& library) {
++  return library.GetFunction(GetScopedName(), stage_);
++}
++
++bool SpiGpuShader::IsRegistered(impeller::Context& context) {
++  auto& library = *context.GetShaderLibrary();
++  return GetFunctionFromLibrary(library) != nullptr;
++}
++
++bool SpiGpuShader::IsDirty() const {
++  return is_dirty_;
++}
++
++void SpiGpuShader::SetClean() {
++  is_dirty_ = false;
++}
++
++void SpiGpuShader::ResetFrom(SpiGpuShader& other) {
++  const bool code_changed =
++      code_mapping_ == nullptr || other.code_mapping_ == nullptr ||
++      code_mapping_->GetSize() != other.code_mapping_->GetSize() ||
++      std::memcmp(code_mapping_->GetMapping(),
++                  other.code_mapping_->GetMapping(),
++                  code_mapping_->GetSize()) != 0;
++
++  entrypoint_ = std::move(other.entrypoint_);
++  stage_ = other.stage_;
++  code_mapping_ = std::move(other.code_mapping_);
++  inputs_ = std::move(other.inputs_);
++  layouts_ = std::move(other.layouts_);
++  uniform_structs_ = std::move(other.uniform_structs_);
++  uniform_textures_ = std::move(other.uniform_textures_);
++  descriptor_set_layouts_ = std::move(other.descriptor_set_layouts_);
++  RebuildBindingOrder();
++  if (code_changed) {
++    is_dirty_ = true;
++  }
++}
++
++bool SpiGpuShader::RegisterSync(impeller::Context& context) {
++  auto& library = *context.GetShaderLibrary();
++  const std::string scoped_name = GetScopedName();
++  std::shared_ptr<const impeller::ShaderFunction> existing =
++      library.GetFunction(scoped_name, stage_);
++  if (existing && !is_dirty_) {
++    return true;
++  }
++  if (existing && is_dirty_) {
++    context.GetPipelineLibrary()->RemovePipelinesWithEntryPoint(existing);
++    library.UnregisterFunction(scoped_name, stage_);
++  }
++
++  std::promise<bool> promise;
++  auto future = promise.get_future();
++  library.RegisterFunction(
++      scoped_name, stage_, code_mapping_,
++      fml::MakeCopyable([promise = std::move(promise)](bool result) mutable {
++        promise.set_value(result);
++      }));
++  if (!future.get()) {
++    return false;
++  }
++  is_dirty_ = false;
++  return true;
++}
++
++std::shared_ptr<impeller::VertexDescriptor>
++SpiGpuShader::CreateVertexDescriptor() const {
++  auto descriptor = std::make_shared<impeller::VertexDescriptor>();
++  descriptor->SetStageInputs(inputs_, layouts_);
++  return descriptor;
++}
++
++const std::vector<impeller::ShaderStageIOSlot>& SpiGpuShader::GetStageInputs()
++    const {
++  return inputs_;
++}
++
++const std::vector<impeller::ShaderStageBufferLayout>&
++SpiGpuShader::GetStageBufferLayouts() const {
++  return layouts_;
++}
++
++const std::vector<impeller::DescriptorSetLayout>&
++SpiGpuShader::GetDescriptorSetLayouts() const {
++  return descriptor_set_layouts_;
++}
++
++impeller::ShaderStage SpiGpuShader::GetShaderStage() const {
++  return stage_;
++}
++
++const std::string& SpiGpuShader::GetEntrypoint() const {
++  return entrypoint_;
++}
++
++const SpiGpuShader::UniformBinding* SpiGpuShader::GetUniformStruct(
++    const std::string& name) const {
++  auto uniform = uniform_structs_.find(name);
++  return uniform == uniform_structs_.end() ? nullptr : &uniform->second;
++}
++
++const SpiGpuShader::TextureBinding* SpiGpuShader::GetUniformTexture(
++    const std::string& name) const {
++  auto uniform = uniform_textures_.find(name);
++  return uniform == uniform_textures_.end() ? nullptr : &uniform->second;
++}
++
++int SpiGpuShader::GetUniformStructIndex(const std::string& name) const {
++  const UniformBinding* binding = GetUniformStruct(name);
++  if (binding == nullptr) {
++    return -1;
++  }
++  for (size_t index = 0; index < uniform_struct_order_.size(); index++) {
++    if (uniform_struct_order_[index] == binding) {
++      return static_cast<int>(index);
++    }
++  }
++  return -1;
++}
++
++const SpiGpuShader::UniformBinding* SpiGpuShader::GetUniformStructAt(
++    int index) const {
++  if (index < 0 || static_cast<size_t>(index) >= uniform_struct_order_.size()) {
++    return nullptr;
++  }
++  return uniform_struct_order_[index];
++}
++
++int SpiGpuShader::GetUniformTextureIndex(const std::string& name) const {
++  const TextureBinding* binding = GetUniformTexture(name);
++  if (binding == nullptr) {
++    return -1;
++  }
++  for (size_t index = 0; index < uniform_texture_order_.size(); index++) {
++    if (uniform_texture_order_[index] == binding) {
++      return static_cast<int>(index);
++    }
++  }
++  return -1;
++}
++
++const SpiGpuShader::TextureBinding* SpiGpuShader::GetUniformTextureAt(
++    int index) const {
++  if (index < 0 ||
++      static_cast<size_t>(index) >= uniform_texture_order_.size()) {
++    return nullptr;
++  }
++  return uniform_texture_order_[index];
++}
++
++void SpiGpuShader::RebuildBindingOrder() {
++  uniform_struct_order_.clear();
++  uniform_struct_order_.reserve(uniform_structs_.size());
++  for (const auto& entry : uniform_structs_) {
++    uniform_struct_order_.push_back(&entry.second);
++  }
++  uniform_texture_order_.clear();
++  uniform_texture_order_.reserve(uniform_textures_.size());
++  for (const auto& entry : uniform_textures_) {
++    uniform_texture_order_.push_back(&entry.second);
++  }
++}
++
++SpiGpuShader* SpiGpuShaderGetCore(FlutterSpiGpuShader* shader) {
++  return FindShader(shader);
++}
++
++FlutterSpiGpuShader* SpiGpuShaderInsertHandle(
++    std::shared_ptr<SpiGpuShader> shader) {
++  if (shader == nullptr) {
++    return nullptr;
++  }
++  const uintptr_t handle = Shaders().Insert(std::move(shader));
++  return handle == 0 ? nullptr : MakeHandle(handle);
++}
++
++bool SpiGpuShaderIsDirtyForTesting(FlutterSpiGpuShader* shader) {
++  SpiGpuShader* shader_value = FindShader(shader);
++  return shader_value != nullptr && shader_value->IsDirty();
++}
++
++FlutterSpiResult SpiGpuShaderGetUniformStructSize(FlutterSpiGpuShader* shader,
++                                                  const char* struct_name,
++                                                  int32_t* out_size) {
++  SpiGpuShader* shader_value = FindShader(shader);
++  if (shader_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (struct_name == nullptr || out_size == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const auto* binding = shader_value->GetUniformStruct(struct_name);
++  *out_size =
++      binding == nullptr ? -1 : static_cast<int32_t>(binding->size_in_bytes);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiGpuShaderGetUniformMemberOffset(FlutterSpiGpuShader* shader,
++                                                    const char* struct_name,
++                                                    const char* member_name,
++                                                    int32_t* out_offset) {
++  SpiGpuShader* shader_value = FindShader(shader);
++  if (shader_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (struct_name == nullptr || member_name == nullptr ||
++      out_offset == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const auto* binding = shader_value->GetUniformStruct(struct_name);
++  const auto* member =
++      binding == nullptr ? nullptr : binding->GetMemberMetadata(member_name);
++  *out_offset = member == nullptr ? -1 : static_cast<int32_t>(member->offset);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiGpuShaderGetUniformStructIndex(FlutterSpiGpuShader* shader,
++                                                   const char* name,
++                                                   int32_t* out_index) {
++  SpiGpuShader* shader_value = FindShader(shader);
++  if (shader_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (name == nullptr || out_index == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out_index = shader_value->GetUniformStructIndex(name);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiGpuShaderGetUniformTextureIndex(FlutterSpiGpuShader* shader,
++                                                    const char* name,
++                                                    int32_t* out_index) {
++  SpiGpuShader* shader_value = FindShader(shader);
++  if (shader_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (name == nullptr || out_index == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out_index = shader_value->GetUniformTextureIndex(name);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiGpuShaderRetain(FlutterSpiGpuShader* shader) {
++  return Shaders().Retain(HandleValue(shader)) ? kFlutterSpiOk
++                                               : kFlutterSpiInvalidHandle;
++}
++
++FlutterSpiResult SpiGpuShaderRelease(FlutterSpiGpuShader* shader) {
++  return Shaders().Release(HandleValue(shader)) ? kFlutterSpiOk
++                                                : kFlutterSpiInvalidHandle;
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.h b/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.h
+new file mode 100644
+index 00000000000..8880327cd42
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader.h
+@@ -0,0 +1,121 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_SHADER_H_
++#define FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_SHADER_H_
++
++#include <cstddef>
++#include <memory>
++#include <string>
++#include <unordered_map>
++#include <vector>
++
++#include "flutter/runtime_spi/include/flutter_gpu.h"
++#include "fml/mapping.h"
++#include "impeller/core/shader_types.h"
++#include "impeller/renderer/vertex_descriptor.h"
++
++namespace impeller {
++class Context;
++class ShaderFunction;
++class ShaderLibrary;
++}  // namespace impeller
++
++namespace flutter {
++
++class SpiGpuShader final {
++ public:
++  struct UniformBinding {
++    impeller::ShaderUniformSlot slot;
++    impeller::ShaderMetadata metadata;
++    size_t size_in_bytes = 0;
++
++    const impeller::ShaderStructMemberMetadata* GetMemberMetadata(
++        const std::string& name) const;
++  };
++
++  struct TextureBinding {
++    impeller::SampledImageSlot slot;
++    impeller::ShaderMetadata metadata;
++  };
++
++  static std::shared_ptr<SpiGpuShader> Make(
++      std::string library_id,
++      std::string entrypoint,
++      impeller::ShaderStage stage,
++      std::shared_ptr<fml::Mapping> code_mapping,
++      std::vector<impeller::ShaderStageIOSlot> inputs,
++      std::vector<impeller::ShaderStageBufferLayout> layouts,
++      std::unordered_map<std::string, UniformBinding> uniform_structs,
++      std::unordered_map<std::string, TextureBinding> uniform_textures,
++      std::vector<impeller::DescriptorSetLayout> descriptor_set_layouts);
++
++  std::shared_ptr<const impeller::ShaderFunction> GetFunctionFromLibrary(
++      impeller::ShaderLibrary& library);
++
++  bool IsRegistered(impeller::Context& context);
++  bool RegisterSync(impeller::Context& context);
++  bool IsDirty() const;
++  void SetClean();
++  void ResetFrom(SpiGpuShader& other);
++
++  std::shared_ptr<impeller::VertexDescriptor> CreateVertexDescriptor() const;
++  const std::vector<impeller::ShaderStageIOSlot>& GetStageInputs() const;
++  const std::vector<impeller::ShaderStageBufferLayout>& GetStageBufferLayouts()
++      const;
++  const std::vector<impeller::DescriptorSetLayout>& GetDescriptorSetLayouts()
++      const;
++  impeller::ShaderStage GetShaderStage() const;
++  const std::string& GetEntrypoint() const;
++  const UniformBinding* GetUniformStruct(const std::string& name) const;
++  const TextureBinding* GetUniformTexture(const std::string& name) const;
++  int GetUniformStructIndex(const std::string& name) const;
++  const UniformBinding* GetUniformStructAt(int index) const;
++  int GetUniformTextureIndex(const std::string& name) const;
++  const TextureBinding* GetUniformTextureAt(int index) const;
++
++ private:
++  SpiGpuShader();
++
++  std::string library_id_;
++  std::string entrypoint_;
++  impeller::ShaderStage stage_;
++  std::shared_ptr<fml::Mapping> code_mapping_;
++  std::vector<impeller::ShaderStageIOSlot> inputs_;
++  std::vector<impeller::ShaderStageBufferLayout> layouts_;
++  std::unordered_map<std::string, UniformBinding> uniform_structs_;
++  std::unordered_map<std::string, TextureBinding> uniform_textures_;
++  std::vector<const UniformBinding*> uniform_struct_order_;
++  std::vector<const TextureBinding*> uniform_texture_order_;
++  std::vector<impeller::DescriptorSetLayout> descriptor_set_layouts_;
++  bool is_dirty_ = true;
++
++  void RebuildBindingOrder();
++  std::string GetScopedName() const;
++};
++
++FlutterSpiResult SpiGpuShaderGetUniformStructSize(FlutterSpiGpuShader* shader,
++                                                  const char* struct_name,
++                                                  int32_t* out_size);
++FlutterSpiResult SpiGpuShaderGetUniformMemberOffset(FlutterSpiGpuShader* shader,
++                                                    const char* struct_name,
++                                                    const char* member_name,
++                                                    int32_t* out_offset);
++FlutterSpiResult SpiGpuShaderGetUniformStructIndex(FlutterSpiGpuShader* shader,
++                                                   const char* name,
++                                                   int32_t* out_index);
++FlutterSpiResult SpiGpuShaderGetUniformTextureIndex(FlutterSpiGpuShader* shader,
++                                                    const char* name,
++                                                    int32_t* out_index);
++FlutterSpiResult SpiGpuShaderRetain(FlutterSpiGpuShader* shader);
++FlutterSpiResult SpiGpuShaderRelease(FlutterSpiGpuShader* shader);
++
++SpiGpuShader* SpiGpuShaderGetCore(FlutterSpiGpuShader* shader);
++bool SpiGpuShaderIsDirtyForTesting(FlutterSpiGpuShader* shader);
++FlutterSpiGpuShader* SpiGpuShaderInsertHandle(
++    std::shared_ptr<SpiGpuShader> shader);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_SHADER_H_
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader_library.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader_library.cc
+new file mode 100644
+index 00000000000..ec406333d7f
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader_library.cc
+@@ -0,0 +1,556 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/runtime_spi/gpu/spi_gpu_shader_library.h"
++
++#include <cstdlib>
++#include <cstring>
++#include <optional>
++#include <utility>
++#include <vector>
++
++#include "flutter/runtime_spi/gpu/spi_gpu_context.h"
++#include "flutter/runtime_spi/scene/spi_handle_table.h"
++#include "impeller/base/validation.h"
++#include "impeller/core/shader_types.h"
++#include "impeller/renderer/context.h"
++#include "impeller/renderer/shader_key.h"
++#include "impeller/shader_bundle/shader_bundle_flatbuffers.h"
++
++namespace flutter {
++namespace {
++
++SpiHandleTable<SpiGpuShaderLibrary>& Libraries() {
++  return LeakedHandleTable<SpiGpuShaderLibrary>();
++}
++
++uintptr_t HandleValue(FlutterSpiGpuShaderLibrary* library) {
++  return reinterpret_cast<uintptr_t>(library);
++}
++
++FlutterSpiGpuShaderLibrary* MakeHandle(uintptr_t value) {
++  return reinterpret_cast<FlutterSpiGpuShaderLibrary*>(value);
++}
++
++SpiGpuShaderLibrary* FindLibrary(FlutterSpiGpuShaderLibrary* library) {
++  return Libraries().FindRaw(HandleValue(library));
++}
++
++std::shared_ptr<fml::Mapping> CopyPayload(const uint8_t* data, size_t size) {
++  if (data == nullptr && size != 0) {
++    return nullptr;
++  }
++  if (size == 0) {
++    return std::make_shared<fml::DataMapping>(std::vector<uint8_t>());
++  }
++  return std::make_shared<fml::DataMapping>(
++      std::vector<uint8_t>(data, data + size));
++}
++
++impeller::ShaderStage ToShaderStage(
++    impeller::fb::shaderbundle::ShaderStage stage) {
++  switch (stage) {
++    case impeller::fb::shaderbundle::ShaderStage::kVertex:
++      return impeller::ShaderStage::kVertex;
++    case impeller::fb::shaderbundle::ShaderStage::kFragment:
++      return impeller::ShaderStage::kFragment;
++    case impeller::fb::shaderbundle::ShaderStage::kCompute:
++      return impeller::ShaderStage::kCompute;
++  }
++  return impeller::ShaderStage::kUnknown;
++}
++
++impeller::ShaderType FromInputType(
++    impeller::fb::shaderbundle::InputDataType input_type) {
++  switch (input_type) {
++    case impeller::fb::shaderbundle::InputDataType::kBoolean:
++      return impeller::ShaderType::kBoolean;
++    case impeller::fb::shaderbundle::InputDataType::kSignedByte:
++      return impeller::ShaderType::kSignedByte;
++    case impeller::fb::shaderbundle::InputDataType::kUnsignedByte:
++      return impeller::ShaderType::kUnsignedByte;
++    case impeller::fb::shaderbundle::InputDataType::kSignedShort:
++      return impeller::ShaderType::kSignedShort;
++    case impeller::fb::shaderbundle::InputDataType::kUnsignedShort:
++      return impeller::ShaderType::kUnsignedShort;
++    case impeller::fb::shaderbundle::InputDataType::kSignedInt:
++      return impeller::ShaderType::kSignedInt;
++    case impeller::fb::shaderbundle::InputDataType::kUnsignedInt:
++      return impeller::ShaderType::kUnsignedInt;
++    case impeller::fb::shaderbundle::InputDataType::kSignedInt64:
++      return impeller::ShaderType::kSignedInt64;
++    case impeller::fb::shaderbundle::InputDataType::kUnsignedInt64:
++      return impeller::ShaderType::kUnsignedInt64;
++    case impeller::fb::shaderbundle::InputDataType::kFloat:
++      return impeller::ShaderType::kFloat;
++    case impeller::fb::shaderbundle::InputDataType::kDouble:
++      return impeller::ShaderType::kDouble;
++  }
++  return impeller::ShaderType::kUnknown;
++}
++
++impeller::ShaderType FromUniformType(
++    impeller::fb::shaderbundle::UniformDataType uniform_type) {
++  switch (uniform_type) {
++    case impeller::fb::shaderbundle::UniformDataType::kBoolean:
++      return impeller::ShaderType::kBoolean;
++    case impeller::fb::shaderbundle::UniformDataType::kSignedByte:
++      return impeller::ShaderType::kSignedByte;
++    case impeller::fb::shaderbundle::UniformDataType::kUnsignedByte:
++      return impeller::ShaderType::kUnsignedByte;
++    case impeller::fb::shaderbundle::UniformDataType::kSignedShort:
++      return impeller::ShaderType::kSignedShort;
++    case impeller::fb::shaderbundle::UniformDataType::kUnsignedShort:
++      return impeller::ShaderType::kUnsignedShort;
++    case impeller::fb::shaderbundle::UniformDataType::kSignedInt:
++      return impeller::ShaderType::kSignedInt;
++    case impeller::fb::shaderbundle::UniformDataType::kUnsignedInt:
++      return impeller::ShaderType::kUnsignedInt;
++    case impeller::fb::shaderbundle::UniformDataType::kSignedInt64:
++      return impeller::ShaderType::kSignedInt64;
++    case impeller::fb::shaderbundle::UniformDataType::kUnsignedInt64:
++      return impeller::ShaderType::kUnsignedInt64;
++    case impeller::fb::shaderbundle::UniformDataType::kFloat:
++      return impeller::ShaderType::kFloat;
++    case impeller::fb::shaderbundle::UniformDataType::kDouble:
++      return impeller::ShaderType::kDouble;
++    case impeller::fb::shaderbundle::UniformDataType::kHalfFloat:
++      return impeller::ShaderType::kHalfFloat;
++    case impeller::fb::shaderbundle::UniformDataType::kSampledImage:
++      return impeller::ShaderType::kSampledImage;
++  }
++  return impeller::ShaderType::kUnknown;
++}
++
++size_t SizeOfInputType(impeller::fb::shaderbundle::InputDataType input_type) {
++  switch (input_type) {
++    case impeller::fb::shaderbundle::InputDataType::kBoolean:
++    case impeller::fb::shaderbundle::InputDataType::kSignedByte:
++    case impeller::fb::shaderbundle::InputDataType::kUnsignedByte:
++      return 1;
++    case impeller::fb::shaderbundle::InputDataType::kSignedShort:
++    case impeller::fb::shaderbundle::InputDataType::kUnsignedShort:
++      return 2;
++    case impeller::fb::shaderbundle::InputDataType::kSignedInt:
++    case impeller::fb::shaderbundle::InputDataType::kUnsignedInt:
++    case impeller::fb::shaderbundle::InputDataType::kFloat:
++      return 4;
++    case impeller::fb::shaderbundle::InputDataType::kSignedInt64:
++    case impeller::fb::shaderbundle::InputDataType::kUnsignedInt64:
++    case impeller::fb::shaderbundle::InputDataType::kDouble:
++      return 8;
++  }
++  return 0;
++}
++
++const impeller::fb::shaderbundle::BackendShader* GetShaderBackend(
++    impeller::Context::BackendType backend_type,
++    const impeller::fb::shaderbundle::Shader* shader) {
++  switch (backend_type) {
++    case impeller::Context::BackendType::kMetal:
++#ifdef FML_OS_IOS
++      return shader->metal_ios();
++#else
++      return shader->metal_desktop();
++#endif
++    case impeller::Context::BackendType::kOpenGLES:
++      return shader->opengl_es();
++    case impeller::Context::BackendType::kVulkan:
++      return shader->vulkan();
++  }
++  return nullptr;
++}
++
++SpiGpuShaderLibrary::ShaderMap ParseShaderBundle(
++    impeller::Context::BackendType backend_type,
++    const std::shared_ptr<fml::Mapping>& payload,
++    const std::string& library_id) {
++  SpiGpuShaderLibrary::ShaderMap shader_map;
++  if (payload == nullptr || !payload->GetMapping()) {
++    return shader_map;
++  }
++  if (payload->GetSize() <
++      sizeof(flatbuffers::uoffset_t) + flatbuffers::kFileIdentifierLength) {
++    return shader_map;
++  }
++  if (!impeller::fb::shaderbundle::ShaderBundleBufferHasIdentifier(
++          payload->GetMapping())) {
++    return shader_map;
++  }
++  flatbuffers::Verifier verifier(
++      reinterpret_cast<const uint8_t*>(payload->GetMapping()),
++      payload->GetSize());
++  if (!impeller::fb::shaderbundle::VerifyShaderBundleBuffer(verifier)) {
++    return shader_map;
++  }
++  auto* bundle =
++      impeller::fb::shaderbundle::GetShaderBundle(payload->GetMapping());
++  if (bundle == nullptr || bundle->shaders() == nullptr) {
++    return shader_map;
++  }
++  const auto version = bundle->format_version();
++  const auto expected = static_cast<uint32_t>(
++      impeller::fb::shaderbundle::ShaderBundleFormatVersion::kVersion);
++  if (version != expected) {
++    VALIDATION_LOG << "Unsupported shader bundle format version: " << version
++                   << ", expected: " << expected;
++    return shader_map;
++  }
++
++  for (const auto* bundled_shader : *bundle->shaders()) {
++    const auto* backend_shader = GetShaderBackend(backend_type, bundled_shader);
++    if (backend_shader == nullptr || backend_shader->shader() == nullptr) {
++      continue;
++    }
++    auto code_mapping = std::make_shared<fml::NonOwnedMapping>(
++        backend_shader->shader()->data(), backend_shader->shader()->size(),
++        [payload](auto, auto) {});
++
++    std::vector<impeller::DescriptorSetLayout> descriptor_set_layouts;
++    std::unordered_map<std::string, SpiGpuShader::UniformBinding>
++        uniform_structs;
++    if (backend_shader->uniform_structs() != nullptr) {
++      for (const auto& uniform : *backend_shader->uniform_structs()) {
++        if (uniform->ext_res_0() == impeller::kOptimizedOutBinding) {
++          continue;
++        }
++        std::vector<impeller::ShaderStructMemberMetadata> members;
++        if (uniform->fields() != nullptr) {
++          for (const auto& member : *uniform->fields()) {
++            const impeller::ShaderType type = FromUniformType(member->type());
++            members.push_back(impeller::ShaderStructMemberMetadata{
++                .type = type,
++                .name = member->name()->c_str(),
++                .offset = static_cast<size_t>(member->offset_in_bytes()),
++                .size = static_cast<size_t>(member->element_size_in_bytes()),
++                .byte_length =
++                    static_cast<size_t>(member->total_size_in_bytes()),
++                .array_elements =
++                    member->array_elements() == 0
++                        ? std::optional<size_t>(std::nullopt)
++                        : static_cast<size_t>(member->array_elements()),
++                .float_type = impeller::DeriveShaderFloatType(
++                    type, static_cast<size_t>(member->vec_size()),
++                    static_cast<size_t>(member->columns())),
++            });
++          }
++        }
++        uniform_structs[uniform->name()->str()] = SpiGpuShader::UniformBinding{
++            .slot =
++                impeller::ShaderUniformSlot{
++                    .name = uniform->name()->c_str(),
++                    .ext_res_0 = static_cast<size_t>(uniform->ext_res_0()),
++                    .set = static_cast<size_t>(uniform->set()),
++                    .binding = static_cast<size_t>(uniform->binding()),
++                },
++            .metadata =
++                impeller::ShaderMetadata{
++                    .name = uniform->name()->c_str(),
++                    .members = members,
++                },
++            .size_in_bytes = static_cast<size_t>(uniform->size_in_bytes()),
++        };
++        descriptor_set_layouts.push_back({
++            static_cast<uint32_t>(uniform->binding()),
++            impeller::DescriptorType::kUniformBuffer,
++            ToShaderStage(backend_shader->stage()),
++        });
++      }
++    }
++
++    std::unordered_map<std::string, SpiGpuShader::TextureBinding>
++        uniform_textures;
++    if (backend_shader->uniform_textures() != nullptr) {
++      for (const auto& uniform : *backend_shader->uniform_textures()) {
++        if (uniform->ext_res_0() == impeller::kOptimizedOutBinding) {
++          continue;
++        }
++        uniform_textures[uniform->name()->str()] = SpiGpuShader::TextureBinding{
++            .slot =
++                impeller::SampledImageSlot{
++                    .name = uniform->name()->c_str(),
++                    .texture_index = static_cast<size_t>(uniform->ext_res_0()),
++                    .set = static_cast<size_t>(uniform->set()),
++                    .binding = static_cast<size_t>(uniform->binding()),
++                },
++            .metadata =
++                impeller::ShaderMetadata{
++                    .name = uniform->name()->c_str(),
++                    .members = {},
++                },
++        };
++        descriptor_set_layouts.push_back({
++            static_cast<uint32_t>(uniform->binding()),
++            impeller::DescriptorType::kSampledImage,
++            ToShaderStage(backend_shader->stage()),
++        });
++      }
++    }
++
++    std::vector<impeller::ShaderStageIOSlot> inputs;
++    std::vector<impeller::ShaderStageBufferLayout> layouts;
++    if (backend_shader->stage() ==
++        impeller::fb::shaderbundle::ShaderStage::kVertex) {
++      auto inputs_fb = backend_shader->inputs();
++      if (inputs_fb != nullptr) {
++        inputs.reserve(inputs_fb->size());
++        size_t default_stride = 0;
++        for (const auto& input : *inputs_fb) {
++          impeller::ShaderStageIOSlot slot{
++              .name = input->name()->c_str(),
++              .location = input->location(),
++              .set = input->set(),
++              .binding = input->binding(),
++              .type = FromInputType(input->type()),
++              .bit_width = input->bit_width(),
++              .vec_size = input->vec_size(),
++              .columns = input->columns(),
++              .offset = input->offset(),
++          };
++          inputs.push_back(slot);
++          default_stride +=
++              SizeOfInputType(input->type()) * slot.vec_size * slot.columns;
++        }
++        layouts = {{.stride = default_stride, .binding = 0u}};
++      }
++    }
++
++    shader_map[bundled_shader->name()->str()] = SpiGpuShader::Make(
++        library_id, backend_shader->entrypoint()->str(),
++        ToShaderStage(backend_shader->stage()), std::move(code_mapping),
++        std::move(inputs), std::move(layouts), std::move(uniform_structs),
++        std::move(uniform_textures), std::move(descriptor_set_layouts));
++  }
++  return shader_map;
++}
++
++char* AllocateError(const std::string& error) {
++  char* result = static_cast<char*>(std::malloc(error.size() + 1));
++  if (result == nullptr) {
++    return nullptr;
++  }
++  std::memcpy(result, error.c_str(), error.size() + 1);
++  return result;
++}
++
++void SetError(char** out_error, const std::string& error) {
++  if (out_error != nullptr) {
++    *out_error = AllocateError(error);
++  }
++}
++
++bool IsSupportedFormat(int32_t format) {
++  return format == kFlutterSpiGpuShaderFormatImpellerBundle;
++}
++
++std::shared_ptr<fml::Mapping> MappingFromDescriptor(
++    const FlutterSpiGpuShaderLibraryDescriptor& descriptor) {
++  return CopyPayload(descriptor.data, descriptor.size);
++}
++
++}  // namespace
++
++std::shared_ptr<SpiGpuShaderLibrary> SpiGpuShaderLibrary::MakeFromFlatbuffer(
++    impeller::Context::BackendType backend_type,
++    std::shared_ptr<fml::Mapping> payload,
++    std::string library_id) {
++  if (payload == nullptr || !payload->GetMapping()) {
++    return nullptr;
++  }
++  if (library_id.empty()) {
++    library_id = impeller::ShaderKey::MakeFallbackLibraryId();
++  }
++  ShaderMap shader_map = ParseShaderBundle(backend_type, payload, library_id);
++  if (shader_map.empty()) {
++    return nullptr;
++  }
++  return std::shared_ptr<SpiGpuShaderLibrary>(
++      new SpiGpuShaderLibrary(std::move(payload), std::move(shader_map),
++                              std::move(library_id), backend_type));
++}
++
++std::string SpiGpuShaderLibrary::ReloadFromFlatbuffer(
++    impeller::Context::BackendType backend_type,
++    std::shared_ptr<fml::Mapping> payload) {
++  if (payload == nullptr || !payload->GetMapping()) {
++    return "Empty shader bundle payload.";
++  }
++  ShaderMap new_shaders = ParseShaderBundle(backend_type, payload, library_id_);
++  if (new_shaders.empty()) {
++    return "Shader bundle could not be parsed.";
++  }
++
++  ShaderMap merged;
++  for (auto& [name, parsed] : new_shaders) {
++    auto it = shaders_.find(name);
++    if (it != shaders_.end()) {
++      it->second->ResetFrom(*parsed);
++      merged[name] = it->second;
++    } else {
++      merged[name] = std::move(parsed);
++    }
++  }
++  shaders_ = std::move(merged);
++  payload_ = std::move(payload);
++  return "";
++}
++
++std::shared_ptr<SpiGpuShader> SpiGpuShaderLibrary::FindShader(
++    const std::string& shader_name) const {
++  auto it = shaders_.find(shader_name);
++  return it == shaders_.end() ? nullptr : it->second;
++}
++
++SpiGpuShaderLibrary::SpiGpuShaderLibrary(
++    std::shared_ptr<fml::Mapping> payload,
++    ShaderMap shaders,
++    std::string library_id,
++    impeller::Context::BackendType backend_type)
++    : payload_(std::move(payload)),
++      shaders_(std::move(shaders)),
++      library_id_(std::move(library_id)),
++      backend_type_(backend_type) {}
++
++FlutterSpiResult SpiGpuShaderLibraryCreate(
++    FlutterSpiGpuContext* context,
++    const FlutterSpiGpuShaderLibraryDescriptor* descriptor,
++    FlutterSpiGpuShaderLibrary** out_library,
++    char** out_error) {
++  if (out_error != nullptr) {
++    *out_error = nullptr;
++  }
++  if (descriptor == nullptr || out_library == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out_library = nullptr;
++  if (descriptor->struct_size <
++      offsetof(FlutterSpiGpuShaderLibraryDescriptor, library_id) +
++          sizeof(descriptor->library_id)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (!IsSupportedFormat(descriptor->format)) {
++    SetError(out_error, "Unsupported shader format.");
++    return kFlutterSpiUnsupported;
++  }
++  std::shared_ptr<impeller::Context> context_value =
++      SpiGpuContextGetImpeller(context);
++  if (context_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  std::shared_ptr<fml::Mapping> payload = MappingFromDescriptor(*descriptor);
++  if (payload == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  auto library = SpiGpuShaderLibrary::MakeFromFlatbuffer(
++      context_value->GetBackendType(), std::move(payload),
++      descriptor->library_id == nullptr ? "" : descriptor->library_id);
++  if (library == nullptr) {
++    SetError(out_error,
++             "Failed to parse the shader bundle bytes. The bytes must be a "
++             "shader bundle compiled by a compatible impellerc.");
++    return kFlutterSpiInvalidArgument;
++  }
++  const uintptr_t handle = Libraries().Insert(std::move(library));
++  if (handle == 0) {
++    return kFlutterSpiInternalError;
++  }
++  *out_library = MakeHandle(handle);
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiGpuShaderLibraryReload(
++    FlutterSpiGpuShaderLibrary* library,
++    const FlutterSpiGpuShaderLibraryDescriptor* descriptor,
++    char** out_error) {
++  if (out_error != nullptr) {
++    *out_error = nullptr;
++  }
++  SpiGpuShaderLibrary* library_value = FindLibrary(library);
++  if (library_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (descriptor == nullptr ||
++      descriptor->struct_size <
++          offsetof(FlutterSpiGpuShaderLibraryDescriptor, library_id) +
++              sizeof(descriptor->library_id)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  if (!IsSupportedFormat(descriptor->format)) {
++    SetError(out_error, "Unsupported shader format.");
++    return kFlutterSpiUnsupported;
++  }
++  std::shared_ptr<fml::Mapping> payload = MappingFromDescriptor(*descriptor);
++  if (payload == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  std::string error = library_value->ReloadFromFlatbuffer(
++      library_value->GetBackendType(), std::move(payload));
++  if (!error.empty()) {
++    SetError(out_error, error);
++    return kFlutterSpiInvalidArgument;
++  }
++  return kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiGpuShaderLibraryGetShader(
++    FlutterSpiGpuShaderLibrary* library,
++    const char* name,
++    FlutterSpiGpuShader** out_shader) {
++  SpiGpuShaderLibrary* library_value = FindLibrary(library);
++  if (library_value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (name == nullptr || out_shader == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out_shader = nullptr;
++  std::shared_ptr<SpiGpuShader> shader = library_value->FindShader(name);
++  if (shader == nullptr) {
++    return kFlutterSpiOk;
++  }
++  *out_shader = SpiGpuShaderInsertHandle(std::move(shader));
++  return *out_shader == nullptr ? kFlutterSpiInternalError : kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiGpuShaderLibraryRetain(
++    FlutterSpiGpuShaderLibrary* library) {
++  return Libraries().Retain(HandleValue(library)) ? kFlutterSpiOk
++                                                  : kFlutterSpiInvalidHandle;
++}
++
++FlutterSpiResult SpiGpuShaderLibraryRelease(
++    FlutterSpiGpuShaderLibrary* library) {
++  return Libraries().Release(HandleValue(library)) ? kFlutterSpiOk
++                                                   : kFlutterSpiInvalidHandle;
++}
++
++FlutterSpiResult SpiGpuShaderLibraryCreateForBackend(
++    int32_t backend,
++    const uint8_t* data,
++    size_t size,
++    const char* library_id,
++    FlutterSpiGpuShaderLibrary** out_library) {
++  if (out_library == nullptr || (data == nullptr && size != 0)) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out_library = nullptr;
++  std::shared_ptr<fml::Mapping> payload = CopyPayload(data, size);
++  if (payload == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  auto library = SpiGpuShaderLibrary::MakeFromFlatbuffer(
++      static_cast<impeller::Context::BackendType>(backend), std::move(payload),
++      library_id == nullptr ? "" : library_id);
++  if (library == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  const uintptr_t handle = Libraries().Insert(std::move(library));
++  if (handle == 0) {
++    return kFlutterSpiInternalError;
++  }
++  *out_library = MakeHandle(handle);
++  return kFlutterSpiOk;
++}
++
++}  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader_library.h b/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader_library.h
+new file mode 100644
+index 00000000000..ead9b9f6d2c
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader_library.h
+@@ -0,0 +1,75 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_SHADER_LIBRARY_H_
++#define FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_SHADER_LIBRARY_H_
++
++#include <memory>
++#include <string>
++#include <unordered_map>
++
++#include "flutter/runtime_spi/gpu/spi_gpu_shader.h"
++#include "impeller/renderer/context.h"
++
++namespace flutter {
++
++class SpiGpuShaderLibrary final {
++ public:
++  using ShaderMap =
++      std::unordered_map<std::string, std::shared_ptr<SpiGpuShader>>;
++
++  static std::shared_ptr<SpiGpuShaderLibrary> MakeFromFlatbuffer(
++      impeller::Context::BackendType backend_type,
++      std::shared_ptr<fml::Mapping> payload,
++      std::string library_id = "");
++
++  std::string ReloadFromFlatbuffer(impeller::Context::BackendType backend_type,
++                                   std::shared_ptr<fml::Mapping> payload);
++
++  std::shared_ptr<SpiGpuShader> FindShader(
++      const std::string& shader_name) const;
++  const std::string& GetLibraryId() const { return library_id_; }
++  impeller::Context::BackendType GetBackendType() const {
++    return backend_type_;
++  }
++
++ private:
++  SpiGpuShaderLibrary(std::shared_ptr<fml::Mapping> payload,
++                      ShaderMap shaders,
++                      std::string library_id,
++                      impeller::Context::BackendType backend_type);
++
++  std::shared_ptr<fml::Mapping> payload_;
++  ShaderMap shaders_;
++  std::string library_id_;
++  impeller::Context::BackendType backend_type_;
++};
++
++FlutterSpiResult SpiGpuShaderLibraryCreate(
++    FlutterSpiGpuContext* context,
++    const FlutterSpiGpuShaderLibraryDescriptor* descriptor,
++    FlutterSpiGpuShaderLibrary** out_library,
++    char** out_error);
++FlutterSpiResult SpiGpuShaderLibraryReload(
++    FlutterSpiGpuShaderLibrary* library,
++    const FlutterSpiGpuShaderLibraryDescriptor* descriptor,
++    char** out_error);
++FlutterSpiResult SpiGpuShaderLibraryGetShader(
++    FlutterSpiGpuShaderLibrary* library,
++    const char* name,
++    FlutterSpiGpuShader** out_shader);
++FlutterSpiResult SpiGpuShaderLibraryRetain(FlutterSpiGpuShaderLibrary* library);
++FlutterSpiResult SpiGpuShaderLibraryRelease(
++    FlutterSpiGpuShaderLibrary* library);
++
++FlutterSpiResult SpiGpuShaderLibraryCreateForBackend(
++    int32_t backend,
++    const uint8_t* data,
++    size_t size,
++    const char* library_id,
++    FlutterSpiGpuShaderLibrary** out_library);
++
++}  // namespace flutter
++
++#endif  // FLUTTER_RUNTIME_SPI_GPU_SPI_GPU_SHADER_LIBRARY_H_
+diff --git a/engine/src/flutter/lib/gpu/shader_library_unittests.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader_library_unittests.cc
+similarity index 52%
+rename from engine/src/flutter/lib/gpu/shader_library_unittests.cc
+rename to engine/src/flutter/runtime_spi/gpu/spi_gpu_shader_library_unittests.cc
+index 75d9486ca7e..b180bfd7360 100644
+--- a/engine/src/flutter/lib/gpu/shader_library_unittests.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_shader_library_unittests.cc
+@@ -1,8 +1,8 @@
+-// Copyright 2013 The Flutter Authors. All rights reserved.
++// Copyright 2026 The Flutter Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+-#include "flutter/lib/gpu/shader_library.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_shader_library.h"
+ 
+ #include <cstdint>
+ #include <memory>
+@@ -10,36 +10,22 @@
+ #include <utility>
+ #include <vector>
+ 
+-#include "flutter/lib/gpu/shader.h"
+ #include "fml/mapping.h"
+ #include "gtest/gtest.h"
+ #include "impeller/core/shader_types.h"
+ #include "impeller/renderer/context.h"
+-// Pulls in flatbuffers/flatbuffers.h (FlatBufferBuilder, Verifier) and the
+-// generated impeller::fb::shaderbundle:: symbols.
+ #include "impeller/shader_bundle/shader_bundle_flatbuffers.h"
+ 
+ namespace flutter {
+-namespace gpu {
+-namespace testing {
++namespace {
+ 
+-// Wraps an owning byte vector in an fml::Mapping that keeps the vector alive
+-// for the lifetime of the mapping. Mirrors the helper pattern used by the
+-// impeller runtime_stage / shader_archive verifier tests.
+-static std::shared_ptr<fml::Mapping> CreateMappingFromVector(
++std::shared_ptr<fml::Mapping> CreateMappingFromVector(
+     const std::shared_ptr<std::vector<uint8_t>>& data) {
+-  const uint8_t* ptr = data->data();
+-  const size_t size = data->size();
+-  return std::make_shared<fml::NonOwnedMapping>(ptr, size,
++  return std::make_shared<fml::NonOwnedMapping>(data->data(), data->size(),
+                                                 [data](auto, auto) {});
+ }
+ 
+-// Builds a structurally-valid, minimal shader bundle FlatBuffer with the
+-// correct "IPSB" identifier and an empty (but present) shaders vector. This is
+-// used as a positive control: the verifier added by this change must ACCEPT a
+-// well-formed buffer, so that the rejection tests below prove the verifier is
+-// catching genuinely corrupt input rather than rejecting everything.
+-static std::shared_ptr<std::vector<uint8_t>> BuildValidEmptyBundle() {
++std::shared_ptr<std::vector<uint8_t>> BuildValidEmptyBundle() {
+   flatbuffers::FlatBufferBuilder builder;
+   std::vector<flatbuffers::Offset<impeller::fb::shaderbundle::Shader>> shaders;
+   auto shaders_vec = builder.CreateVector(shaders);
+@@ -48,36 +34,59 @@ static std::shared_ptr<std::vector<uint8_t>> BuildValidEmptyBundle() {
+       impeller::fb::shaderbundle::ShaderBundleFormatVersion::kVersion));
+   bundle_builder.add_shaders(shaders_vec);
+   auto bundle = bundle_builder.Finish();
+-  // Finish with the "IPSB" file identifier (mirrors the runtime_stage test's
+-  // builder.Finish(stages, fb::RuntimeStagesIdentifier()) idiom).
+   builder.Finish(bundle, impeller::fb::shaderbundle::ShaderBundleIdentifier());
+   return std::make_shared<std::vector<uint8_t>>(
+       builder.GetBufferPointer(),
+       builder.GetBufferPointer() + builder.GetSize());
+ }
+ 
+-// A corrupt buffer with a valid "IPSB" file identifier at bytes 4-7 but a root
+-// table offset that points beyond the buffer. This passes the identifier check
+-// (ShaderBundleBufferHasIdentifier) but must fail FlatBuffer structural
+-// verification (VerifyShaderBundleBuffer). Mirrors the impeller
+-// RejectsCorruptBufferWithValidIdentifier tests for runtime_stage / shader
+-// archive.
+-static std::shared_ptr<std::vector<uint8_t>> BuildCorruptBundle() {
++std::shared_ptr<std::vector<uint8_t>> BuildCorruptBundle() {
+   auto data = std::make_shared<std::vector<uint8_t>>(32, 0);
+-  // "IPSB" file identifier at bytes 4-7.
+   (*data)[4] = 'I';
+   (*data)[5] = 'P';
+   (*data)[6] = 'S';
+   (*data)[7] = 'B';
+-  // Root offset (little-endian uint32 at offset 0) pointing out of bounds.
+   (*data)[0] = 0xFF;
+   (*data)[1] = 0xFF;
+   return data;
+ }
+ 
+-// Sanity check on the test fixtures themselves: the corrupt buffer carries the
+-// expected identifier (so it reaches the new verification) while failing
+-// structural verification, and the valid buffer passes both.
++std::shared_ptr<std::vector<uint8_t>> BuildFragmentBundle(
++    const std::vector<std::pair<std::string, uint64_t>>& textures,
++    const std::vector<std::pair<std::string, uint64_t>>& structs) {
++  namespace fbs = impeller::fb::shaderbundle;
++  auto metal = std::make_unique<fbs::BackendShaderT>();
++  metal->stage = fbs::ShaderStage::kFragment;
++  metal->entrypoint = "main";
++  metal->shader = {0};
++  for (const auto& [name, ext_res_0] : textures) {
++    auto texture = std::make_unique<fbs::ShaderUniformTextureT>();
++    texture->name = name;
++    texture->ext_res_0 = ext_res_0;
++    metal->uniform_textures.push_back(std::move(texture));
++  }
++  for (const auto& [name, ext_res_0] : structs) {
++    auto uniform = std::make_unique<fbs::ShaderUniformStructT>();
++    uniform->name = name;
++    uniform->ext_res_0 = ext_res_0;
++    uniform->size_in_bytes = 16;
++    metal->uniform_structs.push_back(std::move(uniform));
++  }
++  auto shader = std::make_unique<fbs::ShaderT>();
++  shader->name = "test";
++  shader->metal_desktop = std::move(metal);
++  fbs::ShaderBundleT bundle;
++  bundle.format_version =
++      static_cast<uint32_t>(fbs::ShaderBundleFormatVersion::kVersion);
++  bundle.shaders.push_back(std::move(shader));
++  flatbuffers::FlatBufferBuilder builder;
++  builder.Finish(fbs::ShaderBundle::Pack(builder, &bundle),
++                 fbs::ShaderBundleIdentifier());
++  return std::make_shared<std::vector<uint8_t>>(
++      builder.GetBufferPointer(),
++      builder.GetBufferPointer() + builder.GetSize());
++}
++
+ TEST(FlutterGpuShaderLibraryTest, VerifierAcceptsValidBundleRejectsCorrupt) {
+   auto valid = BuildValidEmptyBundle();
+   EXPECT_TRUE(impeller::fb::shaderbundle::ShaderBundleBufferHasIdentifier(
+@@ -86,7 +95,6 @@ TEST(FlutterGpuShaderLibraryTest, VerifierAcceptsValidBundleRejectsCorrupt) {
+     flatbuffers::Verifier verifier(valid->data(), valid->size());
+     EXPECT_TRUE(impeller::fb::shaderbundle::VerifyShaderBundleBuffer(verifier));
+   }
+-
+   auto corrupt = BuildCorruptBundle();
+   EXPECT_TRUE(impeller::fb::shaderbundle::ShaderBundleBufferHasIdentifier(
+       corrupt->data()));
+@@ -97,154 +105,77 @@ TEST(FlutterGpuShaderLibraryTest, VerifierAcceptsValidBundleRejectsCorrupt) {
+   }
+ }
+ 
+-// Core regression: a buffer with a valid "IPSB" identifier but corrupt internal
+-// offsets must be rejected (null library) rather than read out of bounds. Prior
+-// to the structural verification this exercised GetShaderBundle() on unverified
+-// data.
+ TEST(FlutterGpuShaderLibraryTest,
+      MakeFromFlatbufferRejectsCorruptBufferWithValidIdentifier) {
+-  auto mapping = CreateMappingFromVector(BuildCorruptBundle());
+-  auto library =
+-      ShaderLibrary::MakeFromFlatbuffer(impeller::Context::BackendType::kMetal,
+-                                        std::move(mapping), "test_bundle");
++  auto library = SpiGpuShaderLibrary::MakeFromFlatbuffer(
++      impeller::Context::BackendType::kMetal,
++      CreateMappingFromVector(BuildCorruptBundle()), "test_bundle");
+   EXPECT_FALSE(library);
+ }
+ 
+-// A truncated buffer (shorter than a FlatBuffer header) with the identifier
+-// bytes must also be rejected without reading out of bounds.
+ TEST(FlutterGpuShaderLibraryTest, MakeFromFlatbufferRejectsTruncatedBuffer) {
+-  // 8 bytes: just enough to hold a (bogus) root offset + "IPSB" identifier.
+   auto data = std::make_shared<std::vector<uint8_t>>(8, 0);
+   (*data)[4] = 'I';
+   (*data)[5] = 'P';
+   (*data)[6] = 'S';
+   (*data)[7] = 'B';
+-  // Root offset points past the 8-byte buffer.
+   (*data)[0] = 0x10;
+-  auto library = ShaderLibrary::MakeFromFlatbuffer(
++  auto library = SpiGpuShaderLibrary::MakeFromFlatbuffer(
+       impeller::Context::BackendType::kMetal, CreateMappingFromVector(data),
+       "test_bundle");
+   EXPECT_FALSE(library);
+ }
+ 
+-// A buffer without the "IPSB" identifier is rejected at the identifier check
+-// (pre-existing behavior, guarded here against regression).
+ TEST(FlutterGpuShaderLibraryTest, MakeFromFlatbufferRejectsMissingIdentifier) {
+   auto data = std::make_shared<std::vector<uint8_t>>(32, 0);
+-  // No identifier bytes set.
+-  auto library = ShaderLibrary::MakeFromFlatbuffer(
++  auto library = SpiGpuShaderLibrary::MakeFromFlatbuffer(
+       impeller::Context::BackendType::kMetal, CreateMappingFromVector(data),
+       "test_bundle");
+   EXPECT_FALSE(library);
+ }
+ 
+-// A null payload must be handled gracefully.
+ TEST(FlutterGpuShaderLibraryTest, MakeFromFlatbufferRejectsNullPayload) {
+-  auto library = ShaderLibrary::MakeFromFlatbuffer(
++  auto library = SpiGpuShaderLibrary::MakeFromFlatbuffer(
+       impeller::Context::BackendType::kMetal, nullptr, "test_bundle");
+   EXPECT_FALSE(library);
+ }
+ 
+-// A structurally-valid bundle that simply contains no shaders parses to an
+-// empty shader map, which MakeFromFlatbuffer reports as a null library. This
+-// confirms the verifier does NOT reject a well-formed buffer (the failure in
+-// the corrupt case above comes from structural verification, not from the
+-// buffer being non-empty).
+ TEST(FlutterGpuShaderLibraryTest,
+      MakeFromFlatbufferValidEmptyBundleIsNotRejectedByVerifier) {
+   auto valid = BuildValidEmptyBundle();
+-  // The verifier accepts it (asserted directly here so this test stands alone).
+   flatbuffers::Verifier verifier(valid->data(), valid->size());
+   ASSERT_TRUE(impeller::fb::shaderbundle::VerifyShaderBundleBuffer(verifier));
+-
+-  // Driven through the public entry, an empty bundle yields a null library
+-  // because there are no shaders to register (empty ShaderMap), NOT because the
+-  // verifier rejected it.
+-  auto library = ShaderLibrary::MakeFromFlatbuffer(
++  auto library = SpiGpuShaderLibrary::MakeFromFlatbuffer(
+       impeller::Context::BackendType::kMetal, CreateMappingFromVector(valid),
+       "test_bundle");
+   EXPECT_FALSE(library);
+ }
+ 
+-// Serializes a single-fragment-shader bundle (Metal desktop variant) carrying
+-// the given reflected textures and uniform structs, each as a
+-// (name, ext_res_0) pair. A texture/struct whose ext_res_0 is the optimized-out
+-// sentinel stands in for a resource the shader compiler dead-code-eliminated.
+-static std::shared_ptr<std::vector<uint8_t>> BuildFragmentBundle(
+-    const std::vector<std::pair<std::string, uint64_t>>& textures,
+-    const std::vector<std::pair<std::string, uint64_t>>& structs) {
+-  namespace fbs = impeller::fb::shaderbundle;
+-
+-  auto metal = std::make_unique<fbs::BackendShaderT>();
+-  metal->stage = fbs::ShaderStage::kFragment;
+-  metal->entrypoint = "main";
+-  // The bytes are ignored at parse time (no GPU compile), but the field must be
+-  // present and non-empty for the loader to build a code mapping.
+-  metal->shader = {0};
+-  for (const auto& [name, ext_res_0] : textures) {
+-    auto texture = std::make_unique<fbs::ShaderUniformTextureT>();
+-    texture->name = name;
+-    texture->ext_res_0 = ext_res_0;
+-    metal->uniform_textures.push_back(std::move(texture));
+-  }
+-  for (const auto& [name, ext_res_0] : structs) {
+-    auto uniform = std::make_unique<fbs::ShaderUniformStructT>();
+-    uniform->name = name;
+-    uniform->ext_res_0 = ext_res_0;
+-    uniform->size_in_bytes = 16;
+-    metal->uniform_structs.push_back(std::move(uniform));
+-  }
+-
+-  auto shader = std::make_unique<fbs::ShaderT>();
+-  shader->name = "test";
+-  shader->metal_desktop = std::move(metal);
+-
+-  fbs::ShaderBundleT bundle;
+-  bundle.format_version =
+-      static_cast<uint32_t>(fbs::ShaderBundleFormatVersion::kVersion);
+-  bundle.shaders.push_back(std::move(shader));
+-
+-  flatbuffers::FlatBufferBuilder builder;
+-  builder.Finish(fbs::ShaderBundle::Pack(builder, &bundle),
+-                 fbs::ShaderBundleIdentifier());
+-  return std::make_shared<std::vector<uint8_t>>(
+-      builder.GetBufferPointer(),
+-      builder.GetBufferPointer() + builder.GetSize());
+-}
+-
+-// A sampler the shader compiler dead-code-eliminated is still listed in
+-// reflection but carries the out-of-range binding sentinel. It must not be
+-// registered as a bindable uniform texture (binding an out-of-range index
+-// crashes the Metal backend), while a live sampler alongside it survives.
+ TEST(FlutterGpuShaderLibraryTest, MakeFromFlatbufferSkipsOptimizedOutTexture) {
+   const uint64_t sentinel = impeller::kOptimizedOutBinding;
+-  auto bundle = BuildFragmentBundle(
+-      /*textures=*/{{"u_live", 0}, {"u_dced", sentinel}}, /*structs=*/{});
+-  auto library = ShaderLibrary::MakeFromFlatbuffer(
++  auto bundle = BuildFragmentBundle({{"u_live", 0}, {"u_dced", sentinel}}, {});
++  auto library = SpiGpuShaderLibrary::MakeFromFlatbuffer(
+       impeller::Context::BackendType::kMetal, CreateMappingFromVector(bundle),
+       "test_bundle");
+   ASSERT_TRUE(library);
+-  auto shader = library->FindShaderForTesting("test");
++  auto shader = library->FindShader("test");
+   ASSERT_TRUE(shader);
+   EXPECT_NE(shader->GetUniformTexture("u_live"), nullptr);
+   EXPECT_EQ(shader->GetUniformTexture("u_dced"), nullptr);
+ }
+ 
+-// The same skip applies to a dead-code-eliminated uniform block.
+ TEST(FlutterGpuShaderLibraryTest, MakeFromFlatbufferSkipsOptimizedOutStruct) {
+   const uint64_t sentinel = impeller::kOptimizedOutBinding;
+-  auto bundle = BuildFragmentBundle(
+-      /*textures=*/{}, /*structs=*/{{"Live", 0}, {"Dced", sentinel}});
+-  auto library = ShaderLibrary::MakeFromFlatbuffer(
++  auto bundle = BuildFragmentBundle({}, {{"Live", 0}, {"Dced", sentinel}});
++  auto library = SpiGpuShaderLibrary::MakeFromFlatbuffer(
+       impeller::Context::BackendType::kMetal, CreateMappingFromVector(bundle),
+       "test_bundle");
+   ASSERT_TRUE(library);
+-  auto shader = library->FindShaderForTesting("test");
++  auto shader = library->FindShader("test");
+   ASSERT_TRUE(shader);
+   EXPECT_NE(shader->GetUniformStruct("Live"), nullptr);
+   EXPECT_EQ(shader->GetUniformStruct("Dced"), nullptr);
+ }
+ 
+-}  // namespace testing
+-}  // namespace gpu
++}  // namespace
+ }  // namespace flutter
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
+index 2ad50dca320..bd2e56e5b3a 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
+@@ -4,8 +4,11 @@
+ 
+ #include "flutter/runtime_spi/gpu/spi_gpu_buffer.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_context.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_shader.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_shader_library.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_texture.h"
+ 
++#include <cstdlib>
+ #include <memory>
+ #include <string>
+ #include <vector>
+@@ -18,6 +21,7 @@
+ #include "gmock/gmock.h"
+ #include "gtest/gtest.h"
+ #include "impeller/renderer/testing/mocks.h"
++#include "impeller/shader_bundle/shader_bundle_flatbuffers.h"
+ 
+ namespace flutter::testing {
+ namespace {
+@@ -126,6 +130,56 @@ FlutterSpiGpuTextureDescriptor MakeTextureDescriptor() {
+   };
+ }
+ 
++std::shared_ptr<std::vector<uint8_t>> BuildShaderBundle(
++    const std::string& uniform_name,
++    uint8_t code_marker) {
++  namespace fbs = impeller::fb::shaderbundle;
++  auto vulkan = std::make_unique<fbs::BackendShaderT>();
++  vulkan->stage = fbs::ShaderStage::kFragment;
++  vulkan->entrypoint = "main";
++  vulkan->shader = {code_marker};
++  auto uniform = std::make_unique<fbs::ShaderUniformStructT>();
++  uniform->name = uniform_name;
++  uniform->ext_res_0 = 0;
++  uniform->size_in_bytes = 16;
++  vulkan->uniform_structs.push_back(std::move(uniform));
++  auto shader = std::make_unique<fbs::ShaderT>();
++  shader->name = "test";
++  shader->vulkan = std::move(vulkan);
++  fbs::ShaderBundleT bundle;
++  bundle.format_version =
++      static_cast<uint32_t>(fbs::ShaderBundleFormatVersion::kVersion);
++  bundle.shaders.push_back(std::move(shader));
++  flatbuffers::FlatBufferBuilder builder;
++  builder.Finish(fbs::ShaderBundle::Pack(builder, &bundle),
++                 fbs::ShaderBundleIdentifier());
++  return std::make_shared<std::vector<uint8_t>>(
++      builder.GetBufferPointer(),
++      builder.GetBufferPointer() + builder.GetSize());
++}
++
++std::shared_ptr<std::vector<uint8_t>> BuildCorruptShaderBundle() {
++  auto data = std::make_shared<std::vector<uint8_t>>(32, 0);
++  (*data)[4] = 'I';
++  (*data)[5] = 'P';
++  (*data)[6] = 'S';
++  (*data)[7] = 'B';
++  (*data)[0] = 0xFF;
++  (*data)[1] = 0xFF;
++  return data;
++}
++
++FlutterSpiGpuShaderLibraryDescriptor MakeShaderLibraryDescriptor(
++    const std::shared_ptr<std::vector<uint8_t>>& bundle) {
++  return {
++      .struct_size = sizeof(FlutterSpiGpuShaderLibraryDescriptor),
++      .format = kFlutterSpiGpuShaderFormatImpellerBundle,
++      .data = bundle->data(),
++      .size = bundle->size(),
++      .library_id = "test_bundle",
++  };
++}
++
+ void AllowTextureDimensions(impeller::testing::MockAllocator& allocator) {
+   ON_CALL(allocator, GetMaxTextureSizeSupported())
+       .WillByDefault(Return(impeller::ISize(1024, 1024)));
+@@ -618,5 +672,157 @@ TEST_F(SpiGpuContextTest, TextureCallsRejectNullAndReleasedHandles) {
+   EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
+ }
+ 
++TEST_F(SpiGpuContextTest, ShaderLibraryCreateRejectsUnsupportedFormat) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  SpiGpuSetDefaultContextOverride(CreateMockContext(&capabilities));
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* context = GetDefaultContext(backend.get());
++  auto bundle = BuildShaderBundle("Frame", 1);
++  auto descriptor = MakeShaderLibraryDescriptor(bundle);
++  descriptor.format = kFlutterSpiGpuShaderFormatWgsl;
++  FlutterSpiGpuShaderLibrary* library = nullptr;
++  char* error = nullptr;
++
++  EXPECT_EQ(SpiGpuShaderLibraryCreate(context, &descriptor, &library, &error),
++            kFlutterSpiUnsupported);
++  EXPECT_EQ(library, nullptr);
++  std::free(error);
++  EXPECT_EQ(SpiGpuContextRelease(context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, ShaderLibraryCreateRejectsSmallStruct) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  SpiGpuSetDefaultContextOverride(CreateMockContext(&capabilities));
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* context = GetDefaultContext(backend.get());
++  auto bundle = BuildShaderBundle("Frame", 1);
++  auto descriptor = MakeShaderLibraryDescriptor(bundle);
++  descriptor.struct_size =
++      offsetof(FlutterSpiGpuShaderLibraryDescriptor, library_id);
++  FlutterSpiGpuShaderLibrary* library = nullptr;
++
++  EXPECT_EQ(SpiGpuShaderLibraryCreate(context, &descriptor, &library, nullptr),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(library, nullptr);
++  EXPECT_EQ(SpiGpuContextRelease(context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, ShaderLibraryCreateReportsParseErrors) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  SpiGpuSetDefaultContextOverride(CreateMockContext(&capabilities));
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* context = GetDefaultContext(backend.get());
++  auto bundle = BuildCorruptShaderBundle();
++  auto descriptor = MakeShaderLibraryDescriptor(bundle);
++  FlutterSpiGpuShaderLibrary* library = nullptr;
++  char* error = nullptr;
++
++  EXPECT_EQ(SpiGpuShaderLibraryCreate(context, &descriptor, &library, &error),
++            kFlutterSpiInvalidArgument);
++  EXPECT_EQ(library, nullptr);
++  ASSERT_NE(error, nullptr);
++  EXPECT_STREQ(
++      error,
++      "Failed to parse the shader bundle bytes. The bytes must be a shader "
++      "bundle compiled by a compatible impellerc.");
++  std::free(error);
++  EXPECT_EQ(SpiGpuContextRelease(context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, ShaderLibraryReloadKeepsShaderHandles) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  SpiGpuSetDefaultContextOverride(CreateMockContext(&capabilities));
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* context = GetDefaultContext(backend.get());
++  auto initial_bundle = BuildShaderBundle("Old", 1);
++  auto initial_descriptor = MakeShaderLibraryDescriptor(initial_bundle);
++  FlutterSpiGpuShaderLibrary* library = nullptr;
++  ASSERT_EQ(SpiGpuShaderLibraryCreate(context, &initial_descriptor, &library,
++                                      nullptr),
++            kFlutterSpiOk);
++  FlutterSpiGpuShader* shader = nullptr;
++  ASSERT_EQ(SpiGpuShaderLibraryGetShader(library, "test", &shader),
++            kFlutterSpiOk);
++  ASSERT_NE(shader, nullptr);
++
++  auto reload_bundle = BuildShaderBundle("New", 2);
++  auto reload_descriptor = MakeShaderLibraryDescriptor(reload_bundle);
++  ASSERT_EQ(SpiGpuShaderLibraryReload(library, &reload_descriptor, nullptr),
++            kFlutterSpiOk);
++  int32_t index = -1;
++  EXPECT_EQ(SpiGpuShaderGetUniformStructIndex(shader, "New", &index),
++            kFlutterSpiOk);
++  EXPECT_EQ(index, 0);
++  EXPECT_EQ(SpiGpuShaderGetUniformStructIndex(shader, "Old", &index),
++            kFlutterSpiOk);
++  EXPECT_EQ(index, -1);
++  EXPECT_TRUE(SpiGpuShaderIsDirtyForTesting(shader));
++
++  EXPECT_EQ(SpiGpuShaderRelease(shader), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuShaderLibraryRelease(library), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuContextRelease(context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, ShaderLookupsReturnMinusOneForUnknownNames) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  SpiGpuSetDefaultContextOverride(CreateMockContext(&capabilities));
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* context = GetDefaultContext(backend.get());
++  auto bundle = BuildShaderBundle("Frame", 1);
++  auto descriptor = MakeShaderLibraryDescriptor(bundle);
++  FlutterSpiGpuShaderLibrary* library = nullptr;
++  ASSERT_EQ(SpiGpuShaderLibraryCreate(context, &descriptor, &library, nullptr),
++            kFlutterSpiOk);
++  FlutterSpiGpuShader* shader = nullptr;
++  ASSERT_EQ(SpiGpuShaderLibraryGetShader(library, "test", &shader),
++            kFlutterSpiOk);
++  int32_t value = 0;
++
++  EXPECT_EQ(SpiGpuShaderGetUniformStructIndex(shader, "Missing", &value),
++            kFlutterSpiOk);
++  EXPECT_EQ(value, -1);
++  EXPECT_EQ(SpiGpuShaderGetUniformTextureIndex(shader, "Missing", &value),
++            kFlutterSpiOk);
++  EXPECT_EQ(value, -1);
++  EXPECT_EQ(SpiGpuShaderGetUniformStructSize(shader, "Missing", &value),
++            kFlutterSpiOk);
++  EXPECT_EQ(value, -1);
++  EXPECT_EQ(
++      SpiGpuShaderGetUniformMemberOffset(shader, "Missing", "field", &value),
++      kFlutterSpiOk);
++  EXPECT_EQ(value, -1);
++
++  EXPECT_EQ(SpiGpuShaderRelease(shader), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuShaderLibraryRelease(library), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuContextRelease(context), kFlutterSpiOk);
++}
++
++TEST_F(SpiGpuContextTest, ShaderCallsRejectNullAndReleasedHandles) {
++  int32_t value = 0;
++  EXPECT_EQ(SpiGpuShaderLibraryRetain(nullptr), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuShaderLibraryRelease(nullptr), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuShaderLibraryGetShader(nullptr, "test", nullptr),
++            kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuShaderRetain(nullptr), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuShaderRelease(nullptr), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuShaderGetUniformStructIndex(nullptr, "test", &value),
++            kFlutterSpiInvalidHandle);
++
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  SpiGpuSetDefaultContextOverride(CreateMockContext(&capabilities));
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* context = GetDefaultContext(backend.get());
++  auto bundle = BuildShaderBundle("Frame", 1);
++  auto descriptor = MakeShaderLibraryDescriptor(bundle);
++  FlutterSpiGpuShaderLibrary* library = nullptr;
++  ASSERT_EQ(SpiGpuShaderLibraryCreate(context, &descriptor, &library, nullptr),
++            kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuShaderLibraryRelease(library), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuShaderLibraryRetain(library), kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuShaderLibraryGetShader(library, "test", nullptr),
++            kFlutterSpiInvalidHandle);
++  EXPECT_EQ(SpiGpuContextRelease(context), kFlutterSpiOk);
++}
++
+ }  // namespace
+ }  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_gpu.h b/engine/src/flutter/runtime_spi/include/flutter_gpu.h
+index 855640ce457..10801658293 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_gpu.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_gpu.h
+@@ -18,6 +18,8 @@ extern "C" {
+ typedef struct FlutterSpiGpuContext FlutterSpiGpuContext;
+ typedef struct FlutterSpiGpuBuffer FlutterSpiGpuBuffer;
+ typedef struct FlutterSpiGpuTexture FlutterSpiGpuTexture;
++typedef struct FlutterSpiGpuShaderLibrary FlutterSpiGpuShaderLibrary;
++typedef struct FlutterSpiGpuShader FlutterSpiGpuShader;
+ 
+ // These values are kept in the same order as the corresponding Flutter GPU
+ // enums in lib/gpu/formats.h.
+@@ -96,6 +98,13 @@ typedef enum {
+   kFlutterSpiGpuUnavailableNoContext = 3,
+ } FlutterSpiGpuUnavailableReason;
+ 
++typedef enum {
++  kFlutterSpiGpuShaderFormatImpellerBundle = 0,
++  kFlutterSpiGpuShaderFormatWgsl = 1,
++  kFlutterSpiGpuShaderFormatSpirv = 2,
++  kFlutterSpiGpuShaderFormatGlsl = 3,
++} FlutterSpiGpuShaderFormat;
++
+ typedef struct {
+   size_t struct_size;
+   int32_t backend;
+@@ -129,6 +138,14 @@ typedef struct {
+   int32_t layer_count;
+ } FlutterSpiGpuTextureDescriptor;
+ 
++typedef struct {
++  size_t struct_size;
++  int32_t format;
++  const uint8_t* data;
++  size_t size;
++  const char* library_id;
++} FlutterSpiGpuShaderLibraryDescriptor;
++
+ typedef struct FlutterSpiGpuApi {
+   size_t struct_size;
+   FlutterSpiResult (*context_get_default)(FlutterSpiEngine* engine,
+@@ -175,6 +192,40 @@ typedef struct FlutterSpiGpuApi {
+                                         int32_t slice);
+   FlutterSpiResult (*texture_retain)(FlutterSpiGpuTexture* texture);
+   FlutterSpiResult (*texture_release)(FlutterSpiGpuTexture* texture);
++  FlutterSpiResult (*shader_library_create)(
++      FlutterSpiGpuContext* context,
++      const FlutterSpiGpuShaderLibraryDescriptor* descriptor,
++      FlutterSpiGpuShaderLibrary** out_library,
++      char** out_error);
++  FlutterSpiResult (*shader_library_reload)(
++      FlutterSpiGpuShaderLibrary* library,
++      const FlutterSpiGpuShaderLibraryDescriptor* descriptor,
++      char** out_error);
++  FlutterSpiResult (*shader_library_get_shader)(
++      FlutterSpiGpuShaderLibrary* library,
++      const char* name,
++      FlutterSpiGpuShader** out_shader);
++  FlutterSpiResult (*shader_library_retain)(FlutterSpiGpuShaderLibrary* library);
++  FlutterSpiResult (*shader_library_release)(FlutterSpiGpuShaderLibrary* library);
++  FlutterSpiResult (*shader_get_uniform_struct_index)(
++      FlutterSpiGpuShader* shader,
++      const char* name,
++      int32_t* out_index);
++  FlutterSpiResult (*shader_get_uniform_texture_index)(
++      FlutterSpiGpuShader* shader,
++      const char* name,
++      int32_t* out_index);
++  FlutterSpiResult (*shader_get_uniform_struct_size)(
++      FlutterSpiGpuShader* shader,
++      const char* struct_name,
++      int32_t* out_size);
++  FlutterSpiResult (*shader_get_uniform_member_offset)(
++      FlutterSpiGpuShader* shader,
++      const char* struct_name,
++      const char* member_name,
++      int32_t* out_offset);
++  FlutterSpiResult (*shader_retain)(FlutterSpiGpuShader* shader);
++  FlutterSpiResult (*shader_release)(FlutterSpiGpuShader* shader);
+ } FlutterSpiGpuApi;
+ 
+ #ifdef __cplusplus
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index 668b365b143..76b4fd6f6af 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 25
++#define FLUTTER_SPI_VERSION_MINOR 26
+ 
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index c8e03d18d1a..0f860ac37de 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -97,7 +97,7 @@ TEST(SpiAbi, ImageEnumValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawUnmodified, 2);
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawExtendedRGBA128, 3);
+   EXPECT_EQ(kFlutterSpiImageByteFormatPNG, 4);
+-  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 25);
++  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 26);
+ }
+ 
+ TEST(SpiAbi, GpuContextInfoLayoutIsFrozen) {
+@@ -134,7 +134,20 @@ TEST(SpiAbi, GpuApiLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi, buffer_flush, 80, 40);
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi, buffer_retain, 88, 44);
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi, buffer_release, 96, 48);
+-  EXPECT_EQ(sizeof(FlutterSpiGpuApi), sizeof(void*) == 8 ? 136u : 68u);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, shader_library_create, 136, 68);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, shader_library_reload, 144, 72);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, shader_library_get_shader, 152, 76);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, shader_library_retain, 160, 80);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, shader_library_release, 168, 84);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, shader_get_uniform_struct_index, 176, 88);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, shader_get_uniform_texture_index, 184,
++                    92);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, shader_get_uniform_struct_size, 192, 96);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, shader_get_uniform_member_offset, 200,
++                    100);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, shader_retain, 208, 104);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, shader_release, 216, 108);
++  EXPECT_EQ(sizeof(FlutterSpiGpuApi), sizeof(void*) == 8 ? 224u : 112u);
+ }
+ 
+ TEST(SpiAbi, GpuBufferDescriptorLayoutIsFrozen) {
+@@ -165,7 +178,17 @@ TEST(SpiAbi, GpuTextureApiLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi, texture_overwrite, 112, 56);
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi, texture_retain, 120, 60);
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi, texture_release, 128, 64);
+-  EXPECT_EQ(sizeof(FlutterSpiGpuApi), sizeof(void*) == 8 ? 136u : 68u);
++  EXPECT_EQ(sizeof(FlutterSpiGpuApi), sizeof(void*) == 8 ? 224u : 112u);
++}
++
++TEST(SpiAbi, GpuShaderLibraryDescriptorLayoutIsFrozen) {
++  EXPECT_SPI_OFFSET(FlutterSpiGpuShaderLibraryDescriptor, struct_size, 0, 0);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuShaderLibraryDescriptor, format, 8, 4);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuShaderLibraryDescriptor, data, 16, 8);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuShaderLibraryDescriptor, size, 24, 12);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuShaderLibraryDescriptor, library_id, 32, 16);
++  EXPECT_EQ(sizeof(FlutterSpiGpuShaderLibraryDescriptor),
++            sizeof(void*) == 8 ? 40u : 20u);
+ }
+ 
+ TEST(SpiAbi, SemanticsLayoutIsFrozen) {
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index 401fa4115dd..f5bfa0416a8 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -22,6 +22,8 @@
+ #include "flutter/runtime_spi/effects/spi_vertices.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_buffer.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_context.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_shader.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_shader_library.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_texture.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
+ #include "flutter/runtime_spi/image/spi_image_canvas.h"
+@@ -170,6 +172,17 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+       .texture_overwrite = SpiGpuTextureOverwrite,
+       .texture_retain = SpiGpuTextureRetain,
+       .texture_release = SpiGpuTextureRelease,
++      .shader_library_create = SpiGpuShaderLibraryCreate,
++      .shader_library_reload = SpiGpuShaderLibraryReload,
++      .shader_library_get_shader = SpiGpuShaderLibraryGetShader,
++      .shader_library_retain = SpiGpuShaderLibraryRetain,
++      .shader_library_release = SpiGpuShaderLibraryRelease,
++      .shader_get_uniform_struct_index = SpiGpuShaderGetUniformStructIndex,
++      .shader_get_uniform_texture_index = SpiGpuShaderGetUniformTextureIndex,
++      .shader_get_uniform_struct_size = SpiGpuShaderGetUniformStructSize,
++      .shader_get_uniform_member_offset = SpiGpuShaderGetUniformMemberOffset,
++      .shader_retain = SpiGpuShaderRetain,
++      .shader_release = SpiGpuShaderRelease,
+   };
+   static const FlutterSpiImageApi image_api = {
+       .struct_size = sizeof(FlutterSpiImageApi),

@@ -1,0 +1,2600 @@
+# Why: S7b; flutter_gpu shaders, render pipelines and binding sets now use
+# FlutterSpiGpuApi.
+diff --git a/engine/src/flutter/lib/gpu/BUILD.gn b/engine/src/flutter/lib/gpu/BUILD.gn
+index 6051ea1f4e9..fe0a8219d0c 100644
+--- a/engine/src/flutter/lib/gpu/BUILD.gn
++++ b/engine/src/flutter/lib/gpu/BUILD.gn
+@@ -62,7 +62,6 @@ source_set("gpu") {
+     "//flutter/assets",
+     "//flutter/impeller",
+     "//flutter/impeller/display_list:skia_conversions",
+-    "//flutter/impeller/shader_bundle:shader_bundle_flatbuffers",
+     "//flutter/lib/ui",
+     "//flutter/lib/ui:ui_image_decoding",
+     "//flutter/lib/ui:ui_gpu_bridge",
+@@ -100,7 +99,6 @@ if (enable_unittests && !is_fuchsia) {
+       ":gpu",
+       ":gpu_unittests_fixtures",
+       "//flutter/impeller/renderer/testing:mocks",
+-      "//flutter/impeller/shader_bundle:shader_bundle_flatbuffers",
+       "//flutter/testing",
+       "//flutter/testing:dart",
+       "//third_party/googletest:gmock",
+diff --git a/engine/src/flutter/lib/gpu/binding_set.cc b/engine/src/flutter/lib/gpu/binding_set.cc
+index 14cd653cb82..c8ed519a8f6 100644
+--- a/engine/src/flutter/lib/gpu/binding_set.cc
++++ b/engine/src/flutter/lib/gpu/binding_set.cc
+@@ -4,109 +4,48 @@
+ 
+ #include "flutter/lib/gpu/binding_set.h"
+ 
+-#include <utility>
+-
+-#include "flutter/lib/gpu/formats.h"
+-#include "impeller/core/sampler_descriptor.h"
+-#include "impeller/renderer/sampler_library.h"
++#include "flutter/lib/ui/spi_api.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_binding_set.h"
+ 
+ namespace flutter {
+ namespace gpu {
++namespace {
+ 
+-IMPLEMENT_WRAPPERTYPEINFO(flutter_gpu, BindingSet);
++const std::vector<BindingSet::BufferBinding> kEmptyBufferBindings;
++const std::vector<BindingSet::TextureBinding> kEmptyTextureBindings;
+ 
+-BindingSet::BindingSet() = default;
++}  // namespace
+ 
+-BindingSet::~BindingSet() = default;
++IMPLEMENT_WRAPPERTYPEINFO(flutter_gpu, BindingSet);
+ 
+-// Whether a shader stage can take resource bindings from a render pass.
+-static bool IsRenderStage(impeller::ShaderStage stage) {
+-  return stage == impeller::ShaderStage::kVertex ||
+-         stage == impeller::ShaderStage::kFragment;
+-}
++BindingSet::BindingSet(FlutterSpiGpuBindingSet* set) : spi_set_(set) {}
+ 
+-void BindingSet::RetainShader(Shader& shader) {
+-  for (const auto& retained : shaders_) {
+-    if (retained.get() == &shader) {
+-      return;
+-    }
++BindingSet::~BindingSet() {
++  if (spi_set_ != nullptr) {
++    SpiApi().gpu->binding_set_release(spi_set_);
+   }
+-  shaders_.push_back(fml::RefPtr<Shader>(&shader));
+ }
+ 
+-bool BindingSet::AddUniform(
+-    Shader& shader,
+-    int uniform_struct_index,
+-    const std::shared_ptr<const impeller::DeviceBuffer>& buffer,
+-    size_t offset_in_bytes,
+-    size_t length_in_bytes) {
+-  if (!IsRenderStage(shader.GetShaderStage())) {
+-    return false;
+-  }
+-  const Shader::UniformBinding* uniform_struct =
+-      shader.GetUniformStructAt(uniform_struct_index);
+-  if (!uniform_struct) {
+-    return false;
+-  }
+-  if (!buffer || offset_in_bytes + length_in_bytes >
+-                     buffer->GetDeviceBufferDescriptor().size) {
+-    return false;
+-  }
+-
+-  RetainShader(shader);
+-  buffer_bindings_.push_back(BufferBinding{
+-      .stage = shader.GetShaderStage(),
+-      .slot = uniform_struct->slot,
+-      .metadata = &uniform_struct->metadata,
+-      .view = impeller::BufferView(
+-          buffer, impeller::Range(offset_in_bytes, length_in_bytes)),
+-  });
+-  return true;
++const std::vector<BindingSet::BufferBinding>&
++BindingSet::GetBufferBindings() const {
++  SpiGpuBindingSet* core = SpiGpuBindingSetGetCore(spi_set_);
++  return core == nullptr ? kEmptyBufferBindings : core->GetBufferBindings();
+ }
+ 
+-bool BindingSet::AddTexture(
+-    Shader& shader,
+-    int uniform_texture_index,
+-    std::shared_ptr<const impeller::Texture> texture,
+-    impeller::raw_ptr<const impeller::Sampler> sampler) {
+-  if (!IsRenderStage(shader.GetShaderStage())) {
+-    return false;
+-  }
+-  const Shader::TextureBinding* texture_binding =
+-      shader.GetUniformTextureAt(uniform_texture_index);
+-  if (!texture_binding) {
+-    return false;
+-  }
+-  if (!texture || !sampler) {
+-    return false;
+-  }
+-
+-  RetainShader(shader);
+-  texture_bindings_.push_back(TextureBinding{
+-      .stage = shader.GetShaderStage(),
+-      .slot = texture_binding->slot,
+-      .metadata = &texture_binding->metadata,
+-      .texture = std::move(texture),
+-      // NOLINTNEXTLINE(performance-move-const-arg)
+-      .sampler = std::move(sampler),
+-  });
+-  return true;
++const std::vector<BindingSet::TextureBinding>&
++BindingSet::GetTextureBindings() const {
++  SpiGpuBindingSet* core = SpiGpuBindingSetGetCore(spi_set_);
++  return core == nullptr ? kEmptyTextureBindings : core->GetTextureBindings();
+ }
+ 
+ void BindingSet::Clear() {
+-  buffer_bindings_.clear();
+-  texture_bindings_.clear();
+-  shaders_.clear();
+-}
+-
+-const std::vector<BindingSet::BufferBinding>& BindingSet::GetBufferBindings()
+-    const {
+-  return buffer_bindings_;
++  if (spi_set_ != nullptr) {
++    SpiApi().gpu->binding_set_clear(spi_set_);
++  }
+ }
+ 
+-const std::vector<BindingSet::TextureBinding>& BindingSet::GetTextureBindings()
+-    const {
+-  return texture_bindings_;
++FlutterSpiGpuBindingSet* BindingSet::GetSpiBindingSet() const {
++  return spi_set_;
+ }
+ 
+ }  // namespace gpu
+@@ -117,7 +56,13 @@ const std::vector<BindingSet::TextureBinding>& BindingSet::GetTextureBindings()
+ ///
+ 
+ void InternalFlutterGpu_BindingSet_Initialize(Dart_Handle wrapper) {
+-  auto res = fml::MakeRefCounted<flutter::gpu::BindingSet>();
++  FlutterSpiGpuBindingSet* set = nullptr;
++  if (flutter::SpiApi().gpu->binding_set_create(&set) != kFlutterSpiOk ||
++      set == nullptr) {
++    FML_LOG(ERROR) << "Failed to create binding set.";
++    return;
++  }
++  auto res = fml::MakeRefCounted<flutter::gpu::BindingSet>(set);
+   res->AssociateWithDartWrapper(wrapper);
+ }
+ 
+@@ -131,29 +76,37 @@ bool InternalFlutterGpu_BindingSet_AddUniform(
+   if (offset_in_bytes < 0 || length_in_bytes < 0) {
+     return false;
+   }
+-  return wrapper->AddUniform(*shader, uniform_struct_index,
+-                             device_buffer->GetBuffer(), offset_in_bytes,
+-                             length_in_bytes);
++  return flutter::SpiApi().gpu->binding_set_add_uniform(
++             wrapper->GetSpiBindingSet(), shader->GetSpiShader(),
++             uniform_struct_index, device_buffer->GetSpiBuffer(),
++             static_cast<size_t>(offset_in_bytes),
++             static_cast<size_t>(length_in_bytes)) == kFlutterSpiOk;
+ }
+ 
+-bool InternalFlutterGpu_BindingSet_AddTexture(flutter::gpu::BindingSet* wrapper,
+-                                              flutter::gpu::Context* context,
+-                                              flutter::gpu::Shader* shader,
+-                                              int uniform_texture_index,
+-                                              flutter::gpu::Texture* texture,
+-                                              int min_filter,
+-                                              int mag_filter,
+-                                              int mip_filter,
+-                                              int width_address_mode,
+-                                              int height_address_mode,
+-                                              int max_anisotropy) {
+-  const impeller::SamplerDescriptor sampler_desc =
+-      flutter::gpu::ToImpellerSamplerDescriptor(
+-          min_filter, mag_filter, mip_filter, width_address_mode,
+-          height_address_mode, max_anisotropy);
+-  return wrapper->AddTexture(
+-      *shader, uniform_texture_index, texture->GetTexture(),
+-      context->GetContext().GetSamplerLibrary()->GetSampler(sampler_desc));
++bool InternalFlutterGpu_BindingSet_AddTexture(
++    flutter::gpu::BindingSet* wrapper,
++    flutter::gpu::Context* context,
++    flutter::gpu::Shader* shader,
++    int uniform_texture_index,
++    flutter::gpu::Texture* texture,
++    int min_filter,
++    int mag_filter,
++    int mip_filter,
++    int width_address_mode,
++    int height_address_mode,
++    int max_anisotropy) {
++  FlutterSpiGpuSamplerDescriptor sampler = {};
++  sampler.struct_size = sizeof(sampler);
++  sampler.min_filter = min_filter;
++  sampler.mag_filter = mag_filter;
++  sampler.mip_filter = mip_filter;
++  sampler.width_address_mode = width_address_mode;
++  sampler.height_address_mode = height_address_mode;
++  sampler.max_anisotropy = max_anisotropy;
++  return flutter::SpiApi().gpu->binding_set_add_texture(
++             wrapper->GetSpiBindingSet(), context->GetSpiContext(),
++             shader->GetSpiShader(), uniform_texture_index,
++             texture->GetSpiTexture(), &sampler) == kFlutterSpiOk;
+ }
+ 
+ void InternalFlutterGpu_BindingSet_Clear(flutter::gpu::BindingSet* wrapper) {
+diff --git a/engine/src/flutter/lib/gpu/binding_set.h b/engine/src/flutter/lib/gpu/binding_set.h
+index e73dd90ec7b..ee9f7fd209f 100644
+--- a/engine/src/flutter/lib/gpu/binding_set.h
++++ b/engine/src/flutter/lib/gpu/binding_set.h
+@@ -5,7 +5,6 @@
+ #ifndef FLUTTER_LIB_GPU_BINDING_SET_H_
+ #define FLUTTER_LIB_GPU_BINDING_SET_H_
+ 
+-#include <memory>
+ #include <vector>
+ 
+ #include "flutter/lib/gpu/context.h"
+@@ -14,85 +13,33 @@
+ #include "flutter/lib/gpu/shader.h"
+ #include "flutter/lib/gpu/texture.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
+-#include "fml/memory/ref_ptr.h"
+-#include "impeller/core/buffer_view.h"
+-#include "impeller/core/device_buffer.h"
+-#include "impeller/core/raw_ptr.h"
+-#include "impeller/core/sampler.h"
+-#include "impeller/core/shader_types.h"
+-#include "impeller/core/texture.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_binding_set.h"
+ 
+ namespace flutter {
+ namespace gpu {
+ 
+-/// A group of uniform and texture bindings, resolved against shader
+-/// reflection once at creation and replayed by every draw that binds it.
+-///
+-/// Binding the set on a render pass costs one slot assignment no matter how
+-/// many resources it holds, so a renderer that draws many nodes with the same
+-/// material stops paying per-resource bind work per draw.
++/// A Dart wrapper around a binding set owned by the runtime SPI.
+ class BindingSet : public RefCountedDartWrappable<BindingSet> {
+   DEFINE_WRAPPERTYPEINFO();
+   FML_FRIEND_MAKE_REF_COUNTED(BindingSet);
+ 
+  public:
+-  struct BufferBinding {
+-    impeller::ShaderStage stage;
+-    impeller::ShaderUniformSlot slot;
+-    /// Borrowed from the shader that declared the binding, which this set
+-    /// keeps alive.
+-    const impeller::ShaderMetadata* metadata;
+-    impeller::BufferView view;
+-  };
+-
+-  struct TextureBinding {
+-    impeller::ShaderStage stage;
+-    impeller::SampledImageSlot slot;
+-    const impeller::ShaderMetadata* metadata;
+-    std::shared_ptr<const impeller::Texture> texture;
+-    /// Owned by the context's sampler library, which caches it for the
+-    /// context's lifetime. The Dart wrapper holds the context that resolved
+-    /// this binding, so the sampler outlives the set.
+-    impeller::raw_ptr<const impeller::Sampler> sampler;
+-  };
+-
+-  BindingSet();
++  using BufferBinding = SpiGpuBindingSet::BufferBinding;
++  using TextureBinding = SpiGpuBindingSet::TextureBinding;
+ 
+-  ~BindingSet() override;
++  explicit BindingSet(FlutterSpiGpuBindingSet* set = nullptr);
+ 
+-  /// Appends the uniform struct at `uniform_struct_index` in `shader`'s
+-  /// binding order, viewing `length_in_bytes` of `buffer` starting at
+-  /// `offset_in_bytes`. Returns false when the index names no struct, the
+-  /// shader's stage takes no uniform bindings, or the view runs past the end
+-  /// of the buffer.
+-  bool AddUniform(Shader& shader,
+-                  int uniform_struct_index,
+-                  const std::shared_ptr<const impeller::DeviceBuffer>& buffer,
+-                  size_t offset_in_bytes,
+-                  size_t length_in_bytes);
+-
+-  /// The texture counterpart to `AddUniform`.
+-  bool AddTexture(Shader& shader,
+-                  int uniform_texture_index,
+-                  std::shared_ptr<const impeller::Texture> texture,
+-                  impeller::raw_ptr<const impeller::Sampler> sampler);
+-
+-  /// Drops every binding so the set can be repopulated. Used when a shader
+-  /// reload replaces the reflection data the bindings resolved against.
+-  void Clear();
++  ~BindingSet() override;
+ 
+   const std::vector<BufferBinding>& GetBufferBindings() const;
+-
+   const std::vector<TextureBinding>& GetTextureBindings() const;
+ 
+- private:
+-  /// Keeps `shader` alive for this set's lifetime, since the bindings point
+-  /// into reflection data the shader owns.
+-  void RetainShader(Shader& shader);
++  void Clear();
+ 
+-  std::vector<BufferBinding> buffer_bindings_;
+-  std::vector<TextureBinding> texture_bindings_;
+-  std::vector<fml::RefPtr<Shader>> shaders_;
++  FlutterSpiGpuBindingSet* GetSpiBindingSet() const;
++
++ private:
++  FlutterSpiGpuBindingSet* spi_set_ = nullptr;
+ 
+   FML_DISALLOW_COPY_AND_ASSIGN(BindingSet);
+ };
+diff --git a/engine/src/flutter/lib/gpu/render_pass.cc b/engine/src/flutter/lib/gpu/render_pass.cc
+index 908c1d9cf75..8ccc42d5b13 100644
+--- a/engine/src/flutter/lib/gpu/render_pass.cc
++++ b/engine/src/flutter/lib/gpu/render_pass.cc
+@@ -23,6 +23,9 @@
+ #include "impeller/renderer/pipeline_library.h"
+ #include "lib/gpu/context.h"
+ #include "lib/ui/ui_dart_state.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_binding_set.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_render_pipeline.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "tonic/converter/dart_converter.h"
+ 
+ namespace flutter {
+@@ -232,8 +235,12 @@ RenderPass::GetOrCreatePipeline() {
+ 
+   auto& context = *GetContext();
+ 
+-  if (!render_pipeline_->BindToPipelineDescriptor(*context.GetShaderLibrary(),
+-                                                  pipeline_desc)) {
++  // Temporary bridge until render pass encoding moves behind the SPI in S7c.
++  auto* pipeline_core = SpiGpuRenderPipelineGetCore(
++      render_pipeline_->GetSpiRenderPipeline());
++  if (pipeline_core == nullptr ||
++      !pipeline_core->BindToPipelineDescriptor(*context.GetShaderLibrary(),
++                                               pipeline_desc)) {
+     return nullptr;
+   }
+ 
+@@ -306,12 +313,18 @@ bool RenderPass::Draw(size_t element_count,
+     if (!set) {
+       continue;
+     }
+-    for (const auto& buffer : set->GetBufferBindings()) {
++    // Temporary bridge until render pass encoding moves behind the SPI in S7c.
++    auto* binding_set_core =
++        SpiGpuBindingSetGetCore(set->GetSpiBindingSet());
++    if (binding_set_core == nullptr) {
++      continue;
++    }
++    for (const auto& buffer : binding_set_core->GetBufferBindings()) {
+       render_pass_->BindResource(buffer.stage,
+                                  impeller::DescriptorType::kUniformBuffer,
+                                  buffer.slot, buffer.metadata, buffer.view);
+     }
+-    for (const auto& texture : set->GetTextureBindings()) {
++    for (const auto& texture : binding_set_core->GetTextureBindings()) {
+       render_pass_->BindResource(
+           texture.stage, impeller::DescriptorType::kSampledImage, texture.slot,
+           texture.metadata, texture.texture, texture.sampler);
+@@ -538,7 +551,9 @@ static bool BindUniformStruct(
+   }
+ 
+   flutter::gpu::RenderPass::BufferUniformMap* uniform_map = nullptr;
+-  switch (shader->GetShaderStage()) {
++  flutter::SpiGpuShader* shader_core =
++      flutter::SpiGpuShaderGetCore(shader->GetSpiShader());
++  switch (shader_core->GetShaderStage()) {
+     case impeller::ShaderStage::kVertex:
+       uniform_map = &wrapper->vertex_uniform_bindings;
+       break;
+@@ -575,8 +590,12 @@ bool InternalFlutterGpu_RenderPass_BindUniformDevice(
+     int offset_in_bytes,
+     int length_in_bytes) {
+   auto uniform_name = tonic::StdStringFromDart(uniform_name_handle);
++  flutter::SpiGpuShader* shader_core =
++      flutter::SpiGpuShaderGetCore(shader->GetSpiShader());
+   return BindUniformStruct(
+-      wrapper, shader, shader->GetUniformStruct(uniform_name),
++      wrapper, shader,
++      shader_core == nullptr ? nullptr
++                             : shader_core->GetUniformStruct(uniform_name),
+       device_buffer->GetBuffer(), offset_in_bytes, length_in_bytes);
+ }
+ 
+@@ -587,8 +606,13 @@ bool InternalFlutterGpu_RenderPass_BindUniformDeviceIndexed(
+     flutter::gpu::DeviceBuffer* device_buffer,
+     int offset_in_bytes,
+     int length_in_bytes) {
++  flutter::SpiGpuShader* shader_core =
++      flutter::SpiGpuShaderGetCore(shader->GetSpiShader());
+   return BindUniformStruct(
+-      wrapper, shader, shader->GetUniformStructAt(uniform_struct_index),
++      wrapper, shader,
++      shader_core == nullptr ? nullptr
++                             : shader_core->GetUniformStructAt(
++                                   uniform_struct_index),
+       device_buffer->GetBuffer(), offset_in_bytes, length_in_bytes);
+ }
+ 
+@@ -615,7 +639,9 @@ static bool BindTextureBinding(
+       wrapper->GetContext()->GetSamplerLibrary()->GetSampler(sampler_desc);
+ 
+   flutter::gpu::RenderPass::TextureUniformMap* uniform_map = nullptr;
+-  switch (shader->GetShaderStage()) {
++  flutter::SpiGpuShader* shader_core =
++      flutter::SpiGpuShaderGetCore(shader->GetSpiShader());
++  switch (shader_core->GetShaderStage()) {
+     case impeller::ShaderStage::kVertex:
+       uniform_map = &wrapper->vertex_texture_bindings;
+       break;
+@@ -648,8 +674,13 @@ bool InternalFlutterGpu_RenderPass_BindTexture(
+     int height_address_mode,
+     int max_anisotropy) {
+   auto uniform_name = tonic::StdStringFromDart(uniform_name_handle);
++  flutter::SpiGpuShader* shader_core =
++      flutter::SpiGpuShaderGetCore(shader->GetSpiShader());
+   return BindTextureBinding(
+-      wrapper, shader, shader->GetUniformTexture(uniform_name), texture,
++      wrapper, shader,
++      shader_core == nullptr ? nullptr
++                             : shader_core->GetUniformTexture(uniform_name),
++      texture,
+       min_filter, mag_filter, mip_filter, width_address_mode,
+       height_address_mode, max_anisotropy);
+ }
+@@ -665,8 +696,13 @@ bool InternalFlutterGpu_RenderPass_BindTextureIndexed(
+     int width_address_mode,
+     int height_address_mode,
+     int max_anisotropy) {
++  flutter::SpiGpuShader* shader_core =
++      flutter::SpiGpuShaderGetCore(shader->GetSpiShader());
+   return BindTextureBinding(
+-      wrapper, shader, shader->GetUniformTextureAt(uniform_texture_index),
++      wrapper, shader,
++      shader_core == nullptr ? nullptr
++                             : shader_core->GetUniformTextureAt(
++                                   uniform_texture_index),
+       texture, min_filter, mag_filter, mip_filter, width_address_mode,
+       height_address_mode, max_anisotropy);
+ }
+diff --git a/engine/src/flutter/lib/gpu/render_pass_unittests.cc b/engine/src/flutter/lib/gpu/render_pass_unittests.cc
+index 9f501e1499b..82a8453584a 100644
+--- a/engine/src/flutter/lib/gpu/render_pass_unittests.cc
++++ b/engine/src/flutter/lib/gpu/render_pass_unittests.cc
+@@ -14,18 +14,8 @@
+ namespace flutter::gpu {
+ namespace {
+ 
+-fml::RefPtr<Shader> MakeShader(impeller::ShaderStage stage) {
+-  return Shader::Make("library", "Entrypoint", stage,
+-                      /*code_mapping=*/nullptr, /*inputs=*/{}, /*layouts=*/{},
+-                      /*uniform_structs=*/{}, /*uniform_textures=*/{},
+-                      /*descriptor_set_layouts=*/{});
+-}
+-
+ fml::RefPtr<RenderPipeline> MakeRenderPipeline() {
+-  auto vertex = MakeShader(impeller::ShaderStage::kVertex);
+-  auto fragment = MakeShader(impeller::ShaderStage::kFragment);
+-  return fml::MakeRefCounted<RenderPipeline>(vertex, fragment,
+-                                             vertex->CreateVertexDescriptor());
++  return fml::MakeRefCounted<RenderPipeline>(nullptr);
+ }
+ 
+ // Regression test for https://github.com/flutter/flutter/issues/188712:
+diff --git a/engine/src/flutter/lib/gpu/render_pipeline.cc b/engine/src/flutter/lib/gpu/render_pipeline.cc
+index 342a5a1d3c2..994c5d5b126 100644
+--- a/engine/src/flutter/lib/gpu/render_pipeline.cc
++++ b/engine/src/flutter/lib/gpu/render_pipeline.cc
+@@ -4,314 +4,183 @@
+ 
+ #include "flutter/lib/gpu/render_pipeline.h"
+ 
+-#include <array>
+ #include <cstdint>
+-#include <cstring>
+ #include <span>
+-#include <string_view>
+-
+-#include "flutter/lib/gpu/shader.h"
+-#include "impeller/base/validation.h"
+-#include "impeller/core/shader_types.h"
+-#include "impeller/renderer/pipeline_descriptor.h"
+-#include "impeller/renderer/vertex_descriptor.h"
+-#include "third_party/abseil-cpp/absl/status/status.h"
+-#include "third_party/abseil-cpp/absl/status/statusor.h"
+-#include "third_party/abseil-cpp/absl/strings/str_cat.h"
++#include <string>
++#include <utility>
++#include <vector>
++
++#include "flutter/lib/ui/painting/image.h"
++#include "flutter/lib/ui/spi_api.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_render_pipeline.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "third_party/tonic/typed_data/dart_byte_data.h"
+ 
+ namespace flutter {
+ namespace gpu {
++namespace {
+ 
+-IMPLEMENT_WRAPPERTYPEINFO(flutter_gpu, RenderPipeline);
++constexpr size_t kBufferLayoutInts = 3;
++constexpr size_t kAttributeInts = 3;
+ 
+-RenderPipeline::RenderPipeline(
+-    fml::RefPtr<flutter::gpu::Shader> vertex_shader,
+-    fml::RefPtr<flutter::gpu::Shader> fragment_shader,
+-    std::shared_ptr<impeller::VertexDescriptor> vertex_descriptor)
+-    : vertex_shader_(std::move(vertex_shader)),
+-      fragment_shader_(std::move(fragment_shader)),
+-      vertex_descriptor_(std::move(vertex_descriptor)) {
+-  // Register the descriptor set layouts contributed by each shader exactly
+-  // once, here at construction. Doing this in BindToPipelineDescriptor (as
+-  // earlier revisions did) would append the same layouts on every bind
+-  // since `RegisterDescriptorSetLayouts` accumulates rather than replaces.
+-  vertex_descriptor_->RegisterDescriptorSetLayouts(
+-      vertex_shader_->GetDescriptorSetLayouts().data(),
+-      vertex_shader_->GetDescriptorSetLayouts().size());
+-  vertex_descriptor_->RegisterDescriptorSetLayouts(
+-      fragment_shader_->GetDescriptorSetLayouts().data(),
+-      fragment_shader_->GetDescriptorSetLayouts().size());
++std::string TakeSpiError(char* error) {
++  if (error == nullptr) {
++    return {};
++  }
++  std::string message(error);
++  SpiApi().free_string(CanvasImage::GetSpiEngine(), error);
++  return message;
+ }
+ 
+-bool RenderPipeline::BindToPipelineDescriptor(
+-    impeller::ShaderLibrary& library,
+-    impeller::PipelineDescriptor& desc) {
+-  // A failed lookup previously flowed into `AddStageEntrypoint`, which
+-  // dereferences its argument, crashing with no signal about which shader
+-  // was at fault.
+-  auto vertex_function = vertex_shader_->GetFunctionFromLibrary(library);
+-  if (!vertex_function) {
+-    VALIDATION_LOG << "Unable to resolve the vertex shader function '"
+-                   << vertex_shader_->GetEntrypoint()
+-                   << "' from the shader library.";
++bool CopyPackedLayoutData(
++    Dart_Handle buffer_layouts_handle,
++    Dart_Handle attributes_handle,
++    Dart_Handle attribute_names_handle,
++    std::vector<int32_t>& buffer_layouts,
++    std::vector<int32_t>& attributes,
++    std::vector<char>& attribute_names,
++    std::string& out_error) {
++  tonic::DartByteData buffer_layouts_data(buffer_layouts_handle);
++  tonic::DartByteData attributes_data(attributes_handle);
++  tonic::DartByteData attribute_names_data(attribute_names_handle);
++  if (buffer_layouts_data.length_in_bytes() %
++          (kBufferLayoutInts * sizeof(int32_t)) !=
++      0) {
++    out_error = "Internal error: buffer layouts ByteData has invalid length.";
+     return false;
+   }
+-  auto fragment_function = fragment_shader_->GetFunctionFromLibrary(library);
+-  if (!fragment_function) {
+-    VALIDATION_LOG << "Unable to resolve the fragment shader function '"
+-                   << fragment_shader_->GetEntrypoint()
+-                   << "' from the shader library.";
++  if (attributes_data.length_in_bytes() %
++          (kAttributeInts * sizeof(int32_t)) !=
++      0) {
++    out_error = "Internal error: attributes ByteData has invalid length.";
+     return false;
+   }
+ 
+-  desc.SetVertexDescriptor(vertex_descriptor_);
+-  desc.AddStageEntrypoint(std::move(vertex_function));
+-  desc.AddStageEntrypoint(std::move(fragment_function));
+-  return true;
+-}
+-
+-RenderPipeline::~RenderPipeline() = default;
+-
+-const char* ValidateRenderPipelineShaderStages(const Shader& vertex_shader,
+-                                               const Shader& fragment_shader) {
+-  if (vertex_shader.GetShaderStage() != impeller::ShaderStage::kVertex) {
+-    return "The shader given for the vertex stage is not a vertex shader.";
++  const auto* buffer_layouts_source =
++      static_cast<const int32_t*>(buffer_layouts_data.data());
++  const auto* attributes_source =
++      static_cast<const int32_t*>(attributes_data.data());
++  const auto* names_source =
++      static_cast<const char*>(attribute_names_data.data());
++  buffer_layouts.assign(
++      buffer_layouts_source,
++      buffer_layouts_source +
++          buffer_layouts_data.length_in_bytes() / sizeof(int32_t));
++  attributes.assign(
++      attributes_source,
++      attributes_source + attributes_data.length_in_bytes() / sizeof(int32_t));
++  if (attribute_names_data.length_in_bytes() != 0) {
++    attribute_names.assign(
++        names_source,
++        names_source + attribute_names_data.length_in_bytes());
+   }
+-  if (fragment_shader.GetShaderStage() != impeller::ShaderStage::kFragment) {
+-    return "The shader given for the fragment stage is not a fragment "
+-           "shader.";
+-  }
+-  return nullptr;
++  return true;
+ }
+ 
+-namespace {
+-
+-// Translation table from the Dart-side `VertexFormat` enum (encoded as the
+-// enum index) to the `(ShaderType, bit_width, vec_size, bytes_per_element)`
+-// tuple Impeller's HAL stores in `ShaderStageIOSlot`. The order MUST stay
+-// in sync with `lib/src/vertex_layout.dart`.
+-struct VertexFormatInfo {
+-  impeller::ShaderType type;
+-  size_t bit_width;
+-  size_t vec_size;
+-  size_t bytes_per_element;
+-};
+-
+-constexpr std::array<VertexFormatInfo, 12> kVertexFormatTable = {{
+-    {impeller::ShaderType::kFloat, 32, 1, 4},         // float32
+-    {impeller::ShaderType::kFloat, 32, 2, 8},         // float32x2
+-    {impeller::ShaderType::kFloat, 32, 3, 12},        // float32x3
+-    {impeller::ShaderType::kFloat, 32, 4, 16},        // float32x4
+-    {impeller::ShaderType::kUnsignedInt, 32, 1, 4},   // uint32
+-    {impeller::ShaderType::kUnsignedInt, 32, 2, 8},   // uint32x2
+-    {impeller::ShaderType::kUnsignedInt, 32, 3, 12},  // uint32x3
+-    {impeller::ShaderType::kUnsignedInt, 32, 4, 16},  // uint32x4
+-    {impeller::ShaderType::kSignedInt, 32, 1, 4},     // sint32
+-    {impeller::ShaderType::kSignedInt, 32, 2, 8},     // sint32x2
+-    {impeller::ShaderType::kSignedInt, 32, 3, 12},    // sint32x3
+-    {impeller::ShaderType::kSignedInt, 32, 4, 16},    // sint32x4
+-}};
+-
+-// Width of each "row" in the packed `bufferLayouts` ByteData passed from
+-// Dart: `[strideInBytes, attributeCount, stepMode]`. Each buffer's binding
+-// slot is implicit in its position in the array (the first buffer is slot 0,
+-// etc.).
+-constexpr size_t kBufferLayoutInts = 3;
+-
+-// Width of each "row" in the packed `attributes` ByteData passed from Dart:
+-// `[offsetInBytes, formatIndex, nameByteLength]`. Attribute rows are
+-// flattened across buffers in buffer-list order; each buffer's
+-// `attributeCount` indicates how many attribute rows belong to it. The
+-// attribute name itself lives in a parallel `attribute_names` byte blob
+-// walked sequentially using the per-row `nameByteLength`.
+-constexpr size_t kAttributeInts = 3;
+-
+-// Builds an `impeller::VertexDescriptor` from the user-supplied buffer
+-// layout and attribute arrays, validating each entry against the vertex
+-// shader's reflection metadata. On validation failure, returns a non-OK
+-// status whose message describes the first problem found.
+-//
+-// Binding slots are implicit in buffer-list position. Buffer N (0-indexed)
+-// is bound at binding slot N. This makes sparse bindings impossible to
+-// express by construction; Impeller's RenderPass::SetVertexBuffer also
+-// rejects sparse bindings, and lifting that restriction would need a
+-// `firstBinding`-style entry point added to the HAL.
+-// TODO(https://github.com/flutter/flutter/issues/186308): Allow sparse
+-// vertex buffer binding slots.
+-absl::StatusOr<std::shared_ptr<impeller::VertexDescriptor>>
+-BuildCustomVertexDescriptor(const flutter::gpu::Shader& vertex_shader,
+-                            std::span<const int32_t> buffer_layouts,
+-                            std::span<const int32_t> attributes,
+-                            std::span<const char> attribute_names) {
+-  const size_t buffer_layout_count = buffer_layouts.size() / kBufferLayoutInts;
+-  const size_t attribute_count = attributes.size() / kAttributeInts;
+-  const auto& shader_inputs = vertex_shader.GetStageInputs();
+-
+-  std::vector<impeller::ShaderStageBufferLayout> stage_layouts;
+-  stage_layouts.reserve(buffer_layout_count);
+-  std::vector<impeller::ShaderStageIOSlot> stage_inputs;
+-  stage_inputs.reserve(attribute_count);
+-
+-  size_t attr_cursor = 0;
++bool BuildVertexLayouts(
++    const std::vector<int32_t>& packed_layouts,
++    const std::vector<int32_t>& packed_attributes,
++    const std::vector<char>& packed_names,
++    std::vector<FlutterSpiGpuVertexBufferLayout>& layouts,
++    std::vector<std::vector<FlutterSpiGpuVertexAttribute>>& attributes,
++    std::vector<std::string>& names,
++    std::string& out_error) {
++  const size_t layout_count = packed_layouts.size() / kBufferLayoutInts;
++  const size_t attribute_count = packed_attributes.size() / kAttributeInts;
++  layouts.reserve(layout_count);
++  attributes.reserve(layout_count);
++  names.reserve(attribute_count);
++
++  size_t attribute_cursor = 0;
+   size_t name_cursor = 0;
+-  for (size_t buffer_index = 0; buffer_index < buffer_layout_count;
+-       ++buffer_index) {
+-    const int32_t stride = buffer_layouts[buffer_index * kBufferLayoutInts + 0];
+-    const int32_t attr_count_in_buffer =
+-        buffer_layouts[buffer_index * kBufferLayoutInts + 1];
+-    const int32_t step_mode =
+-        buffer_layouts[buffer_index * kBufferLayoutInts + 2];
+-    if (stride <= 0) {
+-      return absl::InvalidArgumentError(
+-          absl::StrCat("VertexBuffer.strideInBytes must be positive (got ",
+-                       stride, ") on buffer at index ", buffer_index, "."));
+-    }
+-    if (step_mode < 0 || step_mode > 1) {
+-      return absl::InvalidArgumentError(
+-          absl::StrCat("VertexBuffer.stepMode is out of range (got ", step_mode,
+-                       ") on buffer at index ", buffer_index, "."));
+-    }
+-    if (attr_count_in_buffer < 0 ||
+-        attr_cursor + static_cast<size_t>(attr_count_in_buffer) >
++  for (size_t layout_index = 0; layout_index < layout_count;
++       ++layout_index) {
++    const size_t layout_offset = layout_index * kBufferLayoutInts;
++    const int32_t attribute_count_in_layout =
++        packed_layouts[layout_offset + 1];
++    if (attribute_count_in_layout < 0 ||
++        attribute_cursor +
++                static_cast<size_t>(attribute_count_in_layout) >
+             attribute_count) {
+-      return absl::InvalidArgumentError(
++      out_error =
+           "Internal error: attribute count overruns the packed attributes "
+-          "blob.");
++          "blob.";
++      return false;
+     }
+-    stage_layouts.push_back({static_cast<size_t>(stride), buffer_index,
+-                             step_mode == 0
+-                                 ? impeller::VertexInputRate::kVertex
+-                                 : impeller::VertexInputRate::kInstance});
+ 
+-    // Track each attribute's byte range within this buffer so we can
+-    // detect overlaps after building them all.
+-    struct AttrRange {
+-      std::string name;
+-      size_t begin;
+-      size_t end;
+-    };
+-    std::vector<AttrRange> ranges_in_buffer;
+-    ranges_in_buffer.reserve(attr_count_in_buffer);
+-
+-    for (size_t a = 0; a < static_cast<size_t>(attr_count_in_buffer); ++a) {
+-      const int32_t offset = attributes[attr_cursor * kAttributeInts + 0];
+-      const int32_t format_index = attributes[attr_cursor * kAttributeInts + 1];
+-      const int32_t name_byte_length =
+-          attributes[attr_cursor * kAttributeInts + 2];
+-      ++attr_cursor;
+-
+-      if (name_byte_length <= 0 ||
+-          name_cursor + static_cast<size_t>(name_byte_length) >
+-              attribute_names.size()) {
+-        return absl::InvalidArgumentError(
+-            "Internal error: attribute name overruns the packed names blob.");
++    attributes.emplace_back();
++    auto& layout_attributes = attributes.back();
++    layout_attributes.reserve(attribute_count_in_layout);
++    for (int32_t index = 0; index < attribute_count_in_layout; ++index) {
++      const size_t attribute_offset = attribute_cursor * kAttributeInts;
++      const int32_t name_length = packed_attributes[attribute_offset + 2];
++      if (name_length <= 0 ||
++          name_cursor + static_cast<size_t>(name_length) >
++              packed_names.size()) {
++        out_error =
++            "Internal error: attribute name overruns the packed names blob.";
++        return false;
+       }
+-      const std::string_view name(attribute_names.data() + name_cursor,
+-                                  static_cast<size_t>(name_byte_length));
+-      name_cursor += static_cast<size_t>(name_byte_length);
+ 
+-      if (offset < 0) {
+-        return absl::InvalidArgumentError(absl::StrCat(
+-            "VertexAttribute '", name,
+-            "' offsetInBytes must be non-negative (got ", offset, ")."));
+-      }
+-      if (format_index < 0 ||
+-          static_cast<size_t>(format_index) >= kVertexFormatTable.size()) {
+-        return absl::InvalidArgumentError(
+-            absl::StrCat("VertexAttribute '", name, "' format index ",
+-                         format_index, " is out of range."));
+-      }
+-      const VertexFormatInfo& format = kVertexFormatTable[format_index];
++      names.emplace_back(packed_names.data() + name_cursor,
++                         static_cast<size_t>(name_length));
++      name_cursor += static_cast<size_t>(name_length);
++      FlutterSpiGpuVertexAttribute attribute = {};
++      attribute.struct_size = sizeof(attribute);
++      attribute.name = names.back().c_str();
++      attribute.format = packed_attributes[attribute_offset + 1];
++      attribute.offset = packed_attributes[attribute_offset];
++      layout_attributes.push_back(attribute);
++      attribute_cursor++;
++    }
+ 
+-      if (static_cast<size_t>(offset) + format.bytes_per_element >
+-          static_cast<size_t>(stride)) {
+-        return absl::InvalidArgumentError(absl::StrCat(
+-            "VertexAttribute '", name, "' (offset ", offset, " + ",
+-            format.bytes_per_element, " bytes) overruns stride of ", stride,
+-            " on buffer at index ", buffer_index, "."));
+-      }
++    FlutterSpiGpuVertexBufferLayout layout = {};
++    layout.struct_size = sizeof(layout);
++    layout.stride = packed_layouts[layout_offset];
++    layout.step_mode = packed_layouts[layout_offset + 2];
++    layout.attributes = layout_attributes.data();
++    layout.attribute_count = layout_attributes.size();
++    layouts.push_back(layout);
++  }
+ 
+-      // Detect overlap against earlier attributes in this buffer before
+-      // doing any shader-side lookups, so the overlap diagnostic isn't
+-      // shadowed by a less informative name-mismatch error.
+-      const size_t begin = static_cast<size_t>(offset);
+-      const size_t end = begin + format.bytes_per_element;
+-      const std::string name_owned(name);
+-      for (const auto& other : ranges_in_buffer) {
+-        if (begin < other.end && other.begin < end) {
+-          return absl::InvalidArgumentError(
+-              absl::StrCat("VertexAttribute '", name, "' (bytes [", begin, ", ",
+-                           end, ")) overlaps VertexAttribute '", other.name,
+-                           "' (bytes [", other.begin, ", ", other.end,
+-                           ")) on buffer at index ", buffer_index, "."));
+-        }
+-      }
+-      ranges_in_buffer.push_back({name_owned, begin, end});
++  if (attribute_cursor != attribute_count) {
++    out_error =
++        "Internal error: attributes blob has trailing rows not consumed by "
++        "any buffer.";
++    return false;
++  }
++  if (name_cursor != packed_names.size()) {
++    out_error =
++        "Internal error: attribute names blob has trailing bytes.";
++    return false;
++  }
++  return true;
++}
+ 
+-      // Find the matching shader input by name to validate format and to
+-      // copy the (location, set, columns, relaxed_precision) metadata we
+-      // don't carry on the Dart side. The Shader's IOSlot names point into
+-      // the shader bundle flatbuffer, which the Shader keeps alive via its
+-      // code mapping; the impellerc-generated builds use static string
+-      // literals. Either way, strcmp against a NUL-terminated needle is
+-      // safe.
+-      const impeller::ShaderStageIOSlot* shader_slot = nullptr;
+-      for (const auto& slot : shader_inputs) {
+-        if (slot.name != nullptr &&
+-            std::strcmp(slot.name, name_owned.c_str()) == 0) {
+-          shader_slot = &slot;
+-          break;
+-        }
+-      }
+-      if (shader_slot == nullptr) {
+-        return absl::InvalidArgumentError(absl::StrCat(
+-            "VertexAttribute name '", name,
+-            "' does not match any input declared by the bound vertex "
+-            "shader."));
+-      }
+-      // Match the shader's scalar type class (float vs signed int vs
+-      // unsigned int). Component-count mismatches are NOT errors: the shader
+-      // receives default substitution (missing components default to
+-      // (0, 0, 0, 1)) when the buffer supplies fewer components than
+-      // declared, and reads only the leading components when the buffer
+-      // supplies more. The shipped enum only contains 32-bit formats, so
+-      // checking `type` alone is sufficient until 8/16-bit formats are added.
+-      // TODO(https://github.com/flutter/flutter/issues/186309): Add
+-      // normalized, packed, half-float, BGRA-swizzled, and 64-bit vertex
+-      // attribute formats; the format check will need to also verify
+-      // `bit_width` once those land.
+-      if (shader_slot->type != format.type ||
+-          shader_slot->bit_width != format.bit_width) {
+-        return absl::InvalidArgumentError(absl::StrCat(
+-            "VertexAttribute '", name,
+-            "' format does not match the vertex shader's declared input "
+-            "type."));
+-      }
++}  // namespace
+ 
+-      impeller::ShaderStageIOSlot built = *shader_slot;
+-      built.binding = buffer_index;
+-      built.offset = static_cast<size_t>(offset);
+-      stage_inputs.push_back(built);
+-    }
+-  }
++IMPLEMENT_WRAPPERTYPEINFO(flutter_gpu, RenderPipeline);
+ 
+-  if (attr_cursor != attribute_count) {
+-    return absl::InvalidArgumentError(
+-        "Internal error: attributes blob has trailing rows not consumed "
+-        "by any buffer.");
+-  }
+-  if (name_cursor != attribute_names.size()) {
+-    return absl::InvalidArgumentError(
+-        "Internal error: attribute names blob has trailing bytes.");
++RenderPipeline::RenderPipeline(FlutterSpiGpuRenderPipeline* pipeline)
++    : spi_pipeline_(pipeline) {}
++
++RenderPipeline::~RenderPipeline() {
++  if (spi_pipeline_ != nullptr) {
++    SpiApi().gpu->render_pipeline_release(spi_pipeline_);
+   }
++}
+ 
+-  auto descriptor = std::make_shared<impeller::VertexDescriptor>();
+-  descriptor->SetStageInputs(stage_inputs, stage_layouts);
+-  return descriptor;
++FlutterSpiGpuRenderPipeline* RenderPipeline::GetSpiRenderPipeline() const {
++  return spi_pipeline_;
+ }
+ 
+-}  // namespace
++const char* ValidateRenderPipelineShaderStages(
++    const Shader& vertex_shader,
++    const Shader& fragment_shader) {
++  return ::flutter::ValidateRenderPipelineShaderStages(
++      *SpiGpuShaderGetCore(vertex_shader.GetSpiShader()),
++      *SpiGpuShaderGetCore(fragment_shader.GetSpiShader()));
++}
+ 
+ }  // namespace gpu
+ }  // namespace flutter
+@@ -328,20 +197,12 @@ Dart_Handle InternalFlutterGpu_RenderPipeline_Initialize(
+     Dart_Handle buffer_layouts_handle,
+     Dart_Handle attributes_handle,
+     Dart_Handle attribute_names_handle) {
+-  // Swapped or mismatched stages would otherwise only fail at first draw,
+-  // deep inside backend pipeline compilation.
+   if (const char* stage_error =
+           flutter::gpu::ValidateRenderPipelineShaderStages(*vertex_shader,
+-                                                           *fragment_shader)) {
++                                                            *fragment_shader)) {
+     return tonic::ToDart(stage_error);
+   }
+ 
+-  // Lazily register the shaders synchronously if they haven't been already.
+-  vertex_shader->RegisterSync(*gpu_context);
+-  fragment_shader->RegisterSync(*gpu_context);
+-
+-  std::shared_ptr<impeller::VertexDescriptor> vertex_descriptor;
+-
+   const bool buffer_layouts_provided = !Dart_IsNull(buffer_layouts_handle);
+   const bool attributes_provided = !Dart_IsNull(attributes_handle);
+   const bool attribute_names_provided = !Dart_IsNull(attribute_names_handle);
+@@ -352,75 +213,48 @@ Dart_Handle InternalFlutterGpu_RenderPipeline_Initialize(
+         "names to be provided together.");
+   }
+ 
++  std::vector<int32_t> packed_layouts;
++  std::vector<int32_t> packed_attributes;
++  std::vector<char> packed_names;
++  std::vector<FlutterSpiGpuVertexBufferLayout> layouts;
++  std::vector<std::vector<FlutterSpiGpuVertexAttribute>> attributes;
++  std::vector<std::string> names;
+   if (buffer_layouts_provided) {
+-    // Copy the packed Dart-side ByteData buffers into local vectors so the
+-    // tonic::DartByteData typed-data handles are released before we make any
+-    // call back into the Dart VM (e.g. tonic::ToDart for an error string).
+-    // Holding a typed-data handle while calling into the VM raises
+-    // "Callbacks into the Dart VM are currently prohibited." Errors raised
+-    // inside the inner scope must therefore be deferred to a local string
+-    // and returned only after the typed-data handles go out of scope.
+-    std::vector<int32_t> buffer_layouts_ints;
+-    std::vector<int32_t> attribute_ints;
+-    std::vector<char> attribute_names_bytes;
+     std::string copy_error;
+     {
+-      tonic::DartByteData buffer_layouts_data(buffer_layouts_handle);
+-      tonic::DartByteData attributes_data(attributes_handle);
+-      tonic::DartByteData attribute_names_data(attribute_names_handle);
+-      if (buffer_layouts_data.length_in_bytes() %
+-              (flutter::gpu::kBufferLayoutInts * sizeof(int32_t)) !=
+-          0) {
+-        copy_error =
+-            "Internal error: buffer layouts ByteData has invalid length.";
+-      } else if (attributes_data.length_in_bytes() %
+-                     (flutter::gpu::kAttributeInts * sizeof(int32_t)) !=
+-                 0) {
+-        copy_error = "Internal error: attributes ByteData has invalid length.";
+-      } else {
+-        const auto* buffer_layouts_src =
+-            static_cast<const int32_t*>(buffer_layouts_data.data());
+-        const auto* attributes_src =
+-            static_cast<const int32_t*>(attributes_data.data());
+-        const auto* names_src =
+-            static_cast<const char*>(attribute_names_data.data());
+-        buffer_layouts_ints.assign(
+-            buffer_layouts_src,
+-            buffer_layouts_src +
+-                buffer_layouts_data.length_in_bytes() / sizeof(int32_t));
+-        attribute_ints.assign(
+-            attributes_src, attributes_src + attributes_data.length_in_bytes() /
+-                                                 sizeof(int32_t));
+-        attribute_names_bytes.assign(
+-            names_src, names_src + attribute_names_data.length_in_bytes());
++      if (!flutter::gpu::CopyPackedLayoutData(
++              buffer_layouts_handle, attributes_handle,
++              attribute_names_handle, packed_layouts, packed_attributes,
++              packed_names, copy_error)) {
++        return tonic::ToDart(copy_error);
+       }
+     }
+-    if (!copy_error.empty()) {
++    if (!flutter::gpu::BuildVertexLayouts(
++            packed_layouts, packed_attributes, packed_names, layouts,
++            attributes, names, copy_error)) {
+       return tonic::ToDart(copy_error);
+     }
++  }
+ 
+-    absl::StatusOr<std::shared_ptr<impeller::VertexDescriptor>> built =
+-        flutter::gpu::BuildCustomVertexDescriptor(
+-            *vertex_shader,
+-            std::span<const int32_t>(buffer_layouts_ints.data(),
+-                                     buffer_layouts_ints.size()),
+-            std::span<const int32_t>(attribute_ints.data(),
+-                                     attribute_ints.size()),
+-            std::span<const char>(attribute_names_bytes.data(),
+-                                  attribute_names_bytes.size()));
+-    if (!built.ok()) {
+-      return tonic::ToDart(std::string(built.status().message()));
+-    }
+-    vertex_descriptor = *std::move(built);
+-  } else {
+-    vertex_descriptor = vertex_shader->CreateVertexDescriptor();
++  FlutterSpiGpuRenderPipelineDescriptor descriptor = {};
++  descriptor.struct_size = sizeof(descriptor);
++  descriptor.vertex_shader = vertex_shader->GetSpiShader();
++  descriptor.fragment_shader = fragment_shader->GetSpiShader();
++  descriptor.buffer_layouts =
++      layouts.empty() ? nullptr : layouts.data();
++  descriptor.buffer_layout_count = layouts.size();
++
++  FlutterSpiGpuRenderPipeline* pipeline = nullptr;
++  char* error = nullptr;
++  const FlutterSpiResult result = flutter::SpiApi().gpu->render_pipeline_create(
++      gpu_context->GetSpiContext(), &descriptor, &pipeline, &error);
++  if (result != kFlutterSpiOk || pipeline == nullptr) {
++    const std::string message = flutter::gpu::TakeSpiError(error);
++    return tonic::ToDart(message.empty() ? "Failed to create render pipeline."
++                                         : message);
+   }
+ 
+-  auto res = fml::MakeRefCounted<flutter::gpu::RenderPipeline>(
+-      fml::RefPtr<flutter::gpu::Shader>(vertex_shader),    //
+-      fml::RefPtr<flutter::gpu::Shader>(fragment_shader),  //
+-      std::move(vertex_descriptor));
++  auto res = fml::MakeRefCounted<flutter::gpu::RenderPipeline>(pipeline);
+   res->AssociateWithDartWrapper(wrapper);
+-
+   return Dart_Null();
+ }
+diff --git a/engine/src/flutter/lib/gpu/render_pipeline.h b/engine/src/flutter/lib/gpu/render_pipeline.h
+index 29557493604..c32b5f1147b 100644
+--- a/engine/src/flutter/lib/gpu/render_pipeline.h
++++ b/engine/src/flutter/lib/gpu/render_pipeline.h
+@@ -5,14 +5,11 @@
+ #ifndef FLUTTER_LIB_GPU_RENDER_PIPELINE_H_
+ #define FLUTTER_LIB_GPU_RENDER_PIPELINE_H_
+ 
+-#include <memory>
+-
+ #include "flutter/lib/gpu/context.h"
+ #include "flutter/lib/gpu/export.h"
+ #include "flutter/lib/gpu/shader.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
+-#include "impeller/renderer/pipeline_descriptor.h"
+-#include "impeller/renderer/vertex_descriptor.h"
++#include "flutter/runtime_spi/include/flutter_gpu.h"
+ 
+ namespace flutter {
+ namespace gpu {
+@@ -22,42 +19,19 @@ class RenderPipeline : public RefCountedDartWrappable<RenderPipeline> {
+   FML_FRIEND_MAKE_REF_COUNTED(RenderPipeline);
+ 
+  public:
+-  RenderPipeline(fml::RefPtr<flutter::gpu::Shader> vertex_shader,
+-                 fml::RefPtr<flutter::gpu::Shader> fragment_shader,
+-                 std::shared_ptr<impeller::VertexDescriptor> vertex_descriptor);
++  explicit RenderPipeline(FlutterSpiGpuRenderPipeline* pipeline);
+ 
+   ~RenderPipeline() override;
+ 
+-  /// Sets this pipeline's vertex descriptor and stage entrypoints on [desc].
+-  /// Returns false (after a validation log naming the shader) when either
+-  /// stage's function cannot be resolved from [library], in which case the
+-  /// descriptor must not be used to build a backend pipeline.
+-  [[nodiscard]] bool BindToPipelineDescriptor(
+-      impeller::ShaderLibrary& library,
+-      impeller::PipelineDescriptor& desc);
++  FlutterSpiGpuRenderPipeline* GetSpiRenderPipeline() const;
+ 
+  private:
+-  fml::RefPtr<flutter::gpu::Shader> vertex_shader_;
+-  fml::RefPtr<flutter::gpu::Shader> fragment_shader_;
+-  // Vertex descriptor used at pipeline-build time. When the caller passes
+-  // a custom `VertexLayout` to `GpuContext.createRenderPipeline`, this is
+-  // built from that layout against the vertex shader's reflection metadata.
+-  // Otherwise it is the impellerc-generated default for the vertex shader.
+-  //
+-  // Shared rather than unique because `impeller::PipelineDescriptor::
+-  // SetVertexDescriptor` stores its argument as `shared_ptr<VertexDescriptor>`
+-  // and `impeller::VertexDescriptor` is non-copyable; we have to keep a
+-  // reference here so the descriptor remains valid across the many
+-  // `BindToPipelineDescriptor` calls a single pipeline may participate in.
+-  std::shared_ptr<impeller::VertexDescriptor> vertex_descriptor_;
++  FlutterSpiGpuRenderPipeline* spi_pipeline_ = nullptr;
+ 
+   FML_DISALLOW_COPY_AND_ASSIGN(RenderPipeline);
+ };
+ 
+-/// Checks that [vertex_shader] and [fragment_shader] are actually a vertex
+-/// and a fragment shader, returning an error message suitable for a Dart
+-/// exception when they are not (pairing the wrong stages otherwise fails
+-/// deep inside backend pipeline compilation with no useful signal).
++/// Checks that [vertex_shader] and [fragment_shader] have render stages.
+ const char* ValidateRenderPipelineShaderStages(const Shader& vertex_shader,
+                                                const Shader& fragment_shader);
+ 
+diff --git a/engine/src/flutter/lib/gpu/shader.cc b/engine/src/flutter/lib/gpu/shader.cc
+index 7923e2caa03..b7a79427054 100644
+--- a/engine/src/flutter/lib/gpu/shader.cc
++++ b/engine/src/flutter/lib/gpu/shader.cc
+@@ -4,251 +4,30 @@
+ 
+ #include "flutter/lib/gpu/shader.h"
+ 
+-#include <cstring>
+-#include <utility>
+-
+-#include "flutter/lib/gpu/formats.h"
+-#include "fml/make_copyable.h"
+-#include "impeller/core/runtime_types.h"
+-#include "impeller/renderer/pipeline_library.h"
+-#include "impeller/renderer/shader_function.h"
+-#include "impeller/renderer/shader_key.h"
+-#include "impeller/renderer/shader_library.h"
++#include "flutter/lib/ui/spi_api.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_shader.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "tonic/converter/dart_converter.h"
+ 
+ namespace flutter {
+ namespace gpu {
+ 
+-const impeller::ShaderStructMemberMetadata*
+-Shader::UniformBinding::GetMemberMetadata(const std::string& name) const {
+-  auto result =
+-      std::find_if(metadata.members.begin(), metadata.members.end(),
+-                   [&name](const impeller::ShaderStructMemberMetadata& member) {
+-                     return member.name == name;
+-                   });
+-  if (result == metadata.members.end()) {
+-    return nullptr;
+-  }
+-  return &(*result);
+-}
+-
+ IMPLEMENT_WRAPPERTYPEINFO(flutter_gpu, Shader);
+ 
+-Shader::Shader() = default;
+-
+-Shader::~Shader() = default;
+-
+-fml::RefPtr<Shader> Shader::Make(
+-    std::string library_id,
+-    std::string entrypoint,
+-    impeller::ShaderStage stage,
+-    std::shared_ptr<fml::Mapping> code_mapping,
+-    std::vector<impeller::ShaderStageIOSlot> inputs,
+-    std::vector<impeller::ShaderStageBufferLayout> layouts,
+-    std::unordered_map<std::string, UniformBinding> uniform_structs,
+-    std::unordered_map<std::string, TextureBinding> uniform_textures,
+-    std::vector<impeller::DescriptorSetLayout> descriptor_set_layouts) {
+-  auto shader = fml::MakeRefCounted<Shader>();
+-  shader->library_id_ = std::move(library_id);
+-  shader->entrypoint_ = std::move(entrypoint);
+-  shader->stage_ = stage;
+-  shader->code_mapping_ = std::move(code_mapping);
+-  shader->inputs_ = std::move(inputs);
+-  shader->layouts_ = std::move(layouts);
+-  shader->uniform_structs_ = std::move(uniform_structs);
+-  shader->uniform_textures_ = std::move(uniform_textures);
+-  shader->descriptor_set_layouts_ = std::move(descriptor_set_layouts);
+-  shader->RebuildBindingOrder();
+-  return shader;
+-}
+-
+-std::string Shader::GetScopedName() const {
+-  return impeller::ShaderKey::MakeUserScopedName(
+-      impeller::ShaderKey::kScopeFlutterGPU, library_id_, entrypoint_);
+-}
+-
+-std::shared_ptr<const impeller::ShaderFunction> Shader::GetFunctionFromLibrary(
+-    impeller::ShaderLibrary& library) {
+-  return library.GetFunction(GetScopedName(), stage_);
+-}
+-
+-bool Shader::IsRegistered(Context& context) {
+-  auto& lib = *context.GetContext().GetShaderLibrary();
+-  return GetFunctionFromLibrary(lib) != nullptr;
+-}
+-
+-bool Shader::IsDirty() const {
+-  return is_dirty_;
+-}
+-
+-void Shader::SetClean() {
+-  is_dirty_ = false;
+-}
+-
+-void Shader::ResetFrom(Shader& other) {
+-  // Compare the compiled bytes against the freshly-parsed mapping before
+-  // moving anything. A shader bundle is the unit of asset distribution, so
+-  // editing one shader recompiles the whole bundle; without this dedupe
+-  // every unchanged shader in the bundle would still be evicted and
+-  // re-registered on reload. Code-byte equality is sufficient because
+-  // impellerc derives reflection metadata (uniforms, inputs, layouts)
+-  // deterministically from the compiled output.
+-  const bool code_changed =
+-      code_mapping_ == nullptr || other.code_mapping_ == nullptr ||
+-      code_mapping_->GetSize() != other.code_mapping_->GetSize() ||
+-      std::memcmp(code_mapping_->GetMapping(),
+-                  other.code_mapping_->GetMapping(),
+-                  code_mapping_->GetSize()) != 0;
+-
+-  // library_id_ is intentionally preserved: the scoped registry key
+-  // (library_id + entrypoint) must remain stable across reloads so the
+-  // eviction triple-call in `RegisterSync` lands at the same slot.
+-  entrypoint_ = std::move(other.entrypoint_);
+-  stage_ = other.stage_;
+-  code_mapping_ = std::move(other.code_mapping_);
+-  inputs_ = std::move(other.inputs_);
+-  layouts_ = std::move(other.layouts_);
+-  uniform_structs_ = std::move(other.uniform_structs_);
+-  uniform_textures_ = std::move(other.uniform_textures_);
+-  descriptor_set_layouts_ = std::move(other.descriptor_set_layouts_);
+-  RebuildBindingOrder();
+-  if (code_changed) {
+-    is_dirty_ = true;
+-  }
+-}
+-
+-bool Shader::RegisterSync(Context& context) {
+-  auto& lib = *context.GetContext().GetShaderLibrary();
+-  const std::string scoped_name = GetScopedName();
+-
+-  std::shared_ptr<const impeller::ShaderFunction> existing =
+-      lib.GetFunction(scoped_name, stage_);
+-  if (existing && !is_dirty_) {
+-    return true;  // Already registered and current.
+-  }
+-
+-  // Dirty path: an earlier asset version still occupies the scoped slot.
+-  // Evict it (and any pipelines that referenced it) before registering the
+-  // new code mapping. Mirrors `RuntimeEffectContents::RegisterShader`.
+-  if (existing && is_dirty_) {
+-    context.GetContext().GetPipelineLibrary()->RemovePipelinesWithEntryPoint(
+-        existing);
+-    lib.UnregisterFunction(scoped_name, stage_);
+-  }
++Shader::Shader(FlutterSpiGpuShader* shader) : spi_shader_(shader) {}
+ 
+-  std::promise<bool> promise;
+-  auto future = promise.get_future();
+-  lib.RegisterFunction(
+-      scoped_name, stage_, code_mapping_,
+-      fml::MakeCopyable([promise = std::move(promise)](bool result) mutable {
+-        promise.set_value(result);
+-      }));
+-  if (!future.get()) {
+-    return false;  // Registration failed.
++Shader::~Shader() {
++  if (spi_shader_ != nullptr) {
++    SpiApi().gpu->shader_release(spi_shader_);
+   }
+-  is_dirty_ = false;
+-  return true;
+ }
+ 
+-std::shared_ptr<impeller::VertexDescriptor> Shader::CreateVertexDescriptor()
+-    const {
+-  auto vertex_descriptor = std::make_shared<impeller::VertexDescriptor>();
+-  vertex_descriptor->SetStageInputs(inputs_, layouts_);
+-  return vertex_descriptor;
+-}
+-
+-const std::vector<impeller::ShaderStageIOSlot>& Shader::GetStageInputs() const {
+-  return inputs_;
+-}
+-
+-const std::vector<impeller::ShaderStageBufferLayout>&
+-Shader::GetStageBufferLayouts() const {
+-  return layouts_;
+-}
+-
+-impeller::ShaderStage Shader::GetShaderStage() const {
+-  return stage_;
+-}
+-
+-const std::string& Shader::GetEntrypoint() const {
+-  return entrypoint_;
+-}
+-
+-const std::vector<impeller::DescriptorSetLayout>&
+-Shader::GetDescriptorSetLayouts() const {
+-  return descriptor_set_layouts_;
+-}
+-
+-const Shader::UniformBinding* Shader::GetUniformStruct(
+-    const std::string& name) const {
+-  auto uniform = uniform_structs_.find(name);
+-  if (uniform == uniform_structs_.end()) {
+-    return nullptr;
+-  }
+-  return &uniform->second;
+-}
+-
+-const Shader::TextureBinding* Shader::GetUniformTexture(
+-    const std::string& name) const {
+-  auto uniform = uniform_textures_.find(name);
+-  if (uniform == uniform_textures_.end()) {
+-    return nullptr;
+-  }
+-  return &uniform->second;
+-}
+-
+-int Shader::GetUniformStructIndex(const std::string& name) const {
+-  const UniformBinding* binding = GetUniformStruct(name);
+-  if (binding == nullptr) {
+-    return -1;
+-  }
+-  for (size_t i = 0; i < uniform_struct_order_.size(); i++) {
+-    if (uniform_struct_order_[i] == binding) {
+-      return static_cast<int>(i);
+-    }
+-  }
+-  return -1;
+-}
+-
+-const Shader::UniformBinding* Shader::GetUniformStructAt(int index) const {
+-  if (index < 0 || static_cast<size_t>(index) >= uniform_struct_order_.size()) {
+-    return nullptr;
+-  }
+-  return uniform_struct_order_[index];
+-}
+-
+-int Shader::GetUniformTextureIndex(const std::string& name) const {
+-  const TextureBinding* binding = GetUniformTexture(name);
+-  if (binding == nullptr) {
+-    return -1;
+-  }
+-  for (size_t i = 0; i < uniform_texture_order_.size(); i++) {
+-    if (uniform_texture_order_[i] == binding) {
+-      return static_cast<int>(i);
+-    }
+-  }
+-  return -1;
+-}
+-
+-const Shader::TextureBinding* Shader::GetUniformTextureAt(int index) const {
+-  if (index < 0 ||
+-      static_cast<size_t>(index) >= uniform_texture_order_.size()) {
+-    return nullptr;
+-  }
+-  return uniform_texture_order_[index];
++bool Shader::IsDirty() const {
++  return SpiGpuShaderIsDirtyForTesting(spi_shader_);
+ }
+ 
+-void Shader::RebuildBindingOrder() {
+-  uniform_struct_order_.clear();
+-  uniform_struct_order_.reserve(uniform_structs_.size());
+-  for (const auto& entry : uniform_structs_) {
+-    uniform_struct_order_.push_back(&entry.second);
+-  }
+-  uniform_texture_order_.clear();
+-  uniform_texture_order_.reserve(uniform_textures_.size());
+-  for (const auto& entry : uniform_textures_) {
+-    uniform_texture_order_.push_back(&entry.second);
+-  }
++FlutterSpiGpuShader* Shader::GetSpiShader() const {
++  return spi_shader_;
+ }
+ 
+ }  // namespace gpu
+@@ -261,48 +40,56 @@ void Shader::RebuildBindingOrder() {
+ int InternalFlutterGpu_Shader_GetUniformStructSize(
+     flutter::gpu::Shader* wrapper,
+     Dart_Handle struct_name_handle) {
+-  auto name = tonic::StdStringFromDart(struct_name_handle);
+-  const auto* uniform = wrapper->GetUniformStruct(name);
+-  if (uniform == nullptr) {
++  const std::string name = tonic::StdStringFromDart(struct_name_handle);
++  int32_t size = -1;
++  if (flutter::SpiApi().gpu->shader_get_uniform_struct_size(
++          wrapper->GetSpiShader(), name.c_str(), &size) != kFlutterSpiOk) {
+     return -1;
+   }
+-
+-  return uniform->size_in_bytes;
++  return size;
+ }
+ 
+ int InternalFlutterGpu_Shader_GetUniformStructIndex(
+     flutter::gpu::Shader* wrapper,
+     Dart_Handle struct_name_handle) {
+-  auto name = tonic::StdStringFromDart(struct_name_handle);
+-  return wrapper->GetUniformStructIndex(name);
++  const std::string name = tonic::StdStringFromDart(struct_name_handle);
++  int32_t index = -1;
++  if (flutter::SpiApi().gpu->shader_get_uniform_struct_index(
++          wrapper->GetSpiShader(), name.c_str(), &index) != kFlutterSpiOk) {
++    return -1;
++  }
++  return index;
+ }
+ 
+ int InternalFlutterGpu_Shader_GetUniformTextureIndex(
+     flutter::gpu::Shader* wrapper,
+     Dart_Handle texture_name_handle) {
+-  auto name = tonic::StdStringFromDart(texture_name_handle);
+-  return wrapper->GetUniformTextureIndex(name);
++  const std::string name = tonic::StdStringFromDart(texture_name_handle);
++  int32_t index = -1;
++  if (flutter::SpiApi().gpu->shader_get_uniform_texture_index(
++          wrapper->GetSpiShader(), name.c_str(), &index) != kFlutterSpiOk) {
++    return -1;
++  }
++  return index;
+ }
+ 
+ int InternalFlutterGpu_Shader_GetUniformMemberOffset(
+     flutter::gpu::Shader* wrapper,
+     Dart_Handle struct_name_handle,
+     Dart_Handle member_name_handle) {
+-  auto struct_name = tonic::StdStringFromDart(struct_name_handle);
+-  const auto* uniform = wrapper->GetUniformStruct(struct_name);
+-  if (uniform == nullptr) {
++  const std::string struct_name =
++      tonic::StdStringFromDart(struct_name_handle);
++  const std::string member_name =
++      tonic::StdStringFromDart(member_name_handle);
++  int32_t offset = -1;
++  if (flutter::SpiApi().gpu->shader_get_uniform_member_offset(
++          wrapper->GetSpiShader(), struct_name.c_str(), member_name.c_str(),
++          &offset) != kFlutterSpiOk) {
+     return -1;
+   }
+-
+-  auto member_name = tonic::StdStringFromDart(member_name_handle);
+-  const auto* member = uniform->GetMemberMetadata(member_name);
+-  if (member == nullptr) {
+-    return -1;
+-  }
+-
+-  return member->offset;
++  return offset;
+ }
+ 
+ bool InternalFlutterGpu_Shader_DebugIsDirty(flutter::gpu::Shader* wrapper) {
+-  return wrapper->IsDirty();
++  return flutter::SpiGpuShaderIsDirtyForTesting(wrapper->GetSpiShader());
+ }
+diff --git a/engine/src/flutter/lib/gpu/shader.h b/engine/src/flutter/lib/gpu/shader.h
+index 49f18966a49..00f488e6ee3 100644
+--- a/engine/src/flutter/lib/gpu/shader.h
++++ b/engine/src/flutter/lib/gpu/shader.h
+@@ -5,138 +5,33 @@
+ #ifndef FLUTTER_LIB_GPU_SHADER_H_
+ #define FLUTTER_LIB_GPU_SHADER_H_
+ 
+-#include <algorithm>
+-#include <memory>
+-#include <string>
+-
+-#include "flutter/lib/gpu/context.h"
++#include "flutter/lib/gpu/export.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_shader.h"
+ #include "fml/memory/ref_ptr.h"
+-#include "impeller/core/shader_types.h"
+-#include "impeller/renderer/shader_function.h"
+-#include "impeller/renderer/vertex_descriptor.h"
+ 
+ namespace flutter {
+ namespace gpu {
+ 
+-/// An immutable collection of shaders loaded from a shader bundle asset.
++/// A Dart wrapper around a shader owned by the runtime SPI.
+ class Shader : public RefCountedDartWrappable<Shader> {
+   DEFINE_WRAPPERTYPEINFO();
+   FML_FRIEND_MAKE_REF_COUNTED(Shader);
+ 
+  public:
+-  struct UniformBinding {
+-    impeller::ShaderUniformSlot slot;
+-    impeller::ShaderMetadata metadata;
+-    size_t size_in_bytes = 0;
+-
+-    const impeller::ShaderStructMemberMetadata* GetMemberMetadata(
+-        const std::string& name) const;
+-  };
++  using UniformBinding = SpiGpuShader::UniformBinding;
++  using TextureBinding = SpiGpuShader::TextureBinding;
+ 
+-  struct TextureBinding {
+-    impeller::SampledImageSlot slot;
+-    impeller::ShaderMetadata metadata;
+-  };
++  explicit Shader(FlutterSpiGpuShader* shader);
+ 
+   ~Shader() override;
+ 
+-  static fml::RefPtr<Shader> Make(
+-      std::string library_id,
+-      std::string entrypoint,
+-      impeller::ShaderStage stage,
+-      std::shared_ptr<fml::Mapping> code_mapping,
+-      std::vector<impeller::ShaderStageIOSlot> inputs,
+-      std::vector<impeller::ShaderStageBufferLayout> layouts,
+-      std::unordered_map<std::string, UniformBinding> uniform_structs,
+-      std::unordered_map<std::string, TextureBinding> uniform_textures,
+-      std::vector<impeller::DescriptorSetLayout> descriptor_set_layouts);
+-
+-  std::shared_ptr<const impeller::ShaderFunction> GetFunctionFromLibrary(
+-      impeller::ShaderLibrary& library);
+-
+-  bool IsRegistered(Context& context);
+-
+-  bool RegisterSync(Context& context);
+-
+-  /// Whether this shader needs to be re-registered with the impeller shader
+-  /// library on next use. Fresh shaders start dirty. Set back to false by
+-  /// `RegisterSync` after registration completes, and back to true by
+-  /// `ResetFrom` when the underlying asset is reloaded.
+   bool IsDirty() const;
+ 
+-  void SetClean();
+-
+-  /// Replaces this shader's payload (code, layouts, uniforms) with the data
+-  /// from `other`, preserving the library_id / entrypoint registry key and
+-  /// marking this shader dirty. Used by `ShaderLibrary` to reload a shader
+-  /// bundle in place without breaking existing Dart wrappers.
+-  void ResetFrom(Shader& other);
+-
+-  std::shared_ptr<impeller::VertexDescriptor> CreateVertexDescriptor() const;
+-
+-  const std::vector<impeller::ShaderStageIOSlot>& GetStageInputs() const;
+-
+-  const std::vector<impeller::ShaderStageBufferLayout>& GetStageBufferLayouts()
+-      const;
+-
+-  const std::vector<impeller::DescriptorSetLayout>& GetDescriptorSetLayouts()
+-      const;
+-
+-  impeller::ShaderStage GetShaderStage() const;
+-
+-  /// The shader's entrypoint name, for identifying it in error messages.
+-  const std::string& GetEntrypoint() const;
+-
+-  const Shader::UniformBinding* GetUniformStruct(const std::string& name) const;
+-
+-  const Shader::TextureBinding* GetUniformTexture(
+-      const std::string& name) const;
+-
+-  /// The position of the named uniform struct in this shader's stable
+-  /// binding order, or -1. Indices stay valid until the shader's payload
+-  /// is replaced by a reload (`ResetFrom`); callers cache them to bind
+-  /// without passing the name across the FFI boundary on every draw.
+-  int GetUniformStructIndex(const std::string& name) const;
+-
+-  /// The uniform struct at `index` in the stable binding order, or nullptr
+-  /// when the index is out of range.
+-  const Shader::UniformBinding* GetUniformStructAt(int index) const;
+-
+-  /// The texture counterpart to `GetUniformStructIndex`.
+-  int GetUniformTextureIndex(const std::string& name) const;
+-
+-  /// The texture counterpart to `GetUniformStructAt`.
+-  const Shader::TextureBinding* GetUniformTextureAt(int index) const;
++  FlutterSpiGpuShader* GetSpiShader() const;
+ 
+  private:
+-  Shader();
+-
+-  // Stable per-source identifier used to namespace this shader's entrypoint
+-  // in the shared shader registry. Set by ShaderLibrary at construction, and
+-  // shared by all shaders within the same library. Typically the asset path
+-  // the bundle was loaded from.
+-  std::string library_id_;
+-  std::string entrypoint_;
+-  impeller::ShaderStage stage_;
+-  std::shared_ptr<fml::Mapping> code_mapping_;
+-  std::vector<impeller::ShaderStageIOSlot> inputs_;
+-  std::vector<impeller::ShaderStageBufferLayout> layouts_;
+-  std::unordered_map<std::string, UniformBinding> uniform_structs_;
+-  std::unordered_map<std::string, TextureBinding> uniform_textures_;
+-  // The maps' entries in a stable order for index-based lookup. Entry
+-  // pointers stay valid for the maps' lifetime (node-based containers);
+-  // rebuilt whenever the maps are replaced (`Make`, `ResetFrom`).
+-  std::vector<const UniformBinding*> uniform_struct_order_;
+-  std::vector<const TextureBinding*> uniform_texture_order_;
+-  std::vector<impeller::DescriptorSetLayout> descriptor_set_layouts_;
+-  bool is_dirty_ = true;
+-
+-  void RebuildBindingOrder();
+-
+-  // Returns the scoped name to use when registering or looking up this
+-  // shader's function in a shared impeller::ShaderLibrary.
+-  std::string GetScopedName() const;
++  FlutterSpiGpuShader* spi_shader_ = nullptr;
+ 
+   FML_DISALLOW_COPY_AND_ASSIGN(Shader);
+ };
+@@ -171,8 +66,6 @@ extern int InternalFlutterGpu_Shader_GetUniformTextureIndex(
+     flutter::gpu::Shader* wrapper,
+     Dart_Handle texture_name_handle);
+ 
+-// Test-only: exposes the per-shader dirty bit so tests can assert that
+-// reload deduplication keeps unchanged shaders clean.
+ FLUTTER_GPU_EXPORT
+ extern bool InternalFlutterGpu_Shader_DebugIsDirty(
+     flutter::gpu::Shader* wrapper);
+diff --git a/engine/src/flutter/lib/gpu/shader_library.cc b/engine/src/flutter/lib/gpu/shader_library.cc
+index 8aeb3269a78..a5a547f942e 100644
+--- a/engine/src/flutter/lib/gpu/shader_library.cc
++++ b/engine/src/flutter/lib/gpu/shader_library.cc
+@@ -4,430 +4,238 @@
+ 
+ #include "flutter/lib/gpu/shader_library.h"
+ 
+-#include <memory>
+-#include <optional>
+ #include <utility>
+ #include <vector>
+ 
+ #include "flutter/assets/asset_manager.h"
+-#include "flutter/lib/gpu/shader.h"
++#include "flutter/lib/ui/painting/image.h"
++#include "flutter/lib/ui/spi_api.h"
+ #include "flutter/lib/ui/ui_dart_state.h"
+ #include "flutter/lib/ui/window/platform_configuration.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_shader_library.h"
++#include "flutter/runtime_spi/internal/spi_internal_bridges.h"
+ #include "fml/mapping.h"
+-#include "fml/memory/ref_ptr.h"
+-#include "impeller/base/validation.h"
+-#include "impeller/core/shader_types.h"
+-#include "impeller/renderer/shader_key.h"
+-#include "impeller/shader_bundle/shader_bundle_flatbuffers.h"
+-#include "lib/gpu/context.h"
+ #include "third_party/tonic/typed_data/dart_byte_data.h"
+ 
+ namespace flutter {
+ namespace gpu {
++namespace {
+ 
+-IMPLEMENT_WRAPPERTYPEINFO(flutter_gpu, ShaderLibrary);
+-
+-fml::RefPtr<ShaderLibrary> ShaderLibrary::override_shader_library_;
+-
+-fml::RefPtr<ShaderLibrary> ShaderLibrary::MakeFromAsset(
+-    impeller::Context::BackendType backend_type,
+-    const std::string& name,
+-    std::string& out_error) {
+-  if (override_shader_library_) {
+-    return override_shader_library_;
+-  }
+-
+-  auto dart_state = UIDartState::Current();
+-  std::shared_ptr<AssetManager> asset_manager =
+-      dart_state->platform_configuration()->client()->GetAssetManager();
+-
+-  std::unique_ptr<fml::Mapping> data = asset_manager->GetAsMapping(name);
+-  if (data == nullptr) {
+-    out_error = std::string("Asset '") + name + std::string("' not found.");
+-    return nullptr;
+-  }
+-
+-  return MakeFromFlatbuffer(backend_type, std::move(data), name);
+-}
+-
+-fml::RefPtr<ShaderLibrary> ShaderLibrary::MakeFromShaders(ShaderMap shaders) {
+-  return fml::MakeRefCounted<flutter::gpu::ShaderLibrary>(nullptr,
+-                                                          std::move(shaders));
+-}
+-
+-static impeller::ShaderStage ToShaderStage(
+-    impeller::fb::shaderbundle::ShaderStage stage) {
+-  switch (stage) {
+-    case impeller::fb::shaderbundle::ShaderStage::kVertex:
+-      return impeller::ShaderStage::kVertex;
+-    case impeller::fb::shaderbundle::ShaderStage::kFragment:
+-      return impeller::ShaderStage::kFragment;
+-    case impeller::fb::shaderbundle::ShaderStage::kCompute:
+-      return impeller::ShaderStage::kCompute;
++std::string UnavailableReasonMessage(int32_t reason) {
++  switch (reason) {
++    case kFlutterSpiGpuUnavailableImpellerDisabled:
++      return
++          "Flutter GPU requires the Impeller rendering backend, but Impeller "
++          "is not enabled. For more details about where Impeller is available "
++          "and how to enable it, see: https://docs.flutter.dev/perf/impeller";
++    case kFlutterSpiGpuUnavailableFlutterGpuDisabled:
++      return
++          "Flutter GPU must be enabled via the Flutter GPU manifest setting. "
++          "This can be done either via command line argument "
++          "--enable-flutter-gpu or by adding the FLTEnableFlutterGPU key set "
++          "to true in the Info.plist on iOS/macOS, or the "
++          "io.flutter.embedding.android.EnableFlutterGPU metadata key to "
++          "true in the AndroidManifest.xml on Android.";
++    default:
++      return "Unable to retrieve the Impeller context.";
+   }
+-  FML_UNREACHABLE();
+ }
+ 
+-static impeller::ShaderType FromInputType(
+-    impeller::fb::shaderbundle::InputDataType input_type) {
+-  switch (input_type) {
+-    case impeller::fb::shaderbundle::InputDataType::kBoolean:
+-      return impeller::ShaderType::kBoolean;
+-    case impeller::fb::shaderbundle::InputDataType::kSignedByte:
+-      return impeller::ShaderType::kSignedByte;
+-    case impeller::fb::shaderbundle::InputDataType::kUnsignedByte:
+-      return impeller::ShaderType::kUnsignedByte;
+-    case impeller::fb::shaderbundle::InputDataType::kSignedShort:
+-      return impeller::ShaderType::kSignedShort;
+-    case impeller::fb::shaderbundle::InputDataType::kUnsignedShort:
+-      return impeller::ShaderType::kUnsignedShort;
+-    case impeller::fb::shaderbundle::InputDataType::kSignedInt:
+-      return impeller::ShaderType::kSignedInt;
+-    case impeller::fb::shaderbundle::InputDataType::kUnsignedInt:
+-      return impeller::ShaderType::kUnsignedInt;
+-    case impeller::fb::shaderbundle::InputDataType::kSignedInt64:
+-      return impeller::ShaderType::kSignedInt64;
+-    case impeller::fb::shaderbundle::InputDataType::kUnsignedInt64:
+-      return impeller::ShaderType::kUnsignedInt64;
+-    case impeller::fb::shaderbundle::InputDataType::kFloat:
+-      return impeller::ShaderType::kFloat;
+-    case impeller::fb::shaderbundle::InputDataType::kDouble:
+-      return impeller::ShaderType::kDouble;
++FlutterSpiGpuContext* AcquireDefaultSpiContext(std::string& out_error) {
++  FlutterSpiGpuContext* context = nullptr;
++  int32_t reason = kFlutterSpiGpuUnavailableNone;
++  if (SpiApi().gpu->context_get_default(CanvasImage::GetSpiEngine(), &context,
++                                        &reason) != kFlutterSpiOk) {
++    out_error = UnavailableReasonMessage(reason);
++    return nullptr;
+   }
++  return context;
+ }
+ 
+-static impeller::ShaderType FromUniformType(
+-    impeller::fb::shaderbundle::UniformDataType uniform_type) {
+-  switch (uniform_type) {
+-    case impeller::fb::shaderbundle::UniformDataType::kBoolean:
+-      return impeller::ShaderType::kBoolean;
+-    case impeller::fb::shaderbundle::UniformDataType::kSignedByte:
+-      return impeller::ShaderType::kSignedByte;
+-    case impeller::fb::shaderbundle::UniformDataType::kUnsignedByte:
+-      return impeller::ShaderType::kUnsignedByte;
+-    case impeller::fb::shaderbundle::UniformDataType::kSignedShort:
+-      return impeller::ShaderType::kSignedShort;
+-    case impeller::fb::shaderbundle::UniformDataType::kUnsignedShort:
+-      return impeller::ShaderType::kUnsignedShort;
+-    case impeller::fb::shaderbundle::UniformDataType::kSignedInt:
+-      return impeller::ShaderType::kSignedInt;
+-    case impeller::fb::shaderbundle::UniformDataType::kUnsignedInt:
+-      return impeller::ShaderType::kUnsignedInt;
+-    case impeller::fb::shaderbundle::UniformDataType::kSignedInt64:
+-      return impeller::ShaderType::kSignedInt64;
+-    case impeller::fb::shaderbundle::UniformDataType::kUnsignedInt64:
+-      return impeller::ShaderType::kUnsignedInt64;
+-    case impeller::fb::shaderbundle::UniformDataType::kFloat:
+-      return impeller::ShaderType::kFloat;
+-    case impeller::fb::shaderbundle::UniformDataType::kDouble:
+-      return impeller::ShaderType::kDouble;
+-    case impeller::fb::shaderbundle::UniformDataType::kHalfFloat:
+-      return impeller::ShaderType::kHalfFloat;
+-    case impeller::fb::shaderbundle::UniformDataType::kSampledImage:
+-      return impeller::ShaderType::kSampledImage;
++void ReleaseSpiContext(FlutterSpiGpuContext* context) {
++  if (context != nullptr) {
++    SpiApi().gpu->context_release(context);
+   }
+ }
+ 
+-static size_t SizeOfInputType(
+-    impeller::fb::shaderbundle::InputDataType input_type) {
+-  switch (input_type) {
+-    case impeller::fb::shaderbundle::InputDataType::kBoolean:
+-      return 1;
+-    case impeller::fb::shaderbundle::InputDataType::kSignedByte:
+-      return 1;
+-    case impeller::fb::shaderbundle::InputDataType::kUnsignedByte:
+-      return 1;
+-    case impeller::fb::shaderbundle::InputDataType::kSignedShort:
+-      return 2;
+-    case impeller::fb::shaderbundle::InputDataType::kUnsignedShort:
+-      return 2;
+-    case impeller::fb::shaderbundle::InputDataType::kSignedInt:
+-      return 4;
+-    case impeller::fb::shaderbundle::InputDataType::kUnsignedInt:
+-      return 4;
+-    case impeller::fb::shaderbundle::InputDataType::kSignedInt64:
+-      return 8;
+-    case impeller::fb::shaderbundle::InputDataType::kUnsignedInt64:
+-      return 8;
+-    case impeller::fb::shaderbundle::InputDataType::kFloat:
+-      return 4;
+-    case impeller::fb::shaderbundle::InputDataType::kDouble:
+-      return 8;
++std::string TakeSpiError(char* error) {
++  if (error == nullptr) {
++    return {};
+   }
++  std::string message(error);
++  SpiApi().free_string(CanvasImage::GetSpiEngine(), error);
++  return message;
+ }
+ 
+-static const impeller::fb::shaderbundle::BackendShader* GetShaderBackend(
+-    impeller::Context::BackendType backend_type,
+-    const impeller::fb::shaderbundle::Shader* shader) {
+-  switch (backend_type) {
+-    case impeller::Context::BackendType::kMetal:
+-#ifdef FML_OS_IOS
+-      return shader->metal_ios();
+-#else
+-      return shader->metal_desktop();
+-#endif
+-    case impeller::Context::BackendType::kOpenGLES:
+-      return shader->opengl_es();
+-    case impeller::Context::BackendType::kVulkan:
+-      return shader->vulkan();
++std::shared_ptr<fml::Mapping> ShaderBundleMappingFromByteData(
++    Dart_Handle byte_data) {
++  tonic::DartByteData data(byte_data);
++  if (!data.data()) {
++    return nullptr;
+   }
++  const auto* bytes = static_cast<const uint8_t*>(data.data());
++  return std::make_shared<fml::DataMapping>(
++      std::vector<uint8_t>(bytes, bytes + data.length_in_bytes()));
+ }
+ 
+-static ShaderLibrary::ShaderMap ParseShaderBundle(
++FlutterSpiGpuShaderLibrary* CreateLibraryForBackend(
+     impeller::Context::BackendType backend_type,
+     const std::shared_ptr<fml::Mapping>& payload,
+     const std::string& library_id) {
+-  ShaderLibrary::ShaderMap shader_map;
+-  if (payload == nullptr || !payload->GetMapping()) {
+-    return shader_map;
+-  }
+-  // `ShaderBundleBufferHasIdentifier` reads the file identifier at a fixed
+-  // offset, so a buffer too small to hold the root offset plus the identifier
+-  // would be read out of bounds. A `fromBytes` caller can pass arbitrary bytes,
+-  // so reject undersized buffers before sniffing the identifier.
+-  if (payload->GetSize() <
+-      sizeof(flatbuffers::uoffset_t) + flatbuffers::kFileIdentifierLength) {
+-    return shader_map;
+-  }
+-  if (!impeller::fb::shaderbundle::ShaderBundleBufferHasIdentifier(
+-          payload->GetMapping())) {
+-    return shader_map;
+-  }
+-  // Structurally verify the FlatBuffer before accessing any fields. A buffer
+-  // with a valid "IPSB" identifier but corrupt internal offsets would otherwise
+-  // be read out of bounds. This mirrors the verification added for the runtime
+-  // stage and shader archive loaders.
+-  flatbuffers::Verifier verifier(
+-      reinterpret_cast<const uint8_t*>(payload->GetMapping()),
+-      payload->GetSize());
+-  if (!impeller::fb::shaderbundle::VerifyShaderBundleBuffer(verifier)) {
+-    return shader_map;
++  if (payload == nullptr || payload->GetMapping() == nullptr) {
++    return nullptr;
+   }
+-  auto* bundle =
+-      impeller::fb::shaderbundle::GetShaderBundle(payload->GetMapping());
+-  if (!bundle) {
+-    return shader_map;
++  FlutterSpiGpuShaderLibrary* library = nullptr;
++  const char* id = library_id.empty() ? nullptr : library_id.c_str();
++  if (SpiGpuShaderLibraryCreateForBackend(
++          static_cast<int32_t>(backend_type),
++          static_cast<const uint8_t*>(payload->GetMapping()), payload->GetSize(),
++          id, &library) != kFlutterSpiOk) {
++    return nullptr;
+   }
++  return library;
++}
+ 
+-  const auto version = bundle->format_version();
+-  const auto expected = static_cast<uint32_t>(
+-      impeller::fb::shaderbundle::ShaderBundleFormatVersion::kVersion);
+-  if (version != expected) {
+-    VALIDATION_LOG << "Unsupported shader bundle format version: " << version
+-                   << ", expected: " << expected
+-                   << ". This shader bundle was compiled with an incompatible "
+-                      "version of impellerc. Please rebuild the shader bundle "
+-                      "with the version of impellerc that ships with the "
+-                      "current Flutter SDK.";
+-    return shader_map;
+-  }
++std::string ErrorOrFallback(char* error, const char* fallback) {
++  std::string message = TakeSpiError(error);
++  return message.empty() ? fallback : message;
++}
+ 
+-  for (const auto* bundled_shader : *bundle->shaders()) {
+-    const impeller::fb::shaderbundle::BackendShader* backend_shader =
+-        GetShaderBackend(backend_type, bundled_shader);
+-    if (!backend_shader) {
+-      VALIDATION_LOG << "Failed to unpack shader \""
+-                     << bundled_shader->name()->c_str() << "\" from bundle.";
+-      continue;
+-    }
++}  // namespace
+ 
+-    auto code_mapping = std::make_shared<fml::NonOwnedMapping>(
+-        backend_shader->shader()->data(),   //
+-        backend_shader->shader()->size(),   //
+-        [payload = payload](auto, auto) {}  //
+-    );
+-
+-    std::vector<impeller::DescriptorSetLayout> descriptor_set_layouts;
+-
+-    std::unordered_map<std::string, Shader::UniformBinding> uniform_structs;
+-    if (backend_shader->uniform_structs() != nullptr) {
+-      for (const auto& uniform : *backend_shader->uniform_structs()) {
+-        if (uniform->ext_res_0() == impeller::kOptimizedOutBinding) {
+-          // A dead-code-eliminated uniform block, dropped for the same reason
+-          // as the optimized-out samplers below.
+-          continue;
+-        }
+-        std::vector<impeller::ShaderStructMemberMetadata> members;
+-        if (uniform->fields() != nullptr) {
+-          for (const auto& struct_member : *uniform->fields()) {
+-            const impeller::ShaderType type =
+-                FromUniformType(struct_member->type());
+-            members.push_back(impeller::ShaderStructMemberMetadata{
+-                .type = type,
+-                .name = struct_member->name()->c_str(),
+-                .offset = static_cast<size_t>(struct_member->offset_in_bytes()),
+-                .size =
+-                    static_cast<size_t>(struct_member->element_size_in_bytes()),
+-                .byte_length =
+-                    static_cast<size_t>(struct_member->total_size_in_bytes()),
+-                .array_elements =
+-                    struct_member->array_elements() == 0
+-                        ? std::optional<size_t>(std::nullopt)
+-                        : static_cast<size_t>(struct_member->array_elements()),
+-                .float_type = impeller::DeriveShaderFloatType(
+-                    type, static_cast<size_t>(struct_member->vec_size()),
+-                    static_cast<size_t>(struct_member->columns())),
+-            });
+-          }
+-        }
+-
+-        uniform_structs[uniform->name()->str()] = Shader::UniformBinding{
+-            .slot =
+-                impeller::ShaderUniformSlot{
+-                    .name = uniform->name()->c_str(),
+-                    .ext_res_0 = static_cast<size_t>(uniform->ext_res_0()),
+-                    .set = static_cast<size_t>(uniform->set()),
+-                    .binding = static_cast<size_t>(uniform->binding()),
+-                },
+-            .metadata =
+-                impeller::ShaderMetadata{
+-                    .name = uniform->name()->c_str(),
+-                    .members = members,
+-                },
+-            .size_in_bytes = static_cast<size_t>(uniform->size_in_bytes()),
+-        };
+-
+-        descriptor_set_layouts.push_back(impeller::DescriptorSetLayout{
+-            static_cast<uint32_t>(uniform->binding()),
+-            impeller::DescriptorType::kUniformBuffer,
+-            ToShaderStage(backend_shader->stage()),
+-        });
+-      }
+-    }
++IMPLEMENT_WRAPPERTYPEINFO(flutter_gpu, ShaderLibrary);
+ 
+-    std::unordered_map<std::string, Shader::TextureBinding> uniform_textures;
+-    if (backend_shader->uniform_textures() != nullptr) {
+-      for (const auto& uniform : *backend_shader->uniform_textures()) {
+-        if (uniform->ext_res_0() == impeller::kOptimizedOutBinding) {
+-          // The shader compiler dead-code-eliminated this sampler. Reflection
+-          // still lists it but stamps the out-of-range binding sentinel, so
+-          // drop it here rather than register a binding that cannot be bound.
+-          continue;
+-        }
+-        Shader::TextureBinding texture_binding;
+-        texture_binding.slot = impeller::SampledImageSlot{
+-            .name = uniform->name()->c_str(),
+-            .texture_index = static_cast<size_t>(uniform->ext_res_0()),
+-            .set = static_cast<size_t>(uniform->set()),
+-            .binding = static_cast<size_t>(uniform->binding()),
+-        };
+-        texture_binding.metadata = impeller::ShaderMetadata{
+-            .name = uniform->name()->c_str(),
+-            .members = {},
+-        };
+-
+-        uniform_textures[uniform->name()->str()] = texture_binding;
+-
+-        descriptor_set_layouts.push_back(impeller::DescriptorSetLayout{
+-            static_cast<uint32_t>(uniform->binding()),
+-            impeller::DescriptorType::kSampledImage,
+-            ToShaderStage(backend_shader->stage()),
+-        });
+-      }
+-    }
++fml::RefPtr<ShaderLibrary> ShaderLibrary::override_shader_library_;
+ 
+-    std::vector<impeller::ShaderStageIOSlot> inputs;
+-    std::vector<impeller::ShaderStageBufferLayout> layouts;
+-    if (backend_shader->stage() ==
+-        impeller::fb::shaderbundle::ShaderStage::kVertex) {
+-      auto inputs_fb = backend_shader->inputs();
+-
+-      inputs.reserve(inputs_fb->size());
+-      size_t default_stride = 0;
+-      for (const auto& input : *inputs_fb) {
+-        impeller::ShaderStageIOSlot slot;
+-        slot.name = input->name()->c_str();
+-        slot.location = input->location();
+-        slot.set = input->set();
+-        slot.binding = input->binding();
+-        slot.type = FromInputType(input->type());
+-        slot.bit_width = input->bit_width();
+-        slot.vec_size = input->vec_size();
+-        slot.columns = input->columns();
+-        slot.offset = input->offset();
+-        inputs.emplace_back(slot);
+-
+-        default_stride +=
+-            SizeOfInputType(input->type()) * slot.vec_size * slot.columns;
+-      }
+-      layouts = {impeller::ShaderStageBufferLayout{
+-          .stride = default_stride,
+-          .binding = 0u,
+-      }};
+-    }
++fml::RefPtr<ShaderLibrary> ShaderLibrary::MakeFromAsset(
++    impeller::Context::BackendType backend_type,
++    const std::string& name,
++    std::string& out_error) {
++  (void)backend_type;
++  if (override_shader_library_) {
++    return override_shader_library_;
++  }
+ 
+-    auto shader = flutter::gpu::Shader::Make(
+-        library_id, backend_shader->entrypoint()->str(),
+-        ToShaderStage(backend_shader->stage()), std::move(code_mapping),
+-        std::move(inputs), std::move(layouts), std::move(uniform_structs),
+-        std::move(uniform_textures), std::move(descriptor_set_layouts));
+-    shader_map[bundled_shader->name()->str()] = std::move(shader);
++  FlutterSpiGpuContext* context = AcquireDefaultSpiContext(out_error);
++  if (context == nullptr) {
++    return nullptr;
+   }
+ 
+-  return shader_map;
++  auto dart_state = UIDartState::Current();
++  std::shared_ptr<AssetManager> asset_manager =
++      dart_state->platform_configuration()->client()->GetAssetManager();
++  std::unique_ptr<fml::Mapping> data = asset_manager->GetAsMapping(name);
++  if (data == nullptr) {
++    ReleaseSpiContext(context);
++    out_error = std::string("Asset '") + name + "' not found.";
++    return nullptr;
++  }
++
++  FlutterSpiGpuShaderLibraryDescriptor descriptor = {};
++  descriptor.struct_size = sizeof(descriptor);
++  descriptor.format = kFlutterSpiGpuShaderFormatImpellerBundle;
++  descriptor.data = static_cast<const uint8_t*>(data->GetMapping());
++  descriptor.size = data->GetSize();
++  descriptor.library_id = name.c_str();
++
++  FlutterSpiGpuShaderLibrary* library = nullptr;
++  char* error = nullptr;
++  const FlutterSpiResult result = SpiApi().gpu->shader_library_create(
++      context, &descriptor, &library, &error);
++  ReleaseSpiContext(context);
++  if (result != kFlutterSpiOk || library == nullptr) {
++    out_error = ErrorOrFallback(
++        error,
++        "Failed to parse the shader bundle bytes. The bytes must be a shader "
++        "bundle compiled by a compatible impellerc.");
++    return nullptr;
++  }
++  return fml::MakeRefCounted<ShaderLibrary>(library);
+ }
+ 
+-fml::RefPtr<ShaderLibrary> ShaderLibrary::MakeFromFlatbuffer(
+-    impeller::Context::BackendType backend_type,
++fml::RefPtr<ShaderLibrary> ShaderLibrary::MakeFromBytes(
+     std::shared_ptr<fml::Mapping> payload,
+-    std::string library_id) {
+-  if (payload == nullptr || !payload->GetMapping()) {
++    std::string& out_error) {
++  FlutterSpiGpuContext* context = AcquireDefaultSpiContext(out_error);
++  if (context == nullptr) {
+     return nullptr;
+   }
+-  if (library_id.empty()) {
+-    library_id = impeller::ShaderKey::MakeFallbackLibraryId();
+-  }
+-  ShaderMap shader_map = ParseShaderBundle(backend_type, payload, library_id);
+-  if (shader_map.empty()) {
++
++  FlutterSpiGpuShaderLibraryDescriptor descriptor = {};
++  descriptor.struct_size = sizeof(descriptor);
++  descriptor.format = kFlutterSpiGpuShaderFormatImpellerBundle;
++  descriptor.data = static_cast<const uint8_t*>(payload->GetMapping());
++  descriptor.size = payload->GetSize();
++
++  FlutterSpiGpuShaderLibrary* library = nullptr;
++  char* error = nullptr;
++  const FlutterSpiResult result = SpiApi().gpu->shader_library_create(
++      context, &descriptor, &library, &error);
++  ReleaseSpiContext(context);
++  if (result != kFlutterSpiOk || library == nullptr) {
++    out_error = ErrorOrFallback(
++        error,
++        "Failed to parse the shader bundle bytes. The bytes must be a shader "
++        "bundle compiled by a compatible impellerc.");
+     return nullptr;
+   }
+-  return fml::MakeRefCounted<flutter::gpu::ShaderLibrary>(
+-      std::move(payload), std::move(shader_map), std::move(library_id));
++  return fml::MakeRefCounted<ShaderLibrary>(library);
+ }
+ 
+-std::string ShaderLibrary::ReloadFromAsset(
++fml::RefPtr<ShaderLibrary> ShaderLibrary::MakeFromFlatbuffer(
+     impeller::Context::BackendType backend_type,
+-    const std::string& name) {
++    std::shared_ptr<fml::Mapping> payload,
++    std::string library_id) {
++  // This backend-specific path is kept for the renderer playground override.
++  FlutterSpiGpuShaderLibrary* library =
++      CreateLibraryForBackend(backend_type, payload, library_id);
++  return library == nullptr ? nullptr
++                            : fml::MakeRefCounted<ShaderLibrary>(library);
++}
++
++std::string ShaderLibrary::ReloadFromAsset(const std::string& name) {
+   auto dart_state = UIDartState::Current();
+   std::shared_ptr<AssetManager> asset_manager =
+       dart_state->platform_configuration()->client()->GetAssetManager();
+-
+   std::unique_ptr<fml::Mapping> data = asset_manager->GetAsMapping(name);
+   if (data == nullptr) {
+     return "Asset '" + name + "' not found.";
+   }
+-  return ReloadFromFlatbuffer(backend_type, std::move(data));
++
++  FlutterSpiGpuShaderLibraryDescriptor descriptor = {};
++  descriptor.struct_size = sizeof(descriptor);
++  descriptor.format = kFlutterSpiGpuShaderFormatImpellerBundle;
++  descriptor.data = static_cast<const uint8_t*>(data->GetMapping());
++  descriptor.size = data->GetSize();
++
++  char* error = nullptr;
++  const FlutterSpiResult result = SpiApi().gpu->shader_library_reload(
++      spi_library_, &descriptor, &error);
++  if (result != kFlutterSpiOk) {
++    return ErrorOrFallback(error, "Shader bundle could not be parsed.");
++  }
++  return {};
+ }
+ 
+ std::string ShaderLibrary::ReloadFromFlatbuffer(
+-    impeller::Context::BackendType backend_type,
+     std::shared_ptr<fml::Mapping> payload) {
+-  if (payload == nullptr || !payload->GetMapping()) {
++  if (payload == nullptr || payload->GetMapping() == nullptr) {
+     return "Empty shader bundle payload.";
+   }
+-  ShaderMap new_shaders = ParseShaderBundle(backend_type, payload, library_id_);
+-  if (new_shaders.empty()) {
+-    return "Shader bundle could not be parsed.";
+-  }
+ 
+-  // Reuse the existing Shader instance for any name that survives the
+-  // reload so user-held Dart wrappers stay attached to live data. Names
+-  // that disappeared in the new bundle drop out of the map; names that
+-  // are new get added. The eviction of old shader functions happens
+-  // lazily in `Shader::RegisterSync` when the dirty bit is observed.
+-  ShaderMap merged;
+-  for (auto& [name, parsed] : new_shaders) {
+-    auto it = shaders_.find(name);
+-    if (it != shaders_.end()) {
+-      it->second->ResetFrom(*parsed);
+-      merged[name] = it->second;
+-    } else {
+-      merged[name] = std::move(parsed);
+-    }
++  FlutterSpiGpuShaderLibraryDescriptor descriptor = {};
++  descriptor.struct_size = sizeof(descriptor);
++  descriptor.format = kFlutterSpiGpuShaderFormatImpellerBundle;
++  descriptor.data = static_cast<const uint8_t*>(payload->GetMapping());
++  descriptor.size = payload->GetSize();
++
++  char* error = nullptr;
++  const FlutterSpiResult result = SpiApi().gpu->shader_library_reload(
++      spi_library_, &descriptor, &error);
++  if (result != kFlutterSpiOk) {
++    return ErrorOrFallback(error, "Shader bundle could not be parsed.");
+   }
+-  shaders_ = std::move(merged);
+-  payload_ = std::move(payload);
+-  return "";
++  return {};
+ }
+ 
+ void ShaderLibrary::SetOverride(
+@@ -438,34 +246,40 @@ void ShaderLibrary::SetOverride(
+ fml::RefPtr<Shader> ShaderLibrary::GetShader(const std::string& shader_name,
+                                              Dart_Handle shader_wrapper) {
+   auto it = shaders_.find(shader_name);
++  if (it == shaders_.end() && spi_library_ != nullptr) {
++    FlutterSpiGpuShader* shader = nullptr;
++    if (SpiApi().gpu->shader_library_get_shader(
++            spi_library_, shader_name.c_str(), &shader) == kFlutterSpiOk &&
++        shader != nullptr) {
++      it = shaders_.emplace(shader_name,
++                            fml::MakeRefCounted<Shader>(shader))
++               .first;
++    }
++  }
+   if (it == shaders_.end()) {
+-    return nullptr;  // No matching shaders.
++    return nullptr;
+   }
+-  auto shader = it->second;
+ 
+-  if (shader->dart_wrapper() == nullptr) {
+-    shader->AssociateWithDartWrapper(shader_wrapper);
++  if (it->second->dart_wrapper() == nullptr) {
++    it->second->AssociateWithDartWrapper(shader_wrapper);
+   }
+-  return shader;
++  return it->second;
+ }
+ 
+ fml::RefPtr<Shader> ShaderLibrary::FindShaderForTesting(
+     const std::string& shader_name) const {
+   auto it = shaders_.find(shader_name);
+-  if (it == shaders_.end()) {
+-    return nullptr;
+-  }
+-  return it->second;
++  return it == shaders_.end() ? nullptr : it->second;
+ }
+ 
+-ShaderLibrary::ShaderLibrary(std::shared_ptr<fml::Mapping> payload,
+-                             ShaderMap shaders,
+-                             std::string library_id)
+-    : payload_(std::move(payload)),
+-      shaders_(std::move(shaders)),
+-      library_id_(std::move(library_id)) {}
++ShaderLibrary::ShaderLibrary(FlutterSpiGpuShaderLibrary* library)
++    : spi_library_(library) {}
+ 
+-ShaderLibrary::~ShaderLibrary() = default;
++ShaderLibrary::~ShaderLibrary() {
++  if (spi_library_ != nullptr) {
++    SpiApi().gpu->shader_library_release(spi_library_);
++  }
++}
+ 
+ }  // namespace gpu
+ }  // namespace flutter
+@@ -474,24 +288,6 @@ ShaderLibrary::~ShaderLibrary() = default;
+ /// Exports
+ ///
+ 
+-namespace {
+-
+-// Copies the bytes of a Dart `ByteData` into an owned mapping, so the shader
+-// bundle data outlives the (temporarily acquired) Dart buffer. Returns null if
+-// the handle is not typed data.
+-std::shared_ptr<fml::Mapping> ShaderBundleMappingFromByteData(
+-    Dart_Handle byte_data) {
+-  tonic::DartByteData data(byte_data);
+-  if (!data.data()) {
+-    return nullptr;
+-  }
+-  const auto* bytes = static_cast<const uint8_t*>(data.data());
+-  return std::make_shared<fml::DataMapping>(
+-      std::vector<uint8_t>(bytes, bytes + data.length_in_bytes()));
+-}
+-
+-}  // namespace
+-
+ Dart_Handle InternalFlutterGpu_ShaderLibrary_InitializeWithAsset(
+     Dart_Handle wrapper,
+     Dart_Handle asset_name) {
+@@ -499,20 +295,14 @@ Dart_Handle InternalFlutterGpu_ShaderLibrary_InitializeWithAsset(
+     return tonic::ToDart("Asset name must be a string");
+   }
+ 
+-  std::optional<std::string> out_error;
+-  auto impeller_context = flutter::gpu::Context::GetDefaultContext(out_error);
+-  if (out_error.has_value()) {
+-    return tonic::ToDart(out_error.value());
+-  }
+-
+   std::string error;
+-  auto res = flutter::gpu::ShaderLibrary::MakeFromAsset(
+-      impeller_context->GetBackendType(), tonic::StdStringFromDart(asset_name),
+-      error);
+-  if (!res) {
++  auto library = flutter::gpu::ShaderLibrary::MakeFromAsset(
++      impeller::Context::BackendType::kVulkan,
++      tonic::StdStringFromDart(asset_name), error);
++  if (!library) {
+     return tonic::ToDart(error);
+   }
+-  res->AssociateWithDartWrapper(wrapper);
++  library->AssociateWithDartWrapper(wrapper);
+   return Dart_Null();
+ }
+ 
+@@ -523,67 +313,42 @@ Dart_Handle InternalFlutterGpu_ShaderLibrary_ReinitializeWithAsset(
+     return tonic::ToDart("Asset name must be a string");
+   }
+ 
+-  std::optional<std::string> out_error;
+-  auto impeller_context = flutter::gpu::Context::GetDefaultContext(out_error);
+-  if (out_error.has_value()) {
+-    return tonic::ToDart(out_error.value());
+-  }
+-
+   std::string error = wrapper->ReloadFromAsset(
+-      impeller_context->GetBackendType(), tonic::StdStringFromDart(asset_name));
+-  if (!error.empty()) {
+-    return tonic::ToDart(error);
+-  }
+-  return Dart_Null();
++      tonic::StdStringFromDart(asset_name));
++  return error.empty() ? Dart_Null() : tonic::ToDart(error);
+ }
+ 
+ Dart_Handle InternalFlutterGpu_ShaderLibrary_InitializeWithBytes(
+     Dart_Handle wrapper,
+     Dart_Handle byte_data) {
+-  std::optional<std::string> out_error;
+-  auto impeller_context = flutter::gpu::Context::GetDefaultContext(out_error);
+-  if (out_error.has_value()) {
+-    return tonic::ToDart(out_error.value());
+-  }
+-
+   std::shared_ptr<fml::Mapping> payload =
+-      ShaderBundleMappingFromByteData(byte_data);
++      flutter::gpu::ShaderBundleMappingFromByteData(byte_data);
+   if (payload == nullptr) {
+     return tonic::ToDart("Shader bundle bytes must be a ByteData.");
+   }
+ 
+-  auto res = flutter::gpu::ShaderLibrary::MakeFromFlatbuffer(
+-      impeller_context->GetBackendType(), std::move(payload));
+-  if (!res) {
+-    return tonic::ToDart(
+-        "Failed to parse the shader bundle bytes. The bytes must be a shader "
+-        "bundle compiled by a compatible impellerc.");
++  std::string error;
++  auto library = flutter::gpu::ShaderLibrary::MakeFromBytes(
++      std::move(payload), error);
++  if (!library) {
++    return tonic::ToDart(error);
+   }
+-  res->AssociateWithDartWrapper(wrapper);
++  library->AssociateWithDartWrapper(wrapper);
+   return Dart_Null();
+ }
+ 
+ Dart_Handle InternalFlutterGpu_ShaderLibrary_ReinitializeWithBytes(
+     flutter::gpu::ShaderLibrary* wrapper,
+     Dart_Handle byte_data) {
+-  std::optional<std::string> out_error;
+-  auto impeller_context = flutter::gpu::Context::GetDefaultContext(out_error);
+-  if (out_error.has_value()) {
+-    return tonic::ToDart(out_error.value());
+-  }
+-
+   std::shared_ptr<fml::Mapping> payload =
+-      ShaderBundleMappingFromByteData(byte_data);
++      flutter::gpu::ShaderBundleMappingFromByteData(byte_data);
+   if (payload == nullptr) {
+     return tonic::ToDart("Shader bundle bytes must be a ByteData.");
+   }
+ 
+-  std::string error = wrapper->ReloadFromFlatbuffer(
+-      impeller_context->GetBackendType(), std::move(payload));
+-  if (!error.empty()) {
+-    return tonic::ToDart(error);
+-  }
+-  return Dart_Null();
++  const std::string reload_error = wrapper->ReloadFromFlatbuffer(
++      std::move(payload));
++  return reload_error.empty() ? Dart_Null() : tonic::ToDart(reload_error);
+ }
+ 
+ Dart_Handle InternalFlutterGpu_ShaderLibrary_GetShader(
+@@ -593,8 +358,5 @@ Dart_Handle InternalFlutterGpu_ShaderLibrary_GetShader(
+   FML_DCHECK(Dart_IsString(shader_name));
+   auto shader =
+       wrapper->GetShader(tonic::StdStringFromDart(shader_name), shader_wrapper);
+-  if (!shader) {
+-    return Dart_Null();
+-  }
+-  return tonic::ToDart(shader.get());
++  return shader.get() == nullptr ? Dart_Null() : tonic::ToDart(shader.get());
+ }
+diff --git a/engine/src/flutter/lib/gpu/shader_library.h b/engine/src/flutter/lib/gpu/shader_library.h
+index 05f72cd6ee9..17906f2a118 100644
+--- a/engine/src/flutter/lib/gpu/shader_library.h
++++ b/engine/src/flutter/lib/gpu/shader_library.h
+@@ -9,6 +9,7 @@
+ #include <string>
+ #include <unordered_map>
+ 
++#include "flutter/lib/gpu/context.h"
+ #include "flutter/lib/gpu/export.h"
+ #include "flutter/lib/gpu/shader.h"
+ #include "flutter/lib/ui/dart_wrapper.h"
+@@ -17,7 +18,7 @@
+ namespace flutter {
+ namespace gpu {
+ 
+-/// An immutable collection of shaders loaded from a shader bundle asset.
++/// A Dart wrapper around a shader library owned by the runtime SPI.
+ class ShaderLibrary : public RefCountedDartWrappable<ShaderLibrary> {
+   DEFINE_WRAPPERTYPEINFO();
+   FML_FRIEND_MAKE_REF_COUNTED(ShaderLibrary);
+@@ -30,63 +31,36 @@ class ShaderLibrary : public RefCountedDartWrappable<ShaderLibrary> {
+       const std::string& name,
+       std::string& out_error);
+ 
+-  static fml::RefPtr<ShaderLibrary> MakeFromShaders(ShaderMap shaders);
++  static fml::RefPtr<ShaderLibrary> MakeFromBytes(
++      std::shared_ptr<fml::Mapping> payload,
++      std::string& out_error);
+ 
+-  /// `library_id` is a stable identifier (typically the asset path the
+-  /// bundle was loaded from) used to namespace the shaders' entrypoints in
+-  /// the shared shader registry, so they cannot collide with engine-internal
+-  /// shaders or with shaders from a different bundle. If empty, a
+-  /// process-unique fallback is generated.
+   static fml::RefPtr<ShaderLibrary> MakeFromFlatbuffer(
+       impeller::Context::BackendType backend_type,
+       std::shared_ptr<fml::Mapping> payload,
+       std::string library_id = "");
+ 
+-  /// Sets a return override for `MakeFromAsset` for testing purposes.
+   static void SetOverride(fml::RefPtr<ShaderLibrary> override_shader_library);
+ 
+-  /// Re-fetches `name` from the AssetManager and reparses it into this
+-  /// library, preserving Dart object identity and the `library_id` so any
+-  /// already-handed-out `Shader` instances continue to work. Existing
+-  /// `Shader` entries whose names appear in the new bundle are mutated in
+-  /// place and marked dirty so the next pipeline build evicts and
+-  /// re-registers them. Returns the empty string on success.
+-  std::string ReloadFromAsset(impeller::Context::BackendType backend_type,
+-                              const std::string& name);
++  std::string ReloadFromAsset(const std::string& name);
+ 
+-  /// Reparses `payload` into this library, preserving Dart object identity
+-  /// and the `library_id`. Returns the empty string on success.
+-  std::string ReloadFromFlatbuffer(impeller::Context::BackendType backend_type,
+-                                   std::shared_ptr<fml::Mapping> payload);
++  std::string ReloadFromFlatbuffer(std::shared_ptr<fml::Mapping> payload);
+ 
+   fml::RefPtr<Shader> GetShader(const std::string& shader_name,
+                                 Dart_Handle shader_wrapper);
+ 
+-  // Looks up a registered shader by name without creating a Dart wrapper, for
+-  // tests and tooling that run without a UI isolate. Production code uses
+-  // `GetShader`.
+   fml::RefPtr<Shader> FindShaderForTesting(
+       const std::string& shader_name) const;
+ 
+-  const std::string& GetLibraryId() const { return library_id_; }
+-
+   ~ShaderLibrary() override;
+ 
+  private:
+-  /// A global override used to inject a ShaderLibrary when running with the
+-  /// Impeller playground. When set, `MakeFromAsset` will always just return
+-  /// this library.
+   static fml::RefPtr<ShaderLibrary> override_shader_library_;
+ 
+-  std::shared_ptr<fml::Mapping> payload_;
++  FlutterSpiGpuShaderLibrary* spi_library_ = nullptr;
+   ShaderMap shaders_;
+-  // The stable library_id assigned at construction. Reloads keep this
+-  // value so the scoped registry slot a shader landed in remains the same.
+-  std::string library_id_;
+ 
+-  explicit ShaderLibrary(std::shared_ptr<fml::Mapping> payload,
+-                         ShaderMap shaders,
+-                         std::string library_id = "");
++  explicit ShaderLibrary(FlutterSpiGpuShaderLibrary* library);
+ 
+   FML_DISALLOW_COPY_AND_ASSIGN(ShaderLibrary);
+ };
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 45c98136c5d..2a234e8d576 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -34,6 +34,7 @@ source_set("spi_backend") {
+     "gpu/spi_gpu_texture.h",
+     "gpu/spi_gpu_shader.h",
+     "gpu/spi_gpu_shader_library.h",
++    "gpu/spi_gpu_render_pipeline.h",
+     "gpu/spi_gpu_binding_set.h",
+     "spi_engine_api.h",
+     "spi_scene.h",
+diff --git a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+index e62b4a66b51..9bcdaea4044 100644
+--- a/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
++++ b/engine/src/flutter/runtime_spi/internal/spi_internal_bridges.h
+@@ -25,6 +25,9 @@ namespace flutter {
+ class AssetManager;
+ class FontCollection;
+ class LayerTree;
++class SpiGpuBindingSet;
++class SpiGpuRenderPipeline;
++class SpiGpuShader;
+ 
+ sk_sp<DlImage> SpiImageToDlImage(FlutterSpiImage*);
+ 
+@@ -57,6 +60,18 @@ void SpiGpuSetDefaultContextOverride(
+     std::shared_ptr<impeller::Context> context);
+ std::shared_ptr<impeller::Context> SpiGpuGetDefaultContextOverride();
+ 
++// Temporary bridges until flutter_gpu's draw encoding moves behind the SPI.
++SpiGpuShader* SpiGpuShaderGetCore(FlutterSpiGpuShader* shader);
++SpiGpuRenderPipeline* SpiGpuRenderPipelineGetCore(
++    FlutterSpiGpuRenderPipeline* pipeline);
++SpiGpuBindingSet* SpiGpuBindingSetGetCore(FlutterSpiGpuBindingSet* set);
++FlutterSpiResult SpiGpuShaderLibraryCreateForBackend(
++    int32_t backend,
++    const uint8_t* data,
++    size_t size,
++    const char* library_id,
++    FlutterSpiGpuShaderLibrary** out_library);
++
+ }  // namespace flutter
+ 
+ #endif  // FLUTTER_RUNTIME_SPI_INTERNAL_SPI_INTERNAL_BRIDGES_H_
