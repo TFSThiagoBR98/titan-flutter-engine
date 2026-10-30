@@ -51,8 +51,11 @@ output_directory="$engine_source/out/host_debug"
 no_unittests_output_directory="$engine_source/out/host_debug_no_unittests"
 args_file="$output_directory/args.gn"
 core_smoke="$output_directory/flutter_engine_core_smoke"
+core_gpu_triangle="$output_directory/flutter_engine_core_gpu_triangle"
 icu_data="$output_directory/icudtl.dat"
 assets_directory="$output_directory/gen/flutter/shell/platform/embedder/assets"
+shader_bundle="$output_directory/playground.shaderbundle"
+lavapipe_icd="${TITAN_LAVAPIPE_ICD:-/usr/share/vulkan/icd.d/lvp_icd.json}"
 
 mkdir -p "$output_directory" "$no_unittests_output_directory"
 exec {build_lock_fd}>"$output_directory/.titan-build.lock"
@@ -170,18 +173,13 @@ run_tests() {
   printf 'tests: ok\n'
 }
 
-run_core_smoke() {
-  [[ -x "$core_smoke" ]] || die "core smoke executable is missing: $core_smoke"
-  [[ -f "$icu_data" ]] || die "ICU data is missing: $icu_data"
-  [[ -d "$assets_directory" ]] || die "core smoke assets are missing: $assets_directory"
-
-  "$core_smoke" "$icu_data" "$assets_directory"
-
+check_core_engine_dependencies() {
+  local executable=$1
   local dynamic_output
   dynamic_output=$(mktemp)
-  if ! readelf -d "$core_smoke" >"$dynamic_output"; then
+  if ! readelf -d "$executable" >"$dynamic_output"; then
     rm -f "$dynamic_output"
-    die "readelf failed for $core_smoke"
+    die "readelf failed for $executable"
   fi
 
   local found_core=0
@@ -192,12 +190,40 @@ run_core_smoke() {
       found_core=1
     else
       rm -f "$dynamic_output"
-      die "core smoke links an unexpected engine library: $dependency"
+      die "core executable links an unexpected engine library: $dependency"
     fi
   done < <(sed -n 's/.*Shared library: \[\(libflutter_engine[^]]*\)\].*/\1/p' "$dynamic_output")
   rm -f "$dynamic_output"
 
-  ((found_core == 1)) || die "core smoke does not link libflutter_engine_core.so"
+  ((found_core == 1)) || die "core executable does not link libflutter_engine_core.so"
+}
+
+run_core_smoke() {
+  [[ -x "$core_smoke" ]] || die "core smoke executable is missing: $core_smoke"
+  [[ -f "$icu_data" ]] || die "ICU data is missing: $icu_data"
+  [[ -d "$assets_directory" ]] || die "core smoke assets are missing: $assets_directory"
+
+  "$core_smoke" "$icu_data" "$assets_directory"
+  check_core_engine_dependencies "$core_smoke"
+}
+
+run_core_gpu_triangle() {
+  [[ -x "$core_gpu_triangle" ]] ||
+    die "core gpu triangle executable is missing: $core_gpu_triangle"
+  [[ -f "$shader_bundle" ]] ||
+    die "core gpu triangle shader bundle is missing: $shader_bundle"
+
+  if [[ ! -f "$lavapipe_icd" ]]; then
+    printf 'core gpu triangle: skipped (lavapipe not installed)\n'
+    return 0
+  fi
+
+  if ! VK_DRIVER_FILES="$lavapipe_icd" "$core_gpu_triangle" "$icu_data" \
+      "$assets_directory" "$shader_bundle"; then
+    die "core gpu triangle executable failed"
+  fi
+  check_core_engine_dependencies "$core_gpu_triangle"
+  printf 'core gpu triangle: ok\n'
 }
 
 ninja_pid=''
@@ -247,4 +273,5 @@ run_build_without_unittests
 run_ninja
 run_tests
 run_core_smoke
+run_core_gpu_triangle
 "$check_core_artifact" "$output_directory/libflutter_engine_core.so"

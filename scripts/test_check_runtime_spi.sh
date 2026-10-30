@@ -55,8 +55,12 @@ runner_log="$temporary_directory/runner.log"
 dart_runner_log="$temporary_directory/dart-runner.log"
 order_log="$temporary_directory/order.log"
 output_log="$temporary_directory/output.log"
+baseline_output_log="$temporary_directory/baseline-output.log"
 locale_output_log="$temporary_directory/locale-output.log"
 mkdir -p "$fake_bin" "$work_directory/depot_tools"
+
+fake_lavapipe_icd="$temporary_directory/lvp_icd.json"
+: > "$fake_lavapipe_icd"
 
 cat > "$fake_bin/build-engine" <<'EOF'
 #!/usr/bin/env bash
@@ -77,6 +81,16 @@ printf 'smoke\n' >> "$ORDER_LOG"
 printf 'core smoke: ok\n'
 SMOKE_EOF
 chmod +x "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/flutter_engine_core_smoke"
+cat > "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/flutter_engine_core_gpu_triangle" <<'TRIANGLE_EOF'
+#!/usr/bin/env bash
+printf 'triangle\n' >> "$ORDER_LOG"
+if ((FAKE_TRIANGLE_STATUS != 0)); then
+  exit "$FAKE_TRIANGLE_STATUS"
+fi
+printf 'core gpu triangle: ok\n'
+TRIANGLE_EOF
+chmod +x "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/flutter_engine_core_gpu_triangle"
+: > "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/playground.shaderbundle"
 printf '%s\n' "$FAKE_ARGS_GN" > \
   "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/args.gn"
 printf 'build\n' >> "$ORDER_LOG"
@@ -138,8 +152,14 @@ case "${LC_ALL:-${LANG:-}}" in
     ;;
 esac
 
-if [[ "${@: -1}" == *flutter_engine_core_smoke ]]; then
+if [[ "${@: -1}" == *flutter_engine_core_smoke ||
+      "${@: -1}" == *flutter_engine_core_gpu_triangle ]]; then
   printf ' 0x0000000000000001 (NEEDED)             %s: [libflutter_engine_core.so]\n' \
+    "$dynamic_label"
+fi
+if [[ "${@: -1}" == *flutter_engine_core_gpu_triangle &&
+      "${FAKE_GPU_UNEXPECTED:-0}" == 1 ]]; then
+  printf ' 0x0000000000000001 (NEEDED)             %s: [libflutter_engine.so]\n' \
     "$dynamic_label"
 fi
 printf ' 0x0000000000000001 (NEEDED)             %s: [libc.so]\n' "$dynamic_label"
@@ -176,6 +196,9 @@ run_check() {
   RUNNER_LOG="$runner_log" \
   DART_RUNNER_LOG="$dart_runner_log" \
   ORDER_LOG="$order_log" \
+  TITAN_LAVAPIPE_ICD="${FAKE_LAVAPIPE_ICD:-$fake_lavapipe_icd}" \
+  FAKE_TRIANGLE_STATUS="${FAKE_TRIANGLE_STATUS:-0}" \
+  FAKE_GPU_UNEXPECTED="${FAKE_GPU_UNEXPECTED:-0}" \
   FAKE_NO_UNIT_BUILD_STATUS="${FAKE_NO_UNIT_BUILD_STATUS:-0}" \
   FAKE_ARGS_GN="${FAKE_ARGS_GN:-enable_unittests = true}" \
   FAKE_NINJA_STATUS="${FAKE_NINJA_STATUS:-0}" \
@@ -212,7 +235,7 @@ else
   fail 'the complete fake check should pass'
 fi
 
-[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner smoke ' ]] || \
+[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner smoke triangle ' ]] || \
   fail 'steps did not run in build, ninja, runner order'
 assert_contains "$build_log" '--unittests' 'build arguments'
 assert_contains "$build_log" '--gn-only' 'build arguments'
@@ -224,6 +247,8 @@ grep -Fxq 'flutter/fml:fml_unittests' "$ninja_log" || \
   fail 'ninja target was not passed as one argument'
 grep -Fxq 'flutter/shell/platform/embedder:flutter_engine_core_library' "$ninja_log" || \
   fail 'core engine target was not passed as one argument'
+grep -Fxq 'flutter/shell/platform/embedder:flutter_engine_core_gpu_triangle' "$ninja_log" || \
+  fail 'core gpu triangle target was not passed as one argument'
 grep -Fxq 'flutter/shell/testing:flutter_tester' "$ninja_log" || \
   fail 'flutter_tester target was not passed as one argument'
 grep -Fxq 'flutter/testing/dart:compile_gpu_test.dart' "$ninja_log" || \
@@ -234,6 +259,37 @@ assert_contains "$output_log" 'build: ok' 'stage summary'
 assert_contains "$output_log" 'ninja: ok' 'stage summary'
 assert_contains "$output_log" 'tests: ok' 'stage summary'
 assert_contains "$output_log" 'core artifact: ok' 'core artifact summary'
+assert_contains "$output_log" 'core gpu triangle: ok' 'core gpu triangle summary'
+cp "$output_log" "$baseline_output_log"
+
+rm -f "$runner_log" "$dart_runner_log" "$order_log"
+if FAKE_TRIANGLE_STATUS=17 run_check >"$output_log" 2>&1; then
+  fail 'core gpu triangle failure should fail the check'
+else
+  status=$?
+fi
+[[ "$status" -eq 2 ]] || fail "core gpu triangle failure returned $status instead of 2"
+assert_contains "$output_log" 'core gpu triangle executable failed' \
+  'core gpu triangle failure diagnostic'
+
+rm -f "$runner_log" "$dart_runner_log" "$order_log"
+if FAKE_GPU_UNEXPECTED=1 run_check >"$output_log" 2>&1; then
+  fail 'unexpected core gpu triangle library should fail the check'
+else
+  status=$?
+fi
+[[ "$status" -eq 2 ]] || fail "unexpected library returned $status instead of 2"
+assert_contains "$output_log" 'core executable links an unexpected engine library' \
+  'core gpu triangle dependency diagnostic'
+
+rm -f "$runner_log" "$dart_runner_log" "$order_log"
+FAKE_LAVAPIPE_ICD="$temporary_directory/missing-lvp.json" \
+  run_check >"$output_log" 2>&1
+assert_contains "$output_log" \
+  'core gpu triangle: skipped (lavapipe not installed)' \
+  'lavapipe skip diagnostic'
+assert_not_contains "$output_log" 'core gpu triangle: ok' \
+  'lavapipe skip output'
 
 non_c_locale=$(locale -a | awk '
   tolower($0) == "pt_br.utf8" || tolower($0) == "pt_br.utf-8" { print; exit }
@@ -251,8 +307,8 @@ if [[ -n "$non_c_locale" ]]; then
     cat "$locale_output_log" >&2
     fail "the complete fake check should pass under locale $non_c_locale"
   fi
-  if ! cmp -s "$output_log" "$locale_output_log"; then
-    diff -u "$output_log" "$locale_output_log" >&2 || true
+  if ! cmp -s "$baseline_output_log" "$locale_output_log"; then
+    diff -u "$baseline_output_log" "$locale_output_log" >&2 || true
     fail "the fake check result changed under locale $non_c_locale"
   fi
 else
@@ -282,7 +338,7 @@ assert_contains "$output_log" 'unit tests are disabled in' 'disabled unit test d
 
 rm -f "$runner_log" "$dart_runner_log" "$order_log"
 FAKE_ARGS_GN='# default is enabled' run_check >"$output_log" 2>&1
-[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner smoke ' ]] || \
+[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner smoke triangle ' ]] || \
   fail 'steps did not continue when enable_unittests is absent'
 assert_contains "$output_log" 'tests: ok' 'missing unit test setting summary'
 
