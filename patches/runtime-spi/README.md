@@ -192,6 +192,9 @@ idêntica à anterior. A série antiga está no worktree do engine no branch
 | `0175-test-engine-draw-a-triangle-through-the-runtime-spi-gpu-table-from-c.patch` | S7e: a C program that links only the core draws a triangle through FlutterSpiGpuApi on Vulkan and reads it back as a FlutterSpiImage. | |
 | `0176-build-engine-produce-a-static-core-library.patch` | S6: the core also ships as libflutter_engine_core.a, one prelinked object (libc++ and third-party code inside) with only FlutterCore* global, for Rust and other native hosts (ADR-0027 amendment of 2026-10-30). | |
 | `0177-test-runtime-spi-run-the-conformance-suite-against-an-external-runtime.patch` | R0a: the SPI conformance suite can load an external runtime and run its supported tests against the same engine fixture. | |
+| `0178-test-shell-record-the-dart-scene-corpus.patch` | R1b: record the 60 Dart scene-corpus goldens used as the oracle for native runtimes. | |
+| `0179-fix-runtime-spi-restore-to-the-base-save-count-below-one.patch` | R1b: restore the canvas stack to its base count when `restoreToCount` receives a value below one. | |
+| `0180-test-runtime-spi-compare-a-rust-scene-corpus-with-the-dart-goldens.patch` | R1b: compare the Rust scene corpus with the Dart goldens through the Runtime SPI. | |
 
 O fluxo é:
 

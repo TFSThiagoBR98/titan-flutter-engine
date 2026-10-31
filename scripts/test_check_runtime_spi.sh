@@ -53,6 +53,7 @@ ninja_pid_log="$temporary_directory/ninja-pids.log"
 ninja_environment="$temporary_directory/ninja-environment.log"
 runner_log="$temporary_directory/runner.log"
 dart_runner_log="$temporary_directory/dart-runner.log"
+dart_scene_corpus_log="$temporary_directory/dart-scene-corpus.log"
 rust_conformance_log="$temporary_directory/rust-conformance.log"
 rust_conformance_cargo_log="$temporary_directory/rust-conformance-cargo.log"
 inventory_log="$temporary_directory/inventory.log"
@@ -79,6 +80,10 @@ mkdir -p "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug"
 : > "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/libflutter_engine_core.a"
 mkdir -p "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/gen/flutter/shell/platform/embedder/assets"
 : > "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/icudtl.dat"
+mkdir -p "$TITAN_WORK_DIR/flutter/engine/src/flutter/runtime_spi/testing/scene_corpus"
+for program_number in $(seq 1 60); do
+  printf 'program-%02d\n' "$program_number"
+done > "$TITAN_WORK_DIR/flutter/engine/src/flutter/runtime_spi/testing/scene_corpus/programs.txt"
 cat > "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/flutter_engine_core_smoke" <<'SMOKE_EOF'
 #!/usr/bin/env bash
 printf 'smoke\n' >> "$ORDER_LOG"
@@ -99,7 +104,18 @@ cat > "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/runtime_spi_unittests" 
 #!/usr/bin/env bash
 set -euo pipefail
 
-printf '%s\n' "$@" > "$RUST_CONFORMANCE_LOG"
+printf '%s\n' "$@" >> "$RUST_CONFORMANCE_LOG"
+if [[ " $* " == *' --gtest_filter=SpiSceneCorpus.* '* ]]; then
+  printf 'scene-corpus-rust\n' >> "$ORDER_LOG"
+  if ((FAKE_SCENE_RUST_STATUS != 0)); then
+    exit "$FAKE_SCENE_RUST_STATUS"
+  fi
+  while IFS= read -r program; do
+    printf 'scene corpus: %s ok\n' "$program"
+  done < "$TITAN_WORK_DIR/flutter/engine/src/flutter/runtime_spi/testing/scene_corpus/programs.txt"
+  printf '[  PASSED  ] 1 test.\n'
+  exit 0
+fi
 printf 'FLUTTER_SPI_CONFORMANCE_RUNTIME=%s\n' \
   "${FLUTTER_SPI_CONFORMANCE_RUNTIME:-}" >> "$RUST_CONFORMANCE_LOG"
 printf 'rust-conformance\n' >> "$ORDER_LOG"
@@ -111,6 +127,21 @@ printf '[  SKIPPED ] 9 tests, listed below:\n'
 exit "${FAKE_RUST_CONFORMANCE_STATUS:-0}"
 RUNTIME_SPI_EOF
 chmod +x "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/runtime_spi_unittests"
+cat > "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/shell_unittests" <<'SHELL_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$@" > "$DART_SCENE_CORPUS_LOG"
+printf 'scene-corpus-dart\n' >> "$ORDER_LOG"
+if ((FAKE_SCENE_DART_STATUS != 0)); then
+  exit "$FAKE_SCENE_DART_STATUS"
+fi
+while IFS= read -r program; do
+  printf 'scene corpus: %s ok\n' "$program"
+done < "$TITAN_WORK_DIR/flutter/engine/src/flutter/runtime_spi/testing/scene_corpus/programs.txt"
+printf '[  PASSED  ] 1 test.\n'
+SHELL_EOF
+chmod +x "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/shell_unittests"
 : > "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/playground.shaderbundle"
 printf '%s\n' "$FAKE_ARGS_GN" > \
   "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/args.gn"
@@ -217,7 +248,12 @@ set -euo pipefail
 printf '%s\n' "$@" >> "$CARGO_LOG"
 if [[ " $* " == *' xtask conformance-report '* ]]; then
   printf 'conformance-report\n' >> "$ORDER_LOG"
-  printf 'flutter-rs conformance: api 0.00%%, tests 0.00%%, spi 28/37\n'
+  printf 'flutter-rs conformance: api 0.00%%, tests 0.00%%, spi 28/37 corpus 60/60\n'
+  exit 0
+fi
+if [[ " $* " == *' -p flutter-rs-scene-corpus '* ]]; then
+  mkdir -p "$CARGO_TARGET_DIR/debug"
+  : > "$CARGO_TARGET_DIR/debug/libflutter_rs_scene_corpus.so"
   exit 0
 fi
 if [[ " $* " == *' test '* && " $* " == *' --ignored '* ]]; then
@@ -288,6 +324,7 @@ run_check() {
   NINJA_ENVIRONMENT="$ninja_environment" \
   RUNNER_LOG="$runner_log" \
   DART_RUNNER_LOG="$dart_runner_log" \
+  DART_SCENE_CORPUS_LOG="$dart_scene_corpus_log" \
   RUST_CONFORMANCE_LOG="$rust_conformance_log" \
   CARGO_LOG="$rust_conformance_cargo_log" \
   INVENTORY_LOG="$inventory_log" \
@@ -301,6 +338,8 @@ run_check() {
   FAKE_RUST_UNEXPECTED="${FAKE_RUST_UNEXPECTED:-0}" \
   FAKE_RUST_CONFORMANCE_STATUS="${FAKE_RUST_CONFORMANCE_STATUS:-0}" \
   FAKE_RUST_CONFORMANCE_FAILED="${FAKE_RUST_CONFORMANCE_FAILED:-0}" \
+  FAKE_SCENE_DART_STATUS="${FAKE_SCENE_DART_STATUS:-0}" \
+  FAKE_SCENE_RUST_STATUS="${FAKE_SCENE_RUST_STATUS:-0}" \
   FAKE_CONFORMANCE_BUILD_STATUS="${FAKE_CONFORMANCE_BUILD_STATUS:-0}" \
   FAKE_NO_UNIT_BUILD_STATUS="${FAKE_NO_UNIT_BUILD_STATUS:-0}" \
   FAKE_ARGS_GN="${FAKE_ARGS_GN:-enable_unittests = true}" \
@@ -338,7 +377,7 @@ else
   fail 'the complete fake check should pass'
 fi
 
-[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner rust-conformance rust-engine-tests inventory conformance-report smoke rust triangle ' ]] || \
+[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner rust-conformance scene-corpus-dart scene-corpus-rust rust-engine-tests inventory conformance-report smoke rust triangle ' ]] || \
   fail 'steps did not run in build, ninja, runner order'
 assert_contains "$build_log" '--unittests' 'build arguments'
 assert_contains "$build_log" '--gn-only' 'build arguments'
@@ -371,15 +410,23 @@ assert_contains "$output_log" 'core static rust: ok' 'core static rust summary'
 assert_contains "$output_log" 'core gpu triangle: ok' 'core gpu triangle summary'
 assert_contains "$output_log" 'spi conformance rust: 28 passed, 9 skipped' \
   'Rust SPI conformance summary'
+assert_contains "$output_log" 'scene corpus dart: 60/60' \
+  'Dart scene corpus summary'
+assert_contains "$output_log" 'scene corpus rust: 60/60' \
+  'Rust scene corpus summary'
 assert_contains "$output_log" 'flutter-rs engine tests: 13 passed' \
   'Flutter Rust engine test summary'
-assert_contains "$output_log" 'flutter-rs conformance: api 0.00%, tests 0.00%, spi 28/37' \
+assert_contains "$output_log" 'flutter-rs conformance: api 0.00%, tests 0.00%, spi 28/37 corpus 60/60' \
   'flutter-rs conformance summary'
 assert_contains "$inventory_log" '--engine-src' 'Dart inventory arguments'
 assert_contains "$inventory_log" '--framework-src' 'Dart inventory arguments'
 assert_contains "$inventory_log" '--check' 'Dart inventory arguments'
 assert_contains "$rust_conformance_log" '--gtest_filter=SpiConformance.*' \
   'Rust SPI conformance filter'
+assert_contains "$dart_scene_corpus_log" '--gtest_filter=SceneCorpusDart.*' \
+  'Dart scene corpus filter'
+assert_contains "$rust_conformance_log" '--gtest_filter=SpiSceneCorpus.*' \
+  'Rust scene corpus filter'
 assert_matches "$rust_conformance_log" \
   'FLUTTER_SPI_CONFORMANCE_RUNTIME=.*/libflutter_rs_conformance\.so$' \
   'Rust SPI conformance runtime path'
@@ -390,7 +437,31 @@ assert_contains "$rust_conformance_cargo_log" 'conformance-report' \
   'Flutter Dart conformance cargo command'
 assert_contains "$rust_conformance_cargo_log" '--spi-log' \
   'Flutter Dart conformance cargo arguments'
+assert_contains "$rust_conformance_cargo_log" '--corpus-log' \
+  'Flutter Dart conformance corpus arguments'
 cp "$output_log" "$baseline_output_log"
+
+rm -f "$runner_log" "$dart_runner_log" "$rust_conformance_log" "$rust_conformance_cargo_log" \
+  "$dart_scene_corpus_log" "$order_log"
+if FAKE_SCENE_DART_STATUS=17 run_check >"$output_log" 2>&1; then
+  fail 'Dart scene corpus failure should fail the check'
+else
+  status=$?
+fi
+[[ "$status" -eq 2 ]] || fail "Dart scene corpus failure returned $status instead of 2"
+assert_contains "$output_log" 'scene corpus dart failed' \
+  'Dart scene corpus failure diagnostic'
+
+rm -f "$runner_log" "$dart_runner_log" "$rust_conformance_log" "$rust_conformance_cargo_log" \
+  "$dart_scene_corpus_log" "$order_log"
+if FAKE_SCENE_RUST_STATUS=17 run_check >"$output_log" 2>&1; then
+  fail 'Rust scene corpus failure should fail the check'
+else
+  status=$?
+fi
+[[ "$status" -eq 2 ]] || fail "Rust scene corpus failure returned $status instead of 2"
+assert_contains "$output_log" 'scene corpus rust failed' \
+  'Rust scene corpus failure diagnostic'
 
 rm -f "$runner_log" "$dart_runner_log" "$order_log"
 if FAKE_STATIC_EXTRA=1 run_check >"$output_log" 2>&1; then
@@ -498,7 +569,7 @@ assert_contains "$output_log" 'unit tests are disabled in' 'disabled unit test d
 
 rm -f "$runner_log" "$dart_runner_log" "$order_log"
 FAKE_ARGS_GN='# default is enabled' run_check >"$output_log" 2>&1
-[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner rust-conformance rust-engine-tests inventory conformance-report smoke rust triangle ' ]] || \
+[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner rust-conformance scene-corpus-dart scene-corpus-rust rust-engine-tests inventory conformance-report smoke rust triangle ' ]] || \
   fail 'steps did not continue when enable_unittests is absent'
 assert_contains "$output_log" 'tests: ok' 'missing unit test setting summary'
 
@@ -554,6 +625,10 @@ run_check --skip-tests >"$output_log" 2>&1
 [[ ! -e "$rust_conformance_log" ]] || fail 'Rust conformance ran with --skip-tests'
 assert_contains "$output_log" 'spi conformance rust: skipped (tests skipped)' \
   'Rust SPI conformance skip-tests diagnostic'
+assert_contains "$output_log" 'scene corpus dart: skipped (tests skipped)' \
+  'Dart scene corpus skip-tests diagnostic'
+assert_contains "$output_log" 'scene corpus rust: skipped (tests skipped)' \
+  'Rust scene corpus skip-tests diagnostic'
 assert_not_exact_line "$output_log" 'tests: ok' 'skip-tests summary'
 
 lock_directory="$work_directory/flutter/engine/src/out/host_debug"

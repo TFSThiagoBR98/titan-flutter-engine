@@ -50,6 +50,9 @@ engine_source="$TITAN_WORK_DIR/flutter/engine/src"
 output_directory="$engine_source/out/host_debug"
 no_unittests_output_directory="$engine_source/out/host_debug_no_unittests"
 args_file="$output_directory/args.gn"
+shell_unittests="$output_directory/shell_unittests"
+scene_corpus_directory="$engine_source/flutter/runtime_spi/testing/scene_corpus"
+scene_corpus_programs="$scene_corpus_directory/programs.txt"
 core_smoke="$output_directory/flutter_engine_core_smoke"
 core_gpu_triangle="$output_directory/flutter_engine_core_gpu_triangle"
 core_library="$output_directory/libflutter_engine_core.so"
@@ -232,6 +235,93 @@ run_conformance_rust() {
     "$passed_count" "$skipped_count"
 }
 
+scene_corpus_program_count() {
+  awk 'NF { count++ } END { print count + 0 }' "$scene_corpus_programs"
+}
+
+run_scene_corpus_dart() {
+  if ((skip_tests)); then
+    printf 'scene corpus dart: skipped (tests skipped)\n'
+    return 0
+  fi
+
+  local scene_corpus_log="$output_directory/scene-corpus-dart.log"
+  local test_status=0
+  local expected_count
+  local passed_count
+  [[ -x "$shell_unittests" ]] || die "shell unit tests executable is missing: $shell_unittests"
+  [[ -f "$scene_corpus_programs" ]] || die "scene corpus programs file is missing: $scene_corpus_programs"
+  expected_count=$(scene_corpus_program_count)
+  if (
+    cd "$engine_source"
+    FLUTTER_SCENE_CORPUS_DIR="$scene_corpus_directory" \
+      "$shell_unittests" '--gtest_filter=SceneCorpusDart.*'
+  ) >"$scene_corpus_log" 2>&1; then
+    :
+  else
+    test_status=$?
+  fi
+  passed_count=$(grep -cE '^scene corpus: .+ ok$' "$scene_corpus_log" || true)
+  printf 'scene corpus dart: %s/%s\n' "$passed_count" "$expected_count"
+  if ((test_status != 0)) || grep -Fq '[  FAILED  ]' "$scene_corpus_log" ||
+    ((passed_count != expected_count)); then
+    die 'scene corpus dart failed'
+  fi
+}
+
+run_scene_corpus_rust() {
+  if ((skip_tests)); then
+    printf 'scene corpus rust: skipped (tests skipped)\n'
+    return 0
+  fi
+
+  local flutter_rs_directory=${TITAN_FLUTTER_RS_DIR:-$repository_root/../../flutter-rs}
+  if [[ ! -f "$flutter_rs_directory/Cargo.toml" ]]; then
+    printf 'scene corpus rust: skipped (flutter-rs not found)\n'
+    return 0
+  fi
+  if ! command -v cargo >/dev/null 2>&1; then
+    printf 'scene corpus rust: skipped (cargo not installed)\n'
+    return 0
+  fi
+
+  local rust_target_directory="$output_directory/flutter-rs"
+  local runtime_library="$rust_target_directory/debug/libflutter_rs_scene_corpus.so"
+  local scene_corpus_log="$output_directory/scene-corpus-rust.log"
+  local test_status=0
+  local expected_count
+  local passed_count
+  if ! (
+    CARGO_TARGET_DIR="$rust_target_directory" \
+      cargo build --locked --offline \
+        --manifest-path "$flutter_rs_directory/Cargo.toml" \
+        -p flutter-rs-scene-corpus
+  ); then
+    die 'scene corpus rust build failed'
+  fi
+  [[ -f "$runtime_library" ]] || die "Rust scene corpus runtime is missing: $runtime_library"
+  [[ -f "$scene_corpus_programs" ]] || die "scene corpus programs file is missing: $scene_corpus_programs"
+  expected_count=$(scene_corpus_program_count)
+  printf 'scene corpus programs: %s\n' "$scene_corpus_programs" >"$scene_corpus_log"
+  if (
+    cd "$engine_source"
+    FLUTTER_SCENE_CORPUS_DIR="$scene_corpus_directory" \
+      FLUTTER_SPI_SCENE_CORPUS_RUNTIME="$runtime_library" \
+      "$output_directory/runtime_spi_unittests" \
+      '--gtest_filter=SpiSceneCorpus.*'
+  ) >>"$scene_corpus_log" 2>&1; then
+    :
+  else
+    test_status=$?
+  fi
+  passed_count=$(grep -cE '^scene corpus: .+ ok$' "$scene_corpus_log" || true)
+  printf 'scene corpus rust: %s/%s\n' "$passed_count" "$expected_count"
+  if ((test_status != 0)) || grep -Fq '[  FAILED  ]' "$scene_corpus_log" ||
+    ((passed_count != expected_count)); then
+    die 'scene corpus rust failed'
+  fi
+}
+
 run_flutter_rs_engine_tests() {
   if ((skip_tests)); then
     printf 'flutter-rs engine tests: skipped (tests skipped)\n'
@@ -306,6 +396,7 @@ run_conformance_report() {
     cd "$flutter_rs_directory"
     cargo xtask conformance-report \
       --spi-log "$output_directory/spi-conformance-rust.log" \
+      --corpus-log "$output_directory/scene-corpus-rust.log" \
       --check
   ); then
     die 'flutter-rs conformance report check failed'
@@ -481,6 +572,8 @@ run_build_without_unittests
 run_ninja
 run_tests
 run_conformance_rust
+run_scene_corpus_dart
+run_scene_corpus_rust
 run_flutter_rs_engine_tests
 run_conformance_report
 run_core_smoke
