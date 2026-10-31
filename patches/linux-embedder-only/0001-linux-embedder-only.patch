@@ -17,20 +17,24 @@ index a6c8100d434..a221aa445a2 100644
    # to configure warnings.
    is_clang = current_os == "mac" || current_os == "ios" ||
 diff --git a/engine/src/flutter/shell/platform/linux/BUILD.gn b/engine/src/flutter/shell/platform/linux/BUILD.gn
-index 8f9e79fd120..a2bcd4035d7 100644
+index 87d6ecefcc0..8680d4b614b 100644
 --- a/engine/src/flutter/shell/platform/linux/BUILD.gn
 +++ b/engine/src/flutter/shell/platform/linux/BUILD.gn
-@@ -9,10 +9,10 @@ import("//flutter/shell/platform/glfw/config.gni")
+@@ -10,11 +10,13 @@ import("//flutter/testing/symbols/check_forbidden_native_symbols.gni")
  import("//flutter/testing/testing.gni")
  
  group("linux") {
 -  deps = [
+-    ":check_native_symbols",
 -    ":flutter_linux_gtk",
 -    ":publish_headers_linux",
 -  ]
 +  deps = [ ":publish_headers_linux" ]
 +  if (build_linux_gtk_shell) {
-+    deps += [ ":flutter_linux_gtk" ]
++    deps += [
++      ":check_native_symbols",
++      ":flutter_linux_gtk",
++    ]
 +  }
    if (build_glfw_shell) {
      deps += [
