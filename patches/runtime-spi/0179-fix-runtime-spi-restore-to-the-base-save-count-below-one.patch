@@ -1,0 +1,41 @@
+# Why: flutter-rs R1b; upstream restores to 1 and the dart test expects it.
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+index 6d44aeae9c5..f89d3f9ed2a 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas.cc
+@@ -906,7 +906,7 @@ FlutterSpiResult CanvasRestoreToCount(FlutterSpiPictureRecorder* recorder,
+     return kFlutterSpiInvalidHandle;
+   }
+   if (count < 1) {
+-    return kFlutterSpiInvalidArgument;
++    count = 1;
+   }
+   recorder_value->builder()->RestoreToCount(count);
+   return kFlutterSpiOk;
+diff --git a/engine/src/flutter/runtime_spi/scene/spi_canvas_parity_unittests.cc b/engine/src/flutter/runtime_spi/scene/spi_canvas_parity_unittests.cc
+index 78cd7e044d3..7324318da42 100644
+--- a/engine/src/flutter/runtime_spi/scene/spi_canvas_parity_unittests.cc
++++ b/engine/src/flutter/runtime_spi/scene/spi_canvas_parity_unittests.cc
+@@ -400,6 +400,22 @@ TEST_F(SpiCanvasTest, SaveCountMatchesBuilder) {
+   EXPECT_EQ(api()->recorder_release(recorder), kFlutterSpiOk);
+ }
+ 
++TEST_F(SpiCanvasTest, RestoreToCountBelowOneResetsStack) {
++  FlutterSpiPictureRecorder* recorder = nullptr;
++  ASSERT_EQ(api()->recorder_create(engine(), nullptr, &recorder), kFlutterSpiOk);
++  for (int i = 0; i < 5; ++i) {
++    ASSERT_EQ(api()->canvas_save(recorder), kFlutterSpiOk);
++  }
++
++  int32_t count = 0;
++  ASSERT_EQ(api()->canvas_get_save_count(recorder, &count), kFlutterSpiOk);
++  EXPECT_EQ(count, 6);
++  ASSERT_EQ(api()->canvas_restore_to_count(recorder, 0), kFlutterSpiOk);
++  ASSERT_EQ(api()->canvas_get_save_count(recorder, &count), kFlutterSpiOk);
++  EXPECT_EQ(count, 1);
++  EXPECT_EQ(api()->recorder_release(recorder), kFlutterSpiOk);
++}
++
+ TEST(SpiPaintEffects, SaveLayerWithImageFilterMatchesDl) {
+   FlutterSpiEngine engine = {};
+   const FlutterSpiSceneApi* api = SpiSceneApi();

@@ -1,0 +1,208 @@
+# Why: flutter-rs R1b.
+diff --git a/engine/src/flutter/runtime_spi/BUILD.gn b/engine/src/flutter/runtime_spi/BUILD.gn
+index 29054717f66..292df9ac1a7 100644
+--- a/engine/src/flutter/runtime_spi/BUILD.gn
++++ b/engine/src/flutter/runtime_spi/BUILD.gn
+@@ -278,6 +278,7 @@ if (enable_unittests) {
+       "gpu/spi_gpu_render_pipeline_unittests.cc",
+       "gpu/spi_gpu_shader_library_unittests.cc",
+       "spi_conformance_unittests.cc",
++      "spi_scene_corpus_unittests.cc",
+       "scene/spi_handle_table_unittests.cc",
+       "scene/spi_canvas_parity_unittests.cc",
+       "scene/spi_path_unittests.cc",
+diff --git a/engine/src/flutter/runtime_spi/spi_scene_corpus_unittests.cc b/engine/src/flutter/runtime_spi/spi_scene_corpus_unittests.cc
+new file mode 100644
+index 00000000000..f41e5034221
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/spi_scene_corpus_unittests.cc
+@@ -0,0 +1,189 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include <dlfcn.h>
++#include <chrono>
++#include <cstdlib>
++#include <fstream>
++#include <functional>
++#include <future>
++#include <iostream>
++#include <memory>
++#include <string>
++#include <thread>
++#include <vector>
++
++#include "flutter/flow/layers/layer_tree.h"
++#include "flutter/fml/task_runner.h"
++#include "flutter/runtime_spi/include/flutter_runtime_spi.h"
++#include "flutter/runtime_spi/scene/spi_scene_trace.h"
++#include "flutter/runtime_spi/spi_runtime_backend_factory.h"
++#include "flutter/runtime_spi/testing/test_icu.h"
++#include "flutter/shell/common/rasterizer.h"
++#include "flutter/shell/common/run_configuration.h"
++#include "flutter/shell/common/shell.h"
++#include "flutter/shell/common/shell_test.h"
++#include "flutter/shell/common/shell_test_platform_view.h"
++#include "flutter/testing/testing.h"
++
++namespace flutter::testing {
++namespace {
++
++constexpr double kCorpusWidth = 200.0;
++constexpr double kCorpusHeight = 150.0;
++constexpr int64_t kImplicitViewId = 0;
++
++using SceneCorpusRuntimeTableFunction = bool (*)(const char* program,
++                                                 FlutterSpiRuntimeTable* out);
++
++struct SceneCorpusRuntime {
++  void* library = nullptr;
++  SceneCorpusRuntimeTableFunction table = nullptr;
++  std::string error;
++};
++
++SceneCorpusRuntime& GetSceneCorpusRuntime() {
++  static SceneCorpusRuntime runtime = [] {
++    SceneCorpusRuntime result;
++    const char* path = std::getenv("FLUTTER_SPI_SCENE_CORPUS_RUNTIME");
++    result.library = ::dlopen(path, RTLD_NOW | RTLD_LOCAL);
++    if (result.library == nullptr) {
++      const char* error = ::dlerror();
++      result.error = error == nullptr ? "dlopen failed" : error;
++      return result;
++    }
++    result.table = reinterpret_cast<SceneCorpusRuntimeTableFunction>(
++        ::dlsym(result.library, "flutter_scene_corpus_runtime_table"));
++    const char* error = ::dlerror();
++    if (result.table == nullptr) {
++      result.error = error == nullptr ? "symbol not found" : error;
++    }
++    return result;
++  }();
++  return runtime;
++}
++
++void RunOnTaskRunner(const fml::RefPtr<fml::TaskRunner>& task_runner,
++                     const std::function<void()>& callback) {
++  std::promise<void> completed;
++  std::future<void> completion = completed.get_future();
++  task_runner->PostTask([&completed, &callback]() {
++    callback();
++    completed.set_value();
++  });
++  completion.wait();
++}
++
++std::vector<std::string> ReadPrograms(const std::string& corpus_directory) {
++  std::ifstream input(corpus_directory + "/programs.txt");
++  std::vector<std::string> programs;
++  std::string program;
++  while (std::getline(input, program)) {
++    if (!program.empty()) {
++      programs.push_back(program);
++    }
++  }
++  return programs;
++}
++
++std::string ReadGolden(const std::string& corpus_directory,
++                       const std::string& program) {
++  std::ifstream input(corpus_directory + "/" + program + ".trace");
++  return std::string(std::istreambuf_iterator<char>(input),
++                     std::istreambuf_iterator<char>());
++}
++
++std::unique_ptr<Shell> CreateSceneCorpusShell(
++    const Settings& settings,
++    const TaskRunners& task_runners,
++    const FlutterSpiRuntimeTable& runtime_table) {
++  auto factory = std::make_shared<SpiRuntimeBackendFactory>(runtime_table);
++  return Shell::Create(
++      PlatformData(), task_runners, settings, ShellTestPlatformViewBuilder({}),
++      [](Shell& shell) { return std::make_unique<Rasterizer>(shell); },
++      std::move(factory));
++}
++
++class SpiSceneCorpus : public ShellTest {
++ protected:
++  void SetUp() override { InitializeIcuForTesting(); }
++};
++
++TEST_F(SpiSceneCorpus, MatchesGoldens) {
++  const char* corpus_directory = std::getenv("FLUTTER_SCENE_CORPUS_DIR");
++  if (corpus_directory == nullptr || corpus_directory[0] == '\0') {
++    GTEST_SKIP() << "FLUTTER_SCENE_CORPUS_DIR is not set";
++  }
++  const char* runtime_path = std::getenv("FLUTTER_SPI_SCENE_CORPUS_RUNTIME");
++  if (runtime_path == nullptr || runtime_path[0] == '\0') {
++    GTEST_SKIP() << "FLUTTER_SPI_SCENE_CORPUS_RUNTIME is not set";
++  }
++
++  SceneCorpusRuntime& runtime = GetSceneCorpusRuntime();
++  if (!runtime.error.empty()) {
++    GTEST_FAIL() << runtime.error;
++    return;
++  }
++
++  const std::string directory(corpus_directory);
++  const std::vector<std::string> programs = ReadPrograms(directory);
++  ASSERT_FALSE(programs.empty());
++  for (const std::string& program : programs) {
++    FlutterSpiRuntimeTable runtime_table = {};
++    if (!runtime.table(program.c_str(), &runtime_table)) {
++      ADD_FAILURE() << "program missing: " << program;
++      continue;
++    }
++
++    Settings settings = CreateSettingsForFixture();
++    settings.icu_data_path = IcuDataPathForTesting();
++    const TaskRunners task_runners = GetTaskRunnersForFixture();
++    std::unique_ptr<Shell> shell =
++        CreateSceneCorpusShell(settings, task_runners, runtime_table);
++    ASSERT_NE(shell, nullptr);
++    ASSERT_TRUE(shell->IsSetup());
++    ASSERT_EQ(shell->GetDartVM(), nullptr);
++
++    PlatformViewNotifyCreated(shell.get());
++    RunEngine(shell.get(), RunConfiguration::InferFromSettings(settings));
++
++    ViewportMetrics viewport_metrics;
++    viewport_metrics.device_pixel_ratio = 1.0;
++    viewport_metrics.physical_width = kCorpusWidth;
++    viewport_metrics.physical_height = kCorpusHeight;
++    std::string actual;
++    bool has_layer_tree = false;
++    const fml::TimePoint deadline =
++        fml::TimePoint::Now() + fml::TimeDelta::FromSeconds(2);
++    while (!has_layer_tree && fml::TimePoint::Now() < deadline) {
++      PumpOneFrameFromRuntime(shell.get(), kImplicitViewId, viewport_metrics);
++      RunOnTaskRunner(shell->GetTaskRunners().GetRasterTaskRunner(), [&] {
++        const LayerTree* layer_tree =
++            shell->GetRasterizer()->GetLastLayerTree(kImplicitViewId);
++        if (layer_tree != nullptr) {
++          actual = SceneTrace(*layer_tree);
++          has_layer_tree = true;
++        }
++      });
++      if (!has_layer_tree) {
++        std::this_thread::sleep_for(std::chrono::milliseconds(50));
++      }
++    }
++    ASSERT_TRUE(has_layer_tree) << "No layer tree was produced for " << program;
++
++    const std::string expected = ReadGolden(directory, program);
++    if (expected != actual) {
++      ADD_FAILURE() << program << " expected:\n"
++                    << expected << "obtained:\n"
++                    << actual;
++    } else {
++      std::cout << "scene corpus: " << program << " ok" << std::endl;
++    }
++
++    DestroyShell(std::move(shell), task_runners);
++  }
++}
++
++}  // namespace
++}  // namespace flutter::testing

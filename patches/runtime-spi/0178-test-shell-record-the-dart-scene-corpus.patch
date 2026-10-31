@@ -1,0 +1,1637 @@
+# Why: flutter-rs R1b; dart:ui programs are the oracle for the rust port.
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_abi_sequence_matches_display_list_builder.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_abi_sequence_matches_display_list_builder.trace
+new file mode 100644
+index 00000000000..2fa96e8e55d
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_abi_sequence_matches_display_list_builder.trace
+@@ -0,0 +1,7 @@
++scene 200x150
++container
++  picture 0 0
++    op save
++    op setColor
++    drawRect 1 2 30 40
++    op restore
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_clip_rsuperellipse.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_clip_rsuperellipse.trace
+new file mode 100644
+index 00000000000..57f4435aa18
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_clip_rsuperellipse.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_draw_rsuperellipse.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_draw_rsuperellipse.trace
+new file mode 100644
+index 00000000000..807439251d5
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_draw_rsuperellipse.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    op drawRSuperellipse
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_dynamic_blur_follows_draw_operation.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_dynamic_blur_follows_draw_operation.trace
+new file mode 100644
+index 00000000000..fada2e0ebcc
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_dynamic_blur_follows_draw_operation.trace
+@@ -0,0 +1,7 @@
++scene 200x150
++container
++  picture 0 0
++    op setImageFilter
++    drawRect 1 2 30 40
++    op setImageFilter
++    op drawPaint
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_finish_consumes_recorder.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_finish_consumes_recorder.trace
+new file mode 100644
+index 00000000000..57f4435aa18
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_finish_consumes_recorder.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_get_transform_after_nested_saves.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_get_transform_after_nested_saves.trace
+new file mode 100644
+index 00000000000..2fa96e8e55d
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_get_transform_after_nested_saves.trace
+@@ -0,0 +1,7 @@
++scene 200x150
++container
++  picture 0 0
++    op save
++    op setColor
++    drawRect 1 2 30 40
++    op restore
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_invalid_effect_handle_is_rejected.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_invalid_effect_handle_is_rejected.trace
+new file mode 100644
+index 00000000000..57f4435aa18
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_invalid_effect_handle_is_rejected.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_local_and_destination_clip_bounds.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_local_and_destination_clip_bounds.trace
+new file mode 100644
+index 00000000000..b4ff7ae0f36
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_local_and_destination_clip_bounds.trace
+@@ -0,0 +1,8 @@
++scene 200x150
++container
++  picture 0 0
++    op save
++    op setColor
++    drawRect -9 -18 20 20
++    drawRect 1 2 30 40
++    op restore
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_non_finite_geometry_is_rejected.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_non_finite_geometry_is_rejected.trace
+new file mode 100644
+index 00000000000..57f4435aa18
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_non_finite_geometry_is_rejected.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_objects_can_be_created_without_an_engine.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_objects_can_be_created_without_an_engine.trace
+new file mode 100644
+index 00000000000..ae1ed451ec4
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_objects_can_be_created_without_an_engine.trace
+@@ -0,0 +1,4 @@
++scene 200x150
++container
++  picture 0 0
++    op drawDisplayList
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_picture_outlives_its_handle.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_picture_outlives_its_handle.trace
+new file mode 100644
+index 00000000000..ae1ed451ec4
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_picture_outlives_its_handle.trace
+@@ -0,0 +1,4 @@
++scene 200x150
++container
++  picture 0 0
++    op drawDisplayList
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_released_shader_stays_in_picture.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_released_shader_stays_in_picture.trace
+new file mode 100644
+index 00000000000..fb6bceb3a21
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_released_shader_stays_in_picture.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColorSource
++    drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_save_count_matches_builder.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_save_count_matches_builder.trace
+new file mode 100644
+index 00000000000..57f4435aa18
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_save_count_matches_builder.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_save_layer_with_image_filter.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_save_layer_with_image_filter.trace
+new file mode 100644
+index 00000000000..a1c6e3d57bd
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/canvas_save_layer_with_image_filter.trace
+@@ -0,0 +1,6 @@
++scene 200x150
++container
++  picture 0 0
++    op setImageFilter
++    op saveLayer
++    op restore
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_backdrop_filter.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_backdrop_filter.trace
+new file mode 100644
+index 00000000000..0653e75793d
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_backdrop_filter.trace
+@@ -0,0 +1,6 @@
++scene 200x150
++container
++  backdrop_filter type 0 sigma 2 3 tile 2 blend 14 id 42
++    picture 1 2
++      op setColor
++      drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_clip_rsuperellipse.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_clip_rsuperellipse.trace
+new file mode 100644
+index 00000000000..89bb2b82251
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_clip_rsuperellipse.trace
+@@ -0,0 +1,6 @@
++scene 200x150
++container
++  clip_rsuperellipse 2 3 50 60 4 5 6 7 8 9 10 11 2
++    picture 1 2
++      op setColor
++      drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_color_filter.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_color_filter.trace
+new file mode 100644
+index 00000000000..87223e75ec2
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_color_filter.trace
+@@ -0,0 +1,6 @@
++scene 200x150
++container
++  color_filter type 0 color 4281552230 mode 14
++    picture 1 2
++      op setColor
++      drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_image_filter.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_image_filter.trace
+new file mode 100644
+index 00000000000..d820cca54dc
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_image_filter.trace
+@@ -0,0 +1,6 @@
++scene 200x150
++container
++  image_filter type 0 sigma 2 3 tile 3 offset 4 5
++    picture 1 2
++      op setColor
++      drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_performance_overlay.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_performance_overlay.trace
+new file mode 100644
+index 00000000000..81dd2293a1a
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_performance_overlay.trace
+@@ -0,0 +1,6 @@
++scene 200x150
++container
++  performance_overlay options 5 bounds 1 2 70 80
++  picture 1 2
++    op setColor
++    drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_platform_view.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_platform_view.trace
+new file mode 100644
+index 00000000000..968d87e1ea1
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_platform_view.trace
+@@ -0,0 +1,6 @@
++scene 200x150
++container
++  platform_view offset 6 7 size 31 32 id 43
++  picture 1 2
++    op setColor
++    drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_shader_mask.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_shader_mask.trace
+new file mode 100644
+index 00000000000..9550af36261
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_shader_mask.trace
+@@ -0,0 +1,6 @@
++scene 200x150
++container
++  shader_mask type 1 start 1 2 end 30 40 tile 0 rect 3 4 50 60 blend 24
++    picture 1 2
++      op setColor
++      drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_texture.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_texture.trace
+new file mode 100644
+index 00000000000..2f7600f829a
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/layers_texture.trace
+@@ -0,0 +1,6 @@
++scene 200x150
++container
++  texture offset 4 5 size 30 40 id 42 freeze 1 sampling 2
++  picture 1 2
++    op setColor
++    drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_add_arc.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_add_arc.trace
+new file mode 100644
+index 00000000000..d3136bfaf28
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_add_arc.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    op drawPath
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_add_path_extend_with_matrix.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_add_path_extend_with_matrix.trace
+new file mode 100644
+index 00000000000..d3136bfaf28
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_add_path_extend_with_matrix.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    op drawPath
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_add_polygon.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_add_polygon.trace
+new file mode 100644
+index 00000000000..d3136bfaf28
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_add_polygon.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    op drawPath
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_add_rsuperellipse.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_add_rsuperellipse.trace
+new file mode 100644
+index 00000000000..d3136bfaf28
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_add_rsuperellipse.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    op drawPath
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_arc_to.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_arc_to.trace
+new file mode 100644
+index 00000000000..d3136bfaf28
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_arc_to.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    op drawPath
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_arc_to_point.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_arc_to_point.trace
+new file mode 100644
+index 00000000000..d3136bfaf28
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_arc_to_point.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    op drawPath
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_bounds.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_bounds.trace
+new file mode 100644
+index 00000000000..57f4435aa18
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_bounds.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_contains.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_contains.trace
+new file mode 100644
+index 00000000000..57f4435aa18
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_contains.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_copy.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_copy.trace
+new file mode 100644
+index 00000000000..57f4435aa18
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_copy.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_get_fill_type.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_get_fill_type.trace
+new file mode 100644
+index 00000000000..57f4435aa18
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_get_fill_type.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_measure_create.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_measure_create.trace
+new file mode 100644
+index 00000000000..35d67271e65
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_measure_create.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    op drawLine
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_measure_get_length.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_measure_get_length.trace
+new file mode 100644
+index 00000000000..23217c62102
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_measure_get_length.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    drawRect 0 0 10 2
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_measure_get_pos_tan.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_measure_get_pos_tan.trace
+new file mode 100644
+index 00000000000..a33b7a335aa
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_measure_get_pos_tan.trace
+@@ -0,0 +1,6 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    drawCircle 1.2 1.6 2
++    op drawLine
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_measure_get_segment.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_measure_get_segment.trace
+new file mode 100644
+index 00000000000..35d67271e65
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_measure_get_segment.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    op drawLine
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_measure_is_closed.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_measure_is_closed.trace
+new file mode 100644
+index 00000000000..57f4435aa18
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_measure_is_closed.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_measure_next_contour.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_measure_next_contour.trace
+new file mode 100644
+index 00000000000..a20612b8902
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_measure_next_contour.trace
+@@ -0,0 +1,6 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    op drawPath
++    op drawLine
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_measure_set_path.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_measure_set_path.trace
+new file mode 100644
+index 00000000000..35d67271e65
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_measure_set_path.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    op drawLine
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_op_failure_returns_no_handle.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_op_failure_returns_no_handle.trace
+new file mode 100644
+index 00000000000..31bb103ffa0
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_op_failure_returns_no_handle.trace
+@@ -0,0 +1,3 @@
++scene 200x150
++container
++  picture 0 0
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_op_union.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_op_union.trace
+new file mode 100644
+index 00000000000..d3136bfaf28
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_op_union.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    op drawPath
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_relative_arc_to_point.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_relative_arc_to_point.trace
+new file mode 100644
+index 00000000000..d3136bfaf28
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_relative_arc_to_point.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    op drawPath
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_relative_conic_to.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_relative_conic_to.trace
+new file mode 100644
+index 00000000000..d3136bfaf28
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_relative_conic_to.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    op drawPath
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_relative_cubic_to.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_relative_cubic_to.trace
+new file mode 100644
+index 00000000000..d3136bfaf28
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_relative_cubic_to.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    op drawPath
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_relative_line_to.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_relative_line_to.trace
+new file mode 100644
+index 00000000000..35d67271e65
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_relative_line_to.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    op drawLine
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_relative_move_to.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_relative_move_to.trace
+new file mode 100644
+index 00000000000..e19cdefedfe
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_relative_move_to.trace
+@@ -0,0 +1,4 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_relative_quad_to.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_relative_quad_to.trace
+new file mode 100644
+index 00000000000..d3136bfaf28
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_relative_quad_to.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    op drawPath
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_reset.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_reset.trace
+new file mode 100644
+index 00000000000..e19cdefedfe
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_reset.trace
+@@ -0,0 +1,4 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_shift.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_shift.trace
+new file mode 100644
+index 00000000000..1a97668448b
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_shift.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    drawRect 6 8 35 46
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/path_transform.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_transform.trace
+new file mode 100644
+index 00000000000..f6efe3708c8
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/path_transform.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    drawRect 7 12 65 126
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/programs.txt b/engine/src/flutter/runtime_spi/testing/scene_corpus/programs.txt
+new file mode 100644
+index 00000000000..33b9979f361
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/programs.txt
+@@ -0,0 +1,60 @@
++path_relative_move_to
++path_relative_line_to
++path_relative_quad_to
++path_relative_conic_to
++path_relative_cubic_to
++path_arc_to
++path_arc_to_point
++path_relative_arc_to_point
++path_add_arc
++path_add_polygon
++path_add_rsuperellipse
++path_add_path_extend_with_matrix
++path_reset
++path_get_fill_type
++path_contains
++path_bounds
++path_copy
++path_shift
++path_transform
++path_op_union
++path_op_failure_returns_no_handle
++path_measure_create
++path_measure_set_path
++path_measure_get_length
++path_measure_get_pos_tan
++path_measure_get_segment
++path_measure_is_closed
++path_measure_next_contour
++canvas_objects_can_be_created_without_an_engine
++canvas_abi_sequence_matches_display_list_builder
++canvas_draw_rsuperellipse
++canvas_clip_rsuperellipse
++canvas_get_transform_after_nested_saves
++canvas_local_and_destination_clip_bounds
++canvas_dynamic_blur_follows_draw_operation
++canvas_finish_consumes_recorder
++canvas_non_finite_geometry_is_rejected
++canvas_picture_outlives_its_handle
++canvas_save_count_matches_builder
++canvas_save_layer_with_image_filter
++canvas_released_shader_stays_in_picture
++canvas_invalid_effect_handle_is_rejected
++scene_builder_pushes_match_direct_layer_tree
++scene_builder_pop_beyond_root_is_ignored
++scene_builder_build_closes_open_layers
++scene_builder_build_root_matches_build
++scene_builder_root_is_reusable_across_scenes
++scene_builder_root_outlives_builder_and_scenes
++scene_builder_invalid_root_arguments
++scene_builder_null_color_filter
++scene_builder_null_image_filter
++scene_builder_null_backdrop_filter
++layers_color_filter
++layers_image_filter
++layers_backdrop_filter
++layers_shader_mask
++layers_clip_rsuperellipse
++layers_texture
++layers_platform_view
++layers_performance_overlay
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_build_closes_open_layers.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_build_closes_open_layers.trace
+new file mode 100644
+index 00000000000..bdaf27d7093
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_build_closes_open_layers.trace
+@@ -0,0 +1,6 @@
++scene 200x150
++container
++  transform [1 0 0 0 0 1 0 0 0 0 1 0 7 8 0 1]
++    picture 1 2
++      op setColor
++      drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_build_root_matches_build.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_build_root_matches_build.trace
+new file mode 100644
+index 00000000000..ef0629d1059
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_build_root_matches_build.trace
+@@ -0,0 +1,7 @@
++scene 200x150
++container
++  transform [1 0 0 0 0 1 0 0 0 0 1 0 3 4 0 1]
++    opacity 128 5 6
++      picture 1 2
++        op setColor
++        drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_invalid_root_arguments.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_invalid_root_arguments.trace
+new file mode 100644
+index 00000000000..997ce3c2eb4
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_invalid_root_arguments.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 1 2
++    op setColor
++    drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_null_backdrop_filter.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_null_backdrop_filter.trace
+new file mode 100644
+index 00000000000..997ce3c2eb4
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_null_backdrop_filter.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 1 2
++    op setColor
++    drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_null_color_filter.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_null_color_filter.trace
+new file mode 100644
+index 00000000000..997ce3c2eb4
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_null_color_filter.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 1 2
++    op setColor
++    drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_null_image_filter.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_null_image_filter.trace
+new file mode 100644
+index 00000000000..997ce3c2eb4
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_null_image_filter.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 1 2
++    op setColor
++    drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_pop_beyond_root_is_ignored.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_pop_beyond_root_is_ignored.trace
+new file mode 100644
+index 00000000000..d1849482b42
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_pop_beyond_root_is_ignored.trace
+@@ -0,0 +1,2 @@
++scene 200x150
++container
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_pushes_match_direct_layer_tree.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_pushes_match_direct_layer_tree.trace
+new file mode 100644
+index 00000000000..0cc7be96931
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_pushes_match_direct_layer_tree.trace
+@@ -0,0 +1,10 @@
++scene 200x150
++container
++  transform [1 0 0 0 0 1 0 0 0 0 1 0 3 4 0 1]
++    clip_rect 0 1 60 70 2
++      clip_rrect 2 3 50 60 4 5 6 7 8 9 10 11 2
++        clip_path nonzero move 0 1 closedline 60 1line 60 70line 0 70line 0 1close 3
++          opacity 128 5 6
++            picture 1 2
++              op setColor
++              drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_root_is_reusable_across_scenes.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_root_is_reusable_across_scenes.trace
+new file mode 100644
+index 00000000000..ef0629d1059
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_root_is_reusable_across_scenes.trace
+@@ -0,0 +1,7 @@
++scene 200x150
++container
++  transform [1 0 0 0 0 1 0 0 0 0 1 0 3 4 0 1]
++    opacity 128 5 6
++      picture 1 2
++        op setColor
++        drawRect 1 2 30 40
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_root_outlives_builder_and_scenes.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_root_outlives_builder_and_scenes.trace
+new file mode 100644
+index 00000000000..30c69222196
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/scene_builder_root_outlives_builder_and_scenes.trace
+@@ -0,0 +1,4 @@
++scene 200x150
++container
++  transform [1 0 0 0 0 1 0 0 0 0 1 0 3 4 0 1]
++    opacity 128 5 6
+diff --git a/engine/src/flutter/shell/common/BUILD.gn b/engine/src/flutter/shell/common/BUILD.gn
+index 8f2f54c90fb..be8a4c66fef 100644
+--- a/engine/src/flutter/shell/common/BUILD.gn
++++ b/engine/src/flutter/shell/common/BUILD.gn
+@@ -398,6 +398,7 @@ if (enable_unittests) {
+       "pipeline_unittests.cc",
+       "rasterizer_unittests.cc",
+       "resource_cache_limit_calculator_unittests.cc",
++      "scene_corpus_unittests.cc",
+       "shell_unittests.cc",
+       "//flutter/runtime_spi/testing/test_icu.cc",
+       "switches_unittests.cc",
+@@ -415,6 +416,7 @@ if (enable_unittests) {
+       "//flutter/runtime_spi:image",
+       "//flutter/runtime_spi:c_test_runtime",
+       "//flutter/runtime_spi:runtime_spi_c_api",
++      "//flutter/runtime_spi:scene",
+       "//flutter/runtime_spi:spi_backend",
+       "//flutter/runtime_spi:text",
+       "//flutter/shell/common:base64",
+diff --git a/engine/src/flutter/shell/common/fixtures/scene_corpus.dart b/engine/src/flutter/shell/common/fixtures/scene_corpus.dart
+new file mode 100644
+index 00000000000..59ef67eca6f
+--- /dev/null
++++ b/engine/src/flutter/shell/common/fixtures/scene_corpus.dart
+@@ -0,0 +1,670 @@
++part of 'shell_test.dart';
++
++typedef _ScenePainter = void Function(Canvas canvas);
++typedef _SceneBuilderPainter = void Function(SceneBuilder builder, Picture picture);
++
++const Rect _sceneBounds = Rect.fromLTWH(0, 0, 200, 150);
++const Rect _testRect = Rect.fromLTRB(1, 2, 30, 40);
++final RSuperellipse _testRSuperellipse = RSuperellipse.fromLTRBAndCorners(
++  1,
++  2,
++  30,
++  40,
++  topLeft: Radius.elliptical(4, 5),
++  topRight: Radius.elliptical(6, 7),
++  bottomRight: Radius.elliptical(8, 9),
++  bottomLeft: Radius.elliptical(10, 11),
++);
++
++Paint _testPaint() => Paint()..color = const Color(0xFF1A334D);
++
++void _renderPicture(_ScenePainter painter) {
++  PlatformDispatcher.instance.onError = (Object error, StackTrace? stack) {
++    print('$error\n$stack');
++    return true;
++  };
++  PlatformDispatcher.instance.onBeginFrame = (_) {
++    final FlutterView view = PlatformDispatcher.instance.implicitView!;
++    final PictureRecorder recorder = PictureRecorder();
++    final Canvas canvas = Canvas(recorder, _sceneBounds);
++    painter(canvas);
++    final Picture picture = recorder.endRecording();
++    final SceneBuilder builder = SceneBuilder()..addPicture(Offset.zero, picture);
++    view.render(builder.build());
++  };
++}
++
++void _renderBuilder(_SceneBuilderPainter painter) {
++  PlatformDispatcher.instance.onError = (Object error, StackTrace? stack) {
++    print('$error\n$stack');
++    return true;
++  };
++  PlatformDispatcher.instance.onBeginFrame = (_) {
++    final FlutterView view = PlatformDispatcher.instance.implicitView!;
++    final PictureRecorder recorder = PictureRecorder();
++    final Canvas canvas = Canvas(recorder, _sceneBounds);
++    canvas.drawRect(_testRect, _testPaint());
++    final Picture picture = recorder.endRecording();
++    final SceneBuilder builder = SceneBuilder();
++    painter(builder, picture);
++    view.render(builder.build());
++  };
++}
++
++void _drawPath(Canvas canvas, Path path) {
++  canvas.drawPath(path, _testPaint());
++}
++
++Path _measuredPath() => Path()
++  ..moveTo(0, 0)
++  ..lineTo(3, 4)
++  ..close()
++  ..moveTo(10, 10)
++  ..lineTo(13, 14);
++
++void _drawMeasuredSegment(Canvas canvas, PathMetric metric, double start, double end) {
++  _drawPath(canvas, metric.extractPath(start, end));
++}
++
++// SpiPathParity.RelativeMoveTo
++@pragma('vm:entry-point')
++void sceneCorpus_path_relative_move_to() {
++  _renderPicture((Canvas canvas) {
++    final Path path = Path()..moveTo(1, 2);
++    path.relativeMoveTo(3, 4);
++    _drawPath(canvas, path);
++  });
++}
++
++// SpiPathParity.RelativeLineTo
++@pragma('vm:entry-point')
++void sceneCorpus_path_relative_line_to() {
++  _renderPicture((Canvas canvas) {
++    final Path path = Path()..moveTo(1, 2);
++    path.relativeLineTo(3, 4);
++    _drawPath(canvas, path);
++  });
++}
++
++// SpiPathParity.RelativeQuadTo
++@pragma('vm:entry-point')
++void sceneCorpus_path_relative_quad_to() {
++  _renderPicture((Canvas canvas) {
++    final Path path = Path()..moveTo(1, 2);
++    path.relativeQuadraticBezierTo(3, 4, 5, 6);
++    _drawPath(canvas, path);
++  });
++}
++
++// SpiPathParity.RelativeConicTo
++@pragma('vm:entry-point')
++void sceneCorpus_path_relative_conic_to() {
++  _renderPicture((Canvas canvas) {
++    final Path path = Path()..moveTo(1, 2);
++    path.relativeConicTo(3, 4, 5, 6, 0.75);
++    _drawPath(canvas, path);
++  });
++}
++
++// SpiPathParity.RelativeCubicTo
++@pragma('vm:entry-point')
++void sceneCorpus_path_relative_cubic_to() {
++  _renderPicture((Canvas canvas) {
++    final Path path = Path()..moveTo(1, 2);
++    path.relativeCubicTo(3, 4, 5, 6, 7, 8);
++    _drawPath(canvas, path);
++  });
++}
++
++// SpiPathParity.ArcTo
++@pragma('vm:entry-point')
++void sceneCorpus_path_arc_to() {
++  _renderPicture((Canvas canvas) {
++    final Path path = Path()..arcTo(_testRect, 0.25, -0.5, true);
++    _drawPath(canvas, path);
++  });
++}
++
++// SpiPathParity.ArcToPoint
++@pragma('vm:entry-point')
++void sceneCorpus_path_arc_to_point() {
++  _renderPicture((Canvas canvas) {
++    final Path path = Path()..moveTo(1, 2);
++    path.arcToPoint(const Offset(20, 30), radius: const Radius.elliptical(4, 5), rotation: 15, largeArc: true, clockwise: true);
++    _drawPath(canvas, path);
++  });
++}
++
++// SpiPathParity.RelativeArcToPoint
++@pragma('vm:entry-point')
++void sceneCorpus_path_relative_arc_to_point() {
++  _renderPicture((Canvas canvas) {
++    final Path path = Path()..moveTo(1, 2);
++    path.relativeArcToPoint(const Offset(20, 30), radius: const Radius.elliptical(4, 5), rotation: 15, largeArc: false, clockwise: false);
++    _drawPath(canvas, path);
++  });
++}
++
++// SpiPathParity.AddArc
++@pragma('vm:entry-point')
++void sceneCorpus_path_add_arc() {
++  _renderPicture((Canvas canvas) {
++    final Path path = Path()..addArc(_testRect, 0.25, -0.5);
++    _drawPath(canvas, path);
++  });
++}
++
++// SpiPathParity.AddPolygon
++@pragma('vm:entry-point')
++void sceneCorpus_path_add_polygon() {
++  _renderPicture((Canvas canvas) {
++    final Path path = Path()..addPolygon(const <Offset>[Offset(1, 2), Offset(3, 4), Offset(5, 6)], true);
++    _drawPath(canvas, path);
++  });
++}
++
++// SpiPathParity.AddRSuperellipse
++@pragma('vm:entry-point')
++void sceneCorpus_path_add_rsuperellipse() {
++  _renderPicture((Canvas canvas) {
++    final Path path = Path()..addRSuperellipse(_testRSuperellipse);
++    _drawPath(canvas, path);
++  });
++}
++
++// SpiPathParity.AddPathExtendWithMatrix
++@pragma('vm:entry-point')
++void sceneCorpus_path_add_path_extend_with_matrix() {
++  _renderPicture((Canvas canvas) {
++    final Path destination = Path()
++      ..moveTo(1, 2)
++      ..lineTo(3, 4);
++    final Path source = Path()..addRect(_testRect);
++    destination.extendWithPath(source, const Offset(4, 5), matrix4: Float64List.fromList(<double>[
++      1, 0, 0, 0,
++      0, 1, 0, 0,
++      0, 0, 1, 0,
++      2, 3, 0, 1,
++    ]));
++    _drawPath(canvas, destination);
++  });
++}
++
++// SpiPathParity.Reset
++@pragma('vm:entry-point')
++void sceneCorpus_path_reset() {
++  _renderPicture((Canvas canvas) {
++    final Path path = Path()..addRect(_testRect);
++    path.reset();
++    _drawPath(canvas, path);
++  });
++}
++
++// SpiPathParity.GetFillType
++@pragma('vm:entry-point')
++void sceneCorpus_path_get_fill_type() {
++  _renderPicture((Canvas canvas) {
++    final Path path = Path()
++      ..fillType = PathFillType.evenOdd
++      ..addRect(_testRect);
++    _drawPath(canvas, path);
++  });
++}
++
++// SpiPathParity.ContainsMatchesSkPath
++@pragma('vm:entry-point')
++void sceneCorpus_path_contains() {
++  _renderPicture((Canvas canvas) {
++    final Path path = Path()..addRect(_testRect);
++    canvas.drawRect(path.contains(const Offset(10, 20)) ? _testRect : Rect.zero, _testPaint());
++  });
++}
++
++// SpiPathParity.BoundsMatchSkPath
++@pragma('vm:entry-point')
++void sceneCorpus_path_bounds() {
++  _renderPicture((Canvas canvas) {
++    final Path path = Path()..addRect(_testRect);
++    canvas.drawRect(path.getBounds(), _testPaint());
++  });
++}
++
++// SpiPathParity.CopyMakesANewPath
++@pragma('vm:entry-point')
++void sceneCorpus_path_copy() {
++  _renderPicture((Canvas canvas) {
++    final Path source = Path()..addRect(_testRect);
++    _drawPath(canvas, Path.from(source));
++  });
++}
++
++// SpiPathParity.ShiftMakesANewPath
++@pragma('vm:entry-point')
++void sceneCorpus_path_shift() {
++  _renderPicture((Canvas canvas) {
++    final Path source = Path()..addRect(_testRect);
++    _drawPath(canvas, source.shift(const Offset(5, 6)));
++  });
++}
++
++// SpiPathParity.TransformMakesANewPath
++@pragma('vm:entry-point')
++void sceneCorpus_path_transform() {
++  _renderPicture((Canvas canvas) {
++    final Path source = Path()..addRect(_testRect);
++    _drawPath(canvas, source.transform(Float64List.fromList(<double>[
++      2, 0, 0, 0,
++      0, 3, 0, 0,
++      0, 0, 1, 0,
++      5, 6, 0, 1,
++    ])));
++  });
++}
++
++// SpiPathParity.PathOpUnion
++@pragma('vm:entry-point')
++void sceneCorpus_path_op_union() {
++  _renderPicture((Canvas canvas) {
++    final Path first = Path()..addRect(_testRect);
++    final Path second = Path()..addRect(const Rect.fromLTRB(20, 10, 40, 50));
++    _drawPath(canvas, Path.combine(PathOperation.union, first, second));
++  });
++}
++
++// SpiPathParity.PathOpFailureReturnsNoHandle
++@pragma('vm:entry-point')
++void sceneCorpus_path_op_failure_returns_no_handle() {
++  _renderPicture((Canvas canvas) {
++    final Path first = Path()..addRect(_testRect);
++    final Path second = Path()..addRect(const Rect.fromLTRB(20, 10, 40, 50));
++    // The invalid SPI operation has no dart:ui equivalent; retain the empty result.
++    if (first.getBounds().overlaps(second.getBounds())) {
++      canvas.drawRect(Rect.zero, _testPaint());
++    }
++  });
++}
++
++// SpiPathMeasureParity.CreateMatchesSkContourMeasure
++@pragma('vm:entry-point')
++void sceneCorpus_path_measure_create() {
++  _renderPicture((Canvas canvas) {
++    final PathMetrics metrics = _measuredPath().computeMetrics();
++    _drawMeasuredSegment(canvas, metrics.first, 0, metrics.first.length);
++  });
++}
++
++// SpiPathMeasureParity.SetPathMatchesSkContourMeasure
++@pragma('vm:entry-point')
++void sceneCorpus_path_measure_set_path() {
++  _renderPicture((Canvas canvas) {
++    final Path replacement = Path()
++      ..moveTo(0, 0)
++      ..lineTo(0, 8);
++    final PathMetric metric = replacement.computeMetrics().first;
++    _drawMeasuredSegment(canvas, metric, 0, metric.length);
++  });
++}
++
++// SpiPathMeasureParity.GetLengthMatchesSkia
++@pragma('vm:entry-point')
++void sceneCorpus_path_measure_get_length() {
++  _renderPicture((Canvas canvas) {
++    final double length = _measuredPath().computeMetrics().first.length;
++    canvas.drawRect(Rect.fromLTWH(0, 0, length, 2), _testPaint());
++  });
++}
++
++// SpiPathMeasureParity.GetPosTanMatchesSkia
++@pragma('vm:entry-point')
++void sceneCorpus_path_measure_get_pos_tan() {
++  _renderPicture((Canvas canvas) {
++    final Tangent tangent = _measuredPath().computeMetrics().first.getTangentForOffset(2)!;
++    canvas.drawCircle(tangent.position, 2, _testPaint());
++    canvas.drawLine(tangent.position, tangent.position + tangent.vector, _testPaint());
++  });
++}
++
++// SpiPathMeasureParity.GetSegmentMatchesSkia
++@pragma('vm:entry-point')
++void sceneCorpus_path_measure_get_segment() {
++  _renderPicture((Canvas canvas) {
++    final PathMetric metric = _measuredPath().computeMetrics().first;
++    _drawMeasuredSegment(canvas, metric, 1, 5);
++  });
++}
++
++// SpiPathMeasureParity.IsClosedMatchesSkia
++@pragma('vm:entry-point')
++void sceneCorpus_path_measure_is_closed() {
++  _renderPicture((Canvas canvas) {
++    final bool isClosed = _measuredPath().computeMetrics().first.isClosed;
++    canvas.drawRect(isClosed ? _testRect : Rect.zero, _testPaint());
++  });
++}
++
++// SpiPathMeasureParity.NextContourMatchesSkia
++@pragma('vm:entry-point')
++void sceneCorpus_path_measure_next_contour() {
++  _renderPicture((Canvas canvas) {
++    final List<PathMetric> metrics = _measuredPath().computeMetrics().toList();
++    for (final PathMetric metric in metrics) {
++      _drawMeasuredSegment(canvas, metric, 0, metric.length);
++    }
++  });
++}
++
++// SpiCanvasParity.ObjectsCanBeCreatedWithoutAnEngine
++@pragma('vm:entry-point')
++void sceneCorpus_canvas_objects_can_be_created_without_an_engine() {
++  _renderPicture((Canvas canvas) {
++    final Path path = Path()..addRect(_testRect);
++    final PictureRecorder recorder = PictureRecorder();
++    final Canvas nestedCanvas = Canvas(recorder);
++    nestedCanvas.drawPath(path, _testPaint());
++    final Picture picture = recorder.endRecording();
++    canvas.drawPicture(picture);
++  });
++}
++
++// SpiCanvasTest.AbiSequenceMatchesDisplayListBuilder
++@pragma('vm:entry-point')
++void sceneCorpus_canvas_abi_sequence_matches_display_list_builder() {
++  _renderPicture((Canvas canvas) {
++    canvas.save();
++    canvas.translate(3, 4);
++    canvas.drawRect(_testRect, _testPaint());
++    canvas.restore();
++  });
++}
++
++// SpiCanvasTest.DrawRSuperellipseMatchesDisplayListBuilder
++@pragma('vm:entry-point')
++void sceneCorpus_canvas_draw_rsuperellipse() {
++  _renderPicture((Canvas canvas) {
++    canvas.drawRSuperellipse(_testRSuperellipse, _testPaint());
++  });
++}
++
++// SpiCanvasTest.ClipRSuperellipseMatchesDisplayListBuilder
++@pragma('vm:entry-point')
++void sceneCorpus_canvas_clip_rsuperellipse() {
++  _renderPicture((Canvas canvas) {
++    canvas.clipRSuperellipse(_testRSuperellipse);
++    canvas.drawRect(_testRect, _testPaint());
++  });
++}
++
++// SpiCanvasTest.GetTransformAfterNestedSavesMatchesDisplayListBuilder
++@pragma('vm:entry-point')
++void sceneCorpus_canvas_get_transform_after_nested_saves() {
++  _renderPicture((Canvas canvas) {
++    canvas.translate(3, 4);
++    canvas.scale(2, 3);
++    canvas.rotate(0.5);
++    canvas.save();
++    canvas.translate(-1, 5);
++    canvas.drawRect(_testRect, _testPaint());
++    canvas.restore();
++  });
++}
++
++// SpiCanvasTest.LocalAndDestinationClipBoundsMatchDisplayListBuilder
++@pragma('vm:entry-point')
++void sceneCorpus_canvas_local_and_destination_clip_bounds() {
++  _renderPicture((Canvas canvas) {
++    canvas.save();
++    canvas.clipRect(_testRect);
++    canvas.translate(10, 20);
++    canvas.drawRect(canvas.getLocalClipBounds(), _testPaint());
++    canvas.drawRect(canvas.getDestinationClipBounds(), _testPaint());
++    canvas.restore();
++  });
++}
++
++// SpiCanvasTest.DynamicBlurFollowsDrawOperation
++@pragma('vm:entry-point')
++void sceneCorpus_canvas_dynamic_blur_follows_draw_operation() {
++  _renderPicture((Canvas canvas) {
++    final ImageFilter filter = ImageFilter.blur(sigmaX: 2, sigmaY: 3);
++    canvas.drawRect(_testRect, Paint()..imageFilter = filter);
++    canvas.drawPaint(Paint()..imageFilter = filter);
++  });
++}
++
++// SpiCanvasTest.FinishConsumesRecorder
++@pragma('vm:entry-point')
++void sceneCorpus_canvas_finish_consumes_recorder() {
++  _renderPicture((Canvas canvas) {
++    canvas.drawRect(_testRect, _testPaint());
++  });
++}
++
++// SpiCanvasTest.NonFiniteGeometryIsRejected
++@pragma('vm:entry-point')
++void sceneCorpus_canvas_non_finite_geometry_is_rejected() {
++  _renderPicture((Canvas canvas) {
++    canvas.drawRect(_testRect, _testPaint());
++  });
++}
++
++// SpiCanvasTest.PictureOutlivesItsHandle
++@pragma('vm:entry-point')
++void sceneCorpus_canvas_picture_outlives_its_handle() {
++  _renderPicture((Canvas canvas) {
++    final PictureRecorder sourceRecorder = PictureRecorder();
++    Canvas(sourceRecorder).drawRect(_testRect, _testPaint());
++    final Picture source = sourceRecorder.endRecording();
++    final PictureRecorder targetRecorder = PictureRecorder();
++    Canvas(targetRecorder).drawPicture(source);
++    canvas.drawPicture(targetRecorder.endRecording());
++  });
++}
++
++// SpiCanvasTest.SaveCountMatchesBuilder
++@pragma('vm:entry-point')
++void sceneCorpus_canvas_save_count_matches_builder() {
++  _renderPicture((Canvas canvas) {
++    canvas.save();
++    canvas.restoreToCount(1);
++    canvas.drawRect(_testRect, _testPaint());
++  });
++}
++
++// SpiPaintEffects.SaveLayerWithImageFilterMatchesDl
++@pragma('vm:entry-point')
++void sceneCorpus_canvas_save_layer_with_image_filter() {
++  _renderPicture((Canvas canvas) {
++    canvas.saveLayer(_testRect, Paint()..imageFilter = ImageFilter.blur(sigmaX: 2, sigmaY: 3, tileMode: TileMode.mirror));
++    canvas.restore();
++  });
++}
++
++// SpiPaintEffects.ReleasedShaderStaysInPicture
++@pragma('vm:entry-point')
++void sceneCorpus_canvas_released_shader_stays_in_picture() {
++  _renderPicture((Canvas canvas) {
++    final Shader shader = Gradient.linear(const Offset(1, 2), const Offset(30, 40), const <Color>[Color(0xFFFF0000), Color(0xFF00FF00)], const <double>[0, 1]);
++    canvas.drawRect(_testRect, Paint()..shader = shader);
++  });
++}
++
++// SpiPaintEffects.InvalidEffectHandleIsRejected
++@pragma('vm:entry-point')
++void sceneCorpus_canvas_invalid_effect_handle_is_rejected() {
++  _renderPicture((Canvas canvas) {
++    canvas.drawRect(_testRect, _testPaint());
++  });
++}
++
++void _addStandardPicture(SceneBuilder builder, Picture picture) {
++  builder.addPicture(const Offset(1, 2), picture, isComplexHint: true, willChangeHint: true);
++}
++
++// SpiSceneBuilderTest.PushesMatchDirectLayerTree
++@pragma('vm:entry-point')
++void sceneCorpus_scene_builder_pushes_match_direct_layer_tree() {
++  _renderBuilder((SceneBuilder builder, Picture picture) {
++    builder.pushOffset(3, 4);
++    builder.pushClipRect(const Rect.fromLTRB(0, 1, 60, 70));
++    builder.pushClipRRect(RRect.fromLTRBAndCorners(2, 3, 50, 60, topLeft: const Radius.elliptical(4, 5), topRight: const Radius.elliptical(6, 7), bottomRight: const Radius.elliptical(8, 9), bottomLeft: const Radius.elliptical(10, 11)));
++    final Path path = Path()..addRect(const Rect.fromLTRB(0, 1, 60, 70));
++    builder.pushClipPath(path, clipBehavior: Clip.antiAliasWithSaveLayer);
++    builder.pushOpacity(128, offset: const Offset(5, 6));
++    _addStandardPicture(builder, picture);
++    builder.pop();
++    builder.pop();
++    builder.pop();
++    builder.pop();
++    builder.pop();
++  });
++}
++
++// SpiSceneBuilderTest.PopBeyondRootIsIgnored
++@pragma('vm:entry-point')
++void sceneCorpus_scene_builder_pop_beyond_root_is_ignored() {
++  _renderBuilder((SceneBuilder builder, Picture picture) {
++    builder.pop();
++  });
++}
++
++// SpiSceneBuilderTest.BuildClosesOpenLayersAndConsumesBuilder
++@pragma('vm:entry-point')
++void sceneCorpus_scene_builder_build_closes_open_layers() {
++  _renderBuilder((SceneBuilder builder, Picture picture) {
++    builder.pushOffset(7, 8);
++    _addStandardPicture(builder, picture);
++  });
++}
++
++// SpiSceneBuilderTest.BuildRootMatchesBuild
++@pragma('vm:entry-point')
++void sceneCorpus_scene_builder_build_root_matches_build() {
++  _renderBuilder((SceneBuilder builder, Picture picture) {
++    builder.pushOffset(3, 4);
++    builder.pushOpacity(128, offset: const Offset(5, 6));
++    _addStandardPicture(builder, picture);
++  });
++}
++
++// SpiSceneBuilderTest.RootIsReusableAcrossScenes
++@pragma('vm:entry-point')
++void sceneCorpus_scene_builder_root_is_reusable_across_scenes() {
++  _renderBuilder((SceneBuilder builder, Picture picture) {
++    builder.pushOffset(3, 4);
++    builder.pushOpacity(128, offset: const Offset(5, 6));
++    _addStandardPicture(builder, picture);
++  });
++}
++
++// SpiSceneBuilderTest.RootOutlivesBuilderAndScenes
++@pragma('vm:entry-point')
++void sceneCorpus_scene_builder_root_outlives_builder_and_scenes() {
++  _renderBuilder((SceneBuilder builder, Picture picture) {
++    builder.pushOffset(3, 4);
++    builder.pushOpacity(128, offset: const Offset(5, 6));
++  });
++}
++
++// SpiSceneBuilderTest.InvalidRootArgumentsAreRejected
++@pragma('vm:entry-point')
++void sceneCorpus_scene_builder_invalid_root_arguments() {
++  _renderBuilder((SceneBuilder builder, Picture picture) {
++    _addStandardPicture(builder, picture);
++  });
++}
++
++// SpiSceneBuilderTest.NullColorFilterPushesPassThroughLayer
++@pragma('vm:entry-point')
++void sceneCorpus_scene_builder_null_color_filter() {
++  _renderBuilder((SceneBuilder builder, Picture picture) {
++    _addStandardPicture(builder, picture);
++  });
++}
++
++// SpiSceneBuilderTest.NullImageFilterPushesPassThroughLayer
++@pragma('vm:entry-point')
++void sceneCorpus_scene_builder_null_image_filter() {
++  _renderBuilder((SceneBuilder builder, Picture picture) {
++    _addStandardPicture(builder, picture);
++  });
++}
++
++// SpiSceneBuilderTest.NullBackdropFilterPushesPassThroughLayer
++@pragma('vm:entry-point')
++void sceneCorpus_scene_builder_null_backdrop_filter() {
++  _renderBuilder((SceneBuilder builder, Picture picture) {
++    _addStandardPicture(builder, picture);
++  });
++}
++
++void _renderLayerWithPicture(void Function(SceneBuilder builder) addLayer) {
++  _renderBuilder((SceneBuilder builder, Picture picture) {
++    addLayer(builder);
++    _addStandardPicture(builder, picture);
++  });
++}
++
++// SpiSceneLayersTest.ColorFilterMatchesDartUi
++@pragma('vm:entry-point')
++void sceneCorpus_layers_color_filter() {
++  _renderLayerWithPicture((SceneBuilder builder) {
++    builder.pushColorFilter(const ColorFilter.mode(Color(0xFF334D66), BlendMode.screen));
++  });
++}
++
++// SpiSceneLayersTest.ImageFilterMatchesDartUi
++@pragma('vm:entry-point')
++void sceneCorpus_layers_image_filter() {
++  _renderLayerWithPicture((SceneBuilder builder) {
++    builder.pushImageFilter(ImageFilter.blur(sigmaX: 2, sigmaY: 3), offset: const Offset(4, 5));
++  });
++}
++
++// SpiSceneLayersTest.BackdropFilterMatchesDartUi
++@pragma('vm:entry-point')
++void sceneCorpus_layers_backdrop_filter() {
++  _renderLayerWithPicture((SceneBuilder builder) {
++    builder.pushBackdropFilter(ImageFilter.blur(sigmaX: 2, sigmaY: 3), blendMode: BlendMode.screen, backdropId: 42);
++  });
++}
++
++// SpiSceneLayersTest.ShaderMaskMatchesDartUi
++@pragma('vm:entry-point')
++void sceneCorpus_layers_shader_mask() {
++  _renderLayerWithPicture((SceneBuilder builder) {
++    final Shader shader = Gradient.linear(const Offset(1, 2), const Offset(30, 40), const <Color>[Color(0xFFFF0000), Color(0xFF0000FF)], const <double>[0, 1]);
++    builder.pushShaderMask(shader, const Rect.fromLTRB(3, 4, 50, 60), BlendMode.multiply);
++  });
++}
++
++// SpiSceneLayersTest.ClipRSuperellipseMatchesDartUi
++@pragma('vm:entry-point')
++void sceneCorpus_layers_clip_rsuperellipse() {
++  _renderLayerWithPicture((SceneBuilder builder) {
++    builder.pushClipRSuperellipse(RSuperellipse.fromLTRBAndCorners(2, 3, 50, 60, topLeft: const Radius.elliptical(4, 5), topRight: const Radius.elliptical(6, 7), bottomRight: const Radius.elliptical(8, 9), bottomLeft: const Radius.elliptical(10, 11)));
++  });
++}
++
++// SpiSceneLayersTest.TextureMatchesDartUi
++@pragma('vm:entry-point')
++void sceneCorpus_layers_texture() {
++  _renderLayerWithPicture((SceneBuilder builder) {
++    builder.addTexture(42, offset: const Offset(4, 5), width: 30, height: 40, freeze: true, filterQuality: FilterQuality.medium);
++  });
++}
++
++// SpiSceneLayersTest.PlatformViewMatchesDartUi
++@pragma('vm:entry-point')
++void sceneCorpus_layers_platform_view() {
++  _renderLayerWithPicture((SceneBuilder builder) {
++    builder.addPlatformView(43, offset: const Offset(6, 7), width: 31, height: 32);
++  });
++}
++
++// SpiSceneLayersTest.PerformanceOverlayMatchesDartUi
++@pragma('vm:entry-point')
++void sceneCorpus_layers_performance_overlay() {
++  _renderLayerWithPicture((SceneBuilder builder) {
++    builder.addPerformanceOverlay(5, const Rect.fromLTRB(1, 2, 70, 80));
++  });
++}
+diff --git a/engine/src/flutter/shell/common/fixtures/shell_test.dart b/engine/src/flutter/shell/common/fixtures/shell_test.dart
+index f7faf5444f8..9af4b7cba19 100644
+--- a/engine/src/flutter/shell/common/fixtures/shell_test.dart
++++ b/engine/src/flutter/shell/common/fixtures/shell_test.dart
+@@ -11,6 +11,8 @@ import 'dart:isolate';
+ import 'dart:typed_data';
+ import 'dart:ui';
+ 
++part 'scene_corpus.dart';
++
+ void expect(Object? a, Object? b) {
+   if (a != b) {
+     throw AssertionError('Expected $a to == $b');
+diff --git a/engine/src/flutter/shell/common/scene_corpus_unittests.cc b/engine/src/flutter/shell/common/scene_corpus_unittests.cc
+new file mode 100644
+index 00000000000..f01ca605125
+--- /dev/null
++++ b/engine/src/flutter/shell/common/scene_corpus_unittests.cc
+@@ -0,0 +1,129 @@
++// Copyright 2026 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include <chrono>
++#include <cstdlib>
++#include <fstream>
++#include <future>
++#include <string>
++#include <thread>
++#include <vector>
++
++#include "flutter/flow/layers/layer_tree.h"
++#include "flutter/fml/task_runner.h"
++#include "flutter/runtime_spi/scene/spi_scene_trace.h"
++#include "flutter/shell/common/run_configuration.h"
++#include "flutter/shell/common/shell_test.h"
++#include "flutter/testing/testing.h"
++
++namespace flutter::testing {
++namespace {
++
++constexpr double kCorpusWidth = 200.0;
++constexpr double kCorpusHeight = 150.0;
++constexpr int64_t kImplicitViewId = 0;
++
++void RunOnTaskRunner(const fml::RefPtr<fml::TaskRunner>& task_runner,
++                     const std::function<void()>& callback) {
++  std::promise<void> completed;
++  std::future<void> completion = completed.get_future();
++  task_runner->PostTask([&completed, &callback]() {
++    callback();
++    completed.set_value();
++  });
++  completion.wait();
++}
++
++std::vector<std::string> ReadPrograms(const std::string& corpus_directory) {
++  std::ifstream input(corpus_directory + "/programs.txt");
++  std::vector<std::string> programs;
++  std::string program;
++  while (std::getline(input, program)) {
++    if (!program.empty()) {
++      programs.push_back(program);
++    }
++  }
++  return programs;
++}
++
++std::string ReadGolden(const std::string& corpus_directory,
++                       const std::string& program) {
++  std::ifstream input(corpus_directory + "/" + program + ".trace");
++  return std::string(std::istreambuf_iterator<char>(input),
++                     std::istreambuf_iterator<char>());
++}
++
++class SceneCorpusDart : public ShellTest {};
++
++TEST_F(SceneCorpusDart, MatchesGoldens) {
++  const char* corpus_directory = std::getenv("FLUTTER_SCENE_CORPUS_DIR");
++  if (corpus_directory == nullptr || corpus_directory[0] == '\0') {
++    GTEST_SKIP() << "FLUTTER_SCENE_CORPUS_DIR is not set";
++  }
++
++  const std::string directory(corpus_directory);
++  const std::vector<std::string> programs = ReadPrograms(directory);
++  ASSERT_FALSE(programs.empty());
++  const bool update_goldens =
++      std::getenv("FLUTTER_SCENE_CORPUS_UPDATE") != nullptr &&
++      std::string(std::getenv("FLUTTER_SCENE_CORPUS_UPDATE")) == "1";
++
++  for (const std::string& program : programs) {
++    Settings settings = CreateSettingsForFixture();
++    std::unique_ptr<Shell> shell = CreateShell(settings);
++    ASSERT_NE(shell, nullptr);
++    ASSERT_TRUE(shell->IsSetup());
++
++    RunConfiguration configuration =
++        RunConfiguration::InferFromSettings(settings);
++    configuration.SetEntrypoint("sceneCorpus_" + program);
++    PlatformViewNotifyCreated(shell.get());
++    RunEngine(shell.get(), std::move(configuration));
++    ViewportMetrics viewport_metrics;
++    viewport_metrics.device_pixel_ratio = 1.0;
++    viewport_metrics.physical_width = kCorpusWidth;
++    viewport_metrics.physical_height = kCorpusHeight;
++    std::string actual;
++    bool has_layer_tree = false;
++    const fml::TimePoint deadline =
++        fml::TimePoint::Now() + fml::TimeDelta::FromSeconds(2);
++    while (!has_layer_tree && fml::TimePoint::Now() < deadline) {
++      PumpOneFrameFromRuntime(shell.get(), kImplicitViewId, viewport_metrics);
++      RunOnTaskRunner(shell->GetTaskRunners().GetRasterTaskRunner(), [&] {
++        const LayerTree* layer_tree =
++            shell->GetRasterizer()->GetLastLayerTree(kImplicitViewId);
++        if (layer_tree != nullptr) {
++          actual = SceneTrace(*layer_tree);
++          has_layer_tree = true;
++        }
++      });
++      if (!has_layer_tree) {
++        std::this_thread::sleep_for(std::chrono::milliseconds(50));
++      }
++    }
++    ASSERT_TRUE(has_layer_tree)
++        << "No layer tree was produced for " << program;
++
++    const std::string golden_path = directory + "/" + program + ".trace";
++    if (update_goldens) {
++      std::ofstream output(golden_path);
++      ASSERT_TRUE(output.good()) << "Could not write " << golden_path;
++      output << actual;
++    } else {
++      const std::string expected = ReadGolden(directory, program);
++      if (expected != actual) {
++        ADD_FAILURE() << program << " expected:\n"
++                      << expected << "obtained:\n"
++                      << actual;
++      } else {
++        std::cout << "scene corpus: " << program << " ok" << std::endl;
++      }
++    }
++
++    DestroyShell(std::move(shell));
++  }
++}
++
++}  // namespace
++}  // namespace flutter::testing
+diff --git a/engine/src/flutter/shell/common/shell_test.cc b/engine/src/flutter/shell/common/shell_test.cc
+index 57dc21628da..73a6078a6d0 100644
+--- a/engine/src/flutter/shell/common/shell_test.cc
++++ b/engine/src/flutter/shell/common/shell_test.cc
+@@ -285,6 +285,27 @@ void ShellTest::PumpOneFrame(Shell* shell, FrameContent frame_content) {
+   latch.Wait();
+ }
+ 
++void ShellTest::PumpOneFrameFromRuntime(
++    Shell* shell,
++    int64_t view_id,
++    const ViewportMetrics& viewport_metrics) {
++  fml::AutoResetWaitableEvent latch;
++  shell->GetTaskRunners().GetUITaskRunner()->PostTask(
++      [&latch, engine = shell->weak_engine_, view_id, viewport_metrics]() {
++        engine->SetViewportMetrics(view_id, viewport_metrics);
++        const auto frame_begin_time = fml::TimePoint::Now();
++        const auto frame_end_time =
++            frame_begin_time + fml::TimeDelta::FromSecondsF(1.0 / 60.0);
++        std::unique_ptr<FrameTimingsRecorder> recorder =
++            std::make_unique<FrameTimingsRecorder>();
++        recorder->RecordVsync(frame_begin_time, frame_end_time);
++        engine->animator_->BeginFrame(std::move(recorder));
++        engine->animator_->EndFrame();
++        latch.Signal();
++      });
++  latch.Wait();
++}
++
+ void ShellTest::DispatchFakePointerData(Shell* shell, double x) {
+   auto packet = std::make_unique<PointerDataPacket>(1);
+   packet->SetPointerData(0, PointerData{
+diff --git a/engine/src/flutter/shell/common/shell_test.h b/engine/src/flutter/shell/common/shell_test.h
+index ca9e2d66557..c3fd5697a45 100644
+--- a/engine/src/flutter/shell/common/shell_test.h
++++ b/engine/src/flutter/shell/common/shell_test.h
+@@ -118,6 +118,9 @@ class ShellTest : public FixtureTest {
+ 
+   static void PumpOneFrame(Shell* shell);
+   static void PumpOneFrame(Shell* shell, FrameContent frame_content);
++  static void PumpOneFrameFromRuntime(Shell* shell,
++                                      int64_t view_id,
++                                      const ViewportMetrics& viewport_metrics);
+   // Dispatch a PointerHoverEvent with the specified `x` as the pointer
+   // position.
+   static void DispatchFakePointerData(Shell* shell, double x);
