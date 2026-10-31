@@ -244,7 +244,21 @@ cat > "$fake_bin/fvm" <<'EOF'
 set -euo pipefail
 
 [[ "${1:-}" == dart && "${2:-}" == run ]] || exit 91
-printf '%s\n' "$@" > "$INVENTORY_LOG"
+inventory_arguments=("$@")
+engine_source=''
+while (($# > 0)); do
+  if [[ "${1:-}" == '--engine-src' ]]; then
+    shift
+    engine_source=${1:-}
+    break
+  fi
+  shift
+done
+[[ "$engine_source" == */engine/src/flutter ]] || {
+  printf 'unexpected --engine-src: %s\n' "$engine_source" >&2
+  exit 92
+}
+printf '%s\n' "${inventory_arguments[@]}" > "$INVENTORY_LOG"
 printf 'inventory\n' >> "$ORDER_LOG"
 EOF
 chmod +x "$fake_bin/fvm"

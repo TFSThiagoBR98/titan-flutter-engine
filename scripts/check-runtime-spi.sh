@@ -259,7 +259,7 @@ run_conformance_report() {
   if ((${#dart_command[@]} > 0)) && ! (
     cd "$flutter_rs_directory"
     "${dart_command[@]}" run tools/api_inventory/bin/api_inventory.dart \
-      --engine-src "$engine_source" \
+      --engine-src "$engine_source/flutter" \
       --framework-src "$TITAN_WORK_DIR/flutter/packages/flutter" \
       --out docs/inventory \
       --check
