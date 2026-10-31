@@ -55,6 +55,7 @@ runner_log="$temporary_directory/runner.log"
 dart_runner_log="$temporary_directory/dart-runner.log"
 rust_conformance_log="$temporary_directory/rust-conformance.log"
 rust_conformance_cargo_log="$temporary_directory/rust-conformance-cargo.log"
+inventory_log="$temporary_directory/inventory.log"
 order_log="$temporary_directory/order.log"
 output_log="$temporary_directory/output.log"
 baseline_output_log="$temporary_directory/baseline-output.log"
@@ -105,8 +106,8 @@ printf 'rust-conformance\n' >> "$ORDER_LOG"
 if ((FAKE_RUST_CONFORMANCE_FAILED != 0)); then
   printf '[  FAILED  ] SpiConformance.ExternalFailure\n'
 fi
-printf '[  PASSED  ] 24 tests.\n'
-printf '[  SKIPPED ] 13 tests, listed below:\n'
+printf '[  PASSED  ] 28 tests.\n'
+printf '[  SKIPPED ] 9 tests, listed below:\n'
 exit "${FAKE_RUST_CONFORMANCE_STATUS:-0}"
 RUNTIME_SPI_EOF
 chmod +x "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/runtime_spi_unittests"
@@ -214,6 +215,11 @@ cat > "$fake_bin/cargo" <<'EOF'
 set -euo pipefail
 
 printf '%s\n' "$@" >> "$CARGO_LOG"
+if [[ " $* " == *' xtask conformance-report '* ]]; then
+  printf 'conformance-report\n' >> "$ORDER_LOG"
+  printf 'flutter-rs conformance: api 0.00%%, tests 0.00%%, spi 28/37\n'
+  exit 0
+fi
 if [[ " $* " == *' -p flutter-rs-conformance '* ]]; then
   mkdir -p "$CARGO_TARGET_DIR/debug"
   : > "$CARGO_TARGET_DIR/debug/libflutter_rs_conformance.so"
@@ -232,6 +238,16 @@ chmod +x "$CARGO_TARGET_DIR/debug/core-static-link"
 exit "${FAKE_RUST_BUILD_STATUS:-0}"
 EOF
 chmod +x "$fake_bin/cargo"
+
+cat > "$fake_bin/fvm" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ "${1:-}" == dart && "${2:-}" == run ]] || exit 91
+printf '%s\n' "$@" > "$INVENTORY_LOG"
+printf 'inventory\n' >> "$ORDER_LOG"
+EOF
+chmod +x "$fake_bin/fvm"
 
 cat > "$fake_bin/strings" <<'EOF'
 #!/usr/bin/env bash
@@ -255,6 +271,7 @@ run_check() {
   DART_RUNNER_LOG="$dart_runner_log" \
   RUST_CONFORMANCE_LOG="$rust_conformance_log" \
   CARGO_LOG="$rust_conformance_cargo_log" \
+  INVENTORY_LOG="$inventory_log" \
   ORDER_LOG="$order_log" \
   TITAN_LAVAPIPE_ICD="${FAKE_LAVAPIPE_ICD:-$fake_lavapipe_icd}" \
   FAKE_TRIANGLE_STATUS="${FAKE_TRIANGLE_STATUS:-0}" \
@@ -302,7 +319,7 @@ else
   fail 'the complete fake check should pass'
 fi
 
-[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner rust-conformance smoke rust triangle ' ]] || \
+[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner rust-conformance inventory conformance-report smoke rust triangle ' ]] || \
   fail 'steps did not run in build, ninja, runner order'
 assert_contains "$build_log" '--unittests' 'build arguments'
 assert_contains "$build_log" '--gn-only' 'build arguments'
@@ -333,8 +350,13 @@ assert_contains "$output_log" 'core artifact: ok' 'core artifact summary'
 assert_contains "$output_log" 'core static symbols: ok' 'core static symbols summary'
 assert_contains "$output_log" 'core static rust: ok' 'core static rust summary'
 assert_contains "$output_log" 'core gpu triangle: ok' 'core gpu triangle summary'
-assert_contains "$output_log" 'spi conformance rust: 24 passed, 13 skipped' \
+assert_contains "$output_log" 'spi conformance rust: 28 passed, 9 skipped' \
   'Rust SPI conformance summary'
+assert_contains "$output_log" 'flutter-rs conformance: api 0.00%, tests 0.00%, spi 28/37' \
+  'flutter-rs conformance summary'
+assert_contains "$inventory_log" '--engine-src' 'Dart inventory arguments'
+assert_contains "$inventory_log" '--framework-src' 'Dart inventory arguments'
+assert_contains "$inventory_log" '--check' 'Dart inventory arguments'
 assert_contains "$rust_conformance_log" '--gtest_filter=SpiConformance.*' \
   'Rust SPI conformance filter'
 assert_matches "$rust_conformance_log" \
@@ -343,6 +365,10 @@ assert_matches "$rust_conformance_log" \
 assert_contains "$rust_conformance_cargo_log" '-p' 'Rust SPI conformance cargo package'
 assert_contains "$rust_conformance_cargo_log" 'flutter-rs-conformance' \
   'Rust SPI conformance cargo package name'
+assert_contains "$rust_conformance_cargo_log" 'conformance-report' \
+  'Flutter Dart conformance cargo command'
+assert_contains "$rust_conformance_cargo_log" '--spi-log' \
+  'Flutter Dart conformance cargo arguments'
 cp "$output_log" "$baseline_output_log"
 
 rm -f "$runner_log" "$dart_runner_log" "$order_log"
@@ -451,7 +477,7 @@ assert_contains "$output_log" 'unit tests are disabled in' 'disabled unit test d
 
 rm -f "$runner_log" "$dart_runner_log" "$order_log"
 FAKE_ARGS_GN='# default is enabled' run_check >"$output_log" 2>&1
-[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner rust-conformance smoke rust triangle ' ]] || \
+[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner rust-conformance inventory conformance-report smoke rust triangle ' ]] || \
   fail 'steps did not continue when enable_unittests is absent'
 assert_contains "$output_log" 'tests: ok' 'missing unit test setting summary'
 

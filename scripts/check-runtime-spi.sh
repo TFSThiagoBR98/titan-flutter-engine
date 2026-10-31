@@ -232,6 +232,51 @@ run_conformance_rust() {
     "$passed_count" "$skipped_count"
 }
 
+run_conformance_report() {
+  if ((skip_tests)); then
+    return 0
+  fi
+
+  local flutter_rs_directory=${TITAN_FLUTTER_RS_DIR:-$repository_root/../../flutter-rs}
+  if [[ ! -f "$flutter_rs_directory/Cargo.toml" ]]; then
+    printf 'flutter-rs conformance: skipped (flutter-rs not found)\n'
+    return 0
+  fi
+  if ! command -v cargo >/dev/null 2>&1; then
+    printf 'flutter-rs conformance: skipped (cargo not installed)\n'
+    return 0
+  fi
+
+  local -a dart_command=()
+  if command -v fvm >/dev/null 2>&1; then
+    dart_command=(fvm dart)
+  elif command -v dart >/dev/null 2>&1; then
+    dart_command=(dart)
+  else
+    printf 'flutter-rs inventory: skipped (dart not installed)\n'
+  fi
+
+  if ((${#dart_command[@]} > 0)) && ! (
+    cd "$flutter_rs_directory"
+    "${dart_command[@]}" run tools/api_inventory/bin/api_inventory.dart \
+      --engine-src "$engine_source" \
+      --framework-src "$TITAN_WORK_DIR/flutter/packages/flutter" \
+      --out docs/inventory \
+      --check
+  ); then
+    die 'flutter-rs inventory check failed'
+  fi
+
+  if ! (
+    cd "$flutter_rs_directory"
+    cargo xtask conformance-report \
+      --spi-log "$output_directory/spi-conformance-rust.log" \
+      --check
+  ); then
+    die 'flutter-rs conformance report check failed'
+  fi
+}
+
 check_core_engine_dependencies() {
   local executable=$1
   local dynamic_output
@@ -401,6 +446,7 @@ run_build_without_unittests
 run_ninja
 run_tests
 run_conformance_rust
+run_conformance_report
 run_core_smoke
 run_core_static_rust
 run_core_static_symbols
