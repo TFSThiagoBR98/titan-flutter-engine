@@ -220,6 +220,11 @@ if [[ " $* " == *' xtask conformance-report '* ]]; then
   printf 'flutter-rs conformance: api 0.00%%, tests 0.00%%, spi 28/37\n'
   exit 0
 fi
+if [[ " $* " == *' test '* && " $* " == *' --ignored '* ]]; then
+  printf 'rust-engine-tests\n' >> "$ORDER_LOG"
+  printf 'test result: ok. 13 passed; 0 failed; 0 ignored\n'
+  exit 0
+fi
 if [[ " $* " == *' -p flutter-rs-conformance '* ]]; then
   mkdir -p "$CARGO_TARGET_DIR/debug"
   : > "$CARGO_TARGET_DIR/debug/libflutter_rs_conformance.so"
@@ -333,7 +338,7 @@ else
   fail 'the complete fake check should pass'
 fi
 
-[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner rust-conformance inventory conformance-report smoke rust triangle ' ]] || \
+[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner rust-conformance rust-engine-tests inventory conformance-report smoke rust triangle ' ]] || \
   fail 'steps did not run in build, ninja, runner order'
 assert_contains "$build_log" '--unittests' 'build arguments'
 assert_contains "$build_log" '--gn-only' 'build arguments'
@@ -366,6 +371,8 @@ assert_contains "$output_log" 'core static rust: ok' 'core static rust summary'
 assert_contains "$output_log" 'core gpu triangle: ok' 'core gpu triangle summary'
 assert_contains "$output_log" 'spi conformance rust: 28 passed, 9 skipped' \
   'Rust SPI conformance summary'
+assert_contains "$output_log" 'flutter-rs engine tests: 13 passed' \
+  'Flutter Rust engine test summary'
 assert_contains "$output_log" 'flutter-rs conformance: api 0.00%, tests 0.00%, spi 28/37' \
   'flutter-rs conformance summary'
 assert_contains "$inventory_log" '--engine-src' 'Dart inventory arguments'
@@ -491,7 +498,7 @@ assert_contains "$output_log" 'unit tests are disabled in' 'disabled unit test d
 
 rm -f "$runner_log" "$dart_runner_log" "$order_log"
 FAKE_ARGS_GN='# default is enabled' run_check >"$output_log" 2>&1
-[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner rust-conformance inventory conformance-report smoke rust triangle ' ]] || \
+[[ "$(tr '\n' ' ' < "$order_log")" == 'build build ninja runner dart-runner rust-conformance rust-engine-tests inventory conformance-report smoke rust triangle ' ]] || \
   fail 'steps did not continue when enable_unittests is absent'
 assert_contains "$output_log" 'tests: ok' 'missing unit test setting summary'
 

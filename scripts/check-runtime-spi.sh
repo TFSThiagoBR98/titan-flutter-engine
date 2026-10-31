@@ -232,6 +232,41 @@ run_conformance_rust() {
     "$passed_count" "$skipped_count"
 }
 
+run_flutter_rs_engine_tests() {
+  if ((skip_tests)); then
+    printf 'flutter-rs engine tests: skipped (tests skipped)\n'
+    return 0
+  fi
+
+  local flutter_rs_directory=${TITAN_FLUTTER_RS_DIR:-$repository_root/../../flutter-rs}
+  if [[ ! -f "$flutter_rs_directory/Cargo.toml" ]]; then
+    printf 'flutter-rs engine tests: skipped (flutter-rs not found)\n'
+    return 0
+  fi
+  if ! command -v cargo >/dev/null 2>&1; then
+    printf 'flutter-rs engine tests: skipped (cargo not installed)\n'
+    return 0
+  fi
+
+  local rust_target_directory="$output_directory/flutter-rs"
+  local engine_tests_log="$output_directory/flutter-rs-engine-tests.log"
+  if ! (
+    cd "$flutter_rs_directory"
+    FLUTTER_RS_ENGINE_DIR="$output_directory" \
+      CARGO_TARGET_DIR="$rust_target_directory" \
+      cargo test --locked --offline --workspace -- --ignored
+  ) >"$engine_tests_log" 2>&1; then
+    cat "$engine_tests_log" >&2
+    die 'flutter-rs engine tests failed'
+  fi
+
+  local passed_count
+  passed_count=$(sed -nE 's/^[[:space:]]*test result: ok\. ([0-9]+) passed.*$/\1/p' \
+    "$engine_tests_log" | awk '{ total += $1 } END { if (NR > 0) print total }')
+  [[ -n "$passed_count" ]] || die 'flutter-rs engine test pass count is missing'
+  printf 'flutter-rs engine tests: %s passed\n' "$passed_count"
+}
+
 run_conformance_report() {
   if ((skip_tests)); then
     return 0
@@ -446,6 +481,7 @@ run_build_without_unittests
 run_ninja
 run_tests
 run_conformance_rust
+run_flutter_rs_engine_tests
 run_conformance_report
 run_core_smoke
 run_core_static_rust
