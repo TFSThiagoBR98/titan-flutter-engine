@@ -1,0 +1,183 @@
+# Why: R1c adds deterministic text fixtures to compare the Dart and Rust scene
+# corpora.
+diff --git a/engine/src/flutter/runtime_spi/spi_scene_corpus_unittests.cc b/engine/src/flutter/runtime_spi/spi_scene_corpus_unittests.cc
+index f41e5034221..28fc1f0df01 100644
+--- a/engine/src/flutter/runtime_spi/spi_scene_corpus_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_scene_corpus_unittests.cc
+@@ -137,6 +137,7 @@ TEST_F(SpiSceneCorpus, MatchesGoldens) {
+     }
+ 
+     Settings settings = CreateSettingsForFixture();
++    settings.use_test_fonts = true;
+     settings.icu_data_path = IcuDataPathForTesting();
+     const TaskRunners task_runners = GetTaskRunnersForFixture();
+     std::unique_ptr<Shell> shell =
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/programs.txt b/engine/src/flutter/runtime_spi/testing/scene_corpus/programs.txt
+index 33b9979f361..0238f64d9ba 100644
+--- a/engine/src/flutter/runtime_spi/testing/scene_corpus/programs.txt
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/programs.txt
+@@ -58,3 +58,8 @@ layers_clip_rsuperellipse
+ layers_texture
+ layers_platform_view
+ layers_performance_overlay
++text_simple_paragraph
++text_two_styles
++text_centered_fixed_width
++text_max_lines_ellipsis
++text_placeholder
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/text_centered_fixed_width.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/text_centered_fixed_width.trace
+new file mode 100644
+index 00000000000..493e363a1ce
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/text_centered_fixed_width.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    op drawText
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/text_max_lines_ellipsis.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/text_max_lines_ellipsis.trace
+new file mode 100644
+index 00000000000..286c0ae94b0
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/text_max_lines_ellipsis.trace
+@@ -0,0 +1,6 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    op drawText
++    op drawText
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/text_placeholder.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/text_placeholder.trace
+new file mode 100644
+index 00000000000..493e363a1ce
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/text_placeholder.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    op drawText
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/text_simple_paragraph.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/text_simple_paragraph.trace
+new file mode 100644
+index 00000000000..493e363a1ce
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/text_simple_paragraph.trace
+@@ -0,0 +1,5 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    op drawText
+diff --git a/engine/src/flutter/runtime_spi/testing/scene_corpus/text_two_styles.trace b/engine/src/flutter/runtime_spi/testing/scene_corpus/text_two_styles.trace
+new file mode 100644
+index 00000000000..286c0ae94b0
+--- /dev/null
++++ b/engine/src/flutter/runtime_spi/testing/scene_corpus/text_two_styles.trace
+@@ -0,0 +1,6 @@
++scene 200x150
++container
++  picture 0 0
++    op setColor
++    op drawText
++    op drawText
+diff --git a/engine/src/flutter/shell/common/fixtures/scene_corpus.dart b/engine/src/flutter/shell/common/fixtures/scene_corpus.dart
+index 59ef67eca6f..ac7bdf2a755 100644
+--- a/engine/src/flutter/shell/common/fixtures/scene_corpus.dart
++++ b/engine/src/flutter/shell/common/fixtures/scene_corpus.dart
+@@ -668,3 +668,82 @@ void sceneCorpus_layers_performance_overlay() {
+     builder.addPerformanceOverlay(5, const Rect.fromLTRB(1, 2, 70, 80));
+   });
+ }
++
++// TextSceneCorpus.SimpleParagraph
++@pragma('vm:entry-point')
++void sceneCorpus_text_simple_paragraph() {
++  _renderPicture((Canvas canvas) {
++    final ParagraphBuilder builder = ParagraphBuilder(ParagraphStyle(
++      fontFamily: 'Ahem',
++      fontSize: 10,
++    ));
++    builder.addText('A');
++    final Paragraph paragraph = builder.build()..layout(const ParagraphConstraints(width: 100));
++    canvas.drawParagraph(paragraph, Offset.zero);
++  });
++}
++
++// TextSceneCorpus.TwoStyles
++@pragma('vm:entry-point')
++void sceneCorpus_text_two_styles() {
++  _renderPicture((Canvas canvas) {
++    final ParagraphBuilder builder = ParagraphBuilder(ParagraphStyle(
++      fontFamily: 'Ahem',
++      fontSize: 10,
++    ));
++    builder.pushStyle(TextStyle(fontFamily: 'Ahem', fontSize: 10));
++    builder.addText('A');
++    builder.pushStyle(TextStyle(fontWeight: FontWeight.bold));
++    builder.addText('B');
++    builder.pop();
++    builder.pop();
++    final Paragraph paragraph = builder.build()..layout(const ParagraphConstraints(width: 100));
++    canvas.drawParagraph(paragraph, Offset.zero);
++  });
++}
++
++// TextSceneCorpus.CenteredFixedWidth
++@pragma('vm:entry-point')
++void sceneCorpus_text_centered_fixed_width() {
++  _renderPicture((Canvas canvas) {
++    final ParagraphBuilder builder = ParagraphBuilder(ParagraphStyle(
++      textAlign: TextAlign.center,
++      fontFamily: 'Ahem',
++      fontSize: 10,
++    ));
++    builder.addText('A');
++    final Paragraph paragraph = builder.build()..layout(const ParagraphConstraints(width: 100));
++    canvas.drawParagraph(paragraph, Offset.zero);
++  });
++}
++
++// TextSceneCorpus.MaxLinesEllipsis
++@pragma('vm:entry-point')
++void sceneCorpus_text_max_lines_ellipsis() {
++  _renderPicture((Canvas canvas) {
++    final ParagraphBuilder builder = ParagraphBuilder(ParagraphStyle(
++      fontFamily: 'Ahem',
++      fontSize: 10,
++      maxLines: 1,
++      ellipsis: '...',
++    ));
++    builder.addText('A long paragraph that exceeds one line');
++    final Paragraph paragraph = builder.build()..layout(const ParagraphConstraints(width: 40));
++    canvas.drawParagraph(paragraph, Offset.zero);
++  });
++}
++
++// TextSceneCorpus.Placeholder
++@pragma('vm:entry-point')
++void sceneCorpus_text_placeholder() {
++  _renderPicture((Canvas canvas) {
++    final ParagraphBuilder builder = ParagraphBuilder(ParagraphStyle(
++      fontFamily: 'Ahem',
++      fontSize: 10,
++    ));
++    builder.addText('A');
++    builder.addPlaceholder(10, 10, PlaceholderAlignment.middle);
++    final Paragraph paragraph = builder.build()..layout(const ParagraphConstraints(width: 100));
++    canvas.drawParagraph(paragraph, Offset.zero);
++  });
++}
+diff --git a/engine/src/flutter/shell/common/scene_corpus_unittests.cc b/engine/src/flutter/shell/common/scene_corpus_unittests.cc
+index f01ca605125..02d7faa9fdf 100644
+--- a/engine/src/flutter/shell/common/scene_corpus_unittests.cc
++++ b/engine/src/flutter/shell/common/scene_corpus_unittests.cc
+@@ -71,6 +71,7 @@ TEST_F(SceneCorpusDart, MatchesGoldens) {
+ 
+   for (const std::string& program : programs) {
+     Settings settings = CreateSettingsForFixture();
++    settings.use_test_fonts = true;
+     std::unique_ptr<Shell> shell = CreateShell(settings);
+     ASSERT_NE(shell, nullptr);
+     ASSERT_TRUE(shell->IsSetup());

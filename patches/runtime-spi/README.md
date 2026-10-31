@@ -195,6 +195,7 @@ idêntica à anterior. A série antiga está no worktree do engine no branch
 | `0178-test-shell-record-the-dart-scene-corpus.patch` | R1b: record the 60 Dart scene-corpus goldens used as the oracle for native runtimes. | |
 | `0179-fix-runtime-spi-restore-to-the-base-save-count-below-one.patch` | R1b: restore the canvas stack to its base count when `restoreToCount` receives a value below one. | |
 | `0180-test-runtime-spi-compare-a-rust-scene-corpus-with-the-dart-goldens.patch` | R1b: compare the Rust scene corpus with the Dart goldens through the Runtime SPI. | |
+| `0181-test-engine-add-text-programs-to-the-scene-corpus.patch` | R1c: compare five text scene programs with test fonts through the Runtime SPI. | |
 
 O fluxo é:
 

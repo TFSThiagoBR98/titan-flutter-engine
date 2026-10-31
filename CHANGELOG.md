@@ -74,6 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime SPI R0a: a suíte de conformidade aceita um runtime externo e o check a executa contra o runtime Rust do `flutter-rs`.
 - Runtime SPI R1a-1: o check confere o inventário Dart e o relatório de conformidade do `flutter-rs`.
 - Runtime SPI R1b-3: o check compara os 60 programas do corpus de cenas Dart e Rust com os mesmos goldens, e registra a contagem no relatório de conformidade.
+- Runtime SPI R1c: o check compara cinco programas de texto com fontes de teste nos runtimes Dart e Rust.
 
 ### Fixed
 
