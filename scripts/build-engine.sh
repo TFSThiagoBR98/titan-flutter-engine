@@ -520,6 +520,11 @@ if [[ "$actual_commit" != "$flutter_commit" ]]; then
     die "Flutter checkout has local changes and is at $actual_commit, expected $flutter_commit"
   git -C "$flutter_dir" fetch origin "$flutter_commit"
   git -C "$flutter_dir" checkout --detach "$flutter_commit"
+  # A new flutter_commit brings a new DEPS (Skia, Dart SDK, ...); without this the
+  # checkout would build the new sources against the old dependencies. --reset drops
+  # the local edits that earlier builds applied to patched dependencies (for example
+  # third_party/swiftshader); the patch series is applied again below.
+  (cd "$flutter_dir" && gclient sync -D --reset --no-history)
 fi
 [[ -d "$engine_src/flutter" ]] || die "Flutter engine source is missing: $engine_src"
 
