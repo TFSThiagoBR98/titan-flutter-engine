@@ -55,6 +55,7 @@ scene_corpus_directory="$engine_source/flutter/runtime_spi/testing/scene_corpus"
 scene_corpus_programs="$scene_corpus_directory/programs.txt"
 core_smoke="$output_directory/flutter_engine_core_smoke"
 core_gpu_triangle="$output_directory/flutter_engine_core_gpu_triangle"
+core_gpu_compute="$output_directory/flutter_engine_core_gpu_compute"
 core_library="$output_directory/libflutter_engine_core.so"
 core_archive="$output_directory/libflutter_engine_core.a"
 icu_data="$output_directory/icudtl.dat"
@@ -125,6 +126,7 @@ run_ninja() {
         printf '%s\n' 'flutter/shell/platform/embedder:flutter_engine_core_library'
         printf '%s\n' 'flutter/shell/platform/embedder:flutter_engine_core_static'
         printf '%s\n' 'flutter/shell/platform/embedder:flutter_engine_core_smoke_entry'
+        printf '%s\n' 'flutter/shell/platform/embedder:flutter_engine_core_gpu_compute'
       } | sed 's/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d'
     )
   fi
@@ -495,6 +497,25 @@ run_core_gpu_triangle() {
   printf 'core gpu triangle: ok\n'
 }
 
+run_core_gpu_compute() {
+  [[ -x "$core_gpu_compute" ]] ||
+    die "core gpu compute executable is missing: $core_gpu_compute"
+  [[ -f "$shader_bundle" ]] ||
+    die "core gpu compute shader bundle is missing: $shader_bundle"
+
+  if [[ ! -f "$lavapipe_icd" ]]; then
+    printf 'core gpu compute: skipped (lavapipe not installed)\n'
+    return 0
+  fi
+
+  if ! VK_DRIVER_FILES="$lavapipe_icd" "$core_gpu_compute" "$icu_data" \
+      "$assets_directory" "$shader_bundle"; then
+    die "core gpu compute executable failed"
+  fi
+  check_core_engine_dependencies "$core_gpu_compute"
+  printf 'core gpu compute: ok\n'
+}
+
 run_core_static_symbols() {
   [[ -f "$core_library" ]] || die "core library is missing: $core_library"
   [[ -f "$core_archive" ]] || die "static core library is missing: $core_archive"
@@ -580,4 +601,5 @@ run_core_smoke
 run_core_static_rust
 run_core_static_symbols
 run_core_gpu_triangle
+run_core_gpu_compute
 "$check_core_artifact" "$core_library"
