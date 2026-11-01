@@ -1,0 +1,73 @@
+# Why: The core GPU compute executable copied playground.shaderbundle, which
+# contains only render shaders. Use the Flutter GPU test bundle so
+# ComputeTriangle and TriangleInfo are available to the C ABI test.
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_compute_unittests.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_compute_unittests.cc
+index 2d1fe1e3161..5549773fa1c 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_compute_unittests.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_compute_unittests.cc
+@@ -7,9 +7,11 @@
+ #include "flutter/runtime_spi/gpu/spi_gpu_compute_pass.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_compute_pipeline.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_context.h"
++#include "flutter/runtime_spi/gpu/spi_gpu_shader.h"
+ #include "flutter/runtime_spi/gpu/spi_gpu_test_fixture.h"
+ 
+ #include <memory>
++#include <unordered_map>
+ 
+ #include "flutter/fml/message_loop.h"
+ #include "flutter/runtime_spi/spi_runtime_backend.h"
+@@ -140,5 +142,36 @@ TEST(SpiGpuComputeApiTest, DispatchReportsTheUpstreamRecordingMessage) {
+   EXPECT_EQ(SpiGpuComputePassRelease(pass), kFlutterSpiOk);
+ }
+ 
++TEST(SpiGpuComputeApiTest, ShaderUniformStructIndexWorksForComputeStage) {
++  SpiGpuShader::UniformBinding uniform{
++      .slot = impeller::ShaderUniformSlot{
++          .name = "TriangleInfo",
++          .ext_res_0 = 0,
++          .set = 0,
++          .binding = 0,
++      },
++      .metadata = impeller::ShaderMetadata{
++          .name = "TriangleInfo",
++          .members = {},
++      },
++      .size_in_bytes = 16,
++  };
++  std::unordered_map<std::string, SpiGpuShader::UniformBinding> uniforms;
++  uniforms.emplace("TriangleInfo", uniform);
++  auto shader = SpiGpuShader::Make(
++      "test_bundle", "compute_main", impeller::ShaderStage::kCompute,
++      nullptr, {}, {}, std::move(uniforms), {}, {});
++  FlutterSpiGpuShader* shader_handle = SpiGpuShaderInsertHandle(shader);
++  ASSERT_NE(shader_handle, nullptr);
++
++  int32_t index = -1;
++  EXPECT_EQ(SpiGpuShaderGetUniformStructIndex(shader_handle, "TriangleInfo",
++                                              &index),
++            kFlutterSpiOk);
++  EXPECT_EQ(index, 0);
++
++  EXPECT_EQ(SpiGpuShaderRelease(shader_handle), kFlutterSpiOk);
++}
++
+ }  // namespace
+ }  // namespace flutter::testing
+diff --git a/engine/src/flutter/shell/platform/embedder/BUILD.gn b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+index 468523401ee..0683fc91ca7 100644
+--- a/engine/src/flutter/shell/platform/embedder/BUILD.gn
++++ b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+@@ -631,10 +631,10 @@ if (enable_unittests) {
+   copy("copy_core_gpu_triangle_shaderbundle") {
+     testonly = true
+     sources = [
+-      "$root_gen_dir/flutter/impeller/fixtures/playground.shaderbundle",
++      "$root_gen_dir/flutter/lib/ui/assets/test.shaderbundle",
+     ]
+     outputs = [ "$root_out_dir/{{source_file_part}}" ]
+-    deps = [ "//flutter/impeller/fixtures:flutter_gpu_shaders" ]
++    deps = [ "//flutter/lib/ui/fixtures/shaders:fixtures" ]
+   }
+ 
+   executable("flutter_engine_core_smoke") {
