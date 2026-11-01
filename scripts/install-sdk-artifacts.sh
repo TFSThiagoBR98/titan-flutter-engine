@@ -70,7 +70,11 @@ if [[ -z "$flutter_hash" || ! -d "$artifact_root/flutter_infra_release/flutter/$
 fi
 
 if ((with_dart_sdk)); then
-  rm -rf "$flutter_sdk/bin/cache/dart-sdk"
+  # bin/internal/shared.sh runs update_dart_sdk.sh only while rebuilding the tool snapshot, and
+  # update_dart_sdk.sh downloads only when engine-dart-sdk.stamp differs from the engine hash: drop
+  # both stamps, or the bootstrap trusts a dart-sdk that is no longer there.
+  rm -rf "$flutter_sdk/bin/cache/dart-sdk" "$flutter_sdk/bin/cache/engine-dart-sdk.stamp" \
+    "$flutter_sdk/bin/cache/flutter_tools.stamp"
 fi
 
 port_file=$(mktemp "$TITAN_WORK_DIR/sdk-server-port.XXXXXX")
