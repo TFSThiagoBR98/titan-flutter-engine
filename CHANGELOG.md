@@ -76,6 +76,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime SPI R1b-3: o check compara os 60 programas do corpus de cenas Dart e Rust com os mesmos goldens, e registra a contagem no relatório de conformidade.
 - Runtime SPI R1c: o check compara cinco programas de texto com fontes de teste nos runtimes Dart e Rust.
 
+### Changed
+
+- Runtime SPI U1-1: a base do Flutter Engine foi atualizada para `327cc39`; a
+  série foi reaplicada e exportada com 192 patches, preservando as mudanças do
+  upstream, a separação da API de host do core e o ciclo de vida de passes do
+  Flutter GPU pelo SPI.
+
 ### Fixed
 
 - `build-engine.sh --mode release|profile` compila `//flutter:gen_snapshot` (o alvo antigo `flutter/shell/common:gen_snapshot` não existe).

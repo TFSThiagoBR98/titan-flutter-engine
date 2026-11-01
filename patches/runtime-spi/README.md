@@ -6,6 +6,11 @@ runtime. Cada patch exportado registra uma mudança isolada do branch
 
 A série `runtime-spi` só modifica o repositório do Flutter.
 
+Na atualização U1-1 (2026-10-31), a série foi reaplicada sobre o Flutter
+`327cc39c4d52f581e74adbb5fd28835b2df19041`. O replay preservou as mudanças do
+upstream e acrescentou os ajustes de compatibilidade e de comportamento do
+Runtime SPI; a exportação final contém 192 patches.
+
 Na S5.5 (2026-10-29) a série foi reorganizada: as correções, os testes
 vermelhos, os ajustes de estilo e as otimizações foram juntados ao commit de
 origem, mantendo a ordem das fases (270 → 153 patches). A árvore final é
@@ -196,6 +201,17 @@ idêntica à anterior. A série antiga está no worktree do engine no branch
 | `0179-fix-runtime-spi-restore-to-the-base-save-count-below-one.patch` | R1b: restore the canvas stack to its base count when `restoreToCount` receives a value below one. | |
 | `0180-test-runtime-spi-compare-a-rust-scene-corpus-with-the-dart-goldens.patch` | R1b: compare the Rust scene corpus with the Dart goldens through the Runtime SPI. | |
 | `0181-test-engine-add-text-programs-to-the-scene-corpus.patch` | R1c: compare five text scene programs with test fonts through the Runtime SPI. | |
+| `0182-test-runtime-spi-compare-a-rust-scene-corpus-with-the-dart-goldens.patch` | Comparar o corpus de cenas Rust com os goldens Dart pela API do Runtime SPI. | |
+| `0183-test-engine-add-text-programs-to-the-scene-corpus.patch` | Comparar cinco programas de texto com fontes de teste pela API do Runtime SPI. | |
+| `0184-fix-engine-restore-the-core-embedder-target-split.patch` | Restaurar a separação dos alvos core e Dart do embedder sobre a base nova do upstream. | |
+| `0185-feat-engine-add-the-core-host-api-header.patch` | Expor o header C da API de host do core sem introduzir dependência de Dart. | |
+| `0186-refactor-engine-split-the-embedder-into-a-core-host-api-and-a-dart-translation.patch` | Separar a API de host do core da camada de tradução do embedder Dart. | |
+| `0187-fix-engine-pass-raw-image-pixel-formats-to-the-spi-by-its-own-enum.patch` | Passar os formatos de pixels crus pelo enum próprio do Runtime SPI. | |
+| `0188-feat-engine-gate-flutter-gpu-compute-until-the-spi-exposes-it.patch` | Manter compute do Flutter GPU explicitamente bloqueado até a tabela U1-2 do SPI. | |
+| `0189-fix-engine-adapt-runtime-spi-gpu-tests-to-327cc39.patch` | Adaptar os testes do Runtime SPI GPU às APIs da base Flutter `327cc39`. | |
+| `0190-fix-runtime-spi-end-gpu-passes-before-recording-next-command.patch` | Encerrar passes GPU antes de gravar o próximo comando pela tabela do SPI. | |
+| `0191-fix-runtime-spi-end-gpu-passes-before-creating-the-next-pass.patch` | Encerrar o pass GPU anterior antes de criar o próximo pass no SPI. | |
+| `0192-fix-runtime-spi-expose-flutter-gpu-render-pass-end.patch` | Expor `RenderPass.end` do Flutter GPU pela tabela do Runtime SPI. | |
 
 O fluxo é:
 
