@@ -61,6 +61,8 @@ core_archive="$output_directory/libflutter_engine_core.a"
 icu_data="$output_directory/icudtl.dat"
 assets_directory="$output_directory/gen/flutter/shell/platform/embedder/assets"
 shader_bundle="$output_directory/playground.shaderbundle"
+# The compute fixture (ComputeTriangle) lives in the flutter_gpu test bundle, not in the playground one.
+compute_shader_bundle="$output_directory/test.shaderbundle"
 lavapipe_icd="${TITAN_LAVAPIPE_ICD:-/usr/share/vulkan/icd.d/lvp_icd.json}"
 
 mkdir -p "$output_directory" "$no_unittests_output_directory"
@@ -500,8 +502,8 @@ run_core_gpu_triangle() {
 run_core_gpu_compute() {
   [[ -x "$core_gpu_compute" ]] ||
     die "core gpu compute executable is missing: $core_gpu_compute"
-  [[ -f "$shader_bundle" ]] ||
-    die "core gpu compute shader bundle is missing: $shader_bundle"
+  [[ -f "$compute_shader_bundle" ]] ||
+    die "core gpu compute shader bundle is missing: $compute_shader_bundle"
 
   if [[ ! -f "$lavapipe_icd" ]]; then
     printf 'core gpu compute: skipped (lavapipe not installed)\n'
@@ -509,7 +511,7 @@ run_core_gpu_compute() {
   fi
 
   if ! VK_DRIVER_FILES="$lavapipe_icd" "$core_gpu_compute" "$icu_data" \
-      "$assets_directory" "$shader_bundle"; then
+      "$assets_directory" "$compute_shader_bundle"; then
     die "core gpu compute executable failed"
   fi
   check_core_engine_dependencies "$core_gpu_compute"

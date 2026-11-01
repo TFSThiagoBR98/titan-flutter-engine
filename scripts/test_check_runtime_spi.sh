@@ -152,6 +152,7 @@ printf '[  PASSED  ] 1 test.\n'
 SHELL_EOF
 chmod +x "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/shell_unittests"
 : > "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/playground.shaderbundle"
+: > "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/test.shaderbundle"
 printf '%s\n' "$FAKE_ARGS_GN" > \
   "$TITAN_WORK_DIR/flutter/engine/src/out/host_debug/args.gn"
 printf 'build\n' >> "$ORDER_LOG"
