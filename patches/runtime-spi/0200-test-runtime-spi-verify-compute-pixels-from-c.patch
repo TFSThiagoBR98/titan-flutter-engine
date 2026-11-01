@@ -1,0 +1,137 @@
+# Why: U1-2; mirror the Dart compute render and pixel readback case. Align the
+# C fixture with the upstream compute triangle by using separate compute and
+# render uniforms, the Dart clear color, and matching RGBA proof pixels.
+diff --git a/engine/src/flutter/runtime_spi/testing/c_test_gpu_compute.c b/engine/src/flutter/runtime_spi/testing/c_test_gpu_compute.c
+index dce45b5f31a..eb9a6d891dd 100644
+--- a/engine/src/flutter/runtime_spi/testing/c_test_gpu_compute.c
++++ b/engine/src/flutter/runtime_spi/testing/c_test_gpu_compute.c
+@@ -17,6 +17,11 @@ typedef struct {
+   float color[4];
+ } VertInfo;
+ 
++typedef struct {
++  float scale;
++  float padding[3];
++} TriangleInfo;
++
+ typedef struct {
+   CTestRuntime* runtime;
+   const FlutterSpiEngineApi* engine_api;
+@@ -35,6 +40,7 @@ typedef struct {
+   FlutterSpiGpuRenderPass* render_pass;
+   FlutterSpiGpuCommandBuffer* command_buffer;
+   FlutterSpiImage* image;
++  size_t compute_uniform_offset;
+   size_t uniform_offset;
+   int32_t uniform_size;
+ } ComputeState;
+@@ -173,9 +179,9 @@ static void OnImageBytes(void* user_data,
+                          size_t size) {
+   ComputeState* state = (ComputeState*)user_data;
+   CTestRuntime* runtime = state->runtime;
+-  const size_t expected_size = 64u * 64u * 4u;
+-  const size_t center_offset = (32u * 64u + 32u) * 4u;
+-  const size_t corner_offset = (1u * 64u + 1u) * 4u;
++  const size_t expected_size = 100u * 100u * 4u;
++  const size_t center_offset = (50u * 100u + 50u) * 4u;
++  const size_t corner_offset = (1u * 100u + 1u) * 4u;
+ 
+   if (!IsResultOk(runtime, result, "image_to_bytes")) {
+     Finish(state);
+@@ -187,8 +193,8 @@ static void OnImageBytes(void* user_data,
+     Finish(state);
+     return;
+   }
+-  if (abs((int)bytes[center_offset] - 255) > 1 ||
+-      abs((int)bytes[center_offset + 1]) > 1 ||
++  if (abs((int)bytes[center_offset]) > 1 ||
++      abs((int)bytes[center_offset + 1] - 255) > 1 ||
+       abs((int)bytes[center_offset + 2]) > 1 ||
+       abs((int)bytes[center_offset + 3] - 255) > 1) {
+     SetFailureWithMessage(runtime, kFlutterSpiInternalError,
+@@ -196,10 +202,10 @@ static void OnImageBytes(void* user_data,
+     Finish(state);
+     return;
+   }
+-  if (abs((int)bytes[corner_offset]) > 1 ||
++  if (abs((int)bytes[corner_offset] - 255) > 1 ||
+       abs((int)bytes[corner_offset + 1]) > 1 ||
+       abs((int)bytes[corner_offset + 2]) > 1 ||
+-      abs((int)bytes[corner_offset + 3]) > 1) {
++      abs((int)bytes[corner_offset + 3] - 255) > 1) {
+     SetFailureWithMessage(runtime, kFlutterSpiInternalError,
+                           "image_to_bytes clear pixel mismatch");
+     Finish(state);
+@@ -338,8 +344,8 @@ static bool CreateRenderResources(
+       .struct_size = sizeof(FlutterSpiGpuTextureDescriptor),
+       .storage_mode = kFlutterSpiGpuStorageModeDevicePrivate,
+       .format = kFlutterSpiGpuPixelFormatR8G8B8A8UNormInt,
+-      .width = 64,
+-      .height = 64,
++      .width = 100,
++      .height = 100,
+       .sample_count = 1,
+       .texture_type = kFlutterSpiGpuTextureType2D,
+       .usage = kFlutterSpiGpuTextureUsageRenderTarget |
+@@ -376,8 +382,12 @@ static bool CreateRenderResources(
+ 
+   const size_t vertex_data_size = 24;
+   const size_t alignment = (size_t)context_info->minimum_uniform_alignment;
+-  state->uniform_offset =
++  state->compute_uniform_offset =
+       (vertex_data_size + alignment - 1) / alignment * alignment;
++  state->uniform_offset =
++      (state->compute_uniform_offset + (size_t)state->compute_uniform_size +
++       alignment - 1) /
++      alignment * alignment;
+   const size_t buffer_size =
+       state->uniform_offset + (size_t)state->uniform_size;
+   uint8_t* buffer_data = (uint8_t*)calloc(1, buffer_size);
+@@ -389,15 +399,23 @@ static bool CreateRenderResources(
+   const float vertices[] = {
+       -0.5f, -0.5f, 0.5f, -0.5f, 0.0f, 0.5f,
+   };
+-  const VertInfo uniform = {
++  const TriangleInfo compute_uniform = {
++      .scale = 0.5f,
++      .padding = {0.0f, 0.0f, 0.0f},
++  };
++  const VertInfo render_uniform = {
+       .mvp = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+               0.0f, 0.0f, 0.0f, 0.0f, 1.0f},
+-      .color = {1.0f, 0.0f, 0.0f, 1.0f},
++      .color = {0.0f, 1.0f, 0.0f, 1.0f},
+   };
+   memcpy(buffer_data, vertices, sizeof(vertices));
+-  memcpy(buffer_data + state->uniform_offset, &uniform,
+-         sizeof(uniform) < (size_t)state->uniform_size
+-             ? sizeof(uniform)
++  memcpy(buffer_data + state->compute_uniform_offset, &compute_uniform,
++         sizeof(compute_uniform) < (size_t)state->compute_uniform_size
++             ? sizeof(compute_uniform)
++             : (size_t)state->compute_uniform_size);
++  memcpy(buffer_data + state->uniform_offset, &render_uniform,
++         sizeof(render_uniform) < (size_t)state->uniform_size
++             ? sizeof(render_uniform)
+              : (size_t)state->uniform_size);
+ 
+   const FlutterSpiGpuBufferDescriptor buffer_descriptor = {
+@@ -445,7 +463,8 @@ static bool CreateRenderResources(
+           gpu->compute_pass_bind_uniform_indexed(
+               state->compute_pass, state->compute_shader,
+               state->compute_uniform_index, state->buffer,
+-              state->uniform_offset, (size_t)state->compute_uniform_size),
++              state->compute_uniform_offset,
++              (size_t)state->compute_uniform_size),
+           "compute_pass_bind_uniform_indexed") ||
+       !IsResultOk(state->runtime,
+                   gpu->compute_pass_bind_storage_buffer_indexed(
+@@ -469,7 +488,7 @@ static bool CreateRenderResources(
+       .struct_size = sizeof(FlutterSpiGpuColorAttachment),
+       .load_action = kFlutterSpiGpuLoadActionClear,
+       .store_action = kFlutterSpiGpuStoreActionStore,
+-      .clear_color = {0.0f, 0.0f, 0.0f, 0.0f},
++      .clear_color = {1.0f, 0.0f, 0.0f, 1.0f},
+       .texture = state->texture,
+       .resolve_texture = NULL,
+       .mip_level = 0,
