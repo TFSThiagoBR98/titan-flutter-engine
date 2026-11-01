@@ -1,0 +1,14 @@
+# Why: Upstream: 327cc39 Skia requires the complete SkColorSpace definition
+# when destroying image info references.
+diff --git a/engine/src/flutter/lib/ui/painting/image_readback.cc b/engine/src/flutter/lib/ui/painting/image_readback.cc
+index 4be27dbcb50..d1670257140 100644
+--- a/engine/src/flutter/lib/ui/painting/image_readback.cc
++++ b/engine/src/flutter/lib/ui/painting/image_readback.cc
+@@ -12,6 +12,7 @@
+ #include "flutter/lib/ui/painting/image_encoding_impl.h"
+ #include "flutter/lib/ui/painting/image_encoding_impeller.h"
+ #include "flutter/lib/ui/painting/image_encoding_skia.h"
++#include "third_party/skia/include/core/SkColorSpace.h"
+ #include "third_party/skia/include/core/SkSurface.h"
+ #include "third_party/skia/include/encode/SkPngEncoder.h"
+ 

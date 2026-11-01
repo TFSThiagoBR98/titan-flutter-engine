@@ -1,7 +1,7 @@
 # Why: move frame decoding, disposal state, durations, and wraparound into a
 # Dart-free IO-thread component while preserving the codec callback contract.
 diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
-index 2a155164c01..41cbc68edbb 100644
+index 37967d3d950..c92655e6727 100644
 --- a/engine/src/flutter/lib/ui/BUILD.gn
 +++ b/engine/src/flutter/lib/ui/BUILD.gn
 @@ -119,6 +119,8 @@ source_set("ui_image_output") {
@@ -15,20 +15,20 @@ index 2a155164c01..41cbc68edbb 100644
      "painting/image_encoding_skia.h",
 diff --git a/engine/src/flutter/lib/ui/painting/animated_image_frames.cc b/engine/src/flutter/lib/ui/painting/animated_image_frames.cc
 new file mode 100644
-index 00000000000..0e72f098be9
+index 00000000000..77275db7fee
 --- /dev/null
 +++ b/engine/src/flutter/lib/ui/painting/animated_image_frames.cc
-@@ -0,0 +1,174 @@
+@@ -0,0 +1,217 @@
 +// Copyright 2013 The Flutter Authors. All rights reserved.
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
 +
 +#include "flutter/lib/ui/painting/animated_image_frames.h"
 +
-+#include <format>
 +#include <sstream>
 +#include <utility>
 +
++#include "third_party/abseil-cpp/absl/strings/str_cat.h"
 +#include "flutter/fml/logging.h"
 +#include "flutter/lib/ui/painting/display_list_image_gpu.h"
 +#if IMPELLER_SUPPORTS_RENDERING
@@ -43,14 +43,35 @@ index 00000000000..0e72f098be9
 +
 +AnimatedImageFrames::AnimatedImageFrames(
 +    std::shared_ptr<ImageGenerator> generator,
-+    bool impeller_enabled)
++    bool impeller_enabled,
++    SkISize target_size)
 +    : generator_(std::move(generator)),
 +      frame_count_(generator_->GetFrameCount()),
 +      repetition_count_(generator_->GetPlayCount() ==
 +                                ImageGenerator::kInfinitePlayCount
 +                            ? -1
 +                            : generator_->GetPlayCount() - 1),
-+      impeller_enabled_(impeller_enabled) {}
++      impeller_enabled_(impeller_enabled),
++      target_size_(target_size) {}
++
++namespace {
++
++std::optional<SkBitmap> ResizeFrame(const SkBitmap& frame,
++                                    SkISize target_size) {
++  SkBitmap resized;
++  if (!resized.tryAllocPixels(frame.info().makeDimensions(target_size))) {
++    return std::nullopt;
++  }
++  if (!frame.pixmap().scalePixels(
++          resized.pixmap(),
++          SkSamplingOptions(SkFilterMode::kLinear, SkMipmapMode::kNone))) {
++    return std::nullopt;
++  }
++  resized.setImmutable();
++  return resized;
++}
++
++}  // namespace
 +
 +std::pair<sk_sp<DlImage>, std::string> AnimatedImageFrames::DecodeFrame(
 +    const AnimatedImageFramesContext& context,
@@ -113,6 +134,28 @@ index 00000000000..0e72f098be9
 +    restore_bg_color_rect_.reset();
 +  }
 +
++  SkISize target_size = target_size_;
++#if IMPELLER_SUPPORTS_RENDERING
++  if (impeller_enabled_ && context.impeller_context) {
++    target_size = ImageDecoderImpeller::ClampToMaxTextureSize(
++        target_size,
++        context.impeller_context->GetResourceAllocator()
++            ->GetMaxTextureSizeSupported());
++  }
++#endif  // IMPELLER_SUPPORTS_RENDERING
++  if (bitmap.dimensions() != target_size) {
++    std::optional<SkBitmap> resized = ResizeFrame(bitmap, target_size);
++    if (!resized.has_value()) {
++      std::string error =
++          absl::StrCat("Could not resize frame ", frame_index, " to ",
++                       target_size.width(), "x", target_size.height());
++      FML_LOG(ERROR) << error;
++      return {nullptr, std::move(error)};
++    }
++    bitmap = std::move(resized.value());
++    info = bitmap.info();
++  }
++
 +#if IMPELLER_SUPPORTS_RENDERING
 +  if (impeller_enabled_) {
 +#ifdef FML_OS_IOS
@@ -134,9 +177,9 @@ index 00000000000..0e72f098be9
 +
 +    const auto pixel_format = ImageDecoderImpeller::ToPixelFormat(info.colorType());
 +    if (!pixel_format.has_value()) {
-+      std::string decode_error(
-+          std::format("Unsupported pixel format (SkColorType={})",
-+                      static_cast<int>(info.colorType())));
++      std::string decode_error =
++          absl::StrCat("Unsupported pixel format (SkColorType=",
++                       static_cast<int>(info.colorType()), ")");
 +      FML_DLOG(ERROR) << decode_error;
 +      return {nullptr, decode_error};
 +    }
@@ -195,10 +238,10 @@ index 00000000000..0e72f098be9
 +}  // namespace flutter
 diff --git a/engine/src/flutter/lib/ui/painting/animated_image_frames.h b/engine/src/flutter/lib/ui/painting/animated_image_frames.h
 new file mode 100644
-index 00000000000..f98ddf3122d
+index 00000000000..f89291e3af9
 --- /dev/null
 +++ b/engine/src/flutter/lib/ui/painting/animated_image_frames.h
-@@ -0,0 +1,65 @@
+@@ -0,0 +1,67 @@
 +// Copyright 2013 The Flutter Authors. All rights reserved.
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -232,7 +275,8 @@ index 00000000000..f98ddf3122d
 +class AnimatedImageFrames {
 + public:
 +  AnimatedImageFrames(std::shared_ptr<ImageGenerator> generator,
-+                      bool impeller_enabled);
++                      bool impeller_enabled,
++                      SkISize target_size);
 +
 +  int frame_count() const { return frame_count_; }
 +  int repetition_count() const { return repetition_count_; }
@@ -254,6 +298,7 @@ index 00000000000..f98ddf3122d
 +  const int frame_count_;
 +  const int repetition_count_;
 +  const bool impeller_enabled_;
++  const SkISize target_size_;
 +
 +  int next_frame_index_ = 0;
 +  std::optional<SkBitmap> last_required_frame_;
@@ -265,10 +310,10 @@ index 00000000000..f98ddf3122d
 +
 +#endif  // FLUTTER_LIB_UI_PAINTING_ANIMATED_IMAGE_FRAMES_H_
 diff --git a/engine/src/flutter/lib/ui/painting/multi_frame_codec.cc b/engine/src/flutter/lib/ui/painting/multi_frame_codec.cc
-index 4010af4f77f..894b22c9d24 100644
+index 6ea4e5fd7da..8aa99b3911e 100644
 --- a/engine/src/flutter/lib/ui/painting/multi_frame_codec.cc
 +++ b/engine/src/flutter/lib/ui/painting/multi_frame_codec.cc
-@@ -6,38 +6,18 @@
+@@ -6,44 +6,18 @@
  
  #include <utility>
  
@@ -281,41 +326,66 @@ index 4010af4f77f..894b22c9d24 100644
 -#if IMPELLER_SUPPORTS_RENDERING
 -#include "flutter/impeller/renderer/context.h"
 -#include "flutter/lib/ui/painting/image_decoder_impeller.h"
+-#include "third_party/abseil-cpp/absl/strings/str_cat.h"
 -#endif  // IMPELLER_SUPPORTS_RENDERING
+-#include "third_party/abseil-cpp/absl/strings/str_cat.h"
 +#include "flutter/lib/ui/ui_dart_state.h"
  #include "third_party/dart/runtime/include/dart_api.h"
 -#include "third_party/skia/include/codec/SkCodecAnimation.h"
 -#include "third_party/skia/include/core/SkImage.h"
 -#include "third_party/skia/include/core/SkPixelRef.h"
+-#include "third_party/skia/include/core/SkSamplingOptions.h"
 -#include "third_party/skia/include/gpu/ganesh/SkImageGanesh.h"
  #include "third_party/tonic/logging/dart_invoke.h"
  
  namespace flutter {
 +namespace {
  
--MultiFrameCodec::MultiFrameCodec(std::shared_ptr<ImageGenerator> generator)
--    : state_(new State(std::move(generator))) {}
+-MultiFrameCodec::MultiFrameCodec(std::shared_ptr<ImageGenerator> generator,
+-                                 SkISize target_size)
+-    : state_(new State(std::move(generator), target_size)) {}
 -
 -MultiFrameCodec::~MultiFrameCodec() = default;
 -
--MultiFrameCodec::State::State(std::shared_ptr<ImageGenerator> generator)
+-MultiFrameCodec::State::State(std::shared_ptr<ImageGenerator> generator,
+-                              SkISize target_size)
 -    : generator_(std::move(generator)),
 -      frameCount_(generator_->GetFrameCount()),
 -      repetitionCount_(generator_->GetPlayCount() ==
 -                               ImageGenerator::kInfinitePlayCount
 -                           ? -1
 -                           : generator_->GetPlayCount() - 1),
--      is_impeller_enabled_(UIDartState::Current()->IsImpellerEnabled()) {}
+-      is_impeller_enabled_(UIDartState::Current()->IsImpellerEnabled()),
+-      target_size_(target_size) {}
 -
 -static void InvokeNextFrameCallback(
 +void InvokeNextFrameCallback(
      const fml::RefPtr<CanvasImage>& image,
      int duration,
      const std::string& decode_error,
-@@ -55,184 +35,14 @@ static void InvokeNextFrameCallback(
+@@ -61,240 +35,14 @@ static void InvokeNextFrameCallback(
                       tonic::ToDart(decode_error)});
  }
  
+-// Resizes a fully composited frame to |target_size|. This uses the same
+-// sampling as the resizing of single-frame images (`ResizeRasterImage` in
+-// image_decoder_skia.cc and `ResizeOnCpu` in image_decoder_impeller.cc), so
+-// `targetWidth` and `targetHeight` behave the same way for every image.
+-static std::optional<SkBitmap> ResizeFrame(const SkBitmap& frame,
+-                                           SkISize target_size) {
+-  SkBitmap resized;
+-  if (!resized.tryAllocPixels(frame.info().makeDimensions(target_size))) {
+-    return std::nullopt;
+-  }
+-  if (!frame.pixmap().scalePixels(
+-          resized.pixmap(),
+-          SkSamplingOptions(SkFilterMode::kLinear, SkMipmapMode::kNone))) {
+-    return std::nullopt;
+-  }
+-  resized.setImmutable();
+-  return resized;
+-}
+-
 -std::pair<sk_sp<DlImage>, std::string>
 -MultiFrameCodec::State::GetNextFrameImage(
 -    const fml::WeakPtr<GrDirectContext>& resourceContext,
@@ -405,6 +475,39 @@ index 4010af4f77f..894b22c9d24 100644
 -    restoreBGColorRect_.reset();
 -  }
 -
+-  // Frames are decoded and composited at the intrinsic size of the image
+-  // above, because frame rects, blending and disposal are all defined in the
+-  // coordinate space of the full canvas, and `lastRequiredFrame_` must keep
+-  // that size to be reused as a backdrop. Only the finished frame is resized
+-  // to the size requested through `targetWidth` and `targetHeight` (e.g. by
+-  // `cacheWidth`/`cacheHeight` or `ResizeImage` in the framework).
+-  //
+-  // See https://github.com/flutter/flutter/issues/90804.
+-  SkISize target_size = target_size_;
+-#if IMPELLER_SUPPORTS_RENDERING
+-  if (is_impeller_enabled_ && impeller_context) {
+-    // Like single-frame images (see ImageDecoderImpeller::DecompressTexture),
+-    // never upload a frame larger than the maximum texture size. The Skia
+-    // backend below limits the size when it creates the texture instead.
+-    target_size = ImageDecoderImpeller::ClampToMaxTextureSize(
+-        target_size,
+-        impeller_context->GetResourceAllocator()->GetMaxTextureSizeSupported());
+-  }
+-#endif  // IMPELLER_SUPPORTS_RENDERING
+-  if (bitmap.dimensions() != target_size) {
+-    std::optional<SkBitmap> resized = ResizeFrame(bitmap, target_size);
+-    if (!resized.has_value()) {
+-      std::string decode_error =
+-          absl::StrCat("Could not resize frame ", nextFrameIndex_, " to ",
+-                       target_size.width(), "x", target_size.height());
+-      FML_LOG(ERROR) << decode_error;
+-      return std::make_pair(nullptr, decode_error);
+-    }
+-    // `lastRequiredFrame_` keeps sharing the full-size pixels.
+-    bitmap = std::move(resized.value());
+-    info = bitmap.info();
+-  }
+-
 -#if IMPELLER_SUPPORTS_RENDERING
 -  if (is_impeller_enabled_) {
 -#ifdef FML_OS_IOS
@@ -430,9 +533,9 @@ index 4010af4f77f..894b22c9d24 100644
 -    const auto pixel_format =
 -        ImageDecoderImpeller::ToPixelFormat(info.colorType());
 -    if (!pixel_format.has_value()) {
--      std::string decode_error(
--          std::format("Unsupported pixel format (SkColorType={})",
--                      static_cast<int>(info.colorType())));
+-      std::string decode_error =
+-          absl::StrCat("Unsupported pixel format (SkColorType=",
+-                       static_cast<int>(info.colorType()), ")");
 -      FML_DLOG(ERROR) << decode_error;
 -      return std::make_pair(nullptr, decode_error);
 -    }
@@ -466,8 +569,12 @@ index 4010af4f77f..894b22c9d24 100644
 -            if (resourceContext) {
 -              SkPixmap pixmap(bitmap.info(), bitmap.pixelRef()->pixels(),
 -                              bitmap.pixelRef()->rowBytes());
+-              // Like single-frame images (see UploadRasterImage in
+-              // image_decoder_skia.cc), limit the texture to the maximum
+-              // texture size.
 -              skImage = SkImages::CrossContextTextureFromPixmap(
--                  resourceContext.get(), pixmap, true);
+-                  resourceContext.get(), pixmap, /*buildMips=*/true,
+-                  /*limitToMaxTextureSize=*/true);
 -            } else {
 -              // Defer decoding until time of draw later on the raster thread.
 -              // Can happen when GL operations are currently forbidden such as
@@ -502,7 +609,7 @@ index 4010af4f77f..894b22c9d24 100644
      ui_task_runner->PostTask(
          fml::MakeCopyable([callback = std::move(callback)]() {
            // must be destroyed on UI thread.
-@@ -241,31 +51,37 @@ void MultiFrameCodec::State::GetNextFrameAndInvokeCallback(
+@@ -303,31 +51,39 @@ void MultiFrameCodec::State::GetNextFrameAndInvokeCallback(
    }
  #endif  // FML_OS_IOS_SIMULATOR
  
@@ -545,16 +652,18 @@ index 4010af4f77f..894b22c9d24 100644
  
 +}  // namespace
 +
-+MultiFrameCodec::MultiFrameCodec(std::shared_ptr<ImageGenerator> generator)
++MultiFrameCodec::MultiFrameCodec(std::shared_ptr<ImageGenerator> generator,
++                                 SkISize target_size)
 +    : frames_(std::make_shared<AnimatedImageFrames>(
-+          std::move(generator), UIDartState::Current()->IsImpellerEnabled())) {}
++          std::move(generator), UIDartState::Current()->IsImpellerEnabled(),
++          target_size)) {}
 +
 +MultiFrameCodec::~MultiFrameCodec() = default;
 +
  Dart_Handle MultiFrameCodec::getNextFrame(Dart_Handle callback_handle) {
    static size_t trace_counter = 1;
    const size_t trace_id = trace_counter++;
-@@ -275,10 +91,9 @@ Dart_Handle MultiFrameCodec::getNextFrame(Dart_Handle callback_handle) {
+@@ -337,10 +93,9 @@ Dart_Handle MultiFrameCodec::getNextFrame(Dart_Handle callback_handle) {
    }
  
    auto* dart_state = UIDartState::Current();
@@ -566,7 +675,7 @@ index 4010af4f77f..894b22c9d24 100644
      std::string decode_error("Could not provide any frame.");
      FML_LOG(ERROR) << decode_error;
      task_runners.GetUITaskRunner()->PostTask(fml::MakeCopyable(
-@@ -294,34 +109,32 @@ Dart_Handle MultiFrameCodec::getNextFrame(Dart_Handle callback_handle) {
+@@ -356,34 +111,32 @@ Dart_Handle MultiFrameCodec::getNextFrame(Dart_Handle callback_handle) {
    task_runners.GetIOTaskRunner()->PostTask(fml::MakeCopyable(
        [callback = std::make_unique<tonic::DartPersistentValue>(
             tonic::DartState::Current(), callback_handle),
@@ -616,22 +725,23 @@ index 4010af4f77f..894b22c9d24 100644
  
  }  // namespace flutter
 diff --git a/engine/src/flutter/lib/ui/painting/multi_frame_codec.h b/engine/src/flutter/lib/ui/painting/multi_frame_codec.h
-index 413574a7c5f..e046c3fb2ee 100644
+index 092122518bc..4f63294f703 100644
 --- a/engine/src/flutter/lib/ui/painting/multi_frame_codec.h
 +++ b/engine/src/flutter/lib/ui/painting/multi_frame_codec.h
-@@ -6,10 +6,8 @@
+@@ -6,11 +6,8 @@
  #define FLUTTER_LIB_UI_PAINTING_MULTI_FRAME_CODEC_H_
  
  #include "flutter/fml/macros.h"
 +#include "flutter/lib/ui/painting/animated_image_frames.h"
  #include "flutter/lib/ui/painting/codec.h"
 -#include "flutter/lib/ui/painting/image_generator.h"
+-#include "third_party/skia/include/core/SkSize.h"
 -
 -#include <utility>
  
  namespace flutter {
  
-@@ -29,54 +27,7 @@ class MultiFrameCodec : public Codec {
+@@ -43,57 +40,7 @@ class MultiFrameCodec : public Codec {
    Dart_Handle getNextFrame(Dart_Handle args) override;
  
   private:
@@ -645,12 +755,15 @@ index 413574a7c5f..e046c3fb2ee 100644
 -  // shares it with the IO task runner's decoding work, and sets the live_
 -  // member to false when it is destructed.
 -  struct State {
--    explicit State(std::shared_ptr<ImageGenerator> generator);
+-    State(std::shared_ptr<ImageGenerator> generator, SkISize target_size);
 -
 -    const std::shared_ptr<ImageGenerator> generator_;
 -    const int frameCount_;
 -    const int repetitionCount_;
 -    bool is_impeller_enabled_ = false;
+-    // The size of the frames delivered to Dart, as requested through
+-    // `targetWidth` and `targetHeight`.
+-    const SkISize target_size_;
 -
 -    // The non-const members and functions below here are only read or written
 -    // to on the IO thread. They are not safe to access or write on the UI

@@ -1,6 +1,6 @@
 # Why: Add the GN seam target and checker before moving lib/ui sources.
 diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
-index 6ed8db4f6e4..20ffebaaef5 100644
+index 52306e2d4aa..f68ea1368a6 100644
 --- a/engine/src/flutter/lib/ui/BUILD.gn
 +++ b/engine/src/flutter/lib/ui/BUILD.gn
 @@ -11,6 +11,17 @@ if (is_fuchsia) {

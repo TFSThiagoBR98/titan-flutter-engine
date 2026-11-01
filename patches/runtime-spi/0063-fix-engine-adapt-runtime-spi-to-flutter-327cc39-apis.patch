@@ -1,0 +1,86 @@
+# Why: Upstream: 40f7050aace replaces fml::Status and fml::StatusOr with
+# Abseil status types. Upstream: 2381790d3b6 carries resolved animated image
+# target sizes into frame decoding.
+diff --git a/engine/src/flutter/lib/ui/painting/runtime_effect_loader.cc b/engine/src/flutter/lib/ui/painting/runtime_effect_loader.cc
+index 8eac642d444..97c86a93fe9 100644
+--- a/engine/src/flutter/lib/ui/painting/runtime_effect_loader.cc
++++ b/engine/src/flutter/lib/ui/painting/runtime_effect_loader.cc
+@@ -14,6 +14,7 @@
+ #endif
+ #include "flutter/impeller/runtime_stage/runtime_stage.h"
+ #include "display_list/effects/dl_runtime_effect_skia.h"
++#include "third_party/abseil-cpp/absl/status/status.h"
+ #include "third_party/skia/include/core/SkString.h"
+ #include "third_party/skia/include/effects/SkRuntimeEffect.h"
+ 
+@@ -43,17 +44,13 @@ std::string LibraryPrefix(const std::string& library_id) {
+   return "Asset '" + library_id + "' ";
+ }
+ 
+-fml::Status InvalidArgument(std::string message) {
+-  // fml::Status stores a string_view, so keep the diagnostic alive until the
+-  // caller has copied it from the returned StatusOr.
+-  static thread_local std::string status_message;
+-  status_message = std::move(message);
+-  return fml::Status(fml::StatusCode::kInvalidArgument, status_message);
++absl::Status InvalidArgument(std::string message) {
++  return absl::InvalidArgumentError(std::move(message));
+ }
+ 
+ }  // namespace
+ 
+-fml::StatusOr<LoadedRuntimeEffect> LoadRuntimeEffect(
++absl::StatusOr<LoadedRuntimeEffect> LoadRuntimeEffect(
+     std::unique_ptr<fml::Mapping> data,
+     const std::string& library_id,
+     const RuntimeEffectLoadContext& context) {
+diff --git a/engine/src/flutter/lib/ui/painting/runtime_effect_loader.h b/engine/src/flutter/lib/ui/painting/runtime_effect_loader.h
+index 2dd585c2f97..39657d6cbc3 100644
+--- a/engine/src/flutter/lib/ui/painting/runtime_effect_loader.h
++++ b/engine/src/flutter/lib/ui/painting/runtime_effect_loader.h
+@@ -13,9 +13,9 @@
+ #include "flutter/display_list/effects/dl_runtime_effect.h"
+ #include "flutter/fml/mapping.h"
+ #include "flutter/fml/memory/weak_ptr.h"
+-#include "flutter/fml/status_or.h"
+ #include "flutter/fml/task_runner.h"
+ #include "flutter/impeller/core/runtime_types.h"
++#include "third_party/abseil-cpp/absl/status/statusor.h"
+ 
+ namespace flutter {
+ 
+@@ -35,7 +35,7 @@ struct RuntimeEffectLoadContext {
+   fml::RefPtr<fml::TaskRunner> raster_task_runner;
+ };
+ 
+-fml::StatusOr<LoadedRuntimeEffect> LoadRuntimeEffect(
++absl::StatusOr<LoadedRuntimeEffect> LoadRuntimeEffect(
+     std::unique_ptr<fml::Mapping> data,
+     const std::string& library_id,
+     const RuntimeEffectLoadContext& context);
+diff --git a/engine/src/flutter/runtime_spi/effects/spi_fragment.cc b/engine/src/flutter/runtime_spi/effects/spi_fragment.cc
+index 9aa3a1e301e..9b9940ae431 100644
+--- a/engine/src/flutter/runtime_spi/effects/spi_fragment.cc
++++ b/engine/src/flutter/runtime_spi/effects/spi_fragment.cc
+@@ -18,7 +18,6 @@
+ #include "flutter/display_list/effects/dl_color_source.h"
+ #include "flutter/display_list/effects/dl_image_filter.h"
+ #include "flutter/fml/mapping.h"
+-#include "flutter/fml/status.h"
+ #include "flutter/impeller/core/runtime_types.h"
+ #include "flutter/lib/ui/painting/runtime_effect_loader.h"
+ #include "flutter/runtime_spi/effects/spi_image_filter.h"
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_codec.cc b/engine/src/flutter/runtime_spi/image/spi_image_codec.cc
+index a1a11a78023..99b9d8e41ca 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_codec.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_codec.cc
+@@ -268,7 +268,8 @@ FlutterSpiResult SpiCodecCreate(
+   std::shared_ptr<AnimatedImageFrames> animated_frames;
+   if (frame_count > 1) {
+     animated_frames =
+-        std::make_shared<AnimatedImageFrames>(std::move(generator), false);
++        std::make_shared<AnimatedImageFrames>(std::move(generator), false,
++                                              target_size);
+   }
+   auto codec = std::make_shared<SpiImageCodec>(
+       image_decoding, task_runners.GetUITaskRunner(),

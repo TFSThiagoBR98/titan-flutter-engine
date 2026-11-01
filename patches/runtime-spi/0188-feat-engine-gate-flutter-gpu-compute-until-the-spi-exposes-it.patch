@@ -1,0 +1,165 @@
+# Why: keep the Flutter GPU compute API explicit and testable while the
+# runtime SPI compute table is deferred to U1-2.
+diff --git a/engine/src/flutter/lib/gpu/BUILD.gn b/engine/src/flutter/lib/gpu/BUILD.gn
+index 0d76d183bfa..9cacdebd388 100644
+--- a/engine/src/flutter/lib/gpu/BUILD.gn
++++ b/engine/src/flutter/lib/gpu/BUILD.gn
+@@ -35,10 +35,7 @@ source_set("gpu") {
+       "binding_set.h",
+       "command_buffer.cc",
+       "command_buffer.h",
+-      "compute_pass.cc",
+-      "compute_pass.h",
+-      "compute_pipeline.cc",
+-      "compute_pipeline.h",
++      # U1-2: the runtime SPI compute table is not available yet.
+       "context.cc",
+       "context.h",
+       "device_buffer.cc",
+diff --git a/engine/src/flutter/lib/gpu/lib/src/command_buffer.dart b/engine/src/flutter/lib/gpu/lib/src/command_buffer.dart
+index 9bb3072318b..fb22b29745f 100644
+--- a/engine/src/flutter/lib/gpu/lib/src/command_buffer.dart
++++ b/engine/src/flutter/lib/gpu/lib/src/command_buffer.dart
+@@ -199,8 +199,7 @@ base class CommandBuffer extends NativeFieldWrapperClass1 {
+     _checkNotSubmitted('CommandBuffer.createComputePass()');
+     if (!_gpuContext.supportsCompute) {
+       throw UnsupportedError(
+-        'Compute is not supported by this GpuContext. Check '
+-        'GpuContext.supportsCompute before creating a ComputePass.',
++        'Compute shaders need the runtime SPI compute table (U1-2).',
+       );
+     }
+     return ComputePass._(_gpuContext, this);
+diff --git a/engine/src/flutter/lib/gpu/lib/src/context.dart b/engine/src/flutter/lib/gpu/lib/src/context.dart
+index f4f0075475f..fc59b2a126a 100644
+--- a/engine/src/flutter/lib/gpu/lib/src/context.dart
++++ b/engine/src/flutter/lib/gpu/lib/src/context.dart
+@@ -342,58 +342,44 @@ base class GpuContext extends NativeFieldWrapperClass1 {
+   /// Whether this context supports compute: [ComputePipeline],
+   /// [ComputePass] and storage buffers.
+   ///
+-  /// True on Metal and Vulkan. False on OpenGL ES, where
+-  /// [createComputePipeline] and [CommandBuffer.createComputePass] throw. An
+-  /// app that uses compute checks this and takes its own non-compute path
+-  /// where it is false.
++  /// False until the runtime SPI exposes the compute table in U1-2.
+   bool get supportsCompute {
+-    return _getSupportsCompute();
++    return false;
+   }
+ 
+   /// The most invocations (threads) one compute workgroup can run, across all
+   /// three dimensions of the shader's `local_size`.
+   ///
+-  /// Every device that supports compute allows at least 128. Zero where
+-  /// [supportsCompute] is false. A pipeline can allow fewer than this on
+-  /// Metal, for example when its shader uses many registers, in which case
+-  /// [createComputePipeline] throws.
++  /// Zero until the runtime SPI exposes the compute table in U1-2.
+   int get maxComputeWorkgroupInvocations {
+-    return _getMaximumComputeWorkgroupInvocations();
++    return 0;
+   }
+ 
+   /// The largest `local_size` a compute shader can declare along each
+   /// dimension. The product of the three must also be at most
+   /// [maxComputeWorkgroupInvocations].
+   ///
+-  /// Every device that supports compute allows at least 128 x 128 x 64.
+-  /// Zero in every dimension where [supportsCompute] is false.
++  /// Zero in every dimension until the runtime SPI exposes the compute table
++  /// in U1-2.
+   ComputeExtent get maxComputeWorkgroupSize {
+-    return ComputeExtent(
+-      _getMaximumComputeWorkgroupSize(0),
+-      _getMaximumComputeWorkgroupSize(1),
+-      _getMaximumComputeWorkgroupSize(2),
+-    );
++    return const ComputeExtent(0, 0, 0);
+   }
+ 
+   /// The most workgroups one [ComputePass.dispatch] can launch along each
+   /// dimension.
+   ///
+-  /// Zero in every dimension where [supportsCompute] is false.
++  /// Zero in every dimension until the runtime SPI exposes the compute table
++  /// in U1-2.
+   ComputeExtent get maxComputeWorkgroupCount {
+-    return ComputeExtent(
+-      _getMaximumComputeWorkgroupCount(0),
+-      _getMaximumComputeWorkgroupCount(1),
+-      _getMaximumComputeWorkgroupCount(2),
+-    );
++    return const ComputeExtent(0, 0, 0);
+   }
+ 
+   /// The most shared (workgroup) memory, in bytes, that a compute shader can
+   /// declare.
+   ///
+-  /// Every device that supports compute allows at least 16384 bytes. Zero
+-  /// where [supportsCompute] is false.
++  /// Zero until the runtime SPI exposes the compute table in U1-2.
+   int get maxComputeSharedMemorySizeInBytes {
+-    return _getMaximumComputeSharedMemorySize();
++    return 0;
+   }
+ 
+   /// Creates a [ComputePipeline] that runs [computeShader].
+@@ -406,8 +392,7 @@ base class GpuContext extends NativeFieldWrapperClass1 {
+   ComputePipeline createComputePipeline(Shader computeShader) {
+     if (!supportsCompute) {
+       throw UnsupportedError(
+-        'Compute is not supported by this GpuContext. Check '
+-        'GpuContext.supportsCompute before creating a ComputePipeline.',
++        'Compute shaders need the runtime SPI compute table (U1-2).',
+       );
+     }
+     return ComputePipeline._(this, computeShader);
+diff --git a/engine/src/flutter/testing/dart/gpu_test.dart b/engine/src/flutter/testing/dart/gpu_test.dart
+index 094ec76d029..e2acd4b337a 100644
+--- a/engine/src/flutter/testing/dart/gpu_test.dart
++++ b/engine/src/flutter/testing/dart/gpu_test.dart
+@@ -1620,11 +1620,8 @@ void main() async {
+     );
+   }, skip: !(impellerEnabled && flutterGpuEnabled));
+ 
+-  test('GpuContext.supportsCompute is true on Metal and Vulkan only', () async {
+-    expect(
+-      gpu.gpuContext.supportsCompute,
+-      impellerBackend == 'metal' || impellerBackend == 'vulkan',
+-    );
++  test('GpuContext.supportsCompute is disabled until U1-2', () async {
++    expect(gpu.gpuContext.supportsCompute, isFalse);
+   }, skip: !(impellerEnabled && flutterGpuEnabled));
+ 
+   test('Compute throws where GpuContext.supportsCompute is false', () async {
+@@ -1633,9 +1630,27 @@ void main() async {
+       return;
+     }
+     final gpu.CommandBuffer commandBuffer = gpu.gpuContext.createCommandBuffer();
+-    expect(() => commandBuffer.createComputePass(), throwsUnsupportedError);
++    expect(
++      () => commandBuffer.createComputePass(),
++      throwsA(
++        isA<UnsupportedError>().having(
++          (UnsupportedError error) => error.message,
++          'message',
++          contains('runtime SPI compute table (U1-2)'),
++        ),
++      ),
++    );
+     final gpu.Shader shader = await getComputeShader('ComputeTriangle');
+-    expect(() => gpu.gpuContext.createComputePipeline(shader), throwsUnsupportedError);
++    expect(
++      () => gpu.gpuContext.createComputePipeline(shader),
++      throwsA(
++        isA<UnsupportedError>().having(
++          (UnsupportedError error) => error.message,
++          'message',
++          contains('runtime SPI compute table (U1-2)'),
++        ),
++      ),
++    );
+   }, skip: !(impellerEnabled && flutterGpuEnabled));
+ 
+   test('A compute pass writes vertices that a later render pass draws', () async {

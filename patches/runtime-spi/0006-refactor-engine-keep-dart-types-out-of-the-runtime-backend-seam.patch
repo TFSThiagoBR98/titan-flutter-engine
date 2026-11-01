@@ -3,7 +3,7 @@
 # adapter so RuntimeController stays upstream, and Dart-free
 # platform_data/display targets.
 diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
-index 0ddf322fc61..6b06582c680 100644
+index 68a38794810..43b2b8f65cd 100644
 --- a/engine/src/flutter/lib/ui/BUILD.gn
 +++ b/engine/src/flutter/lib/ui/BUILD.gn
 @@ -23,10 +23,12 @@ source_set("ui_core_types") {
@@ -56,7 +56,7 @@ index 0ddf322fc61..6b06582c680 100644
  
    public_configs = [ "//flutter:config" ]
 diff --git a/engine/src/flutter/runtime/BUILD.gn b/engine/src/flutter/runtime/BUILD.gn
-index 2f7aea3d0d1..1444b60a6ab 100644
+index 312386166da..240c1b75837 100644
 --- a/engine/src/flutter/runtime/BUILD.gn
 +++ b/engine/src/flutter/runtime/BUILD.gn
 @@ -50,6 +50,26 @@ source_set("dart_plugin_registrant") {
@@ -95,7 +95,7 @@ index 2f7aea3d0d1..1444b60a6ab 100644
      "platform_isolate_manager.cc",
      "platform_isolate_manager.h",
      "ptrace_check.h",
-@@ -95,8 +113,11 @@ source_set("runtime") {
+@@ -96,8 +114,11 @@ source_set("runtime") {
    }
  
    public_deps = [
@@ -929,7 +929,7 @@ index 6997a677afc..eda16ca5cc4 100644
  if __name__ == "__main__":
      unittest.main()
 diff --git a/engine/src/flutter/shell/common/BUILD.gn b/engine/src/flutter/shell/common/BUILD.gn
-index d42ac0626e3..3ebc2156619 100644
+index 76496d00431..90dd1d25491 100644
 --- a/engine/src/flutter/shell/common/BUILD.gn
 +++ b/engine/src/flutter/shell/common/BUILD.gn
 @@ -90,6 +90,8 @@ source_set("common") {
@@ -1829,7 +1829,7 @@ index b3b7683eddb..3c2ff7c10f0 100644
   private:
    void AssertOnUITaskRunner() const;
 diff --git a/engine/src/flutter/shell/common/shell.cc b/engine/src/flutter/shell/common/shell.cc
-index fa555d6f2a5..51986a522b5 100644
+index 5250d711de9..7163b668297 100644
 --- a/engine/src/flutter/shell/common/shell.cc
 +++ b/engine/src/flutter/shell/common/shell.cc
 @@ -61,7 +61,6 @@ namespace {
@@ -1868,10 +1868,10 @@ index fa555d6f2a5..51986a522b5 100644
            const Settings& settings, std::unique_ptr<Animator> animator,
            const fml::WeakPtr<IOManager>& io_manager,
 diff --git a/engine/src/flutter/shell/common/shell.h b/engine/src/flutter/shell/common/shell.h
-index 7f365d158c9..8ef3e87efd9 100644
+index faa19631736..df442ec0110 100644
 --- a/engine/src/flutter/shell/common/shell.h
 +++ b/engine/src/flutter/shell/common/shell.h
-@@ -123,7 +123,6 @@ class Shell final : public PlatformView::Delegate,
+@@ -122,7 +122,6 @@ class Shell final : public PlatformView::Delegate,
    typedef std::function<std::unique_ptr<Engine>(
        Engine::Delegate& delegate,
        const std::shared_ptr<RuntimeBackendFactory>& runtime_backend_factory,
@@ -1880,10 +1880,10 @@ index 7f365d158c9..8ef3e87efd9 100644
        const PlatformData& platform_data,
        Settings settings,
 diff --git a/engine/src/flutter/shell/common/shell_unittests.cc b/engine/src/flutter/shell/common/shell_unittests.cc
-index 7f62bd71e43..50d23d89726 100644
+index c203e1fe7fc..e8fdda3ccf4 100644
 --- a/engine/src/flutter/shell/common/shell_unittests.cc
 +++ b/engine/src/flutter/shell/common/shell_unittests.cc
-@@ -290,7 +290,6 @@ class FakeRuntimeBackendFactory final : public RuntimeBackendFactory {
+@@ -292,7 +292,6 @@ class FakeRuntimeBackendFactory final : public RuntimeBackendFactory {
        const TaskRunners& task_runners,
        const PlatformData&,
        const Settings&,

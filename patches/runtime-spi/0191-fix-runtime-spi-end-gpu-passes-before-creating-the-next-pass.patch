@@ -1,0 +1,105 @@
+# Why: The SPI created a backend render pass before ending the previous pass,
+# which left Vulkan resolve state invalid when two render passes shared a
+# command buffer. Create the pass through SpiGpuCommandBuffer so the previous
+# pass is encoded first. Upstream: 1cc08bfe1b9
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer.cc
+index 8a273fb674a..871cb1382e8 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer.cc
+@@ -111,13 +111,17 @@ SpiGpuCommandBuffer::GetCommandBuffer() {
+   return command_buffer_;
+ }
+ 
+-bool SpiGpuCommandBuffer::AddRenderPass(
+-    std::shared_ptr<impeller::RenderPass> render_pass) {
+-  if (render_pass == nullptr || !EndOpenPass()) {
+-    return false;
++std::shared_ptr<impeller::RenderPass> SpiGpuCommandBuffer::CreateRenderPass(
++    const impeller::RenderTarget& render_target) {
++  if (!EndOpenPass()) {
++    return nullptr;
+   }
+-  encodables_.push_back({.render_pass = std::move(render_pass)});
+-  return true;
++  auto render_pass = command_buffer_->CreateRenderPass(render_target);
++  if (render_pass == nullptr) {
++    return nullptr;
++  }
++  encodables_.push_back({.render_pass = render_pass});
++  return render_pass;
+ }
+ 
+ bool SpiGpuCommandBuffer::EndOpenPass() {
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer.h b/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer.h
+index 9efc553b162..0d2365274c3 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer.h
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer.h
+@@ -38,7 +38,8 @@ class SpiGpuCommandBuffer final {
+ 
+   std::shared_ptr<impeller::CommandBuffer> GetCommandBuffer();
+ 
+-  bool AddRenderPass(std::shared_ptr<impeller::RenderPass> render_pass);
++  std::shared_ptr<impeller::RenderPass> CreateRenderPass(
++      const impeller::RenderTarget& render_target);
+ 
+   bool AddCompletionCallback(CompletionCallback completion_callback);
+ 
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer_unittests.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer_unittests.cc
+index cae02d9636d..12355b21dac 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer_unittests.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer_unittests.cc
+@@ -167,11 +167,15 @@ TEST_F(SpiGpuPassLifecycleTest,
+   auto blit_b = MakeBlitPass();
+   {
+     InSequence sequence;
+-    EXPECT_CALL(*render_a, OnEncodeCommands).WillOnce(Return(true));
+     EXPECT_CALL(*impeller_command_buffer_, OnCreateBlitPass)
+         .WillOnce(Return(blit_a));
+     EXPECT_CALL(*blit_a, OnCopyTextureToTextureCommand);
+     EXPECT_CALL(*blit_a, EncodeCommands).WillOnce(Return(true));
++    EXPECT_CALL(*impeller_command_buffer_, OnCreateRenderPass)
++        .WillOnce(Return(render_a));
++    EXPECT_CALL(*render_a, OnEncodeCommands).WillOnce(Return(true));
++    EXPECT_CALL(*impeller_command_buffer_, OnCreateRenderPass)
++        .WillOnce(Return(render_b));
+     EXPECT_CALL(*render_b, OnEncodeCommands).WillOnce(Return(true));
+     EXPECT_CALL(*impeller_command_buffer_, OnCreateBlitPass)
+         .WillOnce(Return(blit_b));
+@@ -180,9 +184,11 @@ TEST_F(SpiGpuPassLifecycleTest,
+     EXPECT_CALL(*command_queue_, Submit).WillOnce(Return(absl::OkStatus()));
+   }
+ 
+-  ASSERT_TRUE(command_buffer_->AddRenderPass(render_a));
+   EXPECT_TRUE(Copy());
+-  ASSERT_TRUE(command_buffer_->AddRenderPass(render_b));
++  ASSERT_EQ(command_buffer_->CreateRenderPass(impeller::RenderTarget()),
++            render_a);
++  ASSERT_EQ(command_buffer_->CreateRenderPass(impeller::RenderTarget()),
++            render_b);
+   EXPECT_TRUE(Copy());
+   EXPECT_TRUE(Copy());
+   EXPECT_TRUE(command_buffer_->Submit());
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pass.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pass.cc
+index 582c53ad3ed..27fd1aaa8a9 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pass.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pass.cc
+@@ -255,18 +255,10 @@ FlutterSpiResult SpiGpuRenderPass::Begin(
+   if (command_buffer_value == nullptr) {
+     return kFlutterSpiInvalidHandle;
+   }
+-  auto command_buffer_core = command_buffer_value->GetCommandBuffer();
+-  if (command_buffer_core == nullptr) {
+-    return kFlutterSpiInternalError;
+-  }
+-  render_pass_ = command_buffer_core->CreateRenderPass(render_target_);
++  render_pass_ = command_buffer_value->CreateRenderPass(render_target_);
+   if (render_pass_ == nullptr) {
+     return kFlutterSpiInternalError;
+   }
+-  if (!command_buffer_value->AddRenderPass(render_pass_)) {
+-    render_pass_.reset();
+-    return kFlutterSpiInternalError;
+-  }
+   begun_ = true;
+   return kFlutterSpiOk;
+ }

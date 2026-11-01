@@ -1,7 +1,7 @@
 # Why: split the Dart-free data types of lib/ui into their own target so the
 # engine core can use them without the Dart VM
 diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
-index 20ffebaaef5..0ddf322fc61 100644
+index f68ea1368a6..68a38794810 100644
 --- a/engine/src/flutter/lib/ui/BUILD.gn
 +++ b/engine/src/flutter/lib/ui/BUILD.gn
 @@ -12,10 +12,38 @@ if (is_fuchsia) {
@@ -260,7 +260,7 @@ index 00000000000..530294af7f0
 +
 +#endif  // FLUTTER_LIB_UI_SEMANTICS_SEMANTICS_FLAGS_TYPES_H_
 diff --git a/engine/src/flutter/lib/ui/semantics/semantics_node.h b/engine/src/flutter/lib/ui/semantics/semantics_node.h
-index b3e38f3bd1b..5e0e85313cb 100644
+index 576ae6b6548..29888244b93 100644
 --- a/engine/src/flutter/lib/ui/semantics/semantics_node.h
 +++ b/engine/src/flutter/lib/ui/semantics/semantics_node.h
 @@ -13,8 +13,8 @@
@@ -275,7 +275,7 @@ index b3e38f3bd1b..5e0e85313cb 100644
  namespace flutter {
  
 diff --git a/engine/src/flutter/lib/ui/semantics/string_attribute.h b/engine/src/flutter/lib/ui/semantics/string_attribute.h
-index 1e2dce57e61..08f598c5222 100644
+index d13a458694c..08f598c5222 100644
 --- a/engine/src/flutter/lib/ui/semantics/string_attribute.h
 +++ b/engine/src/flutter/lib/ui/semantics/string_attribute.h
 @@ -5,52 +5,12 @@
@@ -314,7 +314,7 @@ index 1e2dce57e61..08f598c5222 100644
 -  virtual ~StringAttribute() = default;
 -  int32_t start = -1;
 -  int32_t end = -1;
--  StringAttributeType type;
+-  StringAttributeType type = StringAttributeType::kSpellOut;
 -};
 -
 -//------------------------------------------------------------------------------
@@ -334,7 +334,7 @@ index 1e2dce57e61..08f598c5222 100644
  class NativeStringAttribute
 diff --git a/engine/src/flutter/lib/ui/semantics/string_attribute_types.h b/engine/src/flutter/lib/ui/semantics/string_attribute_types.h
 new file mode 100644
-index 00000000000..bea378d02c0
+index 00000000000..fbe916fcbd9
 --- /dev/null
 +++ b/engine/src/flutter/lib/ui/semantics/string_attribute_types.h
 @@ -0,0 +1,52 @@
@@ -371,7 +371,7 @@ index 00000000000..bea378d02c0
 +  virtual ~StringAttribute() = default;
 +  int32_t start = -1;
 +  int32_t end = -1;
-+  StringAttributeType type;
++  StringAttributeType type = StringAttributeType::kSpellOut;
 +};
 +
 +// Indicates the string needs to be spelled out character by character when
@@ -465,7 +465,7 @@ index 00000000000..9966b6744de
 +
 +#endif  // FLUTTER_LIB_UI_TEXT_FONT_COLLECTION_DART_H_
 diff --git a/engine/src/flutter/shell/common/BUILD.gn b/engine/src/flutter/shell/common/BUILD.gn
-index 231a71c0378..7efe2f56a8e 100644
+index 1d2a3f13106..1558c568343 100644
 --- a/engine/src/flutter/shell/common/BUILD.gn
 +++ b/engine/src/flutter/shell/common/BUILD.gn
 @@ -135,6 +135,7 @@ source_set("common") {
@@ -477,10 +477,10 @@ index 231a71c0378..7efe2f56a8e 100644
      "//flutter/third_party/rapidjson",
      "//flutter/third_party/tonic",
 diff --git a/engine/src/flutter/shell/platform/embedder/BUILD.gn b/engine/src/flutter/shell/platform/embedder/BUILD.gn
-index de0588a7855..67a7ff92909 100644
+index 93055799b98..ef992c8d026 100644
 --- a/engine/src/flutter/shell/platform/embedder/BUILD.gn
 +++ b/engine/src/flutter/shell/platform/embedder/BUILD.gn
-@@ -108,6 +108,7 @@ template("embedder_source_set") {
+@@ -109,6 +109,7 @@ template("embedder_source_set") {
        "//flutter/flow",
        "//flutter/fml",
        "//flutter/lib/ui",

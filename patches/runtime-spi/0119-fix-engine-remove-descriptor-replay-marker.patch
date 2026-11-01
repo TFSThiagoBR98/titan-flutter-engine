@@ -1,0 +1,13 @@
+# Why: Upstream: 69e721a9564 codec and descriptor SPI migration.
+diff --git a/engine/src/flutter/lib/ui/painting/image_descriptor.cc b/engine/src/flutter/lib/ui/painting/image_descriptor.cc
+index 4142cca0d02..97ffb69a555 100644
+--- a/engine/src/flutter/lib/ui/painting/image_descriptor.cc
++++ b/engine/src/flutter/lib/ui/painting/image_descriptor.cc
+@@ -174,7 +174,6 @@ void ImageDescriptor::instantiateCodec(Dart_Handle codec_handle,
+       spi_codec == nullptr) {
+     Dart_ThrowException(tonic::ToDart("Failed to instantiate codec"));
+     return;
+->>>>>>> 69e721a9564 (feat(engine): move dart ui codecs, buffers and fragment shaders to runtime spi)
+   }
+   fml::RefPtr<Codec> ui_codec = fml::MakeRefCounted<Codec>(spi_codec);
+   ui_codec->AssociateWithDartWrapper(codec_handle);

@@ -1,9 +1,9 @@
 # Why: route fml tracing through a pluggable timeline backend
 diff --git a/engine/src/flutter/fml/BUILD.gn b/engine/src/flutter/fml/BUILD.gn
-index 85c6171dbd2..b555eacf708 100644
+index 6fa774107de..d3cf590ff1a 100644
 --- a/engine/src/flutter/fml/BUILD.gn
 +++ b/engine/src/flutter/fml/BUILD.gn
-@@ -360,6 +360,7 @@ if (enable_unittests) {
+@@ -358,6 +358,7 @@ if (enable_unittests) {
        "task_runner_util_unittests.cc",
        "task_source_unittests.cc",
        "thread_unittests.cc",

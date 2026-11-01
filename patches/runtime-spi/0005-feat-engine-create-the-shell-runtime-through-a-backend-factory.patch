@@ -236,7 +236,7 @@ index 00000000000..e12edb4377e
 +
 +#endif  // FLUTTER_RUNTIME_SPI_RUNTIME_BACKEND_FACTORY_H_
 diff --git a/engine/src/flutter/shell/common/BUILD.gn b/engine/src/flutter/shell/common/BUILD.gn
-index cf5645c8e64..d42ac0626e3 100644
+index dfba630ca1a..76496d00431 100644
 --- a/engine/src/flutter/shell/common/BUILD.gn
 +++ b/engine/src/flutter/shell/common/BUILD.gn
 @@ -90,6 +90,8 @@ source_set("common") {
@@ -568,7 +568,7 @@ index 37f712c06bf..b3b7683eddb 100644
  
  }  // namespace flutter
 diff --git a/engine/src/flutter/shell/common/shell.cc b/engine/src/flutter/shell/common/shell.cc
-index 1f078f224c5..fa555d6f2a5 100644
+index 6b7778566f0..5250d711de9 100644
 --- a/engine/src/flutter/shell/common/shell.cc
 +++ b/engine/src/flutter/shell/common/shell.cc
 @@ -29,6 +29,7 @@
@@ -843,7 +843,7 @@ index 1f078f224c5..fa555d6f2a5 100644
  }
  
  void Shell::SetNeedsReportTimings(bool value) {
-@@ -2510,11 +2520,12 @@ const std::weak_ptr<VsyncWaiter> Shell::GetVsyncWaiter() const {
+@@ -2522,11 +2532,12 @@ const std::weak_ptr<VsyncWaiter> Shell::GetVsyncWaiter() const {
  
  const std::shared_ptr<fml::ConcurrentTaskRunner>
  Shell::GetConcurrentWorkerTaskRunner() const {
@@ -860,10 +860,10 @@ index 1f078f224c5..fa555d6f2a5 100644
  
  BoxConstraints Shell::ExpectedFrameConstraints(int64_t view_id) {
 diff --git a/engine/src/flutter/shell/common/shell.h b/engine/src/flutter/shell/common/shell.h
-index fae536d8a77..7f365d158c9 100644
+index 080f9bcf033..faa19631736 100644
 --- a/engine/src/flutter/shell/common/shell.h
 +++ b/engine/src/flutter/shell/common/shell.h
-@@ -40,6 +40,7 @@
+@@ -39,6 +39,7 @@
  #include "flutter/shell/common/resource_cache_limit_calculator.h"
  #include "flutter/shell/common/shell_io_manager.h"
  #include "flutter/shell/geometry/geometry.h"
@@ -871,7 +871,7 @@ index fae536d8a77..7f365d158c9 100644
  #include "impeller/core/runtime_types.h"
  #include "impeller/renderer/context.h"
  #include "impeller/runtime_stage/runtime_stage.h"
-@@ -121,7 +122,7 @@ class Shell final : public PlatformView::Delegate,
+@@ -120,7 +121,7 @@ class Shell final : public PlatformView::Delegate,
    using CreateCallback = std::function<std::unique_ptr<T>(Shell&)>;
    typedef std::function<std::unique_ptr<Engine>(
        Engine::Delegate& delegate,
@@ -880,7 +880,7 @@ index fae536d8a77..7f365d158c9 100644
        fml::RefPtr<const DartSnapshot> isolate_snapshot,
        TaskRunners task_runners,
        const PlatformData& platform_data,
-@@ -174,6 +175,15 @@ class Shell final : public PlatformView::Delegate,
+@@ -173,6 +174,15 @@ class Shell final : public PlatformView::Delegate,
        const CreateCallback<Rasterizer>& on_create_rasterizer,
        bool is_gpu_disabled = false);
  
@@ -896,7 +896,7 @@ index fae536d8a77..7f365d158c9 100644
    //----------------------------------------------------------------------------
    /// @brief      Destroys the shell. This is a synchronous operation and
    ///             synchronous barrier blocks are introduced on the various
-@@ -413,7 +423,7 @@ class Shell final : public PlatformView::Delegate,
+@@ -412,7 +422,7 @@ class Shell final : public PlatformView::Delegate,
    ///
    /// @return     The Dart VM pointer.
    ///
@@ -905,16 +905,16 @@ index fae536d8a77..7f365d158c9 100644
  
    //----------------------------------------------------------------------------
    /// @brief      Notifies the display manager of the updates.
-@@ -480,7 +490,7 @@ class Shell final : public PlatformView::Delegate,
+@@ -479,7 +489,7 @@ class Shell final : public PlatformView::Delegate,
        resource_cache_limit_calculator_;
-   size_t resource_cache_limit_;
+   size_t resource_cache_limit_ = 0;
    const Settings settings_;
 -  DartVMRef vm_;
 +  std::shared_ptr<RuntimeBackendFactory> runtime_backend_factory_;
    mutable std::mutex time_recorder_mutex_;
    std::optional<fml::TimePoint> latest_frame_target_time_;
    std::unique_ptr<PlatformView> platform_view_;  // on platform task runner
-@@ -557,7 +567,7 @@ class Shell final : public PlatformView::Delegate,
+@@ -556,7 +566,7 @@ class Shell final : public PlatformView::Delegate,
    // How many frames have been timed since last report.
    size_t UnreportedFramesCount() const;
  
@@ -923,7 +923,7 @@ index fae536d8a77..7f365d158c9 100644
          const TaskRunners& task_runners,
          fml::RefPtr<fml::RasterThreadMerger> parent_merger,
          const std::shared_ptr<ResourceCacheLimitCalculator>&
-@@ -566,7 +576,7 @@ class Shell final : public PlatformView::Delegate,
+@@ -565,7 +575,7 @@ class Shell final : public PlatformView::Delegate,
          bool is_gpu_disabled);
  
    static std::unique_ptr<Shell> CreateShellOnPlatformThread(
@@ -932,7 +932,7 @@ index fae536d8a77..7f365d158c9 100644
        fml::RefPtr<fml::RasterThreadMerger> parent_merger,
        std::shared_ptr<ShellIOManager> parent_io_manager,
        const std::shared_ptr<ResourceCacheLimitCalculator>&
-@@ -574,7 +584,6 @@ class Shell final : public PlatformView::Delegate,
+@@ -573,7 +583,6 @@ class Shell final : public PlatformView::Delegate,
        const TaskRunners& task_runners,
        const PlatformData& platform_data,
        const Settings& settings,
@@ -940,7 +940,7 @@ index fae536d8a77..7f365d158c9 100644
        const Shell::CreateCallback<PlatformView>& on_create_platform_view,
        const Shell::CreateCallback<Rasterizer>& on_create_rasterizer,
        const EngineCreateCallback& on_create_engine,
-@@ -588,8 +597,7 @@ class Shell final : public PlatformView::Delegate,
+@@ -587,8 +596,7 @@ class Shell final : public PlatformView::Delegate,
        const std::shared_ptr<ResourceCacheLimitCalculator>&
            resource_cache_limit_calculator,
        Settings settings,
@@ -951,7 +951,7 @@ index fae536d8a77..7f365d158c9 100644
        const CreateCallback<Rasterizer>& on_create_rasterizer,
        const EngineCreateCallback& on_create_engine,
 diff --git a/engine/src/flutter/shell/common/shell_unittests.cc b/engine/src/flutter/shell/common/shell_unittests.cc
-index 1972f1f88dd..7f62bd71e43 100644
+index 86007a521ad..c203e1fe7fc 100644
 --- a/engine/src/flutter/shell/common/shell_unittests.cc
 +++ b/engine/src/flutter/shell/common/shell_unittests.cc
 @@ -38,6 +38,7 @@
@@ -962,7 +962,7 @@ index 1972f1f88dd..7f62bd71e43 100644
  #include "flutter/shell/common/switches.h"
  #include "flutter/shell/common/thread_host.h"
  #include "flutter/shell/common/vsync_waiter_fallback.h"
-@@ -281,6 +282,32 @@ class MockPlatformMessageResponse : public PlatformMessageResponse {
+@@ -283,6 +284,32 @@ class MockPlatformMessageResponse : public PlatformMessageResponse {
    MOCK_METHOD(void, Complete, (std::unique_ptr<fml::Mapping> data), (override));
    MOCK_METHOD(void, CompleteEmpty, (), (override));
  };
@@ -995,7 +995,7 @@ index 1972f1f88dd..7f62bd71e43 100644
  }  // namespace
  
  class TestAssetResolver : public AssetResolver {
-@@ -452,6 +479,49 @@ TEST_F(ShellTest, InitializeWithInvalidThreads) {
+@@ -454,6 +481,49 @@ TEST_F(ShellTest, InitializeWithInvalidThreads) {
    ASSERT_FALSE(DartVMRef::IsInstanceRunning());
  }
  
@@ -1046,7 +1046,7 @@ index 1972f1f88dd..7f62bd71e43 100644
    ASSERT_FALSE(DartVMRef::IsInstanceRunning());
    Settings settings = CreateSettingsForFixture();
 diff --git a/engine/src/flutter/shell/platform/embedder/embedder_semantics_update.h b/engine/src/flutter/shell/platform/embedder/embedder_semantics_update.h
-index c9ab10ebcf4..2a3d10e7a37 100644
+index 6426fd5c98c..e2ea544fa69 100644
 --- a/engine/src/flutter/shell/platform/embedder/embedder_semantics_update.h
 +++ b/engine/src/flutter/shell/platform/embedder/embedder_semantics_update.h
 @@ -5,6 +5,7 @@

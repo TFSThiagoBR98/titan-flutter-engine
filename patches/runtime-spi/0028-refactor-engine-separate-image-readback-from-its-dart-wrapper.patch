@@ -1,7 +1,7 @@
 # Why: expose raster conversion and byte encoding through a Dart-free image
 # readback seam while keeping dart:ui callback behavior unchanged.
 diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
-index 14a1cc1f076..2a155164c01 100644
+index 5533bafcc34..37967d3d950 100644
 --- a/engine/src/flutter/lib/ui/BUILD.gn
 +++ b/engine/src/flutter/lib/ui/BUILD.gn
 @@ -119,6 +119,11 @@ source_set("ui_image_output") {
@@ -41,7 +41,7 @@ index 14a1cc1f076..2a155164c01 100644
      "painting/image_filter.cc",
      "painting/image_filter.h",
      "painting/image_shader.cc",
-@@ -309,8 +314,6 @@ source_set("ui") {
+@@ -310,8 +315,6 @@ source_set("ui") {
  
    if (impeller_supports_rendering) {
      sources += [
@@ -51,7 +51,7 @@ index 14a1cc1f076..2a155164c01 100644
        "painting/pixel_deferred_image_gpu_impeller.h",
      ]
 diff --git a/engine/src/flutter/lib/ui/painting/image_encoding.cc b/engine/src/flutter/lib/ui/painting/image_encoding.cc
-index 9c9f49bf9ff..d6b9a894642 100644
+index 8584151938e..cd03b062156 100644
 --- a/engine/src/flutter/lib/ui/painting/image_encoding.cc
 +++ b/engine/src/flutter/lib/ui/painting/image_encoding.cc
 @@ -3,25 +3,14 @@
@@ -66,10 +66,10 @@ index 9c9f49bf9ff..d6b9a894642 100644
 -#include "flutter/common/task_runners.h"
 -#include "flutter/fml/build_config.h"
  #include "flutter/fml/make_copyable.h"
--#include "flutter/fml/status_or.h"
 -#include "flutter/fml/trace_event.h"
  #include "flutter/lib/ui/painting/image.h"
--#include "fml/status.h"
+-#include "third_party/abseil-cpp/absl/status/status.h"
+-#include "third_party/abseil-cpp/absl/status/statusor.h"
 -#if IMPELLER_SUPPORTS_RENDERING
 -#include "flutter/lib/ui/painting/image_encoding_impeller.h"
 -#endif  // IMPELLER_SUPPORTS_RENDERING
@@ -86,7 +86,7 @@ index 9c9f49bf9ff..d6b9a894642 100644
    DartInvoke(callback->value(), {dart_data, Dart_Null()});
  }
  
--fml::StatusOr<sk_sp<SkData>> CopyImageByteData(
+-absl::StatusOr<sk_sp<SkData>> CopyImageByteData(
 -    const sk_sp<SkImage>& raster_image,
 -    SkColorType color_type,
 -    SkAlphaType alpha_type) {
@@ -95,8 +95,8 @@ index 9c9f49bf9ff..d6b9a894642 100644
 -  SkPixmap pixmap;
 -
 -  if (!raster_image->peekPixels(&pixmap)) {
--    return fml::Status(fml::StatusCode::kInternal,
--                       "Could not copy pixels from the raster image.");
+-    return absl::Status(absl::StatusCode::kInternal,
+-                        "Could not copy pixels from the raster image.");
 -  }
 -
 -  // The color types already match. No need to swizzle. Return early.
@@ -110,15 +110,15 @@ index 9c9f49bf9ff..d6b9a894642 100644
 -                        color_type, alpha_type, nullptr));
 -
 -  if (!surface) {
--    fml::Status(fml::StatusCode::kInternal,
--                "Could not set up the surface for swizzle.");
+-    return absl::Status(absl::StatusCode::kInternal,
+-                        "Could not set up the surface for swizzle.");
 -  }
 -
 -  surface->writePixels(pixmap, 0, 0);
 -
 -  if (!surface->peekPixels(&pixmap)) {
--    return fml::Status(fml::StatusCode::kInternal,
--                       "Pixel address is not available.");
+-    return absl::Status(absl::StatusCode::kInternal,
+-                        "Pixel address is not available.");
 -  }
 -
 -  return SkData::MakeWithCopy(pixmap.addr(), pixmap.computeByteSize());
@@ -139,20 +139,20 @@ index 9c9f49bf9ff..d6b9a894642 100644
 +    ImageReadbackContext context) {
    auto callback_task =
        fml::MakeCopyable([callback = std::move(callback)](
-                             fml::StatusOr<sk_sp<SkData>>&& encoded) mutable {
+                             absl::StatusOr<sk_sp<SkData>>&& encoded) mutable {
 @@ -123,41 +67,19 @@ void EncodeImageAndInvokeDataCallback(
    // The static leak checker gets confused by the use of fml::MakeCopyable in
    // EncodeImage.
    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
 -  auto encode_task =
 -      [callback_task = std::move(callback_task), format,
--       ui_task_runner](const fml::StatusOr<sk_sp<SkImage>>& raster_image) {
+-       ui_task_runner](const absl::StatusOr<sk_sp<SkImage>>& raster_image) {
 +  ConvertToRasterImageAsync(
 +      context, image,
 +      [callback_task = std::move(callback_task), format](
-+          fml::StatusOr<sk_sp<SkImage>> raster_image) mutable {
++          absl::StatusOr<sk_sp<SkImage>> raster_image) mutable {
          if (raster_image.ok()) {
--          fml::StatusOr<sk_sp<SkData>> encoded =
+-          absl::StatusOr<sk_sp<SkData>> encoded =
 -              EncodeImage(raster_image.value(), format);
 -          ui_task_runner->PostTask([callback_task = callback_task,
 -                                    encoded = std::move(encoded)]() mutable {
@@ -223,12 +223,12 @@ index 9c9f49bf9ff..d6b9a894642 100644
    return Dart_Null();
 @@ -204,40 +137,7 @@ Dart_Handle EncodeImage(CanvasImage* canvas_image,
  
- fml::StatusOr<sk_sp<SkData>> EncodeImage(const sk_sp<SkImage>& raster_image,
-                                          ImageByteFormat format) {
+ absl::StatusOr<sk_sp<SkData>> EncodeImage(const sk_sp<SkImage>& raster_image,
+                                           ImageByteFormat format) {
 -  TRACE_EVENT0("flutter", __FUNCTION__);
 -
 -  if (!raster_image) {
--    return fml::Status(fml::StatusCode::kInternal, "Missing raster image.");
+-    return absl::Status(absl::StatusCode::kInternal, "Missing raster image.");
 -  }
 -
 -  switch (format) {
@@ -236,8 +236,8 @@ index 9c9f49bf9ff..d6b9a894642 100644
 -      auto png_image = SkPngEncoder::Encode(nullptr, raster_image.get(), {});
 -
 -      if (png_image == nullptr) {
--        return fml::Status(fml::StatusCode::kInternal,
--                           "Could not convert raster image to PNG.");
+-        return absl::Status(absl::StatusCode::kInternal,
+-                            "Could not convert raster image to PNG.");
 -      };
 -      return png_image;
 -    }
@@ -257,21 +257,21 @@ index 9c9f49bf9ff..d6b9a894642 100644
 -                               kUnpremul_SkAlphaType);
 -  }
 -
--  return fml::Status(fml::StatusCode::kInternal,
--                     "Unknown error encoding image.");
+-  return absl::Status(absl::StatusCode::kInternal,
+-                      "Unknown error encoding image.");
 +  return EncodeRasterImage(raster_image, format);
  }
  
  }  // namespace flutter
 diff --git a/engine/src/flutter/lib/ui/painting/image_encoding.h b/engine/src/flutter/lib/ui/painting/image_encoding.h
-index 16b4c927be8..1537f4e0685 100644
+index d85b74a743b..48313bb9fc2 100644
 --- a/engine/src/flutter/lib/ui/painting/image_encoding.h
 +++ b/engine/src/flutter/lib/ui/painting/image_encoding.h
 @@ -5,23 +5,13 @@
  #ifndef FLUTTER_LIB_UI_PAINTING_IMAGE_ENCODING_H_
  #define FLUTTER_LIB_UI_PAINTING_IMAGE_ENCODING_H_
  
--#include "fml/status_or.h"
+-#include "third_party/abseil-cpp/absl/status/statusor.h"
 -#include "third_party/skia/include/core/SkImage.h"
 +#include "flutter/lib/ui/painting/image_readback.h"
  #include "third_party/tonic/dart_library_natives.h"
@@ -293,7 +293,7 @@ index 16b4c927be8..1537f4e0685 100644
                          int format,
                          Dart_Handle callback_handle);
 diff --git a/engine/src/flutter/lib/ui/painting/image_encoding_impeller.cc b/engine/src/flutter/lib/ui/painting/image_encoding_impeller.cc
-index 53d9bcb8a2d..e71237d6cf2 100644
+index db810908cdb..d6d82910566 100644
 --- a/engine/src/flutter/lib/ui/painting/image_encoding_impeller.cc
 +++ b/engine/src/flutter/lib/ui/painting/image_encoding_impeller.cc
 @@ -6,7 +6,6 @@
@@ -301,9 +301,9 @@ index 53d9bcb8a2d..e71237d6cf2 100644
  #include "flutter/display_list/geometry/dl_geometry_conversions.h"
  #include "flutter/impeller/display_list/dl_image_impeller.h"
 -#include "flutter/lib/ui/painting/image.h"
- #include "fml/status.h"
  #include "impeller/core/device_buffer.h"
  #include "impeller/core/formats.h"
+ #include "impeller/display_list/aiks_context.h"
 @@ -277,13 +276,15 @@ void ImageEncodingImpeller::ConvertImageToRaster(
  
  int ImageEncodingImpeller::GetColorSpace(
@@ -323,7 +323,7 @@ index 53d9bcb8a2d..e71237d6cf2 100644
  }
  
 diff --git a/engine/src/flutter/lib/ui/painting/image_encoding_impeller.h b/engine/src/flutter/lib/ui/painting/image_encoding_impeller.h
-index ede28129f41..bc7148a62a9 100644
+index 3b44f77bd9a..f3c9d95abbd 100644
 --- a/engine/src/flutter/lib/ui/painting/image_encoding_impeller.h
 +++ b/engine/src/flutter/lib/ui/painting/image_encoding_impeller.h
 @@ -5,6 +5,9 @@
@@ -388,7 +388,7 @@ index 42953d4ccd8..af7e600d028 100644
  
 diff --git a/engine/src/flutter/lib/ui/painting/image_readback.cc b/engine/src/flutter/lib/ui/painting/image_readback.cc
 new file mode 100644
-index 00000000000..392434e5b95
+index 00000000000..4be27dbcb50
 --- /dev/null
 +++ b/engine/src/flutter/lib/ui/painting/image_readback.cc
 @@ -0,0 +1,138 @@
@@ -412,7 +412,7 @@ index 00000000000..392434e5b95
 +namespace flutter {
 +namespace {
 +
-+fml::StatusOr<sk_sp<SkData>> CopyImageByteData(
++absl::StatusOr<sk_sp<SkData>> CopyImageByteData(
 +    const sk_sp<SkImage>& raster_image,
 +    SkColorType color_type,
 +    SkAlphaType alpha_type) {
@@ -421,8 +421,8 @@ index 00000000000..392434e5b95
 +  SkPixmap pixmap;
 +
 +  if (!raster_image->peekPixels(&pixmap)) {
-+    return fml::Status(fml::StatusCode::kInternal,
-+                       "Could not copy pixels from the raster image.");
++    return absl::Status(absl::StatusCode::kInternal,
++                        "Could not copy pixels from the raster image.");
 +  }
 +
 +  if (pixmap.colorType() == color_type && pixmap.alphaType() == alpha_type) {
@@ -434,15 +434,15 @@ index 00000000000..392434e5b95
 +                        color_type, alpha_type, nullptr));
 +
 +  if (!surface) {
-+    fml::Status(fml::StatusCode::kInternal,
-+                "Could not set up the surface for swizzle.");
++    return absl::Status(absl::StatusCode::kInternal,
++                        "Could not set up the surface for swizzle.");
 +  }
 +
 +  surface->writePixels(pixmap, 0, 0);
 +
 +  if (!surface->peekPixels(&pixmap)) {
-+    return fml::Status(fml::StatusCode::kInternal,
-+                       "Pixel address is not available.");
++    return absl::Status(absl::StatusCode::kInternal,
++                        "Pixel address is not available.");
 +  }
 +
 +  return SkData::MakeWithCopy(pixmap.addr(), pixmap.computeByteSize());
@@ -453,10 +453,10 @@ index 00000000000..392434e5b95
 +void ConvertToRasterImageAsync(
 +    const ImageReadbackContext& context,
 +    sk_sp<DlImage> image,
-+    std::function<void(fml::StatusOr<sk_sp<SkImage>>)> on_ui_thread) {
++    std::function<void(absl::StatusOr<sk_sp<SkImage>>)> on_ui_thread) {
 +  auto on_io_thread = [ui_task_runner = context.ui_task_runner,
 +                       on_ui_thread = std::move(on_ui_thread)](
-+                          fml::StatusOr<sk_sp<SkImage>> result) mutable {
++                          absl::StatusOr<sk_sp<SkImage>> result) mutable {
 +    fml::TaskRunner::RunNowOrPostTask(
 +        ui_task_runner,
 +        [on_ui_thread = std::move(on_ui_thread),
@@ -490,13 +490,13 @@ index 00000000000..392434e5b95
 +#endif  // !SLIMPELLER
 +}
 +
-+fml::StatusOr<sk_sp<SkData>> EncodeRasterImage(
++absl::StatusOr<sk_sp<SkData>> EncodeRasterImage(
 +    const sk_sp<SkImage>& raster_image,
 +    ImageByteFormat format) {
 +  TRACE_EVENT0("flutter", __FUNCTION__);
 +
 +  if (!raster_image) {
-+    return fml::Status(fml::StatusCode::kInternal, "Missing raster image.");
++    return absl::Status(absl::StatusCode::kInternal, "Missing raster image.");
 +  }
 +
 +  switch (format) {
@@ -504,8 +504,8 @@ index 00000000000..392434e5b95
 +      auto png_image = SkPngEncoder::Encode(nullptr, raster_image.get(), {});
 +
 +      if (png_image == nullptr) {
-+        return fml::Status(fml::StatusCode::kInternal,
-+                           "Could not convert raster image to PNG.");
++        return absl::Status(absl::StatusCode::kInternal,
++                            "Could not convert raster image to PNG.");
 +      };
 +      return png_image;
 +    }
@@ -525,14 +525,14 @@ index 00000000000..392434e5b95
 +                               kUnpremul_SkAlphaType);
 +  }
 +
-+  return fml::Status(fml::StatusCode::kInternal,
-+                     "Unknown error encoding image.");
++  return absl::Status(absl::StatusCode::kInternal,
++                      "Unknown error encoding image.");
 +}
 +
 +}  // namespace flutter
 diff --git a/engine/src/flutter/lib/ui/painting/image_readback.h b/engine/src/flutter/lib/ui/painting/image_readback.h
 new file mode 100644
-index 00000000000..dc841099657
+index 00000000000..e71670e0e7e
 --- /dev/null
 +++ b/engine/src/flutter/lib/ui/painting/image_readback.h
 @@ -0,0 +1,59 @@
@@ -549,10 +549,10 @@ index 00000000000..dc841099657
 +
 +#include "flutter/display_list/image/dl_image.h"
 +#include "flutter/fml/memory/weak_ptr.h"
-+#include "flutter/fml/status_or.h"
 +#include "flutter/fml/synchronization/sync_switch.h"
 +#include "flutter/fml/task_runner.h"
 +#include "flutter/lib/ui/snapshot_delegate.h"
++#include "third_party/abseil-cpp/absl/status/statusor.h"
 +#include "third_party/skia/include/core/SkData.h"
 +#include "third_party/skia/include/core/SkImage.h"
 +
@@ -586,9 +586,9 @@ index 00000000000..dc841099657
 +void ConvertToRasterImageAsync(
 +    const ImageReadbackContext& context,
 +    sk_sp<DlImage> image,
-+    std::function<void(fml::StatusOr<sk_sp<SkImage>>)> on_ui_thread);
++    std::function<void(absl::StatusOr<sk_sp<SkImage>>)> on_ui_thread);
 +
-+fml::StatusOr<sk_sp<SkData>> EncodeRasterImage(
++absl::StatusOr<sk_sp<SkData>> EncodeRasterImage(
 +    const sk_sp<SkImage>& raster_image,
 +    ImageByteFormat format);
 +

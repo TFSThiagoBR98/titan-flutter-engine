@@ -588,10 +588,10 @@ index 00000000000..1df30bf7af5
 +
 +#endif  // FLUTTER_RUNTIME_SPI_RUNTIME_BACKEND_H_
 diff --git a/engine/src/flutter/shell/common/BUILD.gn b/engine/src/flutter/shell/common/BUILD.gn
-index 7efe2f56a8e..cf5645c8e64 100644
+index 1558c568343..dfba630ca1a 100644
 --- a/engine/src/flutter/shell/common/BUILD.gn
 +++ b/engine/src/flutter/shell/common/BUILD.gn
-@@ -323,6 +323,8 @@ if (enable_unittests) {
+@@ -324,6 +324,8 @@ if (enable_unittests) {
        "dl_op_spy_unittests.cc",
        "engine_animator_unittests.cc",
        "engine_unittests.cc",

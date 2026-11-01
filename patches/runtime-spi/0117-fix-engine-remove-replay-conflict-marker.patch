@@ -1,0 +1,13 @@
+# Why: Upstream: e876b26356c image encoding migration.
+diff --git a/engine/src/flutter/lib/ui/painting/image_encoding.cc b/engine/src/flutter/lib/ui/painting/image_encoding.cc
+index 1233d27d59d..6ba37a0e775 100644
+--- a/engine/src/flutter/lib/ui/painting/image_encoding.cc
++++ b/engine/src/flutter/lib/ui/painting/image_encoding.cc
+@@ -57,7 +57,6 @@ void InvokeSpiBytesCallback(void* user_data,
+                             size_t size) {
+   auto callback = std::unique_ptr<DartPersistentValue>(
+       static_cast<DartPersistentValue*>(user_data));
+->>>>>>> e876b26356c (feat(engine): move dart ui images to runtime spi)
+   std::shared_ptr<tonic::DartState> dart_state = callback->dart_state().lock();
+   if (!dart_state) {
+     return;

@@ -2,7 +2,7 @@
 # Dart-free UI target so runtime SPI clients can reuse the engine image path
 # without changing dart:ui behavior.
 diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
-index 52720786a5d..14a1cc1f076 100644
+index 034bd84092e..5533bafcc34 100644
 --- a/engine/src/flutter/lib/ui/BUILD.gn
 +++ b/engine/src/flutter/lib/ui/BUILD.gn
 @@ -115,6 +115,51 @@ source_set("ui_image_decoding") {
@@ -74,7 +74,7 @@ index 52720786a5d..14a1cc1f076 100644
      "//flutter/flow",
      "//flutter/shell/common:display",
      "//flutter/shell/common:platform_message_handler",
-@@ -265,8 +309,6 @@ source_set("ui") {
+@@ -266,8 +310,6 @@ source_set("ui") {
  
    if (impeller_supports_rendering) {
      sources += [
@@ -162,10 +162,10 @@ index 8bf7c2a8693..7a5067d5859 100644
  }
 diff --git a/engine/src/flutter/lib/ui/painting/image_snapshot.cc b/engine/src/flutter/lib/ui/painting/image_snapshot.cc
 new file mode 100644
-index 00000000000..602d931da1b
+index 00000000000..5ce30f447f4
 --- /dev/null
 +++ b/engine/src/flutter/lib/ui/painting/image_snapshot.cc
-@@ -0,0 +1,153 @@
+@@ -0,0 +1,169 @@
 +// Copyright 2013 The Flutter Authors. All rights reserved.
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -223,24 +223,31 @@ index 00000000000..602d931da1b
 +           layer_tree = std::move(layer_tree), width, height,
 +           ui_task = std::move(ui_task)]() mutable {
 +            auto picture_bounds = DlISize(width, height);
-+            sk_sp<DisplayList> snapshot_display_list = display_list;
-+            if (layer_tree) {
-+              FML_DCHECK(picture_bounds == layer_tree->frame_size());
-+              auto aiks_context = context.impeller_enabled
-+                                      ? context.snapshot_delegate->GetAiksContext()
-+                                      : nullptr;
-+              snapshot_display_list = layer_tree->Flatten(
-+                  DlRect::MakeWH(width, height),
-+                  context.snapshot_delegate->GetTextureRegistry(),
-+                  context.impeller_enabled
-+                      ? nullptr
-+                      : context.snapshot_delegate->GetGrContext(),
-+                  aiks_context.get());
-+            }
 +            if (context.impeller_enabled) {
 +#if IMPELLER_SUPPORTS_RENDERING
++              SnapshotDelegate::SnapshotDisplayListProvider provider;
++              if (layer_tree) {
++                FML_DCHECK(picture_bounds == layer_tree->frame_size());
++                // Flatten only after the snapshot controller has made a
++                // rendering context current, which is required by Impeller
++                // GLES.
++                provider = fml::MakeCopyable(
++                    [layer_tree = std::move(layer_tree),
++                     texture_registry = context.snapshot_delegate
++                                             ->GetTextureRegistry(),
++                     bounds = DlRect::MakeWH(width, height)](
++                        impeller::AiksContext* aiks_context) mutable {
++                      return layer_tree->Flatten(bounds, texture_registry,
++                                                 /*gr_context=*/nullptr,
++                                                 aiks_context);
++                    });
++              } else {
++                provider = [display_list](impeller::AiksContext*) {
++                  return display_list;
++                };
++              }
 +              context.snapshot_delegate->MakeImpellerSnapshot(
-+                  snapshot_display_list, picture_bounds,
++                  std::move(provider), picture_bounds,
 +                  [ui_task_runner = context.ui_task_runner,
 +                   ui_task](const std::shared_ptr<impeller::Texture>& texture) {
 +                    fml::TaskRunner::RunNowOrPostTask(
@@ -251,6 +258,15 @@ index 00000000000..602d931da1b
 +                  SnapshotPixelFormat::kDontCare);
 +#endif  // IMPELLER_SUPPORTS_RENDERING
 +            } else {
++              sk_sp<DisplayList> snapshot_display_list = display_list;
++              if (layer_tree) {
++                FML_DCHECK(picture_bounds == layer_tree->frame_size());
++                snapshot_display_list = layer_tree->Flatten(
++                    DlRect::MakeWH(width, height),
++                    context.snapshot_delegate->GetTextureRegistry(),
++                    context.snapshot_delegate->GetGrContext(),
++                    /*aiks_context=*/nullptr);
++              }
 +              context.snapshot_delegate->MakeSkiaSnapshot(
 +                  snapshot_display_list, picture_bounds,
 +                  [ui_task_runner = context.ui_task_runner,
@@ -374,7 +390,7 @@ index 00000000000..735309fb317
 +
 +#endif  // FLUTTER_LIB_UI_PAINTING_IMAGE_SNAPSHOT_H_
 diff --git a/engine/src/flutter/lib/ui/painting/picture.cc b/engine/src/flutter/lib/ui/painting/picture.cc
-index 4afb2dca2d9..37d0e739e0e 100644
+index fd3c1df162f..37d0e739e0e 100644
 --- a/engine/src/flutter/lib/ui/painting/picture.cc
 +++ b/engine/src/flutter/lib/ui/painting/picture.cc
 @@ -9,13 +9,8 @@
@@ -517,7 +533,7 @@ index 4afb2dca2d9..37d0e739e0e 100644
          auto dart_image = CanvasImage::Create();
          dart_image->set_image(image);
          auto* raw_dart_image = tonic::ToDart(dart_image);
-@@ -241,54 +189,8 @@ Dart_Handle Picture::DoRasterizeToImage(const sk_sp<DisplayList>& display_list,
+@@ -241,73 +189,8 @@ Dart_Handle Picture::DoRasterizeToImage(const sk_sp<DisplayList>& display_list,
          // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
        });
  
@@ -528,22 +544,32 @@ index 4afb2dca2d9..37d0e739e0e 100644
 -                         height, ui_task, is_impeller_enabled,
 -                         layer_tree = std::move(layer_tree)]() mutable {
 -        auto picture_bounds = DlISize(width, height);
--        sk_sp<DisplayList> snapshot_display_list = display_list;
--        if (layer_tree) {
--          FML_DCHECK(picture_bounds == layer_tree->frame_size());
--          auto aiks_context = is_impeller_enabled
--                                  ? snapshot_delegate->GetAiksContext()
--                                  : nullptr;
--          snapshot_display_list = layer_tree->Flatten(
--              DlRect::MakeWH(width, height),
--              snapshot_delegate->GetTextureRegistry(),
--              is_impeller_enabled ? nullptr : snapshot_delegate->GetGrContext(),
--              aiks_context.get());
--        }
 -        if (is_impeller_enabled) {
 -#if IMPELLER_SUPPORTS_RENDERING
+-          SnapshotDelegate::SnapshotDisplayListProvider provider;
+-          if (layer_tree) {
+-            FML_DCHECK(picture_bounds == layer_tree->frame_size());
+-            // Flatten only once the snapshot controller has made a rendering
+-            // context current, and with the AiksContext that renders the
+-            // snapshot. Constructing an AiksContext up front, with no context
+-            // current, breaks the OpenGL ES backend.
+-            // https://github.com/flutter/flutter/issues/192365
+-            provider = fml::MakeCopyable(
+-                [layer_tree = std::move(layer_tree),
+-                 texture_registry = snapshot_delegate->GetTextureRegistry(),
+-                 bounds = DlRect::MakeWH(width, height)](
+-                    impeller::AiksContext* aiks_context) mutable {
+-                  return layer_tree->Flatten(bounds, texture_registry,
+-                                             /*gr_context=*/nullptr,
+-                                             aiks_context);
+-                });
+-          } else {
+-            provider = [display_list](impeller::AiksContext*) {
+-              return display_list;
+-            };
+-          }
 -          snapshot_delegate->MakeImpellerSnapshot(
--              snapshot_display_list, picture_bounds,
+-              std::move(provider), picture_bounds,
 -              [ui_task_runner,
 -               ui_task](const std::shared_ptr<impeller::Texture>& texture) {
 -                fml::TaskRunner::RunNowOrPostTask(
@@ -554,6 +580,15 @@ index 4afb2dca2d9..37d0e739e0e 100644
 -              SnapshotPixelFormat::kDontCare);
 -#endif  // IMPELLER_SUPPORTS_RENDERING
 -        } else {
+-          sk_sp<DisplayList> snapshot_display_list = display_list;
+-          if (layer_tree) {
+-            FML_DCHECK(picture_bounds == layer_tree->frame_size());
+-            snapshot_display_list =
+-                layer_tree->Flatten(DlRect::MakeWH(width, height),
+-                                    snapshot_delegate->GetTextureRegistry(),
+-                                    snapshot_delegate->GetGrContext(),
+-                                    /*aiks_context=*/nullptr);
+-          }
 -          snapshot_delegate->MakeSkiaSnapshot(
 -              snapshot_display_list, picture_bounds,
 -              [ui_task_runner, ui_task](const sk_sp<SkImage>& sk_image) {

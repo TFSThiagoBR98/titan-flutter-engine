@@ -1,10 +1,10 @@
 # Why: let the runtime image decoder consume descriptor data without the Dart
 # wrapper.
 diff --git a/engine/src/flutter/lib/gpu/command_buffer.cc b/engine/src/flutter/lib/gpu/command_buffer.cc
-index fb557956982..6ef2e93aca2 100644
+index 63ae2e2a74a..c1804225f2e 100644
 --- a/engine/src/flutter/lib/gpu/command_buffer.cc
 +++ b/engine/src/flutter/lib/gpu/command_buffer.cc
-@@ -11,6 +11,7 @@
+@@ -12,6 +12,7 @@
  #include "impeller/renderer/render_pass.h"
  #include "lib/ui/ui_dart_state.h"
  #include "tonic/converter/dart_converter.h"
@@ -13,7 +13,7 @@ index fb557956982..6ef2e93aca2 100644
  namespace flutter {
  namespace gpu {
 diff --git a/engine/src/flutter/lib/ui/BUILD.gn b/engine/src/flutter/lib/ui/BUILD.gn
-index 6b06582c680..52720786a5d 100644
+index 43b2b8f65cd..034bd84092e 100644
 --- a/engine/src/flutter/lib/ui/BUILD.gn
 +++ b/engine/src/flutter/lib/ui/BUILD.gn
 @@ -56,6 +56,65 @@ source_set("ui_core_types") {
@@ -139,7 +139,7 @@ index 6b06582c680..52720786a5d 100644
      "//flutter/flow",
      "//flutter/shell/common:display",
      "//flutter/shell/common:platform_message_handler",
-@@ -221,8 +267,6 @@ source_set("ui") {
+@@ -222,8 +268,6 @@ source_set("ui") {
      sources += [
        "painting/display_list_deferred_image_gpu_impeller.cc",
        "painting/display_list_deferred_image_gpu_impeller.h",
@@ -183,10 +183,10 @@ index 4cfa99710b6..724e38e2e8b 100644
                        const ImageResult& result) = 0;
  
 diff --git a/engine/src/flutter/lib/ui/painting/image_decoder_impeller.cc b/engine/src/flutter/lib/ui/painting/image_decoder_impeller.cc
-index 08432d2f838..a93c5bdd50f 100644
+index f0020a90e9c..dd6f7e73ebd 100644
 --- a/engine/src/flutter/lib/ui/painting/image_decoder_impeller.cc
 +++ b/engine/src/flutter/lib/ui/painting/image_decoder_impeller.cc
-@@ -175,7 +175,7 @@ struct DecodedBitmap {
+@@ -176,7 +176,7 @@ struct DecodedBitmap {
  };
  
  absl::StatusOr<DecodedBitmap> DecodeToBitmap(
@@ -195,7 +195,7 @@ index 08432d2f838..a93c5bdd50f 100644
      const SkImageInfo& image_info,
      const SkImageInfo& base_image_info,
      const std::shared_ptr<impeller::Allocator>& allocator) {
-@@ -281,10 +281,10 @@ absl::StatusOr<ImageDecoderImpeller::DecompressResult> ResizeOnCpu(
+@@ -282,10 +282,10 @@ absl::StatusOr<ImageDecoderImpeller::DecompressResult> ResizeOnCpu(
        .image_info = decoded_image_info.value()};
  }
  
@@ -208,7 +208,7 @@ index 08432d2f838..a93c5bdd50f 100644
        return output == ImageDecoder::TargetPixelFormat::kR32Float;
      default:
        return false;
-@@ -347,7 +347,7 @@ ImageDecoderImpeller::~ImageDecoderImpeller() = default;
+@@ -367,7 +367,7 @@ SkISize ImageDecoderImpeller::ClampToMaxTextureSize(
  
  absl::StatusOr<ImageDecoderImpeller::DecompressResult>
  ImageDecoderImpeller::DecompressTexture(
@@ -217,7 +217,7 @@ index 08432d2f838..a93c5bdd50f 100644
      const ImageDecoder::Options& options,
      impeller::ISize max_texture_size,
      bool supports_wide_gamut,
-@@ -414,7 +414,7 @@ ImageDecoderImpeller::DecompressTexture(
+@@ -421,7 +421,7 @@ ImageDecoderImpeller::DecompressTexture(
    }
  
    const SkImageInfo base_image_info =
@@ -226,7 +226,7 @@ index 08432d2f838..a93c5bdd50f 100644
    const absl::StatusOr<SkImageInfo> image_info = CreateImageInfo(
        base_image_info, decode_size, supports_wide_gamut, options.target_format);
  
-@@ -703,27 +703,25 @@ ImageDecoderImpeller::UploadTextureToStorage(
+@@ -707,27 +707,25 @@ ImageDecoderImpeller::UploadTextureToStorage(
  }
  
  // |ImageDecoder|
@@ -261,7 +261,7 @@ index 08432d2f838..a93c5bdd50f 100644
         context = context_.get(),  //
         options,
         io_runner = runners_.GetIOTaskRunner(),  //
-@@ -746,7 +744,7 @@ void ImageDecoderImpeller::Decode(fml::RefPtr<ImageDescriptor> descriptor,
+@@ -750,7 +748,7 @@ void ImageDecoderImpeller::Decode(fml::RefPtr<ImageDescriptor> descriptor,
  
          // Always decompress on the concurrent runner.
          auto bitmap_result = DecompressTexture(
@@ -271,7 +271,7 @@ index 08432d2f838..a93c5bdd50f 100644
                  context->GetCapabilities()->SupportsExtendedRangeFormats(),
              context->GetCapabilities(), context->GetResourceAllocator());
 diff --git a/engine/src/flutter/lib/ui/painting/image_decoder_impeller.h b/engine/src/flutter/lib/ui/painting/image_decoder_impeller.h
-index cbaec53a303..6892a0d4b38 100644
+index 0d234c4f34a..d19501f3880 100644
 --- a/engine/src/flutter/lib/ui/painting/image_decoder_impeller.h
 +++ b/engine/src/flutter/lib/ui/painting/image_decoder_impeller.h
 @@ -54,7 +54,7 @@ class ImageDecoderImpeller final : public ImageDecoder {
@@ -283,8 +283,8 @@ index cbaec53a303..6892a0d4b38 100644
                const Options& options,
                const ImageResult& result) override;
  
-@@ -70,7 +70,7 @@ class ImageDecoderImpeller final : public ImageDecoder {
-   };
+@@ -76,7 +76,7 @@ class ImageDecoderImpeller final : public ImageDecoder {
+                                        impeller::ISize max_texture_size);
  
    static absl::StatusOr<DecompressResult> DecompressTexture(
 -      ImageDescriptor* descriptor,
@@ -293,7 +293,7 @@ index cbaec53a303..6892a0d4b38 100644
        impeller::ISize max_texture_size,
        bool supports_wide_gamut,
 diff --git a/engine/src/flutter/lib/ui/painting/image_decoder_no_gl_unittests.cc b/engine/src/flutter/lib/ui/painting/image_decoder_no_gl_unittests.cc
-index 7e6f25d19ab..b0f5b335e1c 100644
+index 038dd3d9c6c..1a89ffe25e1 100644
 --- a/engine/src/flutter/lib/ui/painting/image_decoder_no_gl_unittests.cc
 +++ b/engine/src/flutter/lib/ui/painting/image_decoder_no_gl_unittests.cc
 @@ -6,6 +6,7 @@
@@ -521,7 +521,7 @@ index 8600518820b..5cc807a3966 100644
        uint32_t target_height,
        const fml::tracing::TraceFlow& flow);
 diff --git a/engine/src/flutter/lib/ui/painting/image_decoder_unittests.cc b/engine/src/flutter/lib/ui/painting/image_decoder_unittests.cc
-index c90189ebd23..e3f661d151b 100644
+index a72c29ba652..ce00c81b866 100644
 --- a/engine/src/flutter/lib/ui/painting/image_decoder_unittests.cc
 +++ b/engine/src/flutter/lib/ui/painting/image_decoder_unittests.cc
 @@ -15,6 +15,7 @@
@@ -688,7 +688,7 @@ index c90189ebd23..e3f661d151b 100644
        /*supports_wide_gamut=*/false, capabilities_no_blit, allocator);
    ASSERT_TRUE(result_4.ok());
    EXPECT_EQ(result_4->image_info.size.width, 6);
-@@ -957,7 +970,8 @@ TEST(ImageDecoderTest, ImagesWithTransparencyArePremulAlpha) {
+@@ -978,7 +991,8 @@ TEST(ImageDecoderTest, ImagesWithTransparencyArePremulAlpha) {
    auto descriptor = fml::MakeRefCounted<ImageDescriptor>(std::move(data),
                                                           std::move(generator));
    auto compressed_image = ImageDecoderSkia::ImageFromCompressedData(
@@ -699,7 +699,7 @@ index c90189ebd23..e3f661d151b 100644
    ASSERT_EQ(compressed_image->width(), 250);
    ASSERT_EQ(compressed_image->height(), 250);
 diff --git a/engine/src/flutter/lib/ui/painting/image_descriptor.cc b/engine/src/flutter/lib/ui/painting/image_descriptor.cc
-index 30fdf02d0c3..205b8fded75 100644
+index 5023d6c0ccc..e7a6c14a30e 100644
 --- a/engine/src/flutter/lib/ui/painting/image_descriptor.cc
 +++ b/engine/src/flutter/lib/ui/painting/image_descriptor.cc
 @@ -17,79 +17,16 @@ namespace flutter {
@@ -830,7 +830,7 @@ index 30fdf02d0c3..205b8fded75 100644
    descriptor->AssociateWithDartWrapper(descriptor_handle);
  }
  
-@@ -196,41 +122,18 @@ void ImageDescriptor::instantiateCodec(Dart_Handle codec_handle,
+@@ -196,7 +122,7 @@ void ImageDescriptor::instantiateCodec(Dart_Handle codec_handle,
                                         int32_t target_height,
                                         int32_t destination_format) {
    fml::RefPtr<Codec> ui_codec;
@@ -839,11 +839,12 @@ index 30fdf02d0c3..205b8fded75 100644
      ui_codec = fml::MakeRefCounted<SingleFrameCodec>(
          static_cast<fml::RefPtr<ImageDescriptor>>(this),  //
          target_width,                                     //
-         target_height,                                    //
+@@ -204,34 +130,11 @@ void ImageDescriptor::instantiateCodec(Dart_Handle codec_handle,
          ToImageDecoderTargetPixelFormat(destination_format));
    } else {
--    ui_codec = fml::MakeRefCounted<MultiFrameCodec>(generator_);
-+    ui_codec = fml::MakeRefCounted<MultiFrameCodec>(data_->generator_);
+     ui_codec = fml::MakeRefCounted<MultiFrameCodec>(
+-        generator_, SkISize::Make(target_width, target_height));
++        data_->generator_, SkISize::Make(target_width, target_height));
    }
    ui_codec->AssociateWithDartWrapper(codec_handle);
  }

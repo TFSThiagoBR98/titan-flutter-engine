@@ -1,0 +1,277 @@
+# Why: Upstream: 1cc08bfe1b9 add RenderPass.end through the runtime SPI.
+diff --git a/engine/src/flutter/lib/gpu/render_pass.cc b/engine/src/flutter/lib/gpu/render_pass.cc
+index d28b2edef88..cb70a5282fb 100644
+--- a/engine/src/flutter/lib/gpu/render_pass.cc
++++ b/engine/src/flutter/lib/gpu/render_pass.cc
+@@ -158,6 +158,13 @@ Dart_Handle InternalFlutterGpu_RenderPass_Begin(
+       nullptr, "Failed to begin RenderPass");
+ }
+ 
++Dart_Handle InternalFlutterGpu_RenderPass_End(
++    flutter::gpu::RenderPass* wrapper) {
++  return flutter::gpu::ResultToDart(
++      flutter::SpiApi().gpu->render_pass_end(wrapper->GetSpiRenderPass()),
++      nullptr, "Failed to end RenderPass");
++}
++
+ void InternalFlutterGpu_RenderPass_BindPipeline(
+     flutter::gpu::RenderPass* wrapper,
+     flutter::gpu::RenderPipeline* pipeline) {
+diff --git a/engine/src/flutter/lib/gpu/render_pass.h b/engine/src/flutter/lib/gpu/render_pass.h
+index b0a157d62fd..94f645d089d 100644
+--- a/engine/src/flutter/lib/gpu/render_pass.h
++++ b/engine/src/flutter/lib/gpu/render_pass.h
+@@ -78,6 +78,8 @@ extern Dart_Handle InternalFlutterGpu_RenderPass_Begin(
+     flutter::gpu::RenderPass*,
+     flutter::gpu::CommandBuffer*);
+ FLUTTER_GPU_EXPORT
++extern Dart_Handle InternalFlutterGpu_RenderPass_End(flutter::gpu::RenderPass*);
++FLUTTER_GPU_EXPORT
+ extern void InternalFlutterGpu_RenderPass_BindPipeline(
+     flutter::gpu::RenderPass*,
+     flutter::gpu::RenderPipeline*);
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 051d1e8d4bb..048c0b9b6d0 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -912,7 +912,9 @@ SPI_EXPECT_OFFSET(FlutterSpiGpuApi, image_surface_get_current_image,
+                   sizeof(void*) == 8 ? 656 : 328);
+ SPI_EXPECT_OFFSET(FlutterSpiGpuApi, shader_is_dirty,
+                   sizeof(void*) == 8 ? 664 : 332);
+-SPI_EXPECT_SIZE(FlutterSpiGpuApi, sizeof(void*) == 8 ? 672 : 336);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi, render_pass_end,
++                  sizeof(void*) == 8 ? 672 : 336);
++SPI_EXPECT_SIZE(FlutterSpiGpuApi, sizeof(void*) == 8 ? 680 : 340);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiGpuRegion, x, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiGpuRegion, y, 4);
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer.cc
+index 871cb1382e8..21298f807b2 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer.cc
+@@ -124,6 +124,15 @@ std::shared_ptr<impeller::RenderPass> SpiGpuCommandBuffer::CreateRenderPass(
+   return render_pass;
+ }
+ 
++bool SpiGpuCommandBuffer::EndRenderPass(
++    const std::shared_ptr<impeller::RenderPass>& render_pass) {
++  if (render_pass == nullptr || encodables_.empty() ||
++      encodables_.back().render_pass != render_pass) {
++    return true;
++  }
++  return EndOpenPass();
++}
++
+ bool SpiGpuCommandBuffer::EndOpenPass() {
+   if (encodables_.empty() ||
+       context_->GetBackendType() == impeller::Context::BackendType::kOpenGLES) {
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer.h b/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer.h
+index 0d2365274c3..230e4a3b977 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer.h
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer.h
+@@ -41,6 +41,9 @@ class SpiGpuCommandBuffer final {
+   std::shared_ptr<impeller::RenderPass> CreateRenderPass(
+       const impeller::RenderTarget& render_target);
+ 
++  bool EndRenderPass(
++      const std::shared_ptr<impeller::RenderPass>& render_pass);
++
+   bool AddCompletionCallback(CompletionCallback completion_callback);
+ 
+   bool CopyBufferToTexture(std::shared_ptr<impeller::DeviceBuffer> source,
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pass.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pass.cc
+index 27fd1aaa8a9..f19f3ffbcd0 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pass.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pass.cc
+@@ -259,10 +259,27 @@ FlutterSpiResult SpiGpuRenderPass::Begin(
+   if (render_pass_ == nullptr) {
+     return kFlutterSpiInternalError;
+   }
++  command_buffer_ = command_buffer_value;
+   begun_ = true;
+   return kFlutterSpiOk;
+ }
+ 
++FlutterSpiResult SpiGpuRenderPass::End() {
++  if (!begun_) {
++    return kFlutterSpiOk;
++  }
++  if (command_buffer_ == nullptr || render_pass_ == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (!command_buffer_->EndRenderPass(render_pass_)) {
++    return kFlutterSpiInternalError;
++  }
++  begun_ = false;
++  command_buffer_ = nullptr;
++  render_pass_.reset();
++  return kFlutterSpiOk;
++}
++
+ FlutterSpiResult SpiGpuRenderPass::BindPipeline(
+     FlutterSpiGpuRenderPipeline* pipeline) {
+   if (pipeline == nullptr || GetCoreRenderPipeline(pipeline) == nullptr) {
+@@ -737,6 +754,11 @@ FlutterSpiResult SpiGpuRenderPassBegin(
+                           : value->Begin(command_buffer);
+ }
+ 
++FlutterSpiResult SpiGpuRenderPassEnd(FlutterSpiGpuRenderPass* pass) {
++  SpiGpuRenderPass* value = FindRenderPass(pass);
++  return value == nullptr ? kFlutterSpiInvalidHandle : value->End();
++}
++
+ FlutterSpiResult SpiGpuRenderPassBindPipeline(
+     FlutterSpiGpuRenderPass* pass,
+     FlutterSpiGpuRenderPipeline* pipeline) {
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pass.h b/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pass.h
+index 9f7c94a75b9..1e418e33c5f 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pass.h
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_render_pass.h
+@@ -31,6 +31,7 @@ class Pipeline;
+ namespace flutter {
+ 
+ class SpiGpuRenderPassTestPeer;
++class SpiGpuCommandBuffer;
+ 
+ class SpiGpuRenderPass final {
+  public:
+@@ -47,6 +48,7 @@ class SpiGpuRenderPass final {
+   FlutterSpiResult SetDepthStencilAttachment(
+       const FlutterSpiGpuDepthStencilAttachment* attachment);
+   FlutterSpiResult Begin(FlutterSpiGpuCommandBuffer* command_buffer);
++  FlutterSpiResult End();
+   FlutterSpiResult BindPipeline(FlutterSpiGpuRenderPipeline* pipeline);
+   FlutterSpiResult BindVertexBuffer(FlutterSpiGpuBuffer* buffer,
+                                     size_t offset,
+@@ -120,6 +122,7 @@ class SpiGpuRenderPass final {
+   std::shared_ptr<impeller::Context> context_;
+   impeller::RenderTarget render_target_;
+   std::shared_ptr<impeller::RenderPass> render_pass_;
++  SpiGpuCommandBuffer* command_buffer_ = nullptr;
+ 
+   FlutterSpiGpuRenderPipeline* pipeline_handle_ = nullptr;
+   std::array<FlutterSpiGpuBindingSet*, kMaxBindingSets> binding_set_handles_ =
+@@ -163,6 +166,7 @@ FlutterSpiResult SpiGpuRenderPassSetDepthStencilAttachment(
+ FlutterSpiResult SpiGpuRenderPassBegin(
+     FlutterSpiGpuRenderPass* pass,
+     FlutterSpiGpuCommandBuffer* command_buffer);
++FlutterSpiResult SpiGpuRenderPassEnd(FlutterSpiGpuRenderPass* pass);
+ FlutterSpiResult SpiGpuRenderPassBindPipeline(
+     FlutterSpiGpuRenderPass* pass,
+     FlutterSpiGpuRenderPipeline* pipeline);
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
+index 1371e0f52e8..1a4ab98823d 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
+@@ -1959,6 +1959,51 @@ TEST_F(SpiGpuContextTest, RenderPassBeginTwiceFails) {
+   EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
+ }
+ 
++TEST_F(SpiGpuContextTest, RenderPassEndIsIdempotentAndStopsDrawing) {
++  std::shared_ptr<const impeller::Capabilities> capabilities;
++  auto context = CreateMockContext(&capabilities);
++  auto command_buffer =
++      std::make_shared<NiceMock<impeller::testing::MockCommandBuffer>>(context);
++  auto impeller_render_pass =
++      std::make_shared<NiceMock<impeller::testing::MockRenderPass>>(
++          context, impeller::RenderTarget{});
++  const std::weak_ptr<impeller::CommandBuffer> weak_command_buffer =
++      command_buffer;
++  const std::weak_ptr<impeller::RenderPass> weak_render_pass =
++      impeller_render_pass;
++  ON_CALL(*context, CreateCommandBuffer())
++      .WillByDefault([weak_command_buffer]() {
++        return weak_command_buffer.lock();
++      });
++  ON_CALL(*command_buffer, IsValid()).WillByDefault(Return(true));
++  ON_CALL(*command_buffer, OnCreateRenderPass(::testing::_))
++      .WillByDefault([weak_render_pass](impeller::RenderTarget) {
++        return weak_render_pass.lock();
++      });
++  ON_CALL(*impeller_render_pass, IsValid()).WillByDefault(Return(true));
++  ON_CALL(*impeller_render_pass, OnEncodeCommands)
++      .WillByDefault(Return(true));
++  SpiGpuSetDefaultContextOverride(context);
++  auto backend = CreateBackend(true, true);
++  FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());
++  FlutterSpiGpuCommandBuffer* gpu_command_buffer = nullptr;
++  ASSERT_EQ(SpiGpuCommandBufferCreate(gpu_context, &gpu_command_buffer),
++            kFlutterSpiOk);
++  FlutterSpiGpuRenderPass* render_pass = nullptr;
++  ASSERT_EQ(SpiGpuRenderPassCreate(&render_pass), kFlutterSpiOk);
++  ASSERT_EQ(SpiGpuRenderPassBegin(render_pass, gpu_command_buffer),
++            kFlutterSpiOk);
++
++  EXPECT_EQ(SpiGpuRenderPassEnd(render_pass), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuRenderPassEnd(render_pass), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuRenderPassDraw(render_pass, 3, 1),
++            kFlutterSpiInvalidArgument);
++
++  EXPECT_EQ(SpiGpuRenderPassRelease(render_pass), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuCommandBufferRelease(gpu_command_buffer), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuContextRelease(gpu_context), kFlutterSpiOk);
++}
++
+ TEST_F(SpiGpuContextTest,
+        RenderPassDrawIndexedWithZeroCountSucceedsWithoutIndexBuffer) {
+   std::shared_ptr<const impeller::Capabilities> capabilities;
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_gpu.h b/engine/src/flutter/runtime_spi/include/flutter_gpu.h
+index bf980118783..b6c3fea4b76 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_gpu.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_gpu.h
+@@ -653,6 +653,7 @@ typedef struct FlutterSpiGpuApi {
+       FlutterSpiGpuImageSurface* surface,
+       FlutterSpiImage** out_image);
+   FlutterSpiResult (*shader_is_dirty)(FlutterSpiGpuShader* shader, bool* out);
++  FlutterSpiResult (*render_pass_end)(FlutterSpiGpuRenderPass* pass);
+ } FlutterSpiGpuApi;
+ 
+ #ifdef __cplusplus
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+index 5b4d126297d..95a19522ba3 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_runtime_spi.h
+@@ -10,7 +10,7 @@ extern "C" {
+ #endif
+ 
+ #define FLUTTER_SPI_VERSION_MAJOR 0
+-#define FLUTTER_SPI_VERSION_MINOR 28
++#define FLUTTER_SPI_VERSION_MINOR 29
+ 
+ typedef uint64_t FlutterSpiCapabilities;
+ 
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index c54bba49b99..d8b9379d0de 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -97,7 +97,7 @@ TEST(SpiAbi, ImageEnumValuesAreFrozen) {
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawUnmodified, 2);
+   EXPECT_EQ(kFlutterSpiImageByteFormatRawExtendedRGBA128, 3);
+   EXPECT_EQ(kFlutterSpiImageByteFormatPNG, 4);
+-  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 28);
++  EXPECT_EQ(FLUTTER_SPI_VERSION_MINOR, 29);
+ }
+ 
+ TEST(SpiAbi, GpuContextInfoLayoutIsFrozen) {
+@@ -216,7 +216,8 @@ TEST(SpiAbi, GpuApiLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi, image_surface_get_current_image, 656,
+                     328);
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi, shader_is_dirty, 664, 332);
+-  EXPECT_EQ(sizeof(FlutterSpiGpuApi), sizeof(void*) == 8 ? 672u : 336u);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, render_pass_end, 672, 336);
++  EXPECT_EQ(sizeof(FlutterSpiGpuApi), sizeof(void*) == 8 ? 680u : 340u);
+ }
+ 
+ TEST(SpiAbi, GpuBufferDescriptorLayoutIsFrozen) {
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index d21598fbdbe..5173a4cfa1e 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -251,6 +251,7 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+       .texture_get_descriptor = SpiGpuTextureGetDescriptor,
+       .image_surface_get_current_image = SpiGpuImageSurfaceGetCurrentImage,
+       .shader_is_dirty = SpiGpuShaderIsDirty,
++      .render_pass_end = SpiGpuRenderPassEnd,
+   };
+   static const FlutterSpiImageApi image_api = {
+       .struct_size = sizeof(FlutterSpiImageApi),

@@ -1,0 +1,66 @@
+# Why: Upstream: 2bb0028f3e7 adds the core embedder target and host sources.
+# Upstream: 62a92f2d6f8 makes the Dart embedder target conditional.
+diff --git a/engine/src/flutter/shell/platform/embedder/BUILD.gn b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+index 47b41db9ff5..60e1c885568 100644
+--- a/engine/src/flutter/shell/platform/embedder/BUILD.gn
++++ b/engine/src/flutter/shell/platform/embedder/BUILD.gn
+@@ -55,11 +55,12 @@ config("embedder_jit_snapshot_setup") {
+ # Template for the embedder build. Used to allow building it multiple times with
+ # different flags.
+ template("embedder_source_set") {
+-  forward_variables_from(invoker, "*")
++  source_set("${target_name}_core") {
++    forward_variables_from(invoker, "*")
+ 
+-  source_set(target_name) {
+     sources = [
+-      "embedder.cc",
++      "embedder_core.cc",
++      "embedder_core_internal.h",
+       "embedder_engine.cc",
+       "embedder_engine.h",
+       "embedder_external_texture_resolver.cc",
+@@ -70,6 +71,7 @@ template("embedder_source_set") {
+       "embedder_external_view_embedder.h",
+       "embedder_include.c",
+       "embedder_include2.c",
++      "flutter_core_host_include.c",
+       "embedder_layers.cc",
+       "embedder_layers.h",
+       "embedder_platform_message_response.cc",
+@@ -102,21 +104,13 @@ template("embedder_source_set") {
+     public_deps = [ ":embedder_headers" ]
+     deps = [
+       ":embedder_gpu_configuration",
+-      "$dart_src/runtime/bin:common_embedder_dart_io",
+-      "$dart_src/runtime/bin:elf_loader",
+       "//flutter/assets",
+       "//flutter/common",
+       "//flutter/common/graphics",
+       "//flutter/flow",
+       "//flutter/fml",
+-      "//flutter/lib/ui",
+-      "//flutter/lib/ui:ui_core_types",
+-      "//flutter/runtime:libdart",
+-      "//flutter/runtime",
+       "//flutter/shell/common",
+-      "//flutter/shell/common:dart",
+       "//flutter/skia",
+-      "//flutter/third_party/tonic",
+     ]
+ 
+     assert_no_deps = [
+@@ -266,7 +260,12 @@ if (!titan_flutter_runtime_dart) {
+ }
+ 
+ source_set("embedder_headers") {
+-  public = [ "embedder.h" ]
++  public = [
++    "embedder.h",
++    "flutter_core_host.h",
++  ]
++
++  public_deps = [ "//flutter/runtime_spi:runtime_spi_c_api" ]
+ 
+   public_configs = [ "//flutter:config" ]
+ }

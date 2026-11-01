@@ -1,0 +1,46 @@
+# Why: Upstream: 1cc08bfe1b9 Why: keep the replayed GPU tests compatible with
+# the renamed core GPU wrappers and absl status API.
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer_unittests.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer_unittests.cc
+index 44c37adbd31..7a05f5ca1cc 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer_unittests.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_command_buffer_unittests.cc
+@@ -24,6 +24,9 @@ using ::impeller::testing::MockCommandQueue;
+ using ::impeller::testing::MockImpellerContext;
+ using ::impeller::testing::MockRenderPass;
+ using ::impeller::testing::MockTexture;
++using ::flutter::gpu::CommandBuffer;
++using ::flutter::gpu::RenderPass;
++using ::flutter::gpu::Texture;
+ using ::testing::_;
+ using ::testing::DoAll;
+ using ::testing::InSequence;
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
+index 96ab9b81ffc..1371e0f52e8 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_unittests.cc
+@@ -32,6 +32,7 @@
+ #include "impeller/renderer/shader_library.h"
+ #include "impeller/renderer/testing/mocks.h"
+ #include "impeller/shader_bundle/shader_bundle_flatbuffers.h"
++#include "third_party/abseil-cpp/absl/status/status.h"
+ #include "third_party/skia/include/core/SkBitmap.h"
+ #include "third_party/skia/include/core/SkImage.h"
+ 
+@@ -1716,7 +1717,7 @@ TEST_F(SpiGpuContextTest, CommandBufferSubmitCallsBackOnceOnUiThread) {
+              const impeller::CommandQueue::CompletionCallback& callback) {
+             callback(impeller::CommandBuffer::Status::kCompleted);
+           },
+-          Return(fml::Status())));
++          Return(absl::OkStatus())));
+   SpiGpuSetDefaultContextOverride(context);
+   auto backend = CreateBackend(true, true);
+   FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());
+@@ -1748,7 +1749,7 @@ TEST_F(SpiGpuContextTest, CommandBufferSubmitTwiceFails) {
+       .WillByDefault(Return(command_buffer));
+   ON_CALL(*context, GetCommandQueue()).WillByDefault(Return(command_queue));
+   ON_CALL(*command_queue, Submit(::testing::_, ::testing::_))
+-      .WillByDefault(Return(fml::Status()));
++      .WillByDefault(Return(absl::OkStatus()));
+   SpiGpuSetDefaultContextOverride(context);
+   auto backend = CreateBackend(true, true);
+   FlutterSpiGpuContext* gpu_context = GetDefaultContext(backend.get());

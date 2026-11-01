@@ -726,10 +726,10 @@ index 74597dcd6e7..7e9c5c9a5df 100644
               settings,
               std::move(animator),
 diff --git a/engine/src/flutter/shell/common/shell_unittests.cc b/engine/src/flutter/shell/common/shell_unittests.cc
-index 50d23d89726..1749b3d1f27 100644
+index e8fdda3ccf4..febf4ea9f8a 100644
 --- a/engine/src/flutter/shell/common/shell_unittests.cc
 +++ b/engine/src/flutter/shell/common/shell_unittests.cc
-@@ -285,6 +285,11 @@ class MockPlatformMessageResponse : public PlatformMessageResponse {
+@@ -287,6 +287,11 @@ class MockPlatformMessageResponse : public PlatformMessageResponse {
  
  class FakeRuntimeBackendFactory final : public RuntimeBackendFactory {
   public:

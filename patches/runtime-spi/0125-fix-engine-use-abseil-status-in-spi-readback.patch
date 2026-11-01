@@ -1,0 +1,31 @@
+# Why: Upstream: 40f7050aace replaces fml::StatusOr with absl::StatusOr.
+diff --git a/engine/src/flutter/runtime_spi/image/spi_image_readback.cc b/engine/src/flutter/runtime_spi/image/spi_image_readback.cc
+index 675883ce3be..12a06b07a16 100644
+--- a/engine/src/flutter/runtime_spi/image/spi_image_readback.cc
++++ b/engine/src/flutter/runtime_spi/image/spi_image_readback.cc
+@@ -8,6 +8,7 @@
+ 
+ #include "flutter/lib/ui/io_manager.h"
+ #include "flutter/runtime_spi/image/spi_image.h"
++#include "third_party/abseil-cpp/absl/status/statusor.h"
+ 
+ namespace flutter {
+ namespace {
+@@ -19,7 +20,7 @@ bool IsSupportedFormat(int32_t format) {
+ 
+ void CompleteBytes(FlutterSpiBytesCallback callback,
+                    void* user_data,
+-                   fml::StatusOr<sk_sp<SkData>> encoded) {
++                   absl::StatusOr<sk_sp<SkData>> encoded) {
+   if (!encoded.ok()) {
+     callback(user_data, kFlutterSpiInternalError, nullptr, 0);
+     return;
+@@ -79,7 +80,7 @@ FlutterSpiResult SpiImageToBytes(const ImageReadbackContext& context,
+     ConvertToRasterImageAsync(
+         readback_context, std::move(dl_image),
+         [format, callback,
+-         user_data](fml::StatusOr<sk_sp<SkImage>> raster_image) mutable {
++         user_data](absl::StatusOr<sk_sp<SkImage>> raster_image) mutable {
+           if (!raster_image.ok()) {
+             callback(user_data, kFlutterSpiInternalError, nullptr, 0);
+             return;
