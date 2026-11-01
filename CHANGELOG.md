@@ -75,6 +75,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime SPI R1a-1: o check confere o inventário Dart e o relatório de conformidade do `flutter-rs`.
 - Runtime SPI R1b-3: o check compara os 60 programas do corpus de cenas Dart e Rust com os mesmos goldens, e registra a contagem no relatório de conformidade.
 - Runtime SPI R1c: o check compara cinco programas de texto com fontes de teste nos runtimes Dart e Rust.
+- Runtime SPI U1-2: compute shaders do `flutter_gpu` passam pela ABI 0.30 do SPI, com dispatch verificado pelo
+  `libflutter_engine_core.so` em C, validação compatível com o upstream e o check do alvo `core gpu compute`.
 
 ### Changed
 

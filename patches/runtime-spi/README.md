@@ -11,6 +11,10 @@ Na atualização U1-1 (2026-10-31), a série foi reaplicada sobre o Flutter
 upstream e acrescentou os ajustes de compatibilidade e de comportamento do
 Runtime SPI; a exportação final contém 192 patches.
 
+Na U1-2 (2026-11-01), a série acrescentou compute shaders do `flutter_gpu` à
+ABI 0.30 do Runtime SPI, o dispatch pelo core em C e as mensagens de validação
+do upstream; a exportação passou a conter 198 patches.
+
 Na S5.5 (2026-10-29) a série foi reorganizada: as correções, os testes
 vermelhos, os ajustes de estilo e as otimizações foram juntados ao commit de
 origem, mantendo a ordem das fases (270 → 153 patches). A árvore final é
@@ -212,6 +216,12 @@ idêntica à anterior. A série antiga está no worktree do engine no branch
 | `0190-fix-runtime-spi-end-gpu-passes-before-recording-next-command.patch` | Encerrar passes GPU antes de gravar o próximo comando pela tabela do SPI. | |
 | `0191-fix-runtime-spi-end-gpu-passes-before-creating-the-next-pass.patch` | Encerrar o pass GPU anterior antes de criar o próximo pass no SPI. | |
 | `0192-fix-runtime-spi-expose-flutter-gpu-render-pass-end.patch` | Expor `RenderPass.end` do Flutter GPU pela tabela do Runtime SPI. | |
+| `0193-feat-runtime-spi-add-flutter-gpu-compute-to-the-spi.patch` | U1-2: expor limites, pipelines, passes, bindings e dispatch de compute shaders pela ABI 0.30 do Runtime SPI. | Vulkan |
+| `0194-feat-engine-run-flutter-gpu-compute-through-the-spi.patch` | U1-2: executar o caminho de compute do `lib/gpu` sobre a tabela do SPI. | Vulkan |
+| `0195-test-runtime-spi-dispatch-a-compute-shader-from-c.patch` | U1-2: provar um dispatch de compute e a leitura do buffer pelo programa C do core. | Vulkan |
+| `0196-test-runtime-spi-accept-compute-bindings-like-upstream.patch` | U1-2: cobrir bindings de compute nos testes do Runtime SPI como no upstream. | Vulkan |
+| `0197-fix-engine-pass-context-to-compute-texture-binding.patch` | U1-2: passar o contexto correto ao bind de textura de compute e evitar handle nulo. | Vulkan |
+| `0198-fix-engine-preserve-flutter-gpu-compute-validation-messages.patch` | U1-2: transportar pelo SPI as mensagens de validação de compute do upstream. | Vulkan |
 
 O fluxo é:
 
