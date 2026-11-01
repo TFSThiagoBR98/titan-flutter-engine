@@ -1,0 +1,568 @@
+# Why: U1-2 requires the runtime SPI compute path to preserve the upstream
+# Flutter GPU validation messages for dispatch and binding errors.
+diff --git a/engine/src/flutter/lib/gpu/compute_pass.cc b/engine/src/flutter/lib/gpu/compute_pass.cc
+index dc47dfe4c5a..a812ec7f983 100644
+--- a/engine/src/flutter/lib/gpu/compute_pass.cc
++++ b/engine/src/flutter/lib/gpu/compute_pass.cc
+@@ -16,13 +16,26 @@ namespace {
+ 
+ absl::Status ResultToStatus(FlutterSpiResult result,
+                             const char* operation,
+-                            const char* detail = nullptr) {
++                            FlutterSpiGpuComputePass* pass) {
+   if (result == kFlutterSpiOk) {
+     return absl::OkStatus();
+   }
+-  const std::string message = detail == nullptr
+-                                  ? std::string(operation)
+-                                  : std::string(operation) + ": " + detail;
++  char* error = nullptr;
++  if (pass != nullptr &&
++      SpiApi().gpu->compute_pass_get_last_error(pass, &error) ==
++          kFlutterSpiOk &&
++      error != nullptr) {
++    const std::string message(error);
++    SpiApi().gpu->compute_pass_free_error(error);
++    if (result == kFlutterSpiInvalidArgument) {
++      return absl::InvalidArgumentError(message);
++    }
++    if (result == kFlutterSpiUnsupported) {
++      return absl::UnimplementedError(message);
++    }
++    return absl::InternalError(message);
++  }
++  const std::string message(operation);
+   if (result == kFlutterSpiInvalidArgument) {
+     return absl::InvalidArgumentError(message);
+   }
+@@ -52,9 +65,11 @@ absl::Status ComputePass::Begin(CommandBuffer& command_buffer) {
+   const FlutterSpiResult result = SpiApi().gpu->compute_pass_begin(
+       spi_compute_pass_, command_buffer.GetSpiCommandBuffer());
+   if (result != kFlutterSpiOk) {
++    const absl::Status status = ResultToStatus(
++        result, "Failed to begin ComputePass", spi_compute_pass_);
+     SpiApi().gpu->compute_pass_release(spi_compute_pass_);
+     spi_compute_pass_ = nullptr;
+-    return ResultToStatus(result, "Failed to begin ComputePass");
++    return status;
+   }
+   command_buffer_ = fml::Ref(&command_buffer);
+   return absl::OkStatus();
+@@ -66,10 +81,17 @@ absl::Status ComputePass::End() {
+   }
+   const bool ended = command_buffer_->EndComputePass(spi_compute_pass_);
+   command_buffer_ = nullptr;
++  const absl::Status status =
++      ended ? absl::OkStatus()
++            : ResultToStatus(kFlutterSpiInternalError,
++                             "Failed to end ComputePass", spi_compute_pass_);
+   const FlutterSpiResult release_result =
+       SpiApi().gpu->compute_pass_release(spi_compute_pass_);
+   spi_compute_pass_ = nullptr;
+-  if (!ended || release_result != kFlutterSpiOk) {
++  if (!status.ok()) {
++    return status;
++  }
++  if (release_result != kFlutterSpiOk) {
+     return absl::InternalError("Failed to end ComputePass.");
+   }
+   return absl::OkStatus();
+@@ -92,7 +114,7 @@ absl::Status ComputePass::BindUniform(const Shader& shader,
+       SpiApi().gpu->compute_pass_bind_uniform_indexed(
+           spi_compute_pass_, shader.GetSpiShader(), uniform_struct_index,
+           buffer.GetSpiBuffer(), offset_in_bytes, length_in_bytes),
+-      "Failed to bind uniform");
++      "Failed to bind uniform", spi_compute_pass_);
+ }
+ 
+ absl::Status ComputePass::BindStorageBuffer(const Shader& shader,
+@@ -104,7 +126,7 @@ absl::Status ComputePass::BindStorageBuffer(const Shader& shader,
+       SpiApi().gpu->compute_pass_bind_storage_buffer_indexed(
+           spi_compute_pass_, shader.GetSpiShader(), storage_buffer_index,
+           buffer.GetSpiBuffer(), offset_in_bytes, length_in_bytes),
+-      "Failed to bind storage buffer");
++      "Failed to bind storage buffer", spi_compute_pass_);
+ }
+ 
+ absl::Status ComputePass::BindTexture(
+@@ -117,7 +139,7 @@ absl::Status ComputePass::BindTexture(
+       SpiApi().gpu->compute_pass_bind_texture_indexed(
+           spi_compute_pass_, context.GetSpiContext(), shader.GetSpiShader(),
+           uniform_texture_index, texture.GetSpiTexture(), &sampler),
+-      "Failed to bind texture");
++      "Failed to bind texture", spi_compute_pass_);
+ }
+ 
+ void ComputePass::BindSet(size_t slot, fml::RefPtr<BindingSet> set) {
+@@ -137,7 +159,8 @@ absl::Status ComputePass::Dispatch(std::array<uint32_t, 3> workgroup_count) {
+   return ResultToStatus(SpiApi().gpu->compute_pass_dispatch(
+                             spi_compute_pass_, workgroup_count[0],
+                             workgroup_count[1], workgroup_count[2]),
+-                        "Failed to dispatch compute workgroups");
++                        "Failed to dispatch compute workgroups",
++                        spi_compute_pass_);
+ }
+ 
+ }  // namespace gpu
+diff --git a/engine/src/flutter/runtime_spi/abi_layout_check.c b/engine/src/flutter/runtime_spi/abi_layout_check.c
+index 229e9873b95..dd40093a41f 100644
+--- a/engine/src/flutter/runtime_spi/abi_layout_check.c
++++ b/engine/src/flutter/runtime_spi/abi_layout_check.c
+@@ -1027,7 +1027,13 @@ SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
+ SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
+                   shader_get_storage_buffer_runtime_array_stride_at,
+                   sizeof(void*) == 8 ? 816 : 408);
+-SPI_EXPECT_SIZE(FlutterSpiGpuApi, sizeof(void*) == 8 ? 824 : 412);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  compute_pass_get_last_error,
++                  sizeof(void*) == 8 ? 824 : 412);
++SPI_EXPECT_OFFSET(FlutterSpiGpuApi,
++                  compute_pass_free_error,
++                  sizeof(void*) == 8 ? 832 : 416);
++SPI_EXPECT_SIZE(FlutterSpiGpuApi, sizeof(void*) == 8 ? 840 : 420);
+ 
+ SPI_EXPECT_OFFSET(FlutterSpiGpuRegion, x, 0);
+ SPI_EXPECT_OFFSET(FlutterSpiGpuRegion, y, 4);
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_compute_pass.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_compute_pass.cc
+index d2de5190b27..eb1303a6e13 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_compute_pass.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_compute_pass.cc
+@@ -5,6 +5,8 @@
+ #include "flutter/runtime_spi/gpu/spi_gpu_compute_pass.h"
+ 
+ #include <algorithm>
++#include <cstdlib>
++#include <cstring>
+ #include <utility>
+ 
+ #include "flutter/runtime_spi/gpu/spi_gpu_buffer.h"
+@@ -17,6 +19,7 @@
+ #include "impeller/renderer/capabilities.h"
+ #include "impeller/renderer/context.h"
+ #include "impeller/renderer/sampler_library.h"
++#include "third_party/abseil-cpp/absl/strings/str_cat.h"
+ 
+ namespace flutter {
+ namespace {
+@@ -41,6 +44,16 @@ bool IsOptimizedOut(size_t backend_index) {
+   return backend_index == impeller::kOptimizedOutBinding;
+ }
+ 
++void CopyError(char** out_error, const std::string& error) {
++  if (out_error == nullptr) {
++    return;
++  }
++  *out_error = static_cast<char*>(std::malloc(error.size() + 1));
++  if (*out_error != nullptr) {
++    std::memcpy(*out_error, error.c_str(), error.size() + 1);
++  }
++}
++
+ }  // namespace
+ 
+ SpiGpuComputePass::SpiGpuComputePass() = default;
+@@ -50,6 +63,18 @@ SpiGpuComputePass::~SpiGpuComputePass() {
+   ReleaseBindingShaders();
+ }
+ 
++const std::string& SpiGpuComputePass::GetLastError() const {
++  return last_error_;
++}
++
++void SpiGpuComputePass::ClearLastError() {
++  last_error_.clear();
++}
++
++void SpiGpuComputePass::SetLastError(std::string error) {
++  last_error_ = std::move(error);
++}
++
+ void SpiGpuComputePass::ReleaseBindingSets() {
+   for (auto& set : binding_sets_) {
+     if (set != nullptr) {
+@@ -80,7 +105,9 @@ bool SpiGpuComputePass::RetainBindingShader(FlutterSpiGpuShader* shader) {
+ 
+ FlutterSpiResult SpiGpuComputePass::Begin(
+     FlutterSpiGpuCommandBuffer* command_buffer) {
++  ClearLastError();
+   if (command_buffer == nullptr) {
++    SetLastError("The ComputePass is not recording.");
+     return kFlutterSpiInvalidHandle;
+   }
+   if (command_buffer_ != nullptr) {
+@@ -93,6 +120,7 @@ FlutterSpiResult SpiGpuComputePass::Begin(
+   }
+   compute_pass_ = command_buffer_value->CreateComputePass();
+   if (compute_pass_ == nullptr) {
++    SetLastError("Failed to begin ComputePass.");
+     return kFlutterSpiInternalError;
+   }
+   context_ = command_buffer_value->GetContext();
+@@ -102,11 +130,13 @@ FlutterSpiResult SpiGpuComputePass::Begin(
+ }
+ 
+ FlutterSpiResult SpiGpuComputePass::End() {
++  ClearLastError();
+   if (command_buffer_ == nullptr) {
+     return kFlutterSpiOk;
+   }
+   if (compute_pass_ == nullptr ||
+       !command_buffer_->EndComputePass(compute_pass_)) {
++    SetLastError("Failed to end ComputePass.");
+     return kFlutterSpiInternalError;
+   }
+   command_buffer_ = nullptr;
+@@ -116,7 +146,9 @@ FlutterSpiResult SpiGpuComputePass::End() {
+ 
+ FlutterSpiResult SpiGpuComputePass::BindPipeline(
+     FlutterSpiGpuComputePipeline* pipeline) {
++  ClearLastError();
+   if (pipeline == nullptr) {
++    SetLastError("The compute pipeline is null.");
+     return kFlutterSpiInvalidHandle;
+   }
+   std::shared_ptr<SpiGpuComputePipeline> pipeline_value =
+@@ -133,10 +165,13 @@ FlutterSpiResult SpiGpuComputePass::BindPipeline(
+ 
+ FlutterSpiResult SpiGpuComputePass::BindSet(FlutterSpiGpuBindingSet* set,
+                                             int32_t slot) {
++  ClearLastError();
+   if (slot < 0 || static_cast<size_t>(slot) >= kMaxBindingSets) {
++    SetLastError("The binding set slot is out of range.");
+     return kFlutterSpiInvalidArgument;
+   }
+   if (set == nullptr || GetCoreBindingSet(set) == nullptr) {
++    SetLastError("The binding set is null.");
+     return kFlutterSpiInvalidHandle;
+   }
+   if (binding_sets_[slot] == set) {
+@@ -158,23 +193,35 @@ FlutterSpiResult SpiGpuComputePass::BindUniform(FlutterSpiGpuShader* shader,
+                                                 FlutterSpiGpuBuffer* buffer,
+                                                 size_t offset,
+                                                 size_t length) {
++  ClearLastError();
+   SpiGpuShader* shader_value = GetCoreShader(shader);
+   const std::shared_ptr<impeller::DeviceBuffer> buffer_value =
+       GetImpellerBuffer(buffer);
+   if (shader_value == nullptr || buffer_value == nullptr) {
++    SetLastError(shader_value == nullptr ? "The shader is null."
++                                         : "The buffer is null.");
+     return kFlutterSpiInvalidHandle;
+   }
+   if (shader_value->GetShaderStage() != impeller::ShaderStage::kCompute) {
++    SetLastError(absl::StrCat("The shader '", shader_value->GetEntrypoint(),
++                              "' is not a compute shader."));
+     return kFlutterSpiInvalidArgument;
+   }
+   const SpiGpuShader::UniformBinding* binding =
+       shader_value->GetUniformStructAt(uniform_struct_index);
+   if (binding == nullptr) {
++    SetLastError(absl::StrCat("The shader '", shader_value->GetEntrypoint(),
++                              "' does not declare the binding."));
+     return kFlutterSpiInvalidArgument;
+   }
+   const size_t buffer_size = buffer_value->GetDeviceBufferDescriptor().size;
+   if (offset > buffer_size || length > buffer_size - offset ||
+       !RetainBindingShader(shader)) {
++    SetLastError(offset > buffer_size || length > buffer_size - offset
++                     ? absl::StrCat("The view of ", length, " bytes at offset ",
++                                    offset, " runs past the end of the ",
++                                    buffer_size, "-byte buffer.")
++                     : "The shader binding could not be retained.");
+     return kFlutterSpiInvalidArgument;
+   }
+   uniform_bindings_.insert_or_assign(
+@@ -192,23 +239,35 @@ FlutterSpiResult SpiGpuComputePass::BindStorageBuffer(
+     FlutterSpiGpuBuffer* buffer,
+     size_t offset,
+     size_t length) {
++  ClearLastError();
+   SpiGpuShader* shader_value = GetCoreShader(shader);
+   const std::shared_ptr<impeller::DeviceBuffer> buffer_value =
+       GetImpellerBuffer(buffer);
+   if (shader_value == nullptr || buffer_value == nullptr) {
++    SetLastError(shader_value == nullptr ? "The shader is null."
++                                         : "The buffer is null.");
+     return kFlutterSpiInvalidHandle;
+   }
+   if (shader_value->GetShaderStage() != impeller::ShaderStage::kCompute) {
++    SetLastError(absl::StrCat("The shader '", shader_value->GetEntrypoint(),
++                              "' is not a compute shader."));
+     return kFlutterSpiInvalidArgument;
+   }
+   const SpiGpuShader::StorageBufferBinding* binding =
+       shader_value->GetStorageBufferAt(storage_buffer_index);
+   if (binding == nullptr) {
++    SetLastError(absl::StrCat("The shader '", shader_value->GetEntrypoint(),
++                              "' does not declare the binding."));
+     return kFlutterSpiInvalidArgument;
+   }
+   const size_t buffer_size = buffer_value->GetDeviceBufferDescriptor().size;
+   if (offset > buffer_size || length > buffer_size - offset ||
+       !RetainBindingShader(shader)) {
++    SetLastError(offset > buffer_size || length > buffer_size - offset
++                     ? absl::StrCat("The view of ", length, " bytes at offset ",
++                                    offset, " runs past the end of the ",
++                                    buffer_size, "-byte buffer.")
++                     : "The shader binding could not be retained.");
+     return kFlutterSpiInvalidArgument;
+   }
+   storage_buffer_bindings_.insert_or_assign(
+@@ -226,6 +285,7 @@ FlutterSpiResult SpiGpuComputePass::BindTexture(
+     int32_t uniform_texture_index,
+     FlutterSpiGpuTexture* texture,
+     const FlutterSpiGpuSamplerDescriptor* sampler) {
++  ClearLastError();
+   SpiGpuShader* shader_value = GetCoreShader(shader);
+   const std::shared_ptr<impeller::Texture> texture_value =
+       SpiGpuTextureGetImpeller(texture);
+@@ -233,15 +293,29 @@ FlutterSpiResult SpiGpuComputePass::BindTexture(
+       GetImpellerContext(context);
+   if (shader_value == nullptr || texture_value == nullptr ||
+       context_value == nullptr) {
++    SetLastError(shader_value == nullptr
++                     ? "The shader is null."
++                     : (texture_value == nullptr ? "The texture is null."
++                                                 : "The context is null."));
+     return kFlutterSpiInvalidHandle;
+   }
+   if (sampler == nullptr || sampler->struct_size < sizeof(*sampler) ||
+       shader_value->GetShaderStage() != impeller::ShaderStage::kCompute) {
++    SetLastError(sampler == nullptr || sampler->struct_size < sizeof(*sampler)
++                     ? "The sampler is null."
++                     : absl::StrCat("The shader '",
++                                    shader_value->GetEntrypoint(),
++                                    "' is not a compute shader."));
+     return kFlutterSpiInvalidArgument;
+   }
+   const SpiGpuShader::TextureBinding* binding =
+       shader_value->GetUniformTextureAt(uniform_texture_index);
+   if (binding == nullptr || !RetainBindingShader(shader)) {
++    SetLastError(binding == nullptr
++                     ? absl::StrCat("The shader '",
++                                    shader_value->GetEntrypoint(),
++                                    "' does not declare the binding.")
++                     : "The shader binding could not be retained.");
+     return kFlutterSpiInvalidArgument;
+   }
+   const auto sampler_value = context_value->GetSamplerLibrary()->GetSampler(
+@@ -258,6 +332,7 @@ FlutterSpiResult SpiGpuComputePass::BindTexture(
+ }
+ 
+ FlutterSpiResult SpiGpuComputePass::ClearBindings() {
++  ClearLastError();
+   uniform_bindings_.clear();
+   storage_buffer_bindings_.clear();
+   texture_bindings_.clear();
+@@ -307,6 +382,7 @@ const SpiGpuBindingSet::TextureBinding* SpiGpuComputePass::FindTextureInSets(
+ bool SpiGpuComputePass::ApplyBindings() {
+   if (pipeline_ == nullptr || pipeline_->GetShader() == nullptr ||
+       compute_pass_ == nullptr) {
++    SetLastError("The ComputePass is not recording.");
+     return false;
+   }
+   SpiGpuShader* shader = pipeline_->GetShader();
+@@ -321,6 +397,10 @@ bool SpiGpuComputePass::ApplyBindings() {
+                                   ? FindBufferInSets(&binding->metadata)
+                                   : nullptr;
+     if (dynamic_binding == nullptr && set_binding == nullptr) {
++      SetLastError(absl::StrCat("The compute shader '", shader->GetEntrypoint(),
++                                "' declares the uniform struct '",
++                                binding->metadata.name,
++                                "', but nothing is bound to it."));
+       return false;
+     }
+     const auto& slot =
+@@ -345,6 +425,10 @@ bool SpiGpuComputePass::ApplyBindings() {
+                                   ? FindBufferInSets(&binding->metadata)
+                                   : nullptr;
+     if (dynamic_binding == nullptr && set_binding == nullptr) {
++      SetLastError(absl::StrCat("The compute shader '", shader->GetEntrypoint(),
++                                "' declares the storage buffer '",
++                                binding->metadata.name,
++                                "', but nothing is bound to it."));
+       return false;
+     }
+     const auto& slot =
+@@ -369,6 +453,10 @@ bool SpiGpuComputePass::ApplyBindings() {
+                                   ? FindTextureInSets(&binding->metadata)
+                                   : nullptr;
+     if (dynamic_binding == nullptr && set_binding == nullptr) {
++      SetLastError(absl::StrCat("The compute shader '", shader->GetEntrypoint(),
++                                "' declares the texture '",
++                                binding->metadata.name,
++                                "', but nothing is bound to it."));
+       return false;
+     }
+     const auto& slot =
+@@ -391,7 +479,9 @@ bool SpiGpuComputePass::ApplyBindings() {
+ FlutterSpiResult SpiGpuComputePass::Dispatch(uint32_t workgroup_count_x,
+                                              uint32_t workgroup_count_y,
+                                              uint32_t workgroup_count_z) {
++  ClearLastError();
+   if (compute_pass_ == nullptr || command_buffer_ == nullptr) {
++    SetLastError("The ComputePass is not recording.");
+     return kFlutterSpiInvalidArgument;
+   }
+   if (workgroup_count_x == 0u || workgroup_count_y == 0u ||
+@@ -399,12 +489,18 @@ FlutterSpiResult SpiGpuComputePass::Dispatch(uint32_t workgroup_count_x,
+     return kFlutterSpiOk;
+   }
+   if (pipeline_ == nullptr || pipeline_->GetPipeline() == nullptr) {
++    SetLastError("No ComputePipeline is bound.");
+     return kFlutterSpiInvalidArgument;
+   }
+   const auto limits = context_->GetCapabilities()->GetComputeLimits();
+   if (workgroup_count_x > limits.max_workgroup_count[0] ||
+       workgroup_count_y > limits.max_workgroup_count[1] ||
+       workgroup_count_z > limits.max_workgroup_count[2]) {
++    SetLastError(absl::StrCat(
++        "The workgroup count ", workgroup_count_x, "x", workgroup_count_y, "x",
++        workgroup_count_z, " exceeds the device maximum of ",
++        limits.max_workgroup_count[0], "x", limits.max_workgroup_count[1], "x",
++        limits.max_workgroup_count[2], "."));
+     return kFlutterSpiInvalidArgument;
+   }
+   if (pipeline_ != last_pipeline_) {
+@@ -421,7 +517,8 @@ FlutterSpiResult SpiGpuComputePass::Dispatch(uint32_t workgroup_count_x,
+                      {workgroup_count_x, workgroup_count_y, workgroup_count_z})
+                  .ok()
+              ? kFlutterSpiOk
+-             : kFlutterSpiInternalError;
++             : (SetLastError("Failed to dispatch compute workgroups."),
++                kFlutterSpiInternalError);
+ }
+ 
+ FlutterSpiResult SpiGpuComputePassCreate(FlutterSpiGpuComputePass** out_pass) {
+@@ -510,6 +607,31 @@ FlutterSpiResult SpiGpuComputePassDispatch(FlutterSpiGpuComputePass* pass,
+   SPI_COMPUTE_PASS_CALL(Dispatch, x, y, z);
+ }
+ 
++FlutterSpiResult SpiGpuComputePassGetLastError(FlutterSpiGpuComputePass* pass,
++                                               char** out_error) {
++  if (out_error == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  *out_error = nullptr;
++  SpiGpuComputePass* value = FindPass(pass);
++  if (value == nullptr) {
++    return kFlutterSpiInvalidHandle;
++  }
++  if (value->GetLastError().empty()) {
++    return kFlutterSpiOk;
++  }
++  CopyError(out_error, value->GetLastError());
++  return *out_error == nullptr ? kFlutterSpiInternalError : kFlutterSpiOk;
++}
++
++FlutterSpiResult SpiGpuComputePassFreeError(char* error) {
++  if (error == nullptr) {
++    return kFlutterSpiInvalidArgument;
++  }
++  std::free(error);
++  return kFlutterSpiOk;
++}
++
+ FlutterSpiResult SpiGpuComputePassEnd(FlutterSpiGpuComputePass* pass) {
+   SPI_COMPUTE_PASS_CALL(End);
+ }
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_compute_pass.h b/engine/src/flutter/runtime_spi/gpu/spi_gpu_compute_pass.h
+index 4e25091bd76..019398248d4 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_compute_pass.h
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_compute_pass.h
+@@ -59,6 +59,7 @@ class SpiGpuComputePass final {
+   FlutterSpiResult Dispatch(uint32_t workgroup_count_x,
+                             uint32_t workgroup_count_y,
+                             uint32_t workgroup_count_z);
++  const std::string& GetLastError() const;
+ 
+  private:
+   struct BufferBinding {
+@@ -95,6 +96,10 @@ class SpiGpuComputePass final {
+       texture_bindings_;
+   bool bindings_dirty_ = true;
+   std::shared_ptr<SpiGpuComputePipeline> last_pipeline_;
++  std::string last_error_;
++
++  void ClearLastError();
++  void SetLastError(std::string error);
+ };
+ 
+ FlutterSpiResult SpiGpuComputePassCreate(FlutterSpiGpuComputePass** out_pass);
+@@ -135,6 +140,9 @@ FlutterSpiResult SpiGpuComputePassDispatch(FlutterSpiGpuComputePass* pass,
+                                            uint32_t workgroup_count_x,
+                                            uint32_t workgroup_count_y,
+                                            uint32_t workgroup_count_z);
++FlutterSpiResult SpiGpuComputePassGetLastError(FlutterSpiGpuComputePass* pass,
++                                               char** out_error);
++FlutterSpiResult SpiGpuComputePassFreeError(char* error);
+ FlutterSpiResult SpiGpuComputePassEnd(FlutterSpiGpuComputePass* pass);
+ FlutterSpiResult SpiGpuComputePassRelease(FlutterSpiGpuComputePass* pass);
+ 
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_compute_unittests.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_compute_unittests.cc
+index 4b03c2bbb0a..2d1fe1e3161 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_compute_unittests.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_compute_unittests.cc
+@@ -126,5 +126,19 @@ TEST(SpiGpuComputeApiTest, NewEntriesRejectInvalidHandles) {
+   EXPECT_EQ(SpiGpuComputePassRelease(nullptr), kFlutterSpiInvalidHandle);
+ }
+ 
++TEST(SpiGpuComputeApiTest, DispatchReportsTheUpstreamRecordingMessage) {
++  FlutterSpiGpuComputePass* pass = nullptr;
++  ASSERT_EQ(SpiGpuComputePassCreate(&pass), kFlutterSpiOk);
++
++  ASSERT_EQ(SpiGpuComputePassDispatch(pass, 1, 1, 1),
++            kFlutterSpiInvalidArgument);
++  char* error = nullptr;
++  ASSERT_EQ(SpiGpuComputePassGetLastError(pass, &error), kFlutterSpiOk);
++  ASSERT_NE(error, nullptr);
++  EXPECT_STREQ(error, "The ComputePass is not recording.");
++  EXPECT_EQ(SpiGpuComputePassFreeError(error), kFlutterSpiOk);
++  EXPECT_EQ(SpiGpuComputePassRelease(pass), kFlutterSpiOk);
++}
++
+ }  // namespace
+ }  // namespace flutter::testing
+diff --git a/engine/src/flutter/runtime_spi/include/flutter_gpu.h b/engine/src/flutter/runtime_spi/include/flutter_gpu.h
+index cbdb9ff3fb9..a1431eb8153 100644
+--- a/engine/src/flutter/runtime_spi/include/flutter_gpu.h
++++ b/engine/src/flutter/runtime_spi/include/flutter_gpu.h
+@@ -739,6 +739,10 @@ typedef struct FlutterSpiGpuApi {
+       FlutterSpiGpuShader* shader,
+       int32_t index,
+       int32_t* out_stride);
++  FlutterSpiResult (*compute_pass_get_last_error)(
++      FlutterSpiGpuComputePass* pass,
++      char** out_error);
++  FlutterSpiResult (*compute_pass_free_error)(char* error);
+ } FlutterSpiGpuApi;
+ 
+ #ifdef __cplusplus
+diff --git a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+index cb865c14ab8..2029a9e8931 100644
+--- a/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
++++ b/engine/src/flutter/runtime_spi/spi_abi_frozen_unittests.cc
+@@ -242,7 +242,9 @@ TEST(SpiAbi, GpuApiLayoutIsFrozen) {
+   EXPECT_SPI_OFFSET(FlutterSpiGpuApi,
+                     shader_get_storage_buffer_runtime_array_stride_at, 816,
+                     408);
+-  EXPECT_EQ(sizeof(FlutterSpiGpuApi), sizeof(void*) == 8 ? 824u : 412u);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, compute_pass_get_last_error, 824, 412);
++  EXPECT_SPI_OFFSET(FlutterSpiGpuApi, compute_pass_free_error, 832, 416);
++  EXPECT_EQ(sizeof(FlutterSpiGpuApi), sizeof(void*) == 8 ? 840u : 420u);
+ }
+ 
+ TEST(SpiAbi, GpuComputeLimitsLayoutIsFrozen) {
+diff --git a/engine/src/flutter/runtime_spi/spi_engine_api.cc b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+index d3f547c4438..02fe497fbf8 100644
+--- a/engine/src/flutter/runtime_spi/spi_engine_api.cc
++++ b/engine/src/flutter/runtime_spi/spi_engine_api.cc
+@@ -274,6 +274,8 @@ FlutterSpiEngineApi SpiEngineApi::Create() {
+       .shader_get_storage_buffer_size_at = SpiGpuShaderGetStorageBufferSizeAt,
+       .shader_get_storage_buffer_runtime_array_stride_at =
+           SpiGpuShaderGetStorageBufferRuntimeArrayStrideAt,
++      .compute_pass_get_last_error = SpiGpuComputePassGetLastError,
++      .compute_pass_free_error = SpiGpuComputePassFreeError,
+   };
+   static const FlutterSpiImageApi image_api = {
+       .struct_size = sizeof(FlutterSpiImageApi),

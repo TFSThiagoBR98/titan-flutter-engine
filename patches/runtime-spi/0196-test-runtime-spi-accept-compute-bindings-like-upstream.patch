@@ -1,0 +1,38 @@
+# Why: U1-2; align compute binding validation with upstream.
+diff --git a/engine/src/flutter/runtime_spi/gpu/spi_gpu_binding_set_unittests.cc b/engine/src/flutter/runtime_spi/gpu/spi_gpu_binding_set_unittests.cc
+index 031d7ce22a0..9478bfc4c37 100644
+--- a/engine/src/flutter/runtime_spi/gpu/spi_gpu_binding_set_unittests.cc
++++ b/engine/src/flutter/runtime_spi/gpu/spi_gpu_binding_set_unittests.cc
+@@ -118,15 +118,27 @@ TEST(FlutterGpuBindingSetTest, AddUniformRejectsAViewPastTheEndOfTheBuffer) {
+   EXPECT_TRUE(binding_set.GetBufferBindings().empty());
+ }
+ 
+-TEST(FlutterGpuBindingSetTest, AddRejectsNonRenderStages) {
++TEST(FlutterGpuBindingSetTest, AddAcceptsComputeStageUniformsAndTextures) {
+   auto shader = MakeShader(impeller::ShaderStage::kCompute);
+   SpiGpuBindingSet binding_set;
+   auto buffer = MakeBuffer(128);
++  auto texture = MakeTexture();
++  std::shared_ptr<const impeller::Sampler> sampler =
++      std::make_shared<impeller::testing::MockSampler>(
++          impeller::SamplerDescriptor{});
+ 
+-  EXPECT_FALSE(binding_set.AddUniform(*shader, /*uniform_struct_index=*/0,
+-                                      buffer, /*offset_in_bytes=*/0,
+-                                      /*length_in_bytes=*/64));
+-  EXPECT_TRUE(binding_set.GetBufferBindings().empty());
++  EXPECT_TRUE(binding_set.AddUniform(*shader, /*uniform_struct_index=*/0,
++                                     buffer, /*offset_in_bytes=*/0,
++                                     /*length_in_bytes=*/64));
++  EXPECT_TRUE(binding_set.AddTexture(
++      *shader, /*uniform_texture_index=*/0, texture,
++      impeller::raw_ptr<const impeller::Sampler>(sampler)));
++  ASSERT_EQ(binding_set.GetBufferBindings().size(), 1u);
++  EXPECT_EQ(binding_set.GetBufferBindings()[0].stage,
++            impeller::ShaderStage::kCompute);
++  ASSERT_EQ(binding_set.GetTextureBindings().size(), 1u);
++  EXPECT_EQ(binding_set.GetTextureBindings()[0].stage,
++            impeller::ShaderStage::kCompute);
+ }
+ 
+ TEST(FlutterGpuBindingSetTest, AddTextureResolvesTheShaderBinding) {

@@ -1,0 +1,31 @@
+# Why: U1-2; the native takes the GpuContext, but the Dart call did not pass
+# it, so the arguments shifted and the texture arrived null (SIGSEGV in the
+# gpu suite).
+diff --git a/engine/src/flutter/lib/gpu/lib/src/compute_pass.dart b/engine/src/flutter/lib/gpu/lib/src/compute_pass.dart
+index d0bfa8efa7c..beffd0f8824 100644
+--- a/engine/src/flutter/lib/gpu/lib/src/compute_pass.dart
++++ b/engine/src/flutter/lib/gpu/lib/src/compute_pass.dart
+@@ -214,6 +214,7 @@ base class ComputePass extends NativeFieldWrapperClass1
+     if (!_bindTextureIndexed(
+       slot.shader,
+       uniformTextureIndex,
++      _gpuContext,
+       texture,
+       sampler.minFilter.index,
+       sampler.magFilter.index,
+@@ -373,6 +374,7 @@ base class ComputePass extends NativeFieldWrapperClass1
+       Pointer<Void>,
+       Int,
+       Pointer<Void>,
++      Pointer<Void>,
+       Int,
+       Int,
+       Int,
+@@ -384,6 +386,7 @@ base class ComputePass extends NativeFieldWrapperClass1
+   external bool _bindTextureIndexed(
+     Shader shader,
+     int uniformTextureIndex,
++    GpuContext gpuContext,
+     Texture texture,
+     int minFilter,
+     int magFilter,
